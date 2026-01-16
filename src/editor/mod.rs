@@ -493,6 +493,39 @@ impl CompletionState {
     pub fn visible_count(&self) -> usize {
         self.filtered.len()
     }
+
+    /// Get the ghost text (untyped portion of selected completion)
+    /// Returns None if no completion is selected or if ghost text would be empty
+    pub fn ghost_text(&self) -> Option<String> {
+        if !self.active || self.filtered.is_empty() {
+            return None;
+        }
+
+        let insert_text = self.selected_insert_text()?;
+        let prefix = &self.filter_text;
+
+        if prefix.is_empty() {
+            // No filter text - show full completion as ghost
+            return Some(insert_text.to_string());
+        }
+
+        // Try case-insensitive prefix match
+        let insert_lower = insert_text.to_lowercase();
+        let prefix_lower = prefix.to_lowercase();
+
+        if insert_lower.starts_with(&prefix_lower) {
+            // Ghost text is the part after the prefix
+            let ghost = &insert_text[prefix.len()..];
+            if ghost.is_empty() {
+                return None;
+            }
+            return Some(ghost.to_string());
+        }
+
+        // Fuzzy match - no clear prefix, don't show ghost text
+        // (could show full text but that might be confusing)
+        None
+    }
 }
 
 /// Main editor state
@@ -660,6 +693,72 @@ impl Editor {
     /// Get the first diagnostic message for the cursor line (for status display)
     pub fn diagnostic_at_cursor(&self) -> Option<&Diagnostic> {
         self.diagnostics_for_line(self.cursor.line).into_iter().next()
+    }
+
+    /// Go to next diagnostic after cursor position
+    /// Returns true if a diagnostic was found and cursor moved
+    pub fn goto_next_diagnostic(&mut self) -> bool {
+        let cursor_line = self.cursor.line;
+        let cursor_col = self.cursor.col;
+
+        // Find target position (copy the values to avoid borrow issues)
+        let target_pos = {
+            let diagnostics = self.current_diagnostics();
+            if diagnostics.is_empty() {
+                return false;
+            }
+
+            // Find first diagnostic after cursor (same line but later column, or later line)
+            let next = diagnostics.iter().find(|d| {
+                d.line > cursor_line || (d.line == cursor_line && d.col_start > cursor_col)
+            });
+
+            // If nothing found after cursor, wrap to first diagnostic
+            let target = next.or_else(|| diagnostics.first());
+            target.map(|d| (d.line, d.col_start))
+        };
+
+        if let Some((line, col)) = target_pos {
+            self.cursor.line = line;
+            self.cursor.col = col;
+            self.scroll_to_cursor();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Go to previous diagnostic before cursor position
+    /// Returns true if a diagnostic was found and cursor moved
+    pub fn goto_prev_diagnostic(&mut self) -> bool {
+        let cursor_line = self.cursor.line;
+        let cursor_col = self.cursor.col;
+
+        // Find target position (copy the values to avoid borrow issues)
+        let target_pos = {
+            let diagnostics = self.current_diagnostics();
+            if diagnostics.is_empty() {
+                return false;
+            }
+
+            // Find last diagnostic before cursor (same line but earlier column, or earlier line)
+            let prev = diagnostics.iter().rev().find(|d| {
+                d.line < cursor_line || (d.line == cursor_line && d.col_start < cursor_col)
+            });
+
+            // If nothing found before cursor, wrap to last diagnostic
+            let target = prev.or_else(|| diagnostics.last());
+            target.map(|d| (d.line, d.col_start))
+        };
+
+        if let Some((line, col)) = target_pos {
+            self.cursor.line = line;
+            self.cursor.col = col;
+            self.scroll_to_cursor();
+            true
+        } else {
+            false
+        }
     }
 
     // ============================================
@@ -1462,22 +1561,111 @@ impl Editor {
 
     /// Insert a character at cursor position
     pub fn insert_char(&mut self, ch: char) {
-        // Record the change for undo
+        if ch == '\n' && self.settings.editor.auto_indent {
+            self.insert_newline_with_indent();
+        } else if ch == '}' && self.settings.editor.auto_indent {
+            self.insert_closing_brace();
+        } else {
+            // Standard character insertion
+            self.undo_stack.record_change(Change::insert(
+                self.cursor.line,
+                self.cursor.col,
+                ch.to_string(),
+            ));
+
+            if ch == '\n' {
+                self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, self.cursor.col, '\n');
+                self.cursor.line += 1;
+                self.cursor.col = 0;
+            } else {
+                self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, self.cursor.col, ch);
+                self.cursor.col += 1;
+            }
+        }
+        self.scroll_to_cursor();
+    }
+
+    /// Insert newline with smart indentation
+    fn insert_newline_with_indent(&mut self) {
+        let buffer = &self.buffers[self.current_buffer_idx];
+        let base_indent = buffer.get_line_indent(self.cursor.line);
+        let ends_with_brace = buffer.line_ends_with(self.cursor.line, '{');
+        let tab_width = self.settings.editor.tab_width;
+
+        // Calculate the full indent for the new line
+        let mut indent = base_indent.clone();
+        if ends_with_brace {
+            // Add one level of indentation after {
+            indent.push_str(&" ".repeat(tab_width));
+        }
+
+        // Record the full insertion for undo (newline + indent)
+        let insert_text = format!("\n{}", indent);
         self.undo_stack.record_change(Change::insert(
             self.cursor.line,
             self.cursor.col,
-            ch.to_string(),
+            insert_text.clone(),
         ));
 
-        if ch == '\n' {
-            self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, self.cursor.col, '\n');
-            self.cursor.line += 1;
-            self.cursor.col = 0;
-        } else {
-            self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, self.cursor.col, ch);
-            self.cursor.col += 1;
+        // Insert newline and indent
+        self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, self.cursor.col, &insert_text);
+
+        // Move cursor to end of indentation on new line
+        self.cursor.line += 1;
+        self.cursor.col = indent.len();
+    }
+
+    /// Insert closing brace with auto-dedent
+    fn insert_closing_brace(&mut self) {
+        let tab_width = self.settings.editor.tab_width;
+        let should_dedent = self.should_dedent_for_brace();
+
+        if should_dedent && self.cursor.col >= tab_width {
+            // Delete one level of indent before inserting }
+            let delete_start = self.cursor.col - tab_width;
+
+            // Record the deletion for undo
+            let deleted_text = " ".repeat(tab_width);
+            self.undo_stack.record_change(Change::delete(
+                self.cursor.line,
+                delete_start,
+                deleted_text,
+            ));
+
+            // Delete the indent
+            for _ in 0..tab_width {
+                self.cursor.col -= 1;
+                self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
+            }
         }
-        self.scroll_to_cursor();
+
+        // Record and insert the }
+        self.undo_stack.record_change(Change::insert(
+            self.cursor.line,
+            self.cursor.col,
+            "}".to_string(),
+        ));
+        self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, self.cursor.col, '}');
+        self.cursor.col += 1;
+    }
+
+    /// Check if cursor is preceded only by whitespace on current line
+    fn should_dedent_for_brace(&self) -> bool {
+        let buffer = &self.buffers[self.current_buffer_idx];
+        let Some(line) = buffer.line(self.cursor.line) else {
+            return false;
+        };
+
+        // Check if all characters before cursor are whitespace
+        for (i, ch) in line.chars().enumerate() {
+            if i >= self.cursor.col {
+                break;
+            }
+            if ch != ' ' && ch != '\t' {
+                return false;
+            }
+        }
+        true
     }
 
     /// Delete character before cursor (backspace)
@@ -1554,33 +1742,60 @@ impl Editor {
     pub fn open_line_below(&mut self) {
         let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
 
-        // Start undo group and record the newline insertion
+        // Calculate indent for new line
+        let indent = if self.settings.editor.auto_indent {
+            let buffer = &self.buffers[self.current_buffer_idx];
+            let base_indent = buffer.get_line_indent(self.cursor.line);
+            let ends_with_brace = buffer.line_ends_with(self.cursor.line, '{');
+            let tab_width = self.settings.editor.tab_width;
+
+            let mut indent = base_indent;
+            if ends_with_brace {
+                indent.push_str(&" ".repeat(tab_width));
+            }
+            indent
+        } else {
+            String::new()
+        };
+
+        // Start undo group and record the insertion
+        let insert_text = format!("\n{}", indent);
         self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
         self.undo_stack.record_change(Change::insert(
             self.cursor.line,
             line_len,
-            "\n".to_string(),
+            insert_text.clone(),
         ));
 
-        self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, line_len, '\n');
+        self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, line_len, &insert_text);
         self.cursor.line += 1;
-        self.cursor.col = 0;
+        self.cursor.col = indent.len();
         self.mode = Mode::Insert;
         self.scroll_to_cursor();
     }
 
     /// Open a new line above and enter insert mode
     pub fn open_line_above(&mut self) {
-        // Start undo group and record the newline insertion
+        // Calculate indent for new line (match current line's indent)
+        let indent = if self.settings.editor.auto_indent {
+            let buffer = &self.buffers[self.current_buffer_idx];
+            buffer.get_line_indent(self.cursor.line)
+        } else {
+            String::new()
+        };
+
+        // Start undo group and record the insertion
+        let insert_text = format!("{}\n", indent);
         self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
         self.undo_stack.record_change(Change::insert(
             self.cursor.line,
             0,
-            "\n".to_string(),
+            insert_text.clone(),
         ));
 
-        self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, 0, "\n");
-        self.cursor.col = 0;
+        self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, 0, &insert_text);
+        // Cursor stays on same line number (which is now the new line with indent)
+        self.cursor.col = indent.len();
         self.mode = Mode::Insert;
         self.scroll_to_cursor();
     }

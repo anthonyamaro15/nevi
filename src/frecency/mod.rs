@@ -97,9 +97,10 @@ impl FrecencyDb {
         // This decays slowly - even after 24 hours, the factor is still ~0.55
         let recency_factor = (1.0 / (1.0 + elapsed_hours)).powf(0.2);
 
-        // Frequency boost: log2(count + 1) gives diminishing returns
-        // count=1 -> 1.0, count=3 -> 2.0, count=7 -> 3.0, count=15 -> 4.0
-        let frequency_factor = (entry.count as f64 + 1.0).log2();
+        // Frequency boost: log2(count + 2) gives diminishing returns
+        // count=1 -> 1.58, count=3 -> 2.32, count=7 -> 3.17, count=15 -> 4.09
+        // Using +2 ensures count=1 is clearly > 1.0 (vs +1 which gives exactly 1.0)
+        let frequency_factor = (entry.count as f64 + 2.0).log2();
 
         // Combined score: frequency * recency
         frequency_factor * recency_factor

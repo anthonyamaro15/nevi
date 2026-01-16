@@ -46,6 +46,8 @@ pub struct EditorSettings {
     pub cursor_line: bool,
     /// Lines to keep visible above/below cursor (default: 0)
     pub scroll_off: usize,
+    /// Enable smart auto-indentation (default: true)
+    pub auto_indent: bool,
 }
 
 impl Default for EditorSettings {
@@ -56,6 +58,7 @@ impl Default for EditorSettings {
             relative_numbers: false,
             cursor_line: false,
             scroll_off: 0,
+            auto_indent: true,
         }
     }
 }
