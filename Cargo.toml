@@ -1,0 +1,44 @@
+[package]
+name = "nevi"
+version = "0.1.0"
+edition = "2021"
+description = "A Neovim-like terminal editor in Rust"
+authors = ["Anthony Amaro"]
+repository = "https://github.com/anthonyamaro15/nevi"
+
+[dependencies]
+# Terminal handling
+crossterm = "0.28"
+
+# Text storage (rope data structure)
+ropey = "1.6"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Unicode support
+unicode-width = "0.1"
+unicode-segmentation = "1.10"
+
+# Syntax highlighting
+tree-sitter = "0.26"
+tree-sitter-rust = "0.24"
+streaming-iterator = "0.1"
+
+# System clipboard
+arboard = "3.4"
+
+# Configuration
+toml = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+dirs = "5.0"
+
+# Fuzzy finder
+walkdir = "2.5"           # Directory traversal
+ignore = "0.4"            # .gitignore support
+nucleo = "0.5"            # Fast fuzzy matching
+
+[profile.release]
+lto = true
+codegen-units = 1
