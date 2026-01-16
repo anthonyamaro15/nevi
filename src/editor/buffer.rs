@@ -143,6 +143,46 @@ impl Buffer {
         }
     }
 
+    /// Replace an entire line with new content
+    pub fn replace_line(&mut self, line: usize, new_content: &str) {
+        if line >= self.text.len_lines() {
+            return;
+        }
+
+        // Get the start and end char indices for this line
+        let start_idx = self.text.line_to_char(line);
+        let end_idx = if line + 1 < self.text.len_lines() {
+            self.text.line_to_char(line + 1)
+        } else {
+            self.text.len_chars()
+        };
+
+        // Remove the old line content
+        if start_idx < end_idx {
+            self.text.remove(start_idx..end_idx);
+        }
+
+        // Insert new content (preserve newline handling)
+        let content_to_insert = if line + 1 < self.len_lines() || new_content.ends_with('\n') {
+            new_content.to_string()
+        } else if line == self.len_lines().saturating_sub(1) && !new_content.ends_with('\n') {
+            // Last line, no newline needed
+            new_content.to_string()
+        } else {
+            format!("{}\n", new_content.trim_end_matches('\n'))
+        };
+
+        self.text.insert(start_idx, &content_to_insert);
+        self.dirty = true;
+        self.version = self.version.wrapping_add(1);
+    }
+
+    /// Mark the buffer as modified
+    pub fn mark_modified(&mut self) {
+        self.dirty = true;
+        self.version = self.version.wrapping_add(1);
+    }
+
     /// Get the character at a position
     pub fn char_at(&self, line: usize, col: usize) -> Option<char> {
         let idx = self.line_col_to_char(line, col);

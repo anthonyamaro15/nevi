@@ -29,6 +29,94 @@ enum HoverLineType {
     Separator,
 }
 
+/// A wrapped segment of a line
+#[derive(Debug, Clone)]
+struct WrapSegment {
+    /// Start column in the original line
+    start_col: usize,
+    /// The text content of this segment
+    text: String,
+    /// Whether this is the first segment (shows line number)
+    is_first: bool,
+}
+
+/// Calculate wrapped segments for a line
+/// Returns a vector of segments, each representing one visual row
+fn calculate_wrap_segments(line: &str, max_width: usize, preserve_indent: bool) -> Vec<WrapSegment> {
+    if max_width == 0 {
+        return vec![WrapSegment {
+            start_col: 0,
+            text: line.to_string(),
+            is_first: true,
+        }];
+    }
+
+    let line = line.trim_end_matches('\n');
+    let chars: Vec<char> = line.chars().collect();
+
+    if chars.len() <= max_width {
+        return vec![WrapSegment {
+            start_col: 0,
+            text: line.to_string(),
+            is_first: true,
+        }];
+    }
+
+    // Calculate the indentation of the original line
+    let indent_len = if preserve_indent {
+        chars.iter().take_while(|c| c.is_whitespace()).count()
+    } else {
+        0
+    };
+    let indent: String = chars.iter().take(indent_len).collect();
+
+    let mut segments = Vec::new();
+    let mut current_col = 0;
+    let mut is_first = true;
+
+    while current_col < chars.len() {
+        let segment_indent = if is_first { "" } else { &indent };
+        let available_width = if is_first {
+            max_width
+        } else {
+            max_width.saturating_sub(indent_len)
+        };
+
+        if available_width == 0 {
+            // Can't fit anything, just take one char to avoid infinite loop
+            let text: String = std::iter::once(chars[current_col]).collect();
+            segments.push(WrapSegment {
+                start_col: current_col,
+                text: format!("{}{}", segment_indent, text),
+                is_first,
+            });
+            current_col += 1;
+        } else {
+            let remaining = chars.len() - current_col;
+            let take_count = remaining.min(available_width);
+            let text: String = chars[current_col..current_col + take_count].iter().collect();
+
+            segments.push(WrapSegment {
+                start_col: current_col,
+                text: format!("{}{}", segment_indent, text),
+                is_first,
+            });
+            current_col += take_count;
+        }
+        is_first = false;
+    }
+
+    if segments.is_empty() {
+        segments.push(WrapSegment {
+            start_col: 0,
+            text: String::new(),
+            is_first: true,
+        });
+    }
+
+    segments
+}
+
 /// Terminal handler responsible for rendering and input
 pub struct Terminal {
     stdout: Stdout,
@@ -176,10 +264,223 @@ impl Terminal {
         let show_line_numbers = editor.settings.editor.line_numbers;
         let show_relative = editor.settings.editor.relative_numbers;
         let highlight_cursor_line = is_active && editor.settings.editor.cursor_line;
+        let wrap_enabled = editor.settings.editor.wrap;
+        let wrap_width = editor.settings.editor.wrap_width;
 
         let pane_height = rect.height as usize;
         let pane_width = rect.width as usize;
 
+        // Calculate effective text width (excluding line numbers)
+        let text_area_width = if show_line_numbers {
+            pane_width.saturating_sub(line_num_width + 1)
+        } else {
+            pane_width
+        };
+
+        // Calculate wrap width: use configured wrap_width or text_area_width, whichever is smaller
+        let effective_wrap_width = if wrap_enabled {
+            wrap_width.min(text_area_width)
+        } else {
+            text_area_width
+        };
+
+        if wrap_enabled {
+            // Wrap-aware rendering
+            self.render_pane_wrapped(
+                editor, pane, buffer, rect, is_active,
+                line_num_width, visual_range, show_line_numbers,
+                show_relative, highlight_cursor_line,
+                pane_height, pane_width, effective_wrap_width,
+            )?;
+        } else {
+            // Original non-wrapped rendering
+            self.render_pane_nowrap(
+                editor, pane, buffer, rect, is_active,
+                line_num_width, visual_range, show_line_numbers,
+                show_relative, highlight_cursor_line,
+                pane_height, pane_width, text_area_width,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Render pane with soft wrap enabled
+    #[allow(clippy::too_many_arguments)]
+    fn render_pane_wrapped(
+        &mut self,
+        editor: &Editor,
+        pane: &Pane,
+        buffer: &crate::editor::Buffer,
+        rect: &crate::editor::Rect,
+        is_active: bool,
+        line_num_width: usize,
+        visual_range: Option<(usize, usize, usize, usize)>,
+        show_line_numbers: bool,
+        show_relative: bool,
+        highlight_cursor_line: bool,
+        pane_height: usize,
+        pane_width: usize,
+        wrap_width: usize,
+    ) -> anyhow::Result<()> {
+        let mut current_row = 0;
+        let mut file_line = pane.viewport_offset;
+
+        while current_row < pane_height && file_line < buffer.len_lines() {
+            let is_cursor_line = is_active && file_line == pane.cursor.line;
+
+            // Get line content
+            let line_content = buffer.line(file_line)
+                .map(|l| l.to_string())
+                .unwrap_or_default();
+
+            // Calculate wrapped segments
+            let segments = calculate_wrap_segments(&line_content, wrap_width, true);
+
+            // Get syntax highlights for this line
+            let highlights = if is_active {
+                editor.syntax.get_line_highlights(file_line)
+            } else {
+                Vec::new()
+            };
+
+            // Get diagnostics for line number coloring
+            let line_diagnostics = if is_active {
+                editor.diagnostics_for_line(file_line)
+            } else {
+                Vec::new()
+            };
+            let has_error = line_diagnostics.iter().any(|d| {
+                matches!(d.severity, crate::lsp::types::DiagnosticSeverity::Error)
+            });
+            let has_warning = line_diagnostics.iter().any(|d| {
+                matches!(d.severity, crate::lsp::types::DiagnosticSeverity::Warning)
+            });
+
+            // Render each segment
+            for segment in &segments {
+                if current_row >= pane_height {
+                    break;
+                }
+
+                let screen_y = rect.y + current_row as u16;
+                execute!(self.stdout, cursor::MoveTo(rect.x, screen_y))?;
+
+                // Apply cursor line background if enabled (for all segments of cursor line)
+                if highlight_cursor_line && is_cursor_line {
+                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                }
+
+                // Line number (only on first segment)
+                if show_line_numbers {
+                    if segment.is_first {
+                        let line_num = if show_relative && is_active {
+                            let distance = (file_line as isize - pane.cursor.line as isize).abs() as usize;
+                            if distance == 0 {
+                                format!("{:>width$} ", file_line + 1, width = line_num_width)
+                            } else {
+                                format!("{:>width$} ", distance, width = line_num_width)
+                            }
+                        } else {
+                            format!("{:>width$} ", file_line + 1, width = line_num_width)
+                        };
+
+                        let line_num_color = if has_error {
+                            Color::Red
+                        } else if has_warning {
+                            Color::Yellow
+                        } else if is_cursor_line {
+                            Color::Yellow
+                        } else {
+                            Color::DarkGrey
+                        };
+
+                        execute!(self.stdout, SetForegroundColor(line_num_color))?;
+                        print!("{}", line_num);
+                        execute!(self.stdout, ResetColor)?;
+
+                        if highlight_cursor_line && is_cursor_line {
+                            execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                        }
+                    } else {
+                        // Continuation line - empty line number gutter
+                        print!("{:>width$} ", "", width = line_num_width);
+                    }
+                }
+
+                // Render segment content with syntax highlighting
+                let segment_text = segment.text.trim_end_matches('\n');
+                self.render_line_segment_with_highlights(
+                    segment_text,
+                    file_line,
+                    segment.start_col,
+                    &highlights,
+                    visual_range,
+                    &editor.mode,
+                    highlight_cursor_line && is_cursor_line,
+                    &editor.search_matches,
+                )?;
+
+                // Fill remaining space
+                let chars_printed = if show_line_numbers { line_num_width + 1 } else { 0 }
+                    + segment_text.chars().count();
+                for _ in chars_printed..pane_width {
+                    print!(" ");
+                }
+
+                // Reset background
+                if highlight_cursor_line && is_cursor_line {
+                    execute!(self.stdout, ResetColor)?;
+                }
+
+                current_row += 1;
+            }
+
+            file_line += 1;
+        }
+
+        // Fill remaining rows with ~ indicators
+        while current_row < pane_height {
+            let screen_y = rect.y + current_row as u16;
+            execute!(self.stdout, cursor::MoveTo(rect.x, screen_y))?;
+
+            execute!(self.stdout, SetForegroundColor(Color::Blue))?;
+            if show_line_numbers {
+                print!("{:>width$} ~", "", width = line_num_width);
+            } else {
+                print!("~");
+            }
+            execute!(self.stdout, ResetColor)?;
+
+            let chars_printed = if show_line_numbers { line_num_width + 2 } else { 1 };
+            for _ in chars_printed..pane_width {
+                print!(" ");
+            }
+
+            current_row += 1;
+        }
+
+        Ok(())
+    }
+
+    /// Render pane without wrapping (original behavior)
+    #[allow(clippy::too_many_arguments)]
+    fn render_pane_nowrap(
+        &mut self,
+        editor: &Editor,
+        pane: &Pane,
+        buffer: &crate::editor::Buffer,
+        rect: &crate::editor::Rect,
+        is_active: bool,
+        line_num_width: usize,
+        visual_range: Option<(usize, usize, usize, usize)>,
+        show_line_numbers: bool,
+        show_relative: bool,
+        highlight_cursor_line: bool,
+        pane_height: usize,
+        pane_width: usize,
+        effective_width: usize,
+    ) -> anyhow::Result<()> {
         // Render each row in this pane
         for row in 0..pane_height {
             let screen_y = rect.y + row as u16;
@@ -245,11 +546,6 @@ impl Terminal {
 
                 // Line content with syntax highlighting and visual selection
                 if let Some(line) = buffer.line(file_line) {
-                    let effective_width = if show_line_numbers {
-                        pane_width.saturating_sub(line_num_width + 1)
-                    } else {
-                        pane_width
-                    };
                     let line_str: String = line.chars().take(effective_width).collect();
                     let line_str = line_str.trim_end_matches('\n');
 
@@ -267,6 +563,7 @@ impl Terminal {
                         visual_range,
                         &editor.mode,
                         highlight_cursor_line && is_cursor_line,
+                        &editor.search_matches,
                     )?;
 
                     // Track characters printed for fill calculation
@@ -325,6 +622,105 @@ impl Terminal {
             // Reset background for cursor line
             if highlight_cursor_line && is_cursor_line {
                 execute!(self.stdout, ResetColor)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Render a line segment with syntax highlighting (for wrapped lines)
+    /// col_offset is the starting column in the original line
+    #[allow(clippy::too_many_arguments)]
+    fn render_line_segment_with_highlights(
+        &mut self,
+        text: &str,
+        line_num: usize,
+        col_offset: usize,
+        highlights: &[HighlightSpan],
+        visual_range: Option<(usize, usize, usize, usize)>,
+        mode: &Mode,
+        cursor_line_bg: bool,
+        search_matches: &[(usize, usize, usize)],
+    ) -> anyhow::Result<()> {
+        let chars: Vec<char> = text.chars().collect();
+
+        let search_match_bg = Color::Rgb { r: 180, g: 140, b: 40 }; // Yellow/amber for search matches
+        let search_match_fg = Color::Black; // Black text on yellow background
+
+        // Check if a column is within a search match for this line
+        let in_search_match = |col: usize| -> bool {
+            search_matches.iter().any(|(l, start, end)| {
+                *l == line_num && col >= *start && col < *end
+            })
+        };
+
+        for (i, ch) in chars.iter().enumerate() {
+            // Calculate the actual column in the original line
+            let actual_col = col_offset + i;
+
+            // Check for visual selection
+            let in_visual = if let Some((start_line, start_col, end_line, end_col)) = visual_range {
+                match mode {
+                    Mode::Visual => {
+                        if line_num > start_line && line_num < end_line {
+                            true
+                        } else if line_num == start_line && line_num == end_line {
+                            actual_col >= start_col && actual_col <= end_col
+                        } else if line_num == start_line {
+                            actual_col >= start_col
+                        } else if line_num == end_line {
+                            actual_col <= end_col
+                        } else {
+                            false
+                        }
+                    }
+                    Mode::VisualLine => {
+                        line_num >= start_line && line_num <= end_line
+                    }
+                    Mode::VisualBlock => {
+                        line_num >= start_line && line_num <= end_line &&
+                        actual_col >= start_col && actual_col <= end_col
+                    }
+                    _ => false
+                }
+            } else {
+                false
+            };
+
+            // Check if in search match
+            let is_search = in_search_match(actual_col);
+
+            // Find syntax highlight for this position
+            let syntax_color = highlights.iter()
+                .find(|h| actual_col >= h.start_col && actual_col < h.end_col)
+                .map(|h| h.fg);
+
+            // Apply colors - Priority: visual selection > search match > cursor line > none
+            if in_visual {
+                execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 68, g: 71, b: 90 }))?;
+                if let Some(color) = syntax_color {
+                    execute!(self.stdout, SetForegroundColor(color))?;
+                }
+            } else if is_search {
+                execute!(self.stdout, SetBackgroundColor(search_match_bg))?;
+                execute!(self.stdout, SetForegroundColor(search_match_fg))?;
+            } else if cursor_line_bg {
+                execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                if let Some(color) = syntax_color {
+                    execute!(self.stdout, SetForegroundColor(color))?;
+                }
+            } else if let Some(color) = syntax_color {
+                execute!(self.stdout, SetForegroundColor(color))?;
+            }
+
+            print!("{}", ch);
+
+            // Reset colors after each character
+            if in_visual || is_search || syntax_color.is_some() {
+                execute!(self.stdout, ResetColor)?;
+                if cursor_line_bg && !in_visual && !is_search {
+                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                }
             }
         }
 
@@ -421,11 +817,85 @@ impl Terminal {
             _ => {
                 // Cursor in active pane's buffer
                 let active_pane = &editor.panes()[editor.active_pane_idx()];
-                let cursor_row = editor.cursor.line.saturating_sub(active_pane.viewport_offset);
-                let cursor_col = if show_line_numbers {
-                    line_num_width + 1 + editor.cursor.col
+                let wrap_enabled = editor.settings.editor.wrap;
+                let wrap_width = editor.settings.editor.wrap_width;
+
+                let (cursor_row, cursor_col) = if wrap_enabled {
+                    // Calculate visual position with wrapping
+                    let buffer = editor.buffer();
+                    let text_area_width = if show_line_numbers {
+                        active_pane.rect.width as usize - line_num_width - 1
+                    } else {
+                        active_pane.rect.width as usize
+                    };
+                    let effective_wrap_width = wrap_width.min(text_area_width);
+
+                    // Count visual rows from viewport_offset to cursor line
+                    let mut visual_row = 0;
+                    for line_idx in active_pane.viewport_offset..editor.cursor.line {
+                        if line_idx < buffer.len_lines() {
+                            let line_content = buffer.line(line_idx)
+                                .map(|l| l.to_string())
+                                .unwrap_or_default();
+                            let segments = calculate_wrap_segments(&line_content, effective_wrap_width, true);
+                            visual_row += segments.len();
+                        }
+                    }
+
+                    // Now find which segment of the cursor line contains the cursor column
+                    let cursor_line_content = buffer.line(editor.cursor.line)
+                        .map(|l| l.to_string())
+                        .unwrap_or_default();
+                    let segments = calculate_wrap_segments(&cursor_line_content, effective_wrap_width, true);
+
+                    let mut cursor_visual_row = visual_row;
+                    let mut cursor_visual_col = editor.cursor.col;
+
+                    for (seg_idx, segment) in segments.iter().enumerate() {
+                        let segment_end = if seg_idx + 1 < segments.len() {
+                            segments[seg_idx + 1].start_col
+                        } else {
+                            cursor_line_content.chars().count()
+                        };
+
+                        if editor.cursor.col >= segment.start_col && editor.cursor.col < segment_end {
+                            // Cursor is in this segment
+                            cursor_visual_col = editor.cursor.col - segment.start_col;
+                            // Add indentation offset for wrapped lines
+                            if !segment.is_first {
+                                let indent_len = cursor_line_content.chars()
+                                    .take_while(|c| c.is_whitespace())
+                                    .count();
+                                cursor_visual_col += indent_len;
+                            }
+                            break;
+                        }
+                        cursor_visual_row += 1;
+                    }
+
+                    // Handle cursor at end of line
+                    if editor.cursor.col >= cursor_line_content.trim_end_matches('\n').chars().count() {
+                        cursor_visual_row = visual_row + segments.len().saturating_sub(1);
+                        let last_segment = segments.last().unwrap();
+                        cursor_visual_col = last_segment.text.trim_end_matches('\n').chars().count();
+                    }
+
+                    let col = if show_line_numbers {
+                        line_num_width + 1 + cursor_visual_col
+                    } else {
+                        cursor_visual_col
+                    };
+
+                    (cursor_visual_row, col)
                 } else {
-                    editor.cursor.col
+                    // Original non-wrapped calculation
+                    let cursor_row = editor.cursor.line.saturating_sub(active_pane.viewport_offset);
+                    let cursor_col = if show_line_numbers {
+                        line_num_width + 1 + editor.cursor.col
+                    } else {
+                        editor.cursor.col
+                    };
+                    (cursor_row, cursor_col)
                 };
 
                 // Account for pane position
@@ -441,6 +911,7 @@ impl Terminal {
                 // Set cursor shape based on mode
                 match editor.mode {
                     Mode::Insert => execute!(self.stdout, cursor::SetCursorStyle::BlinkingBar)?,
+                    Mode::Replace => execute!(self.stdout, cursor::SetCursorStyle::BlinkingUnderScore)?,
                     Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock => {
                         execute!(self.stdout, cursor::SetCursorStyle::BlinkingBlock)?
                     }
@@ -1381,6 +1852,7 @@ impl Terminal {
         visual_range: Option<(usize, usize, usize, usize)>,
         mode: &Mode,
         is_cursor_line: bool,
+        search_matches: &[(usize, usize, usize)],
     ) -> anyhow::Result<()> {
         let chars: Vec<char> = line.chars().collect();
         let line_len = chars.len();
@@ -1416,6 +1888,15 @@ impl Terminal {
         // Cursor line background color
         let cursor_line_bg = Color::Rgb { r: 40, g: 44, b: 52 };
         let selection_bg = Color::DarkBlue;
+        let search_match_bg = Color::Rgb { r: 180, g: 140, b: 40 }; // Yellow/amber for search matches
+        let search_match_fg = Color::Black; // Black text on yellow background
+
+        // Check if a column is within a search match for this line
+        let in_search_match = |col: usize| -> bool {
+            search_matches.iter().any(|(l, start, end)| {
+                *l == line_idx && col >= *start && col < *end
+            })
+        };
 
         // Render character by character
         let mut highlight_idx = 0;
@@ -1428,14 +1909,19 @@ impl Terminal {
             // Check if in visual selection
             let is_selected = in_selection && col >= sel_start && col < sel_end;
 
-            let desired_bg = if is_selected {
-                Some(selection_bg)
+            // Check if in search match
+            let is_search_match = in_search_match(col);
+
+            // Priority: visual selection > search match > cursor line > none
+            let (desired_bg, desired_fg) = if is_selected {
+                (Some(selection_bg), syntax_color)
+            } else if is_search_match {
+                (Some(search_match_bg), Some(search_match_fg))
             } else if is_cursor_line {
-                Some(cursor_line_bg)
+                (Some(cursor_line_bg), syntax_color)
             } else {
-                None
+                (None, syntax_color)
             };
-            let desired_fg = syntax_color;
 
             if desired_bg != current_bg || desired_fg != current_fg {
                 execute!(self.stdout, ResetColor)?;
@@ -1528,6 +2014,7 @@ pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
     match editor.mode {
         Mode::Normal => handle_normal_mode(editor, key),
         Mode::Insert => handle_insert_mode(editor, key),
+        Mode::Replace => handle_replace_mode(editor, key),
         Mode::Command => handle_command_mode(editor, key),
         Mode::Search => handle_search_mode(editor, key),
         Mode::Visual | Mode::VisualLine | Mode::VisualBlock => handle_visual_mode(editor, key),
@@ -1750,6 +2237,10 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.enter_visual_block_mode();
         }
 
+        KeyAction::EnterReplace => {
+            editor.enter_replace_mode();
+        }
+
         KeyAction::Quit => {
             editor.should_quit = true;
         }
@@ -1862,6 +2353,18 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             }
         }
 
+        KeyAction::DeleteSurround(surround_char) => {
+            editor.delete_surrounding(surround_char);
+        }
+
+        KeyAction::ChangeSurround(old_char, new_char) => {
+            editor.change_surrounding(old_char, new_char);
+        }
+
+        KeyAction::AddSurround(text_object, surround_char) => {
+            editor.add_surrounding(text_object, surround_char);
+        }
+
         KeyAction::Unknown => {
             // Unknown key, ignore
         }
@@ -1962,6 +2465,28 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
 
         // Backspace
         (KeyModifiers::NONE, KeyCode::Backspace) => {
+            // Auto-pairs: delete matching pair if cursor is between them
+            if editor.settings.editor.auto_pairs {
+                let col = editor.cursor.col;
+                let line = editor.cursor.line;
+                if col > 0 {
+                    let prev_char = editor.buffer().char_at(line, col - 1);
+                    let next_char = editor.buffer().char_at(line, col);
+                    if let (Some(prev), Some(next)) = (prev_char, next_char) {
+                        let is_matching_pair = matches!(
+                            (prev, next),
+                            ('(', ')') | ('[', ']') | ('{', '}') |
+                            ('"', '"') | ('\'', '\'') | ('`', '`')
+                        );
+                        if is_matching_pair {
+                            // Delete both characters
+                            editor.delete_char_before(); // Delete opening
+                            editor.delete_char_at(); // Delete closing (now at cursor)
+                            return;
+                        }
+                    }
+                }
+            }
             editor.delete_char_before();
         }
 
@@ -1980,6 +2505,37 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
 
         // Regular character - accept any modifier for printable chars
         (_, KeyCode::Char(c)) if !c.is_control() => {
+            if editor.settings.editor.auto_pairs {
+                // Auto-pairs: skip over closing pair if next char is the same
+                let next_char = editor.buffer().char_at(editor.cursor.line, editor.cursor.col);
+                let is_closing = matches!(c, ')' | ']' | '}' | '"' | '\'' | '`');
+                if is_closing && next_char == Some(c) {
+                    // Skip over the closing character
+                    editor.cursor.col += 1;
+                    return;
+                }
+
+                // Auto-pairs: insert matching closing pair
+                let closing = match c {
+                    '(' => Some(')'),
+                    '[' => Some(']'),
+                    '{' => Some('}'),
+                    '"' => Some('"'),
+                    '\'' => Some('\''),
+                    '`' => Some('`'),
+                    _ => None,
+                };
+
+                if let Some(close) = closing {
+                    editor.insert_char(c);
+                    editor.insert_char(close);
+                    // Move cursor back between the pair
+                    if editor.cursor.col > 0 {
+                        editor.cursor.col -= 1;
+                    }
+                    return;
+                }
+            }
             editor.insert_char(c);
         }
 
@@ -2047,6 +2603,57 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
             // Cursor moved to different line - hide completion
             editor.completion.hide();
         }
+    }
+}
+
+fn handle_replace_mode(editor: &mut Editor, key: KeyEvent) {
+    match (key.modifiers, key.code) {
+        // Exit replace mode
+        (KeyModifiers::NONE, KeyCode::Esc) |
+        (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
+            editor.enter_normal_mode();
+        }
+
+        // Backspace - move back (don't undo replacement)
+        (KeyModifiers::NONE, KeyCode::Backspace) => {
+            if editor.cursor.col > 0 {
+                editor.cursor.col -= 1;
+            }
+        }
+
+        // Arrow keys for navigation
+        (_, KeyCode::Left) => {
+            if editor.cursor.col > 0 {
+                editor.cursor.col -= 1;
+            }
+        }
+        (_, KeyCode::Right) => {
+            let line_len = editor.buffer().line_len(editor.cursor.line);
+            if editor.cursor.col < line_len {
+                editor.cursor.col += 1;
+            }
+        }
+        (_, KeyCode::Up) => {
+            if editor.cursor.line > 0 {
+                editor.cursor.line -= 1;
+                editor.clamp_cursor();
+                editor.scroll_to_cursor();
+            }
+        }
+        (_, KeyCode::Down) => {
+            if editor.cursor.line < editor.buffer().len_lines() - 1 {
+                editor.cursor.line += 1;
+                editor.clamp_cursor();
+                editor.scroll_to_cursor();
+            }
+        }
+
+        // Regular character - replace
+        (_, KeyCode::Char(c)) if !c.is_control() => {
+            editor.replace_mode_char(c);
+        }
+
+        _ => {}
     }
 }
 
@@ -2138,6 +2745,8 @@ fn handle_search_mode(editor: &mut Editor, key: KeyEvent) {
                 editor.exit_search_mode();
             } else {
                 editor.search.delete_char_before();
+                // Update incremental search highlights
+                editor.update_incremental_search();
             }
         }
 
@@ -2152,6 +2761,8 @@ fn handle_search_mode(editor: &mut Editor, key: KeyEvent) {
         // Regular character - accept any modifier for printable chars
         (_, KeyCode::Char(c)) if !c.is_control() => {
             editor.search.insert_char(c);
+            // Update incremental search highlights
+            editor.update_incremental_search();
         }
 
         _ => {}
@@ -2572,6 +3183,20 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
         Command::LiveGrep => {
             editor.open_finder_grep();
             CommandResult::Ok
+        }
+
+        Command::NoHighlight => {
+            editor.search_matches.clear();
+            CommandResult::Ok
+        }
+
+        Command::Substitute { entire_file, pattern, replacement, global } => {
+            let count = editor.substitute(&pattern, &replacement, entire_file, global);
+            if count > 0 {
+                CommandResult::Message(format!("{} substitution(s)", count))
+            } else {
+                CommandResult::Message(format!("Pattern not found: {}", pattern))
+            }
         }
 
         Command::Unknown(cmd) => {

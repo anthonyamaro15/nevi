@@ -37,6 +37,15 @@ pub struct InputState {
     pub pending_replace: bool,
     /// Pending window command (Ctrl-w waiting for second key)
     pub pending_window_cmd: bool,
+    /// Pending surround delete (ds waiting for char)
+    pub pending_surround_delete: bool,
+    /// Pending surround change (cs waiting for old char, then new char)
+    /// None = waiting for old, Some(old) = waiting for new
+    pub pending_surround_change: Option<Option<char>>,
+    /// Pending surround add (ys waiting for motion/text object, then char)
+    pub pending_surround_add: bool,
+    /// Text object for surround add operation
+    pub surround_add_object: Option<TextObject>,
 }
 
 /// Operators that can be combined with motions
@@ -138,6 +147,8 @@ pub enum KeyAction {
     EnterVisualLine,
     /// Enter visual block mode
     EnterVisualBlock,
+    /// Enter replace mode
+    EnterReplace,
     /// Quit
     Quit,
     /// Save
@@ -165,6 +176,12 @@ pub enum KeyAction {
     NextDiagnostic,
     /// Go to previous diagnostic ([d)
     PrevDiagnostic,
+    /// Delete surrounding (ds)
+    DeleteSurround(char),
+    /// Change surrounding (cs)
+    ChangeSurround(char, char),
+    /// Add surrounding to text object (ys)
+    AddSurround(TextObject, char),
     /// Unknown/unhandled key
     Unknown,
 }
@@ -196,6 +213,10 @@ impl InputState {
         self.selected_register = None;
         self.pending_replace = false;
         self.pending_window_cmd = false;
+        self.pending_surround_delete = false;
+        self.pending_surround_change = None;
+        self.pending_surround_add = false;
+        self.surround_add_object = None;
         // Note: last_find_char is NOT reset - it persists for ; and , repeats
     }
 
@@ -265,8 +286,103 @@ impl InputState {
             return self.handle_window_command(key);
         }
 
+        // Handle surround delete (ds waiting for char)
+        if self.pending_surround_delete {
+            self.pending_surround_delete = false;
+            if let KeyCode::Char(c) = key.code {
+                let surround_char = Self::normalize_surround_char(c);
+                self.reset();
+                return KeyAction::DeleteSurround(surround_char);
+            }
+            self.reset();
+            return KeyAction::Unknown;
+        }
+
+        // Handle surround change (cs waiting for old char, then new char)
+        if let Some(old_char_opt) = self.pending_surround_change.take() {
+            if let KeyCode::Char(c) = key.code {
+                match old_char_opt {
+                    None => {
+                        // Waiting for old char
+                        let old = Self::normalize_surround_char(c);
+                        self.pending_surround_change = Some(Some(old));
+                        return KeyAction::Pending;
+                    }
+                    Some(old) => {
+                        // Waiting for new char
+                        let new = Self::normalize_surround_char(c);
+                        self.reset();
+                        return KeyAction::ChangeSurround(old, new);
+                    }
+                }
+            }
+            self.reset();
+            return KeyAction::Unknown;
+        }
+
+        // Handle surround add (ys waiting for text object, then char)
+        if self.pending_surround_add {
+            // First, check if we have a text object already
+            if let Some(text_object) = self.surround_add_object.take() {
+                // We have the text object, now get the surround char
+                if let KeyCode::Char(c) = key.code {
+                    let surround_char = Self::normalize_surround_char(c);
+                    self.pending_surround_add = false;
+                    self.reset();
+                    return KeyAction::AddSurround(text_object, surround_char);
+                }
+                self.reset();
+                return KeyAction::Unknown;
+            }
+
+            // Need to get text object (i/a modifier or direct object)
+            match key.code {
+                KeyCode::Char('i') => {
+                    self.pending_text_object = Some(TextObjectModifier::Inner);
+                    // Keep pending_surround_add true
+                    return KeyAction::Pending;
+                }
+                KeyCode::Char('a') => {
+                    self.pending_text_object = Some(TextObjectModifier::Around);
+                    // Keep pending_surround_add true
+                    return KeyAction::Pending;
+                }
+                // Direct text object shortcuts
+                KeyCode::Char('w') => {
+                    self.surround_add_object = Some(TextObject {
+                        modifier: TextObjectModifier::Inner,
+                        object_type: TextObjectType::Word,
+                    });
+                    return KeyAction::Pending;
+                }
+                KeyCode::Char('W') => {
+                    self.surround_add_object = Some(TextObject {
+                        modifier: TextObjectModifier::Inner,
+                        object_type: TextObjectType::BigWord,
+                    });
+                    return KeyAction::Pending;
+                }
+                _ => {
+                    self.reset();
+                    return KeyAction::Unknown;
+                }
+            }
+        }
+
         // Handle text object type after i/a modifier
         if let Some(modifier) = self.pending_text_object.take() {
+            // Check if this is part of a surround add operation
+            if self.pending_surround_add {
+                if let Some(obj_type) = Self::char_to_text_object_type(key.code) {
+                    self.surround_add_object = Some(TextObject {
+                        modifier,
+                        object_type: obj_type,
+                    });
+                    return KeyAction::Pending;
+                }
+                self.reset();
+                return KeyAction::Unknown;
+            }
             return self.handle_text_object_type(modifier, key);
         }
 
@@ -316,6 +432,34 @@ impl InputState {
                 } else {
                     self.pending_operator = Some(Operator::Yank);
                     KeyAction::Pending
+                }
+            }
+
+            // Surround operations (ds, cs, ys)
+            (KeyModifiers::NONE, KeyCode::Char('s')) if self.pending_operator.is_some() => {
+                match self.pending_operator {
+                    Some(Operator::Delete) => {
+                        // ds - delete surrounding
+                        self.pending_operator = None;
+                        self.pending_surround_delete = true;
+                        KeyAction::Pending
+                    }
+                    Some(Operator::Change) => {
+                        // cs - change surrounding
+                        self.pending_operator = None;
+                        self.pending_surround_change = Some(None); // waiting for old char
+                        KeyAction::Pending
+                    }
+                    Some(Operator::Yank) => {
+                        // ys - add surrounding
+                        self.pending_operator = None;
+                        self.pending_surround_add = true;
+                        KeyAction::Pending
+                    }
+                    _ => {
+                        self.reset();
+                        KeyAction::Unknown
+                    }
                 }
             }
 
@@ -511,6 +655,11 @@ impl InputState {
                 // r - replace character (wait for replacement char)
                 self.pending_replace = true;
                 KeyAction::Pending
+            }
+            (KeyModifiers::SHIFT, KeyCode::Char('R')) | (KeyModifiers::NONE, KeyCode::Char('R')) => {
+                // R - enter replace mode
+                self.reset();
+                KeyAction::EnterReplace
             }
             (KeyModifiers::SHIFT, KeyCode::Char('J')) => {
                 // J - join lines
@@ -766,6 +915,33 @@ impl InputState {
         } else {
             self.reset();
             KeyAction::Unknown
+        }
+    }
+
+    /// Normalize surround character (handle aliases like b for ( and B for {)
+    fn normalize_surround_char(c: char) -> char {
+        match c {
+            'b' => '(',
+            'B' => '{',
+            'r' => '[',
+            'a' => '<',
+            _ => c,
+        }
+    }
+
+    /// Convert key code to text object type for surround add
+    fn char_to_text_object_type(code: KeyCode) -> Option<TextObjectType> {
+        match code {
+            KeyCode::Char('w') => Some(TextObjectType::Word),
+            KeyCode::Char('W') => Some(TextObjectType::BigWord),
+            KeyCode::Char('"') => Some(TextObjectType::DoubleQuote),
+            KeyCode::Char('\'') => Some(TextObjectType::SingleQuote),
+            KeyCode::Char('`') => Some(TextObjectType::BackTick),
+            KeyCode::Char('(') | KeyCode::Char(')') | KeyCode::Char('b') => Some(TextObjectType::Paren),
+            KeyCode::Char('{') | KeyCode::Char('}') | KeyCode::Char('B') => Some(TextObjectType::Brace),
+            KeyCode::Char('[') | KeyCode::Char(']') | KeyCode::Char('r') => Some(TextObjectType::Bracket),
+            KeyCode::Char('<') | KeyCode::Char('>') | KeyCode::Char('a') => Some(TextObjectType::AngleBracket),
+            _ => None,
         }
     }
 

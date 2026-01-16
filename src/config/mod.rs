@@ -48,6 +48,12 @@ pub struct EditorSettings {
     pub scroll_off: usize,
     /// Enable smart auto-indentation (default: true)
     pub auto_indent: bool,
+    /// Enable soft word wrap (default: false)
+    pub wrap: bool,
+    /// Column to wrap at (default: 80)
+    pub wrap_width: usize,
+    /// Enable auto-pairs (auto-close brackets/quotes) (default: true)
+    pub auto_pairs: bool,
 }
 
 impl Default for EditorSettings {
@@ -59,6 +65,9 @@ impl Default for EditorSettings {
             cursor_line: false,
             scroll_off: 0,
             auto_indent: true,
+            wrap: false,
+            wrap_width: 80,
+            auto_pairs: true,
         }
     }
 }

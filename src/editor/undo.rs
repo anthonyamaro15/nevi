@@ -30,6 +30,11 @@ impl Change {
         Self::new(line, col, text, String::new())
     }
 
+    /// Create a change for replacing an entire line
+    pub fn replace_line(line: usize, old_text: String, new_text: String) -> Self {
+        Self::new(line, 0, old_text, new_text)
+    }
+
     /// Create the inverse of this change (for undo)
     pub fn inverse(&self) -> Self {
         Self {
