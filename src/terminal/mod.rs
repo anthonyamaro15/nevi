@@ -7,11 +7,27 @@ use crossterm::{
 };
 use std::io::{self, Write, Stdout};
 
-use crate::editor::{Editor, Mode, PaneDirection};
+use crate::editor::{Editor, Mode, PaneDirection, Pane, SplitLayout};
 use crate::input::{KeyAction, InsertPosition, Operator, TextObject, TextObjectModifier, TextObjectType};
 use crate::commands::{Command, CommandResult, parse_command};
 use crate::config::LeaderAction;
 use crate::syntax::HighlightSpan;
+use crate::lsp::types::CompletionKind;
+
+/// Section types for hover content parsing
+enum HoverSection {
+    #[allow(dead_code)]
+    Code { language: String, lines: Vec<String> },
+    Text(String),
+}
+
+/// Line type for hover rendering
+#[derive(Clone, Copy)]
+enum HoverLineType {
+    Code,
+    Text,
+    Separator,
+}
 
 /// Terminal handler responsible for rendering and input
 pub struct Terminal {
@@ -94,108 +110,21 @@ impl Terminal {
     pub fn render(&mut self, editor: &Editor) -> anyhow::Result<()> {
         execute!(self.stdout, cursor::MoveTo(0, 0))?;
 
-        let text_rows = editor.text_rows();
-        let width = editor.term_width as usize;
-        let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+        let num_panes = editor.panes().len();
 
-        // Get visual selection range if in visual mode
-        let visual_range = if editor.mode.is_visual() {
-            Some(editor.get_visual_range())
-        } else {
-            None
-        };
+        // Render all panes
+        for (pane_idx, pane) in editor.panes().iter().enumerate() {
+            let is_active = pane_idx == editor.active_pane_idx();
+            self.render_pane(editor, pane, is_active)?;
+        }
 
-        // Determine line number width based on settings
-        let show_line_numbers = editor.settings.editor.line_numbers;
-        let show_relative = editor.settings.editor.relative_numbers;
-        let highlight_cursor_line = editor.settings.editor.cursor_line;
-
-        // Render each row
-        for row in 0..text_rows {
-            let file_line = editor.viewport_offset + row;
-            let is_cursor_line = file_line == editor.cursor.line;
-
-            // Apply cursor line background if enabled
-            if highlight_cursor_line && is_cursor_line && file_line < editor.buffer().len_lines() {
-                execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-            }
-
-            if file_line < editor.buffer().len_lines() {
-                // Line number (if enabled)
-                if show_line_numbers {
-                    let line_num = if show_relative {
-                        // Relative line numbers: show distance from cursor, current line shows absolute
-                        let distance = (file_line as isize - editor.cursor.line as isize).abs() as usize;
-                        if distance == 0 {
-                            format!("{:>width$} ", file_line + 1, width = line_num_width)
-                        } else {
-                            format!("{:>width$} ", distance, width = line_num_width)
-                        }
-                    } else {
-                        format!("{:>width$} ", file_line + 1, width = line_num_width)
-                    };
-
-                    // Highlight current line number
-                    if is_cursor_line {
-                        execute!(self.stdout, SetForegroundColor(Color::Yellow))?;
-                    } else {
-                        execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
-                    }
-                    print!("{}", line_num);
-                    execute!(self.stdout, ResetColor)?;
-
-                    // Re-apply cursor line background after reset
-                    if highlight_cursor_line && is_cursor_line {
-                        execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-                    }
-                }
-
-                // Line content with syntax highlighting and visual selection
-                if let Some(line) = editor.buffer().line(file_line) {
-                    let effective_width = if show_line_numbers {
-                        width - line_num_width - 1
-                    } else {
-                        width
-                    };
-                    let line_str: String = line.chars().take(effective_width).collect();
-                    let line_str = line_str.trim_end_matches('\n');
-
-                    // Get syntax highlights for this line
-                    let highlights = editor.syntax.get_line_highlights(file_line);
-
-                    self.render_line_with_highlights(
-                        line_str,
-                        file_line,
-                        &highlights,
-                        visual_range,
-                        &editor.mode,
-                        highlight_cursor_line && is_cursor_line,
-                    )?;
-                }
-            } else {
-                // Empty line indicator
-                execute!(self.stdout, SetForegroundColor(Color::Blue))?;
-                if show_line_numbers {
-                    print!("{:>width$} ~", "", width = line_num_width);
-                } else {
-                    print!("~");
-                }
-                execute!(self.stdout, ResetColor)?;
-            }
-
-            // Reset background for cursor line
-            if highlight_cursor_line && is_cursor_line {
-                execute!(self.stdout, ResetColor)?;
-            }
-
-            // Clear to end of line and move to next
-            execute!(self.stdout, terminal::Clear(ClearType::UntilNewLine))?;
-            if row < text_rows - 1 {
-                print!("\r\n");
-            }
+        // Draw separators between panes if we have multiple panes
+        if num_panes > 1 {
+            self.render_pane_separators(editor)?;
         }
 
         // Render status line
+        let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
         self.render_status_line(editor, line_num_width)?;
 
         // Render command/message line
@@ -206,7 +135,226 @@ impl Terminal {
             self.render_finder(editor)?;
         }
 
-        // Position cursor based on mode
+        // Render completion popup if active
+        if editor.completion.active {
+            self.render_completion(editor)?;
+        }
+
+        // Render hover popup if active
+        if editor.hover_content.is_some() {
+            self.render_hover(editor)?;
+        }
+
+        // Render signature help popup if active
+        if editor.signature_help.is_some() {
+            self.render_signature_help(editor)?;
+        }
+
+        // Position cursor
+        self.position_cursor(editor)?;
+
+        self.stdout.flush()?;
+        Ok(())
+    }
+
+    /// Render a single pane's content
+    fn render_pane(&mut self, editor: &Editor, pane: &Pane, is_active: bool) -> anyhow::Result<()> {
+        let buffer = editor.buffer_at(pane.buffer_idx).unwrap();
+        let rect = &pane.rect;
+
+        // Calculate line number width for this buffer
+        let line_num_width = buffer.len_lines().to_string().len().max(3);
+
+        // Get visual selection range if in visual mode and this is active pane
+        let visual_range = if is_active && editor.mode.is_visual() {
+            Some(editor.get_visual_range())
+        } else {
+            None
+        };
+
+        // Settings
+        let show_line_numbers = editor.settings.editor.line_numbers;
+        let show_relative = editor.settings.editor.relative_numbers;
+        let highlight_cursor_line = is_active && editor.settings.editor.cursor_line;
+
+        let pane_height = rect.height as usize;
+        let pane_width = rect.width as usize;
+
+        // Render each row in this pane
+        for row in 0..pane_height {
+            let screen_y = rect.y + row as u16;
+            let file_line = pane.viewport_offset + row;
+            let is_cursor_line = is_active && file_line == pane.cursor.line;
+
+            // Move to start of this row in the pane
+            execute!(self.stdout, cursor::MoveTo(rect.x, screen_y))?;
+
+            // Apply cursor line background if enabled
+            if highlight_cursor_line && is_cursor_line && file_line < buffer.len_lines() {
+                execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+            }
+
+            if file_line < buffer.len_lines() {
+                // Line number (if enabled)
+                if show_line_numbers {
+                    // Check for diagnostics on this line (only for active pane)
+                    let line_diagnostics = if is_active {
+                        editor.diagnostics_for_line(file_line)
+                    } else {
+                        Vec::new()
+                    };
+                    let has_error = line_diagnostics.iter().any(|d| {
+                        matches!(d.severity, crate::lsp::types::DiagnosticSeverity::Error)
+                    });
+                    let has_warning = line_diagnostics.iter().any(|d| {
+                        matches!(d.severity, crate::lsp::types::DiagnosticSeverity::Warning)
+                    });
+
+                    let line_num = if show_relative && is_active {
+                        // Relative line numbers: show distance from cursor, current line shows absolute
+                        let distance = (file_line as isize - pane.cursor.line as isize).abs() as usize;
+                        if distance == 0 {
+                            format!("{:>width$} ", file_line + 1, width = line_num_width)
+                        } else {
+                            format!("{:>width$} ", distance, width = line_num_width)
+                        }
+                    } else {
+                        format!("{:>width$} ", file_line + 1, width = line_num_width)
+                    };
+
+                    // Color line number based on diagnostics
+                    let line_num_color = if has_error {
+                        Color::Red
+                    } else if has_warning {
+                        Color::Yellow
+                    } else if is_cursor_line {
+                        Color::Yellow
+                    } else {
+                        Color::DarkGrey
+                    };
+
+                    execute!(self.stdout, SetForegroundColor(line_num_color))?;
+                    print!("{}", line_num);
+                    execute!(self.stdout, ResetColor)?;
+
+                    // Re-apply cursor line background after reset
+                    if highlight_cursor_line && is_cursor_line {
+                        execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                    }
+                }
+
+                // Line content with syntax highlighting and visual selection
+                if let Some(line) = buffer.line(file_line) {
+                    let effective_width = if show_line_numbers {
+                        pane_width.saturating_sub(line_num_width + 1)
+                    } else {
+                        pane_width
+                    };
+                    let line_str: String = line.chars().take(effective_width).collect();
+                    let line_str = line_str.trim_end_matches('\n');
+
+                    // Get syntax highlights for this line (only for active pane)
+                    let highlights = if is_active {
+                        editor.syntax.get_line_highlights(file_line)
+                    } else {
+                        Vec::new()
+                    };
+
+                    self.render_line_with_highlights(
+                        line_str,
+                        file_line,
+                        &highlights,
+                        visual_range,
+                        &editor.mode,
+                        highlight_cursor_line && is_cursor_line,
+                    )?;
+
+                    // Fill remaining space in pane
+                    let chars_printed = if show_line_numbers { line_num_width + 1 } else { 0 } + line_str.chars().count();
+                    for _ in chars_printed..pane_width {
+                        print!(" ");
+                    }
+                }
+            } else {
+                // Empty line indicator
+                execute!(self.stdout, SetForegroundColor(Color::Blue))?;
+                if show_line_numbers {
+                    print!("{:>width$} ~", "", width = line_num_width);
+                } else {
+                    print!("~");
+                }
+                execute!(self.stdout, ResetColor)?;
+
+                // Fill remaining space
+                let chars_printed = if show_line_numbers { line_num_width + 2 } else { 1 };
+                for _ in chars_printed..pane_width {
+                    print!(" ");
+                }
+            }
+
+            // Reset background for cursor line
+            if highlight_cursor_line && is_cursor_line {
+                execute!(self.stdout, ResetColor)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Draw separator lines between panes
+    fn render_pane_separators(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        let separator_color = Color::DarkGrey;
+        let panes = editor.panes();
+
+        match editor.split_layout() {
+            SplitLayout::Vertical => {
+                // Draw vertical separators between side-by-side panes
+                for i in 0..panes.len().saturating_sub(1) {
+                    let pane = &panes[i];
+                    let separator_x = pane.rect.x + pane.rect.width;
+
+                    // Don't draw if separator is at edge of screen
+                    if separator_x >= editor.term_width {
+                        continue;
+                    }
+
+                    execute!(self.stdout, SetForegroundColor(separator_color))?;
+                    for y in 0..pane.rect.height {
+                        execute!(self.stdout, cursor::MoveTo(separator_x, pane.rect.y + y))?;
+                        print!("\u{2502}"); // │
+                    }
+                    execute!(self.stdout, ResetColor)?;
+                }
+            }
+            SplitLayout::Horizontal => {
+                // Draw horizontal separators between stacked panes
+                for i in 0..panes.len().saturating_sub(1) {
+                    let pane = &panes[i];
+                    let separator_y = pane.rect.y + pane.rect.height;
+
+                    // Don't draw if separator is at edge of text area
+                    if separator_y >= editor.text_rows() as u16 {
+                        continue;
+                    }
+
+                    execute!(self.stdout, SetForegroundColor(separator_color))?;
+                    execute!(self.stdout, cursor::MoveTo(0, separator_y))?;
+                    for _ in 0..editor.term_width {
+                        print!("\u{2500}"); // ─
+                    }
+                    execute!(self.stdout, ResetColor)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Position the cursor based on editor mode
+    fn position_cursor(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        let show_line_numbers = editor.settings.editor.line_numbers;
+        let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+
         match editor.mode {
             Mode::Command => {
                 // Cursor in command line
@@ -241,16 +389,22 @@ impl Terminal {
                 )?;
             }
             _ => {
-                // Cursor in buffer
-                let cursor_row = editor.cursor.line - editor.viewport_offset;
+                // Cursor in active pane's buffer
+                let active_pane = &editor.panes()[editor.active_pane_idx()];
+                let cursor_row = editor.cursor.line.saturating_sub(active_pane.viewport_offset);
                 let cursor_col = if show_line_numbers {
                     line_num_width + 1 + editor.cursor.col
                 } else {
                     editor.cursor.col
                 };
+
+                // Account for pane position
+                let screen_x = active_pane.rect.x as usize + cursor_col;
+                let screen_y = active_pane.rect.y as usize + cursor_row;
+
                 execute!(
                     self.stdout,
-                    cursor::MoveTo(cursor_col as u16, cursor_row as u16),
+                    cursor::MoveTo(screen_x as u16, screen_y as u16),
                     cursor::Show
                 )?;
 
@@ -265,12 +419,13 @@ impl Terminal {
             }
         }
 
-        self.stdout.flush()?;
         Ok(())
     }
 
     fn render_status_line(&mut self, editor: &Editor, _line_num_width: usize) -> anyhow::Result<()> {
-        print!("\r\n");
+        // Position at the status line row (second to last row)
+        let status_row = editor.term_height.saturating_sub(2);
+        execute!(self.stdout, cursor::MoveTo(0, status_row))?;
 
         let width = editor.term_width as usize;
 
@@ -309,9 +464,14 @@ impl Terminal {
         let modified = if editor.buffer().dirty { " [+]" } else { "" };
         let left = format!(" {}{} | {}{} ", mode_str, pending, filename, modified);
 
-        // Right side: language and position
+        // Right side: LSP status, language and position
+        let lsp_status = editor.lsp_status.as_deref().unwrap_or("");
         let lang = editor.syntax.language_name().unwrap_or("plain");
-        let right = format!(" {} | {}:{} ", lang, editor.cursor.line + 1, editor.cursor.col + 1);
+        let right = if lsp_status.is_empty() {
+            format!(" {} | {}:{} ", lang, editor.cursor.line + 1, editor.cursor.col + 1)
+        } else {
+            format!(" {} | {} | {}:{} ", lsp_status, lang, editor.cursor.line + 1, editor.cursor.col + 1)
+        };
 
         // Calculate padding
         let padding = width.saturating_sub(left.len() + right.len());
@@ -329,7 +489,9 @@ impl Terminal {
     }
 
     fn render_command_line(&mut self, editor: &Editor) -> anyhow::Result<()> {
-        print!("\r\n");
+        // Position at the command line row (last row)
+        let cmd_row = editor.term_height.saturating_sub(1);
+        execute!(self.stdout, cursor::MoveTo(0, cmd_row))?;
         execute!(self.stdout, terminal::Clear(ClearType::CurrentLine))?;
 
         if editor.mode == Mode::Command {
@@ -341,8 +503,612 @@ impl Terminal {
         } else if let Some(ref msg) = editor.status_message {
             // Show status message
             print!("{}", msg);
+        } else if let Some(diag) = editor.diagnostic_at_cursor() {
+            // Show diagnostic message when cursor is on a line with diagnostics
+            let (color, prefix) = match diag.severity {
+                crate::lsp::types::DiagnosticSeverity::Error => (Color::Red, "Error"),
+                crate::lsp::types::DiagnosticSeverity::Warning => (Color::Yellow, "Warning"),
+                crate::lsp::types::DiagnosticSeverity::Information => (Color::Blue, "Info"),
+                crate::lsp::types::DiagnosticSeverity::Hint => (Color::Cyan, "Hint"),
+            };
+            execute!(self.stdout, SetForegroundColor(color))?;
+            // Truncate message to fit terminal width
+            let max_len = editor.term_width as usize - prefix.len() - 3;
+            let msg = if diag.message.len() > max_len {
+                format!("{}...", &diag.message[..max_len.saturating_sub(3)])
+            } else {
+                diag.message.clone()
+            };
+            print!("{}: {}", prefix, msg);
+            execute!(self.stdout, ResetColor)?;
         }
 
+        Ok(())
+    }
+
+    /// Render the completion popup with documentation
+    fn render_completion(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        let completion = &editor.completion;
+        // Use filtered list instead of raw items
+        if completion.filtered.is_empty() {
+            return Ok(());
+        }
+
+        // Calculate popup position (below cursor, or above if near bottom)
+        let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+        let cursor_screen_col = (line_num_width + 1 + editor.cursor.col) as u16;
+        let cursor_screen_row = (editor.cursor.line - editor.viewport_offset) as u16;
+
+        // Calculate widths for label and detail columns (only from filtered items)
+        let max_label_len = completion.filtered.iter()
+            .filter_map(|&idx| completion.items.get(idx))
+            .map(|item| item.label.len())
+            .max()
+            .unwrap_or(10)
+            .min(30);
+        let max_detail_len = completion.filtered.iter()
+            .filter_map(|&idx| completion.items.get(idx))
+            .filter_map(|item| item.detail.as_ref())
+            .map(|d| d.len())
+            .max()
+            .unwrap_or(0)
+            .min(35);
+
+        // Popup dimensions (use filtered count)
+        let max_items = 10.min(completion.filtered.len());
+        let popup_height = max_items as u16 + 2; // +2 for border
+        let label_col_width = max_label_len + 5; // +5 for kind and padding
+        let detail_col_width = if max_detail_len > 0 { max_detail_len + 2 } else { 0 };
+        let popup_width = (label_col_width + detail_col_width + 3) as u16; // +3 for borders
+        let popup_width = popup_width.min(editor.term_width - 4);
+
+        // Position popup below cursor, or above if no room
+        let available_below = editor.term_height.saturating_sub(cursor_screen_row + 3);
+        let popup_y = if available_below >= popup_height {
+            cursor_screen_row + 1
+        } else {
+            cursor_screen_row.saturating_sub(popup_height)
+        };
+        let popup_x = cursor_screen_col.min(editor.term_width.saturating_sub(popup_width + 2));
+
+        // Colors
+        let border_color = Color::Rgb { r: 70, g: 70, b: 70 };
+        let bg_color = Color::Rgb { r: 25, g: 25, b: 30 };
+        let selected_bg = Color::Rgb { r: 50, g: 50, b: 90 };
+        let kind_color = Color::Rgb { r: 130, g: 180, b: 250 };
+        let detail_color = Color::Rgb { r: 120, g: 120, b: 140 };
+        let doc_bg = Color::Rgb { r: 30, g: 30, b: 35 };
+
+        // Draw top border
+        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        print!("┌");
+        for _ in 0..(popup_width - 2) {
+            print!("─");
+        }
+        print!("┐");
+
+        // Draw items - iterate over filtered indices
+        let scroll_offset = if completion.selected >= max_items {
+            completion.selected - max_items + 1
+        } else {
+            0
+        };
+
+        for (display_idx, &item_idx) in completion.filtered.iter().enumerate().skip(scroll_offset).take(max_items) {
+            let item = match completion.items.get(item_idx) {
+                Some(item) => item,
+                None => continue,
+            };
+            let row = popup_y + 1 + (display_idx - scroll_offset) as u16;
+            execute!(self.stdout, cursor::MoveTo(popup_x, row))?;
+
+            let is_selected = display_idx == completion.selected;
+            let item_bg = if is_selected { selected_bg } else { bg_color };
+
+            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            print!("│");
+
+            execute!(self.stdout, SetBackgroundColor(item_bg))?;
+
+            // Kind indicator (colored)
+            execute!(self.stdout, SetForegroundColor(kind_color))?;
+            print!(" {} ", item.kind.short_name());
+
+            // Label
+            execute!(self.stdout, SetForegroundColor(Color::White))?;
+            let available_label_width = (popup_width as usize).saturating_sub(detail_col_width + 7);
+            let label = if item.label.len() > available_label_width {
+                format!("{}…", &item.label[..available_label_width.saturating_sub(1)])
+            } else {
+                format!("{:width$}", item.label, width = available_label_width)
+            };
+            print!("{}", label);
+
+            // Detail/type signature (dimmed, right-aligned)
+            if let Some(detail) = &item.detail {
+                execute!(self.stdout, SetForegroundColor(detail_color))?;
+                let detail_width = detail_col_width;
+                let detail_str = if detail.len() > detail_width {
+                    format!("{}…", &detail[..detail_width.saturating_sub(1)])
+                } else {
+                    format!("{:>width$}", detail, width = detail_width)
+                };
+                print!(" {}", detail_str);
+            } else if detail_col_width > 0 {
+                print!("{:width$}", "", width = detail_col_width + 1);
+            }
+
+            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            print!("│");
+        }
+
+        // Draw bottom border
+        let bottom_row = popup_y + 1 + max_items as u16;
+        execute!(self.stdout, cursor::MoveTo(popup_x, bottom_row))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        print!("└");
+        for _ in 0..(popup_width - 2) {
+            print!("─");
+        }
+        print!("┘");
+
+        // Draw documentation panel if selected item has docs
+        if let Some(item) = completion.selected_item() {
+            if item.detail.is_some() || item.documentation.is_some() {
+                let doc_y = bottom_row + 1;
+                let doc_width = popup_width.max(50).min(editor.term_width - popup_x - 1);
+
+                // Only show if we have room
+                if doc_y + 2 < editor.term_height.saturating_sub(2) {
+                    // Draw doc panel top border
+                    execute!(self.stdout, cursor::MoveTo(popup_x, doc_y))?;
+                    execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
+                    print!("┌");
+                    for _ in 0..(doc_width - 2) {
+                        print!("─");
+                    }
+                    print!("┐");
+
+                    let mut doc_row = doc_y + 1;
+                    let max_doc_rows = (editor.term_height.saturating_sub(doc_y + 3)) as usize;
+                    let content_width = doc_width as usize - 4;
+
+                    // Show type signature
+                    if let Some(detail) = &item.detail {
+                        if doc_row < editor.term_height.saturating_sub(2) {
+                            execute!(self.stdout, cursor::MoveTo(popup_x, doc_row))?;
+                            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
+                            print!("│");
+                            execute!(self.stdout, SetForegroundColor(Color::Cyan))?;
+                            let sig = if detail.len() > content_width {
+                                format!(" {}…", &detail[..content_width.saturating_sub(2)])
+                            } else {
+                                format!(" {:width$}", detail, width = content_width)
+                            };
+                            print!("{}", sig);
+                            execute!(self.stdout, SetForegroundColor(border_color))?;
+                            print!(" │");
+                            doc_row += 1;
+                        }
+
+                        // Separator line
+                        if doc_row < editor.term_height.saturating_sub(2) {
+                            execute!(self.stdout, cursor::MoveTo(popup_x, doc_row))?;
+                            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
+                            print!("├");
+                            for _ in 0..(doc_width - 2) {
+                                print!("─");
+                            }
+                            print!("┤");
+                            doc_row += 1;
+                        }
+                    }
+
+                    // Show documentation
+                    if let Some(docs) = &item.documentation {
+                        let lines: Vec<&str> = docs.lines().collect();
+                        for line in lines.iter().take(max_doc_rows.saturating_sub(2)) {
+                            if doc_row >= editor.term_height.saturating_sub(2) {
+                                break;
+                            }
+                            execute!(self.stdout, cursor::MoveTo(popup_x, doc_row))?;
+                            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
+                            print!("│");
+                            execute!(self.stdout, SetForegroundColor(Color::White))?;
+                            let doc_line = if line.len() > content_width {
+                                format!(" {}…", &line[..content_width.saturating_sub(2)])
+                            } else {
+                                format!(" {:width$}", line, width = content_width)
+                            };
+                            print!("{}", doc_line);
+                            execute!(self.stdout, SetForegroundColor(border_color))?;
+                            print!(" │");
+                            doc_row += 1;
+                        }
+                    }
+
+                    // Draw doc panel bottom border
+                    if doc_row < editor.term_height.saturating_sub(1) {
+                        execute!(self.stdout, cursor::MoveTo(popup_x, doc_row))?;
+                        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
+                        print!("└");
+                        for _ in 0..(doc_width - 2) {
+                            print!("─");
+                        }
+                        print!("┘");
+                    }
+                }
+            }
+        }
+
+        execute!(self.stdout, ResetColor)?;
+        Ok(())
+    }
+
+    /// Parse hover content into structured sections (code blocks and text)
+    fn parse_hover_content(content: &str) -> Vec<HoverSection> {
+        let mut sections = Vec::new();
+        let mut current_text = String::new();
+        let mut in_code_block = false;
+        let mut code_block_lang = String::new();
+        let mut code_lines = Vec::new();
+
+        for line in content.lines() {
+            if line.starts_with("```") {
+                if in_code_block {
+                    // End of code block
+                    if !code_lines.is_empty() {
+                        sections.push(HoverSection::Code {
+                            language: code_block_lang.clone(),
+                            lines: code_lines.clone(),
+                        });
+                    }
+                    code_lines.clear();
+                    code_block_lang.clear();
+                    in_code_block = false;
+                } else {
+                    // Start of code block - save any pending text
+                    let trimmed = current_text.trim();
+                    if !trimmed.is_empty() {
+                        sections.push(HoverSection::Text(trimmed.to_string()));
+                    }
+                    current_text.clear();
+                    code_block_lang = line.trim_start_matches('`').to_string();
+                    in_code_block = true;
+                }
+            } else if in_code_block {
+                code_lines.push(line.to_string());
+            } else {
+                if !current_text.is_empty() {
+                    current_text.push('\n');
+                }
+                current_text.push_str(line);
+            }
+        }
+
+        // Handle any remaining content
+        if in_code_block && !code_lines.is_empty() {
+            sections.push(HoverSection::Code {
+                language: code_block_lang,
+                lines: code_lines,
+            });
+        } else {
+            let trimmed = current_text.trim();
+            if !trimmed.is_empty() {
+                sections.push(HoverSection::Text(trimmed.to_string()));
+            }
+        }
+
+        sections
+    }
+
+    /// Render the hover documentation popup (Neovim-style)
+    fn render_hover(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        let content = match &editor.hover_content {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+
+        // Parse content into sections
+        let sections = Self::parse_hover_content(content);
+        if sections.is_empty() {
+            return Ok(());
+        }
+
+        // Build display lines with their types
+        let mut display_lines: Vec<(String, HoverLineType)> = Vec::new();
+
+        for (section_idx, section) in sections.iter().enumerate() {
+            // Add separator between sections (except before first)
+            if section_idx > 0 && !display_lines.is_empty() {
+                display_lines.push(("".to_string(), HoverLineType::Separator));
+            }
+
+            match section {
+                HoverSection::Code { lines, .. } => {
+                    for line in lines {
+                        display_lines.push((line.clone(), HoverLineType::Code));
+                    }
+                }
+                HoverSection::Text(text) => {
+                    for line in text.lines() {
+                        display_lines.push((line.to_string(), HoverLineType::Text));
+                    }
+                }
+            }
+        }
+
+        // Calculate dimensions
+        let max_line_len = display_lines
+            .iter()
+            .map(|(l, _)| l.chars().count())
+            .max()
+            .unwrap_or(20);
+        let popup_width = (max_line_len + 4).min(80).max(40) as u16;
+        let popup_height = (display_lines.len() + 2).min(20) as u16;
+
+        // Calculate popup position (above cursor if possible)
+        let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+        let cursor_screen_col = (line_num_width + 1 + editor.cursor.col) as u16;
+        let cursor_screen_row = (editor.cursor.line - editor.viewport_offset) as u16;
+
+        let popup_y = if cursor_screen_row >= popup_height + 1 {
+            cursor_screen_row - popup_height
+        } else {
+            (cursor_screen_row + 1).min(editor.term_height.saturating_sub(popup_height + 1))
+        };
+        let popup_x = cursor_screen_col.saturating_sub(2).min(editor.term_width.saturating_sub(popup_width + 1));
+
+        // Colors (Neovim-inspired)
+        let border_color = Color::Rgb { r: 90, g: 90, b: 120 };
+        let bg_color = Color::Rgb { r: 25, g: 25, b: 35 };
+        let code_bg = Color::Rgb { r: 35, g: 35, b: 50 };
+        let text_color = Color::Rgb { r: 200, g: 200, b: 210 };
+        let code_color = Color::Rgb { r: 150, g: 200, b: 255 }; // Blue for signatures
+        let keyword_color = Color::Rgb { r: 255, g: 150, b: 150 }; // Red/pink for keywords
+        let type_color = Color::Rgb { r: 180, g: 220, b: 180 }; // Green for types
+        let separator_color = Color::Rgb { r: 70, g: 70, b: 90 };
+
+        // Draw top border (rounded corners)
+        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        print!("╭");
+        for _ in 1..(popup_width - 1) {
+            print!("─");
+        }
+        print!("╮");
+
+        // Draw content lines
+        let content_width = (popup_width - 4) as usize;
+        let max_lines = (popup_height - 2) as usize;
+
+        for (i, (line, line_type)) in display_lines.iter().take(max_lines).enumerate() {
+            let row = popup_y + 1 + i as u16;
+            execute!(self.stdout, cursor::MoveTo(popup_x, row))?;
+
+            match line_type {
+                HoverLineType::Code => {
+                    execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(code_bg))?;
+                    print!("│ ");
+                    // Simple syntax highlighting for Rust
+                    self.render_hover_code_line(line, content_width, code_color, keyword_color, type_color, code_bg)?;
+                    execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(code_bg))?;
+                    print!(" │");
+                }
+                HoverLineType::Text => {
+                    execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+                    print!("│ ");
+                    execute!(self.stdout, SetForegroundColor(text_color))?;
+                    let display = if line.chars().count() > content_width {
+                        format!("{}…", line.chars().take(content_width.saturating_sub(1)).collect::<String>())
+                    } else {
+                        format!("{:width$}", line, width = content_width)
+                    };
+                    print!("{}", display);
+                    execute!(self.stdout, SetForegroundColor(border_color))?;
+                    print!(" │");
+                }
+                HoverLineType::Separator => {
+                    execute!(self.stdout, SetForegroundColor(separator_color), SetBackgroundColor(bg_color))?;
+                    print!("├");
+                    for _ in 1..(popup_width - 1) {
+                        print!("─");
+                    }
+                    print!("┤");
+                }
+            }
+        }
+
+        // Fill remaining rows if content is shorter
+        for i in display_lines.len()..max_lines {
+            let row = popup_y + 1 + i as u16;
+            execute!(self.stdout, cursor::MoveTo(popup_x, row))?;
+            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            print!("│ {:width$} │", "", width = content_width);
+        }
+
+        // Draw bottom border (rounded corners)
+        let bottom_row = popup_y + popup_height - 1;
+        execute!(self.stdout, cursor::MoveTo(popup_x, bottom_row))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        print!("╰");
+        for _ in 1..(popup_width - 1) {
+            print!("─");
+        }
+        print!("╯");
+
+        execute!(self.stdout, ResetColor)?;
+        Ok(())
+    }
+
+    /// Render a code line with simple syntax highlighting
+    fn render_hover_code_line(
+        &mut self,
+        line: &str,
+        width: usize,
+        default_color: Color,
+        keyword_color: Color,
+        type_color: Color,
+        bg_color: Color,
+    ) -> anyhow::Result<()> {
+        let rust_keywords = [
+            "fn", "pub", "let", "mut", "const", "static", "struct", "enum", "impl",
+            "trait", "where", "for", "loop", "while", "if", "else", "match", "return",
+            "async", "await", "unsafe", "mod", "use", "crate", "self", "Self", "super",
+            "dyn", "ref", "move", "type", "as", "in",
+        ];
+
+        let mut chars_printed = 0;
+        let mut i = 0;
+        let chars: Vec<char> = line.chars().collect();
+
+        while i < chars.len() && chars_printed < width {
+            // Try to match a word
+            if chars[i].is_alphabetic() || chars[i] == '_' {
+                let start = i;
+                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                    i += 1;
+                }
+                let word: String = chars[start..i].iter().collect();
+
+                // Determine color based on word type
+                let color = if rust_keywords.contains(&word.as_str()) {
+                    keyword_color
+                } else if word.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                    type_color // Types typically start with uppercase
+                } else {
+                    default_color
+                };
+
+                execute!(self.stdout, SetForegroundColor(color), SetBackgroundColor(bg_color))?;
+                let remaining = width - chars_printed;
+                if word.len() <= remaining {
+                    print!("{}", word);
+                    chars_printed += word.len();
+                } else {
+                    print!("{}", &word[..remaining]);
+                    chars_printed = width;
+                }
+            } else {
+                // Print punctuation/symbols in default color
+                execute!(self.stdout, SetForegroundColor(default_color), SetBackgroundColor(bg_color))?;
+                print!("{}", chars[i]);
+                chars_printed += 1;
+                i += 1;
+            }
+        }
+
+        // Pad remaining space
+        if chars_printed < width {
+            execute!(self.stdout, SetForegroundColor(default_color), SetBackgroundColor(bg_color))?;
+            print!("{:width$}", "", width = width - chars_printed);
+        }
+
+        Ok(())
+    }
+
+    /// Render the signature help popup above the cursor
+    fn render_signature_help(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        let help = match &editor.signature_help {
+            Some(h) => h,
+            None => return Ok(()),
+        };
+
+        if help.signatures.is_empty() {
+            return Ok(());
+        }
+
+        // Get the active signature
+        let active_idx = help.active_signature.min(help.signatures.len() - 1);
+        let signature = &help.signatures[active_idx];
+
+        // Calculate popup position (above cursor)
+        let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+        let cursor_screen_col = (line_num_width + 1 + editor.cursor.col) as u16;
+        let cursor_screen_row = (editor.cursor.line - editor.viewport_offset) as u16;
+
+        // Calculate dimensions based on signature
+        let popup_width = (signature.label.chars().count() + 4).min(80).max(30) as u16;
+        let popup_height = 3u16; // Single line signature + borders
+
+        // Position popup above cursor if possible
+        let popup_y = if cursor_screen_row >= popup_height {
+            cursor_screen_row - popup_height
+        } else {
+            cursor_screen_row + 1
+        };
+        let popup_x = cursor_screen_col.saturating_sub(2).min(editor.term_width.saturating_sub(popup_width + 1));
+
+        // Colors
+        let border_color = Color::Rgb { r: 100, g: 100, b: 140 };
+        let bg_color = Color::Rgb { r: 30, g: 30, b: 45 };
+        let text_color = Color::Rgb { r: 200, g: 200, b: 210 };
+        let highlight_color = Color::Rgb { r: 255, g: 200, b: 100 }; // Yellow for active param
+
+        // Draw top border
+        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        print!("╭");
+        for _ in 1..(popup_width - 1) {
+            print!("─");
+        }
+        print!("╮");
+
+        // Draw signature with highlighted parameter
+        let content_width = (popup_width - 4) as usize;
+        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 1))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        print!("│ ");
+
+        // Render the signature with active parameter highlighted
+        let label = &signature.label;
+        let active_param = help.active_parameter;
+
+        // Find the active parameter offsets
+        let highlight_range = active_param.and_then(|idx| {
+            signature.parameters.get(idx).and_then(|p| p.label_offsets)
+        });
+
+        let mut chars_printed = 0;
+        let label_chars: Vec<char> = label.chars().collect();
+        let mut i = 0;
+
+        while i < label_chars.len() && chars_printed < content_width {
+            let in_highlight = highlight_range
+                .map(|(start, end)| i >= start && i < end)
+                .unwrap_or(false);
+
+            if in_highlight {
+                execute!(self.stdout, SetForegroundColor(highlight_color), SetBackgroundColor(bg_color))?;
+            } else {
+                execute!(self.stdout, SetForegroundColor(text_color), SetBackgroundColor(bg_color))?;
+            }
+
+            print!("{}", label_chars[i]);
+            chars_printed += 1;
+            i += 1;
+        }
+
+        // Pad remaining space
+        if chars_printed < content_width {
+            execute!(self.stdout, SetForegroundColor(text_color), SetBackgroundColor(bg_color))?;
+            print!("{:width$}", "", width = content_width - chars_printed);
+        }
+
+        execute!(self.stdout, SetForegroundColor(border_color))?;
+        print!(" │");
+
+        // Draw bottom border
+        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 2))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        print!("╰");
+        for _ in 1..(popup_width - 1) {
+            print!("─");
+        }
+        print!("╯");
+
+        execute!(self.stdout, ResetColor)?;
         Ok(())
     }
 
@@ -559,9 +1325,12 @@ impl Terminal {
 
         // Cursor line background color
         let cursor_line_bg = Color::Rgb { r: 40, g: 44, b: 52 };
+        let selection_bg = Color::DarkBlue;
 
         // Render character by character
         let mut highlight_idx = 0;
+        let mut current_fg: Option<Color> = None;
+        let mut current_bg: Option<Color> = None;
         for (col, ch) in chars.iter().enumerate() {
             // Find syntax color for this column
             let syntax_color = Self::get_syntax_color_at(highlights, col, &mut highlight_idx);
@@ -569,33 +1338,39 @@ impl Terminal {
             // Check if in visual selection
             let is_selected = in_selection && col >= sel_start && col < sel_end;
 
-            // Apply colors
-            if is_selected {
-                execute!(self.stdout, SetBackgroundColor(Color::DarkBlue))?;
+            let desired_bg = if is_selected {
+                Some(selection_bg)
             } else if is_cursor_line {
-                execute!(self.stdout, SetBackgroundColor(cursor_line_bg))?;
-            }
-            if let Some(fg) = syntax_color {
-                execute!(self.stdout, SetForegroundColor(fg))?;
+                Some(cursor_line_bg)
+            } else {
+                None
+            };
+            let desired_fg = syntax_color;
+
+            if desired_bg != current_bg || desired_fg != current_fg {
+                execute!(self.stdout, ResetColor)?;
+                current_bg = None;
+                current_fg = None;
+                if let Some(bg) = desired_bg {
+                    execute!(self.stdout, SetBackgroundColor(bg))?;
+                    current_bg = Some(bg);
+                }
+                if let Some(fg) = desired_fg {
+                    execute!(self.stdout, SetForegroundColor(fg))?;
+                    current_fg = Some(fg);
+                }
             }
 
             print!("{}", ch);
-
-            // Reset colors after each character
-            execute!(self.stdout, ResetColor)?;
-
-            // Re-apply cursor line background if needed
-            if is_cursor_line && !is_selected {
-                execute!(self.stdout, SetBackgroundColor(cursor_line_bg))?;
-            }
         }
 
         // Handle selection extending past line end
         if in_selection && sel_end > line_len {
-            execute!(self.stdout, SetBackgroundColor(Color::DarkBlue))?;
+            execute!(self.stdout, SetBackgroundColor(selection_bg))?;
             print!(" ");
             execute!(self.stdout, ResetColor)?;
         }
+        execute!(self.stdout, ResetColor)?;
 
         Ok(())
     }
@@ -619,12 +1394,12 @@ impl Terminal {
         None
     }
 
-    /// Read a key event (blocking)
-    pub fn read_key(&self) -> anyhow::Result<KeyEvent> {
-        loop {
-            if let Event::Key(key_event) = event::read()? {
-                return Ok(key_event);
-            }
+    /// Read a key event (blocking for the next event)
+    pub fn read_key(&self) -> anyhow::Result<Option<KeyEvent>> {
+        if let Event::Key(key_event) = event::read()? {
+            Ok(Some(key_event))
+        } else {
+            Ok(None)
         }
     }
 
@@ -726,8 +1501,12 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         // Uncomment next line to debug: editor.set_status("No leader mappings");
     }
 
-    // Apply custom keymap remapping
-    let key = editor.keymap.remap_normal(key);
+    // Check for normal mode custom mapping first
+    if let Some(mapping) = editor.keymap.get_normal_mapping(key) {
+        let mapping = mapping.clone();
+        execute_leader_action(editor, &mapping);
+        return;
+    }
 
     let action = editor.input_state.process_normal_key(key);
 
@@ -939,6 +1718,26 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.move_to_pane_direction(PaneDirection::Down);
         }
 
+        KeyAction::GotoDefinition => {
+            editor.pending_lsp_action = Some(crate::editor::LspAction::GotoDefinition);
+        }
+
+        KeyAction::Hover => {
+            editor.pending_lsp_action = Some(crate::editor::LspAction::Hover);
+        }
+
+        KeyAction::JumpBack => {
+            if !editor.jump_back() {
+                editor.set_status("Already at oldest position");
+            }
+        }
+
+        KeyAction::JumpForward => {
+            if !editor.jump_forward() {
+                editor.set_status("Already at newest position");
+            }
+        }
+
         KeyAction::Unknown => {
             // Unknown key, ignore
         }
@@ -948,6 +1747,83 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
 fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
     // Apply custom keymap remapping for insert mode
     let key = editor.keymap.remap_insert(key);
+
+    // If completion popup is active, handle completion keys first
+    if editor.completion.active {
+        match (key.modifiers, key.code) {
+            // Navigate completion
+            (KeyModifiers::NONE, KeyCode::Up) | (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
+                editor.completion.select_prev();
+                return;
+            }
+            (KeyModifiers::NONE, KeyCode::Down) | (KeyModifiers::CONTROL, KeyCode::Char('n')) => {
+                editor.completion.select_next();
+                return;
+            }
+            // Accept completion
+            (KeyModifiers::NONE, KeyCode::Enter) | (KeyModifiers::NONE, KeyCode::Tab) => {
+                // Get completion info before modifying state
+                let completion_info = editor.completion.selected_item()
+                    .map(|item| (
+                        item.insert_text.as_deref().unwrap_or(&item.label).to_string(),
+                        item.label.clone(),
+                        item.kind,
+                    ));
+
+                if let Some((text, label, kind)) = completion_info {
+                    // Record frecency usage
+                    editor.record_completion_use(&label);
+
+                    // Delete back to trigger position and insert completion
+                    let chars_to_delete = editor.cursor.col.saturating_sub(editor.completion.trigger_col);
+                    for _ in 0..chars_to_delete {
+                        editor.delete_char_before();
+                    }
+                    for c in text.chars() {
+                        editor.insert_char(c);
+                    }
+
+                    // Auto-brackets: add () for functions/methods and position cursor inside
+                    let needs_brackets = matches!(kind,
+                        CompletionKind::Function |
+                        CompletionKind::Method |
+                        CompletionKind::Constructor
+                    );
+                    // Only add brackets if the text doesn't already end with ()
+                    if needs_brackets && !text.ends_with("()") && !text.ends_with('(') {
+                        editor.insert_char('(');
+                        editor.insert_char(')');
+                        // Move cursor back inside the parentheses
+                        if editor.cursor.col > 0 {
+                            editor.cursor.col -= 1;
+                        }
+                    }
+                }
+                editor.completion.hide();
+                return;
+            }
+            // Cancel completion
+            (KeyModifiers::NONE, KeyCode::Esc) => {
+                editor.completion.hide();
+                return;
+            }
+            // Backspace - let it fall through, filter will be updated after
+            (KeyModifiers::NONE, KeyCode::Backspace) => {
+                // Continue to normal handling below
+            }
+            // Regular character - let it fall through, filter will be updated after
+            (_, KeyCode::Char(c)) if !c.is_control() => {
+                // Continue to normal handling below
+            }
+            // Any other key hides completion and continues normal handling
+            _ => {
+                editor.completion.hide();
+            }
+        }
+    }
+
+    // Track if completion was active before processing key
+    let completion_was_active = editor.completion.active;
 
     match (key.modifiers, key.code) {
         // Exit insert mode
@@ -978,8 +1854,8 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
             }
         }
 
-        // Regular character
-        (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
+        // Regular character - accept any modifier for printable chars
+        (_, KeyCode::Char(c)) if !c.is_control() => {
             editor.insert_char(c);
         }
 
@@ -1011,6 +1887,42 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
         }
 
         _ => {}
+    }
+
+    // Update completion filter after character changes
+    if completion_was_active && editor.completion.active {
+        // Get the text typed since trigger position
+        if editor.cursor.line == editor.completion.trigger_line {
+            let col = editor.cursor.col;
+            let trigger_col = editor.completion.trigger_col;
+
+            if col >= trigger_col {
+                // Get the prefix from the current line
+                if let Some(line) = editor.buffer().line(editor.cursor.line) {
+                    let line_str: String = line.chars().collect();
+                    let prefix: String = line_str.chars().skip(trigger_col).take(col - trigger_col).collect();
+
+                    // If isIncomplete and filter text changed, request new completions
+                    if editor.completion.is_incomplete && prefix != editor.completion.filter_text {
+                        editor.needs_completion_refresh = true;
+                    }
+
+                    // Update filter with frecency-aware sorting
+                    editor.update_completion_filter(&prefix);
+
+                    // Hide if no matches
+                    if editor.completion.filtered.is_empty() {
+                        editor.completion.hide();
+                    }
+                }
+            } else {
+                // Cursor moved before trigger point - hide completion
+                editor.completion.hide();
+            }
+        } else {
+            // Cursor moved to different line - hide completion
+            editor.completion.hide();
+        }
     }
 }
 
@@ -1073,8 +1985,8 @@ fn handle_command_mode(editor: &mut Editor, key: KeyEvent) {
             editor.command_line.clear();
         }
 
-        // Regular character
-        (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
+        // Regular character - accept any modifier for printable chars
+        (_, KeyCode::Char(c)) if !c.is_control() => {
             editor.command_line.insert_char(c);
         }
 
@@ -1113,8 +2025,8 @@ fn handle_search_mode(editor: &mut Editor, key: KeyEvent) {
             editor.search.move_right();
         }
 
-        // Regular character
-        (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
+        // Regular character - accept any modifier for printable chars
+        (_, KeyCode::Char(c)) if !c.is_control() => {
             editor.search.insert_char(c);
         }
 
@@ -1305,15 +2217,21 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
 
         // Select item
         (KeyModifiers::NONE, KeyCode::Enter) => {
-            if let Some((path, line)) = editor.finder_select() {
-                // Open the selected file
-                if let Err(e) = editor.open_file(path) {
-                    editor.set_status(format!("Error opening file: {}", e));
-                } else if let Some(line_num) = line {
-                    // Jump to the line (for grep results)
-                    editor.cursor.line = line_num.saturating_sub(1);
-                    editor.cursor.col = 0;
-                    editor.scroll_to_cursor();
+            if let Some(item) = editor.finder_select() {
+                if let Some(buf_idx) = item.buffer_idx {
+                    if !editor.switch_to_buffer(buf_idx) {
+                        editor.set_status("Buffer not found");
+                    }
+                } else {
+                    // Open the selected file
+                    if let Err(e) = editor.open_file(item.path) {
+                        editor.set_status(format!("Error opening file: {}", e));
+                    } else if let Some(line_num) = item.line {
+                        // Jump to the line (for grep results)
+                        editor.cursor.line = line_num.saturating_sub(1);
+                        editor.cursor.col = 0;
+                        editor.scroll_to_cursor();
+                    }
                 }
             }
         }
@@ -1345,8 +2263,9 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
             editor.finder.delete_char_before();
         }
 
-        // Regular character
-        (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
+        // Regular character - accept any modifier combination for printable chars
+        // Some terminals may report SHIFT for uppercase or special chars like _
+        (_, KeyCode::Char(c)) if !c.is_control() => {
             editor.finder.insert_char(c);
         }
 
@@ -1377,12 +2296,24 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             if editor.has_unsaved_changes() {
                 CommandResult::Error("No write since last change (add ! to override)".to_string())
             } else {
-                CommandResult::Quit
+                // If multiple panes, close just the active pane
+                if editor.panes().len() > 1 {
+                    editor.close_pane();
+                    CommandResult::Ok
+                } else {
+                    CommandResult::Quit
+                }
             }
         }
 
         Command::ForceQuit => {
-            CommandResult::Quit
+            // If multiple panes, close just the active pane
+            if editor.panes().len() > 1 {
+                editor.close_pane();
+                CommandResult::Ok
+            } else {
+                CommandResult::Quit
+            }
         }
 
         Command::WriteQuit => {

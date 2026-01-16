@@ -31,6 +31,8 @@ impl GrepSearcher {
             return Vec::new();
         }
 
+        const MAX_GREP_FILE_BYTES: u64 = 2_000_000;
+
         let mut results = Vec::new();
         let pattern_lower = pattern.to_lowercase();
 
@@ -58,6 +60,12 @@ impl GrepSearcher {
             // Skip binary files by extension
             if self.is_binary_extension(path) {
                 continue;
+            }
+
+            if let Ok(meta) = path.metadata() {
+                if meta.len() > MAX_GREP_FILE_BYTES {
+                    continue;
+                }
             }
 
             // Search file contents

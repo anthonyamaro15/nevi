@@ -17,6 +17,7 @@ pub struct Settings {
     pub theme: ThemeSettings,
     pub keymap: KeymapSettings,
     pub finder: FinderSettings,
+    pub lsp: LspSettings,
 }
 
 impl Default for Settings {
@@ -26,6 +27,7 @@ impl Default for Settings {
             theme: ThemeSettings::default(),
             keymap: KeymapSettings::default(),
             finder: FinderSettings::default(),
+            lsp: LspSettings::default(),
         }
     }
 }
@@ -145,6 +147,60 @@ pub struct LeaderMapping {
     /// Optional description for which-key style display
     #[serde(default)]
     pub desc: Option<String>,
+}
+
+/// LSP (Language Server Protocol) settings
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LspSettings {
+    /// Enable LSP support (default: true)
+    pub enabled: bool,
+    /// Delay before showing hover (milliseconds)
+    pub hover_delay_ms: u64,
+    /// Language server configurations
+    pub servers: LspServers,
+}
+
+impl Default for LspSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            hover_delay_ms: 500,
+            servers: LspServers::default(),
+        }
+    }
+}
+
+/// Per-language server configurations
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LspServers {
+    pub rust: LspServerConfig,
+}
+
+impl Default for LspServers {
+    fn default() -> Self {
+        Self {
+            rust: LspServerConfig {
+                command: "rust-analyzer".to_string(),
+                args: Vec::new(),
+                root_patterns: vec!["Cargo.toml".to_string(), "rust-project.json".to_string()],
+            },
+        }
+    }
+}
+
+/// Configuration for a single language server
+#[derive(Debug, Clone, Deserialize)]
+pub struct LspServerConfig {
+    /// Command to run the server
+    pub command: String,
+    /// Arguments to pass to the server
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Files that indicate the project root
+    #[serde(default)]
+    pub root_patterns: Vec<String>,
 }
 
 /// Get the path to the config file
