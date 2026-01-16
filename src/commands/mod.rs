@@ -41,6 +41,19 @@ pub enum Command {
     FindBuffers,
     /// :LiveGrep - Open fuzzy finder for live grep
     LiveGrep,
+    /// :noh or :nohlsearch - Clear search highlights
+    NoHighlight,
+    /// :s/pattern/replacement/flags or :%s/pattern/replacement/flags - Search and replace
+    Substitute {
+        /// Range: None for current line, Some(true) for entire file (%)
+        entire_file: bool,
+        /// Search pattern
+        pattern: String,
+        /// Replacement string
+        replacement: String,
+        /// Global flag (replace all on line vs first only)
+        global: bool,
+    },
     /// Unknown command
     Unknown(String),
 }
@@ -78,6 +91,11 @@ pub fn parse_command(input: &str) -> Command {
     // Handle line number
     if let Ok(line_num) = input.parse::<usize>() {
         return Command::GotoLine(line_num);
+    }
+
+    // Handle substitute command: %s/pattern/replacement/flags or s/pattern/replacement/flags
+    if let Some(sub_cmd) = parse_substitute_command(input) {
+        return sub_cmd;
     }
 
     // Split into command and arguments
@@ -142,9 +160,84 @@ pub fn parse_command(input: &str) -> Command {
         "FindBuffers" | "findbuffers" | "fb" | "buffers" => Command::FindBuffers,
         "LiveGrep" | "livegrep" | "grep" | "rg" => Command::LiveGrep,
 
+        // Clear search highlight
+        "noh" | "nohlsearch" => Command::NoHighlight,
+
         // Unknown command
         _ => Command::Unknown(cmd.to_string()),
     }
+}
+
+/// Parse a substitute command: %s/pattern/replacement/flags or s/pattern/replacement/flags
+fn parse_substitute_command(input: &str) -> Option<Command> {
+    // Check for %s or s prefix
+    let (entire_file, rest) = if input.starts_with("%s") {
+        (true, &input[2..])
+    } else if input.starts_with('s') && input.len() > 1 && !input.chars().nth(1).unwrap().is_alphanumeric() {
+        (false, &input[1..])
+    } else {
+        return None;
+    };
+
+    // Must have a delimiter after s or %s
+    if rest.is_empty() {
+        return None;
+    }
+
+    // The delimiter is the first character (usually /)
+    let delimiter = rest.chars().next()?;
+    let rest = &rest[delimiter.len_utf8()..];
+
+    // Split by delimiter, handling escaped delimiters
+    let parts = split_by_delimiter(rest, delimiter);
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let pattern = unescape_delimiter(&parts[0], delimiter);
+    let replacement = unescape_delimiter(&parts[1], delimiter);
+    let flags = if parts.len() > 2 { &parts[2] } else { "" };
+
+    let global = flags.contains('g');
+
+    Some(Command::Substitute {
+        entire_file,
+        pattern,
+        replacement,
+        global,
+    })
+}
+
+/// Split a string by delimiter, respecting escaped delimiters
+fn split_by_delimiter(s: &str, delimiter: char) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            // Check if next char is the delimiter (escaped)
+            if chars.peek() == Some(&delimiter) {
+                current.push('\\');
+                current.push(chars.next().unwrap());
+            } else {
+                current.push(c);
+            }
+        } else if c == delimiter {
+            parts.push(current);
+            current = String::new();
+        } else {
+            current.push(c);
+        }
+    }
+    parts.push(current);
+    parts
+}
+
+/// Remove escape sequences for the delimiter
+fn unescape_delimiter(s: &str, delimiter: char) -> String {
+    let escaped = format!("\\{}", delimiter);
+    s.replace(&escaped, &delimiter.to_string())
 }
 
 /// Command line state

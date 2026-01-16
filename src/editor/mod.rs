@@ -24,6 +24,7 @@ pub enum Mode {
     #[default]
     Normal,
     Insert,
+    Replace,
     Command,
     Search,
     Visual,
@@ -37,6 +38,7 @@ impl Mode {
         match self {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
+            Mode::Replace => "REPLACE",
             Mode::Command => "COMMAND",
             Mode::Search => "SEARCH",
             Mode::Visual => "VISUAL",
@@ -599,6 +601,8 @@ pub struct Editor {
     pub frecency: FrecencyDb,
     /// Signature help popup content
     pub signature_help: Option<crate::lsp::types::SignatureHelpResult>,
+    /// Incremental search matches: (line, start_col, end_col)
+    pub search_matches: Vec<(usize, usize, usize)>,
 }
 
 impl Editor {
@@ -641,6 +645,7 @@ impl Editor {
             needs_completion_refresh: false,
             frecency: FrecencyDb::load(),
             signature_help: None,
+            search_matches: Vec::new(),
         }
     }
 
@@ -1546,6 +1551,47 @@ impl Editor {
         self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
     }
 
+    /// Enter replace mode
+    pub fn enter_replace_mode(&mut self) {
+        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.mode = Mode::Replace;
+    }
+
+    /// Replace character at cursor position (for replace mode)
+    pub fn replace_mode_char(&mut self, ch: char) {
+        let buffer = &self.buffers[self.current_buffer_idx];
+        let line_len = buffer.line_len(self.cursor.line);
+
+        if ch == '\n' {
+            // Newline exits replace mode and goes to next line
+            self.enter_normal_mode();
+            return;
+        }
+
+        if self.cursor.col < line_len {
+            // Replace existing character
+            if let Some(old_char) = buffer.char_at(self.cursor.line, self.cursor.col) {
+                self.undo_stack.record_change(Change::delete(
+                    self.cursor.line,
+                    self.cursor.col,
+                    old_char.to_string(),
+                ));
+            }
+            self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
+        }
+
+        // Insert the new character
+        self.undo_stack.record_change(Change::insert(
+            self.cursor.line,
+            self.cursor.col,
+            ch.to_string(),
+        ));
+        self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, self.cursor.col, ch);
+        self.cursor.col += 1;
+
+        self.scroll_to_cursor();
+    }
+
     /// Exit to normal mode
     pub fn enter_normal_mode(&mut self) {
         // End any current undo group
@@ -1988,6 +2034,78 @@ impl Editor {
     pub fn exit_search_mode(&mut self) {
         self.mode = Mode::Normal;
         self.search.clear();
+        self.search_matches.clear();
+    }
+
+    /// Update incremental search matches based on current search input
+    /// This finds all matches in the buffer and highlights them while typing
+    pub fn update_incremental_search(&mut self) {
+        self.search_matches.clear();
+
+        let pattern = &self.search.input;
+        if pattern.is_empty() {
+            return;
+        }
+
+        let total_lines = self.buffers[self.current_buffer_idx].len_lines();
+        if total_lines == 0 {
+            return;
+        }
+
+        // Find all matches in the buffer
+        for line_idx in 0..total_lines {
+            if let Some(line) = self.buffers[self.current_buffer_idx].line(line_idx) {
+                let line_str: String = line.chars().collect();
+                let pattern_len = pattern.chars().count();
+
+                // Find all occurrences in this line
+                let mut search_from = 0;
+                while search_from < line_str.len() {
+                    if let Some(byte_pos) = line_str[search_from..].find(pattern) {
+                        let match_byte_start = search_from + byte_pos;
+                        let match_byte_end = match_byte_start + pattern.len();
+
+                        // Convert byte positions to char positions
+                        let start_col = Self::byte_to_char_idx(&line_str, match_byte_start);
+                        let end_col = start_col + pattern_len;
+
+                        self.search_matches.push((line_idx, start_col, end_col));
+
+                        // Move past this match to find more
+                        search_from = match_byte_end;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Jump to first match in search direction (preview)
+        if !self.search_matches.is_empty() {
+            let cursor_line = self.cursor.line;
+            let cursor_col = self.cursor.col;
+
+            let target = match self.search.direction {
+                SearchDirection::Forward => {
+                    // Find first match at or after cursor
+                    self.search_matches.iter().find(|(line, col, _)| {
+                        *line > cursor_line || (*line == cursor_line && *col > cursor_col)
+                    }).or_else(|| self.search_matches.first())
+                }
+                SearchDirection::Backward => {
+                    // Find last match before cursor
+                    self.search_matches.iter().rev().find(|(line, col, _)| {
+                        *line < cursor_line || (*line == cursor_line && *col < cursor_col)
+                    }).or_else(|| self.search_matches.last())
+                }
+            };
+
+            if let Some(&(line, col, _)) = target {
+                self.cursor.line = line;
+                self.cursor.col = col;
+                self.scroll_to_cursor();
+            }
+        }
     }
 
     /// Execute the current search
@@ -2008,6 +2126,8 @@ impl Editor {
     pub fn search_next(&mut self) {
         if let Some(pattern) = self.search.last_pattern.clone() {
             let direction = self.search.last_direction;
+            // Update search highlights
+            self.update_search_matches_from_pattern(&pattern);
             if !self.do_search(&pattern, direction, true) {
                 self.set_status(format!("Pattern not found: {}", pattern));
             }
@@ -2024,11 +2144,56 @@ impl Editor {
                 SearchDirection::Forward => SearchDirection::Backward,
                 SearchDirection::Backward => SearchDirection::Forward,
             };
+            // Update search highlights
+            self.update_search_matches_from_pattern(&pattern);
             if !self.do_search(&pattern, direction, true) {
                 self.set_status(format!("Pattern not found: {}", pattern));
             }
         } else {
             self.set_status("No previous search pattern");
+        }
+    }
+
+    /// Update search matches from a pattern string (used for n/N/*/#)
+    fn update_search_matches_from_pattern(&mut self, pattern: &str) {
+        self.search_matches.clear();
+
+        if pattern.is_empty() {
+            return;
+        }
+
+        let total_lines = self.buffers[self.current_buffer_idx].len_lines();
+        if total_lines == 0 {
+            return;
+        }
+
+        let pattern_len = pattern.chars().count();
+
+        // Find all matches in the buffer
+        for line_idx in 0..total_lines {
+            if let Some(line) = self.buffers[self.current_buffer_idx].line(line_idx) {
+                let line_str: String = line.chars().collect();
+
+                // Find all occurrences in this line
+                let mut search_from = 0;
+                while search_from < line_str.len() {
+                    if let Some(byte_pos) = line_str[search_from..].find(pattern) {
+                        let match_byte_start = search_from + byte_pos;
+                        let match_byte_end = match_byte_start + pattern.len();
+
+                        // Convert byte positions to char positions
+                        let start_col = Self::byte_to_char_idx(&line_str, match_byte_start);
+                        let end_col = start_col + pattern_len;
+
+                        self.search_matches.push((line_idx, start_col, end_col));
+
+                        // Move past this match to find more
+                        search_from = match_byte_end;
+                    } else {
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -2038,6 +2203,8 @@ impl Editor {
             // Set as search pattern
             self.search.last_pattern = Some(word.clone());
             self.search.last_direction = SearchDirection::Forward;
+            // Update search highlights
+            self.update_search_matches_from_pattern(&word);
             // Perform search
             if !self.do_search(&word, SearchDirection::Forward, true) {
                 self.set_status(format!("Pattern not found: {}", word));
@@ -2053,6 +2220,8 @@ impl Editor {
             // Set as search pattern
             self.search.last_pattern = Some(word.clone());
             self.search.last_direction = SearchDirection::Backward;
+            // Update search highlights
+            self.update_search_matches_from_pattern(&word);
             // Perform search
             if !self.do_search(&word, SearchDirection::Backward, true) {
                 self.set_status(format!("Pattern not found: {}", word));
@@ -2099,6 +2268,88 @@ impl Editor {
     /// Check if a character is a word character (alphanumeric or underscore)
     fn is_word_char(ch: char) -> bool {
         ch.is_alphanumeric() || ch == '_'
+    }
+
+    /// Search and replace text
+    /// Returns the number of replacements made
+    pub fn substitute(&mut self, pattern: &str, replacement: &str, entire_file: bool, global: bool) -> usize {
+        if pattern.is_empty() {
+            return 0;
+        }
+
+        // Begin undo group for all replacements
+        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+
+        let mut total_replacements = 0;
+        let pattern_len = pattern.len();
+
+        // Determine line range
+        let (start_line, end_line) = if entire_file {
+            (0, self.buffers[self.current_buffer_idx].len_lines())
+        } else {
+            (self.cursor.line, self.cursor.line + 1)
+        };
+
+        for line_idx in start_line..end_line {
+            if let Some(line) = self.buffers[self.current_buffer_idx].line(line_idx) {
+                let line_str: String = line.chars().collect();
+                let mut new_line = String::new();
+                let mut last_end = 0;
+                let mut search_from = 0;
+                let mut line_replacements = 0;
+
+                // Find all matches in this line
+                while search_from < line_str.len() {
+                    if let Some(byte_pos) = line_str[search_from..].find(pattern) {
+                        let match_start = search_from + byte_pos;
+                        let match_end = match_start + pattern_len;
+
+                        // Copy text before match
+                        new_line.push_str(&line_str[last_end..match_start]);
+                        // Add replacement
+                        new_line.push_str(replacement);
+
+                        last_end = match_end;
+                        search_from = match_end;
+                        line_replacements += 1;
+                        total_replacements += 1;
+
+                        // If not global, only replace first occurrence on line
+                        if !global {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                // If we made replacements, update the line
+                if line_replacements > 0 {
+                    // Copy remaining text after last match
+                    new_line.push_str(&line_str[last_end..]);
+
+                    // Record undo
+                    self.undo_stack.record_change(crate::editor::undo::Change::replace_line(
+                        line_idx,
+                        line_str.clone(),
+                        new_line.clone(),
+                    ));
+
+                    // Replace the line in buffer
+                    self.buffers[self.current_buffer_idx].replace_line(line_idx, &new_line);
+                }
+            }
+        }
+
+        // End undo group
+        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+
+        // Mark buffer as modified if changes were made
+        if total_replacements > 0 {
+            self.buffers[self.current_buffer_idx].mark_modified();
+        }
+
+        total_replacements
     }
 
     /// Perform the actual search
@@ -2995,6 +3246,243 @@ impl Editor {
 
         self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
         self.clamp_cursor();
+    }
+
+    // ============================================
+    // Surround operations (vim-surround style)
+    // ============================================
+
+    /// Delete surrounding pair (ds command)
+    pub fn delete_surrounding(&mut self, surround_char: char) {
+        let (open, close) = Self::get_surround_pair(surround_char);
+
+        // Find the surrounding pair
+        if let Some((start_pos, end_pos)) = self.find_surrounding_pair(open, close) {
+            self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+
+            // Delete closing char first (so positions don't shift)
+            self.undo_stack.record_change(Change::delete(
+                end_pos.0,
+                end_pos.1,
+                close.to_string(),
+            ));
+            self.buffers[self.current_buffer_idx].delete_char(end_pos.0, end_pos.1);
+
+            // Delete opening char
+            self.undo_stack.record_change(Change::delete(
+                start_pos.0,
+                start_pos.1,
+                open.to_string(),
+            ));
+            self.buffers[self.current_buffer_idx].delete_char(start_pos.0, start_pos.1);
+
+            // Adjust cursor if needed
+            if self.cursor.line == start_pos.0 && self.cursor.col > start_pos.1 {
+                self.cursor.col = self.cursor.col.saturating_sub(1);
+            }
+
+            self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+            self.clamp_cursor();
+        } else {
+            self.set_status(format!("No surrounding {} found", surround_char));
+        }
+    }
+
+    /// Change surrounding pair (cs command)
+    pub fn change_surrounding(&mut self, old_char: char, new_char: char) {
+        let (old_open, old_close) = Self::get_surround_pair(old_char);
+        let (new_open, new_close) = Self::get_surround_pair(new_char);
+
+        // Find the surrounding pair
+        if let Some((start_pos, end_pos)) = self.find_surrounding_pair(old_open, old_close) {
+            self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+
+            // Replace closing char first (so positions don't shift for same-line pairs)
+            self.undo_stack.record_change(Change::delete(
+                end_pos.0,
+                end_pos.1,
+                old_close.to_string(),
+            ));
+            self.buffers[self.current_buffer_idx].delete_char(end_pos.0, end_pos.1);
+            self.undo_stack.record_change(Change::insert(
+                end_pos.0,
+                end_pos.1,
+                new_close.to_string(),
+            ));
+            self.buffers[self.current_buffer_idx].insert_char(end_pos.0, end_pos.1, new_close);
+
+            // Replace opening char
+            self.undo_stack.record_change(Change::delete(
+                start_pos.0,
+                start_pos.1,
+                old_open.to_string(),
+            ));
+            self.buffers[self.current_buffer_idx].delete_char(start_pos.0, start_pos.1);
+            self.undo_stack.record_change(Change::insert(
+                start_pos.0,
+                start_pos.1,
+                new_open.to_string(),
+            ));
+            self.buffers[self.current_buffer_idx].insert_char(start_pos.0, start_pos.1, new_open);
+
+            self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        } else {
+            self.set_status(format!("No surrounding {} found", old_char));
+        }
+    }
+
+    /// Add surrounding to text object (ys command)
+    pub fn add_surrounding(&mut self, text_object: crate::input::TextObject, surround_char: char) {
+        let (open, close) = Self::get_surround_pair(surround_char);
+
+        // Find the range of the text object
+        if let Some((start_line, start_col, end_line, end_col)) = self.find_text_object_range(text_object) {
+            self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+
+            // Insert closing char first (so start position doesn't shift if on same line)
+            let close_col = if start_line == end_line { end_col + 1 } else { end_col + 1 };
+            self.undo_stack.record_change(Change::insert(
+                end_line,
+                close_col,
+                close.to_string(),
+            ));
+            self.buffers[self.current_buffer_idx].insert_char(end_line, close_col, close);
+
+            // Insert opening char
+            self.undo_stack.record_change(Change::insert(
+                start_line,
+                start_col,
+                open.to_string(),
+            ));
+            self.buffers[self.current_buffer_idx].insert_char(start_line, start_col, open);
+
+            self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        } else {
+            self.set_status("Could not find text object");
+        }
+    }
+
+    /// Get the open and close characters for a surround pair
+    fn get_surround_pair(c: char) -> (char, char) {
+        match c {
+            '(' | ')' => ('(', ')'),
+            '[' | ']' => ('[', ']'),
+            '{' | '}' => ('{', '}'),
+            '<' | '>' => ('<', '>'),
+            '"' => ('"', '"'),
+            '\'' => ('\'', '\''),
+            '`' => ('`', '`'),
+            _ => (c, c), // Default to same char for both
+        }
+    }
+
+    /// Find the positions of a surrounding pair around the cursor
+    /// Returns (start_pos, end_pos) where pos is (line, col)
+    fn find_surrounding_pair(&self, open: char, close: char) -> Option<((usize, usize), (usize, usize))> {
+        let buffer = &self.buffers[self.current_buffer_idx];
+        let line = self.cursor.line;
+        let col = self.cursor.col;
+
+        // For same open/close chars (quotes), use simpler logic
+        if open == close {
+            // Look on current line for quote pairs
+            let line_content: String = buffer.line(line)?.chars().collect();
+            let chars: Vec<char> = line_content.chars().collect();
+
+            // Find all positions of the quote char
+            let positions: Vec<usize> = chars.iter().enumerate()
+                .filter(|(_, c)| **c == open)
+                .map(|(i, _)| i)
+                .collect();
+
+            // Find a pair that contains the cursor
+            for i in (0..positions.len()).step_by(2) {
+                if i + 1 < positions.len() {
+                    let start = positions[i];
+                    let end = positions[i + 1];
+                    if col >= start && col <= end {
+                        return Some(((line, start), (line, end)));
+                    }
+                }
+            }
+            return None;
+        }
+
+        // For bracket pairs, use balance counting
+        // Search backward for opening bracket
+        let mut depth = 0;
+        let mut start_pos = None;
+
+        // Search on current line from cursor backward
+        let line_content: String = buffer.line(line)?.chars().collect();
+        let chars: Vec<char> = line_content.chars().collect();
+
+        for i in (0..=col.min(chars.len().saturating_sub(1))).rev() {
+            if chars[i] == close {
+                depth += 1;
+            } else if chars[i] == open {
+                if depth == 0 {
+                    start_pos = Some((line, i));
+                    break;
+                }
+                depth -= 1;
+            }
+        }
+
+        // If not found on current line, search previous lines
+        if start_pos.is_none() {
+            for l in (0..line).rev() {
+                let line_content: String = buffer.line(l)?.chars().collect();
+                let chars: Vec<char> = line_content.chars().collect();
+                for i in (0..chars.len()).rev() {
+                    if chars[i] == close {
+                        depth += 1;
+                    } else if chars[i] == open {
+                        if depth == 0 {
+                            start_pos = Some((l, i));
+                            break;
+                        }
+                        depth -= 1;
+                    }
+                }
+                if start_pos.is_some() {
+                    break;
+                }
+            }
+        }
+
+        let start_pos = start_pos?;
+
+        // Search forward for closing bracket
+        depth = 0;
+        let mut end_pos = None;
+
+        // Start search from position after open bracket
+        let start_search_line = start_pos.0;
+        let start_search_col = start_pos.1 + 1;
+
+        for l in start_search_line..buffer.len_lines() {
+            let line_content: String = buffer.line(l)?.chars().collect();
+            let chars: Vec<char> = line_content.chars().collect();
+            let start_col = if l == start_search_line { start_search_col } else { 0 };
+
+            for i in start_col..chars.len() {
+                if chars[i] == open {
+                    depth += 1;
+                } else if chars[i] == close {
+                    if depth == 0 {
+                        end_pos = Some((l, i));
+                        break;
+                    }
+                    depth -= 1;
+                }
+            }
+            if end_pos.is_some() {
+                break;
+            }
+        }
+
+        Some((start_pos, end_pos?))
     }
 
     /// Scroll viewport so cursor is at center of screen (zz command)
