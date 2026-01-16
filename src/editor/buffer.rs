@@ -11,6 +11,8 @@ pub struct Buffer {
     pub path: Option<PathBuf>,
     /// Whether the buffer has unsaved changes
     pub dirty: bool,
+    /// Monotonic version for change tracking
+    version: u64,
 }
 
 impl Buffer {
@@ -20,6 +22,7 @@ impl Buffer {
             text: Rope::new(),
             path: None,
             dirty: false,
+            version: 0,
         }
     }
 
@@ -36,6 +39,7 @@ impl Buffer {
             text,
             path: Some(path),
             dirty: false,
+            version: 0,
         })
     }
 
@@ -81,6 +85,21 @@ impl Buffer {
             .unwrap_or(0)
     }
 
+    /// Get the length of a specific line including trailing newline if present
+    pub fn line_len_including_newline(&self, idx: usize) -> usize {
+        self.line(idx).map(|l| l.len_chars()).unwrap_or(0)
+    }
+
+    /// Get the current version of the buffer
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Get the full content of the buffer as a string
+    pub fn content(&self) -> String {
+        self.text.to_string()
+    }
+
     /// Get the char index for a given line and column
     pub fn line_col_to_char(&self, line: usize, col: usize) -> usize {
         let line_start = self.text.line_to_char(line);
@@ -92,6 +111,7 @@ impl Buffer {
         let idx = self.line_col_to_char(line, col);
         self.text.insert_char(idx, ch);
         self.dirty = true;
+        self.version = self.version.wrapping_add(1);
     }
 
     /// Insert a string at the given line and column
@@ -99,6 +119,7 @@ impl Buffer {
         let idx = self.line_col_to_char(line, col);
         self.text.insert(idx, s);
         self.dirty = true;
+        self.version = self.version.wrapping_add(1);
     }
 
     /// Delete a character at the given line and column
@@ -107,6 +128,7 @@ impl Buffer {
         if idx < self.text.len_chars() {
             self.text.remove(idx..idx + 1);
             self.dirty = true;
+            self.version = self.version.wrapping_add(1);
         }
     }
 
@@ -117,6 +139,7 @@ impl Buffer {
         if start < end && end <= self.text.len_chars() {
             self.text.remove(start..end);
             self.dirty = true;
+            self.version = self.version.wrapping_add(1);
         }
     }
 
@@ -185,6 +208,7 @@ impl Buffer {
         }
 
         self.dirty = true;
+        self.version = self.version.wrapping_add(1);
     }
 }
 

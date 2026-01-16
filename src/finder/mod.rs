@@ -25,6 +25,8 @@ pub struct FinderItem {
     pub path: PathBuf,
     /// Line number (for grep results)
     pub line: Option<usize>,
+    /// Buffer index (for buffer picker results)
+    pub buffer_idx: Option<usize>,
     /// Match score for sorting
     pub score: u32,
     /// Indices of matched characters (for highlighting)
@@ -37,6 +39,7 @@ impl FinderItem {
             display,
             path,
             line: None,
+            buffer_idx: None,
             score: 0,
             match_indices: Vec::new(),
         }
@@ -44,6 +47,11 @@ impl FinderItem {
 
     pub fn with_line(mut self, line: usize) -> Self {
         self.line = Some(line);
+        self
+    }
+
+    pub fn with_buffer_idx(mut self, idx: usize) -> Self {
+        self.buffer_idx = Some(idx);
         self
     }
 
@@ -163,7 +171,8 @@ impl FuzzyFinder {
         self.items = buffer_names
             .into_iter()
             .map(|(idx, name, path)| {
-                let mut item = FinderItem::new(format!("{}: {}", idx + 1, name), path);
+                let mut item = FinderItem::new(format!("{}: {}", idx + 1, name), path)
+                    .with_buffer_idx(idx);
                 item.score = idx as u32;
                 item
             })

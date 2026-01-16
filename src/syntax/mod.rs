@@ -6,6 +6,7 @@ pub use theme::{HighlightGroup, Theme};
 
 use std::path::Path;
 use tree_sitter::{Parser, Query, Tree};
+use std::cell::{Cell, RefCell};
 
 use crate::editor::Buffer;
 
@@ -23,6 +24,14 @@ pub struct SyntaxManager {
     theme: Theme,
     /// Cached source text (for querying)
     source_cache: String,
+    /// Line start byte offsets for source_cache
+    line_start_bytes: Vec<usize>,
+    /// Cached highlights per line
+    highlight_cache: RefCell<Vec<Option<Vec<HighlightSpan>>>>,
+    /// Version for which the cache is valid
+    cache_version: Cell<u64>,
+    /// Version of the buffer last parsed
+    parse_version: u64,
 }
 
 impl SyntaxManager {
@@ -35,6 +44,10 @@ impl SyntaxManager {
             language: None,
             theme: Theme::default(),
             source_cache: String::new(),
+            line_start_bytes: Vec::new(),
+            highlight_cache: RefCell::new(Vec::new()),
+            cache_version: Cell::new(0),
+            parse_version: 0,
         }
     }
 
@@ -48,6 +61,12 @@ impl SyntaxManager {
             _ => {
                 self.language = None;
                 self.query = None;
+                self.tree = None;
+                self.source_cache.clear();
+                self.line_start_bytes.clear();
+                self.highlight_cache.borrow_mut().clear();
+                self.cache_version.set(0);
+                self.parse_version = 0;
             }
         }
     }
@@ -59,6 +78,12 @@ impl SyntaxManager {
         } else {
             self.language = None;
             self.query = None;
+            self.tree = None;
+            self.source_cache.clear();
+            self.line_start_bytes.clear();
+            self.highlight_cache.borrow_mut().clear();
+            self.cache_version.set(0);
+            self.parse_version = 0;
         }
     }
 
@@ -94,9 +119,32 @@ impl SyntaxManager {
             return;
         }
 
+        const MAX_HIGHLIGHT_LINES: usize = 200_000;
+        const MAX_HIGHLIGHT_CHARS: usize = 2_000_000;
+
+        if buffer.len_lines() > MAX_HIGHLIGHT_LINES || buffer.len_chars() > MAX_HIGHLIGHT_CHARS {
+            self.tree = None;
+            self.source_cache.clear();
+            self.line_start_bytes.clear();
+            self.highlight_cache.borrow_mut().clear();
+            self.cache_version.set(0);
+            self.parse_version = buffer.version();
+            return;
+        }
+
         // Convert buffer to string for parsing
         self.source_cache = buffer_to_string(buffer);
+        self.line_start_bytes.clear();
+        self.line_start_bytes.push(0);
+        for (idx, b) in self.source_cache.bytes().enumerate() {
+            if b == b'\n' {
+                self.line_start_bytes.push(idx + 1);
+            }
+        }
         self.tree = self.parser.parse(&self.source_cache, None);
+        self.parse_version = buffer.version();
+        self.cache_version.set(self.parse_version);
+        self.highlight_cache.replace(vec![None; self.line_start_bytes.len()]);
     }
 
     /// Check if syntax highlighting is available
@@ -108,7 +156,35 @@ impl SyntaxManager {
     pub fn get_line_highlights(&self, line: usize) -> Vec<HighlightSpan> {
         match (&self.tree, &self.query) {
             (Some(tree), Some(query)) => {
-                highlighter::get_line_highlights(tree, query, &self.source_cache, line, &self.theme)
+                if self.cache_version.get() != self.parse_version {
+                    self.highlight_cache.replace(vec![None; self.line_start_bytes.len()]);
+                    self.cache_version.set(self.parse_version);
+                } else if self.highlight_cache.borrow().len() != self.line_start_bytes.len() {
+                    self.highlight_cache.replace(vec![None; self.line_start_bytes.len()]);
+                    self.cache_version.set(self.parse_version);
+                }
+
+                if let Some(cached) = self
+                    .highlight_cache
+                    .borrow()
+                    .get(line)
+                    .and_then(|entry| entry.as_ref())
+                {
+                    return cached.clone();
+                }
+
+                let spans = highlighter::get_line_highlights(
+                    tree,
+                    query,
+                    &self.source_cache,
+                    &self.line_start_bytes,
+                    line,
+                    &self.theme,
+                );
+                if let Some(entry) = self.highlight_cache.borrow_mut().get_mut(line) {
+                    *entry = Some(spans.clone());
+                }
+                spans
             }
             _ => Vec::new(),
         }

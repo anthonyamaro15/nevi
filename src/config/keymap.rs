@@ -17,9 +17,9 @@ pub enum LeaderAction {
 /// Lookup table for custom key remappings
 #[derive(Debug, Clone)]
 pub struct KeymapLookup {
-    /// Normal mode remappings: from -> to
-    normal: HashMap<KeyEvent, KeyEvent>,
-    /// Insert mode remappings: from -> to
+    /// Normal mode remappings: from key -> action (can be single key or command)
+    normal: HashMap<KeyEvent, LeaderAction>,
+    /// Insert mode remappings: from -> to (single key only)
     insert: HashMap<KeyEvent, KeyEvent>,
     /// Leader key (None if not configured)
     leader_key: Option<KeyEvent>,
@@ -45,11 +45,10 @@ impl KeymapLookup {
         let mut insert = HashMap::new();
 
         for entry in &settings.normal {
-            if let (Some(from), Some(to)) = (
-                parse_key_notation(&entry.from),
-                parse_key_notation(&entry.to),
-            ) {
-                normal.insert(from, to);
+            if let Some(from) = parse_key_notation(&entry.from) {
+                // Parse the 'to' field as an action (command or keys)
+                let action = parse_action(&entry.to);
+                normal.insert(from, action);
             }
         }
 
@@ -80,9 +79,9 @@ impl KeymapLookup {
         }
     }
 
-    /// Remap a key in normal mode, returning the original if no mapping exists
-    pub fn remap_normal(&self, key: KeyEvent) -> KeyEvent {
-        self.normal.get(&key).copied().unwrap_or(key)
+    /// Get the normal mode mapping for a key, if one exists
+    pub fn get_normal_mapping(&self, key: KeyEvent) -> Option<&LeaderAction> {
+        self.normal.get(&key)
     }
 
     /// Remap a key in insert mode, returning the original if no mapping exists

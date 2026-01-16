@@ -20,6 +20,7 @@ pub fn get_line_highlights(
     tree: &Tree,
     query: &Query,
     source: &str,
+    line_start_bytes: &[usize],
     line: usize,
     theme: &Theme,
 ) -> Vec<HighlightSpan> {
@@ -27,17 +28,19 @@ pub fn get_line_highlights(
     let mut cursor = QueryCursor::new();
 
     // Get the byte range for this line
-    let lines: Vec<&str> = source.lines().collect();
-    if line >= lines.len() {
+    if line >= line_start_bytes.len() {
         return spans;
     }
 
-    // Calculate byte offset for start of line
-    let mut line_start_byte = 0;
-    for l in lines.iter().take(line) {
-        line_start_byte += l.len() + 1; // +1 for newline
+    let line_start_byte = line_start_bytes[line];
+    let mut line_end_byte = if line + 1 < line_start_bytes.len() {
+        line_start_bytes[line + 1].saturating_sub(1)
+    } else {
+        source.len()
+    };
+    if line_end_byte < line_start_byte {
+        line_end_byte = line_start_byte;
     }
-    let line_end_byte = line_start_byte + lines[line].len();
 
     let root = tree.root_node();
 

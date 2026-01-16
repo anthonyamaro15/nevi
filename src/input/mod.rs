@@ -153,6 +153,14 @@ pub enum KeyAction {
     WindowRight,
     WindowUp,
     WindowDown,
+    /// Go to definition (gd)
+    GotoDefinition,
+    /// Show hover documentation (K)
+    Hover,
+    /// Jump back in jump list (Ctrl+o)
+    JumpBack,
+    /// Jump forward in jump list (Ctrl+i)
+    JumpForward,
     /// Unknown/unhandled key
     Unknown,
 }
@@ -505,6 +513,11 @@ impl InputState {
                 self.reset();
                 KeyAction::JoinLines
             }
+            (KeyModifiers::SHIFT, KeyCode::Char('K')) => {
+                // K - show hover documentation (LSP)
+                self.reset();
+                KeyAction::Hover
+            }
             (KeyModifiers::NONE, KeyCode::Char('.')) => {
                 // . - repeat last change
                 self.reset();
@@ -615,6 +628,16 @@ impl InputState {
                 KeyAction::Pending
             }
 
+            // Jump list navigation
+            (KeyModifiers::CONTROL, KeyCode::Char('o')) => {
+                self.reset();
+                KeyAction::JumpBack
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('i')) => {
+                self.reset();
+                KeyAction::JumpForward
+            }
+
             // Escape cancels pending operations
             (KeyModifiers::NONE, KeyCode::Esc) => {
                 self.reset();
@@ -642,6 +665,11 @@ impl InputState {
                     self.reset();
                     action
                 }
+            }
+            // gd - go to definition (LSP)
+            ('g', KeyModifiers::NONE, KeyCode::Char('d')) => {
+                self.reset();
+                KeyAction::GotoDefinition
             }
             // zz - scroll cursor to center of screen
             ('z', KeyModifiers::NONE, KeyCode::Char('z')) => {

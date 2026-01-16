@@ -13,6 +13,10 @@ use crate::commands::CommandLine;
 use crate::syntax::SyntaxManager;
 use crate::config::{Settings, KeymapLookup};
 use crate::finder::FuzzyFinder;
+use crate::frecency::FrecencyDb;
+use crate::lsp::types::{Diagnostic, CompletionItem};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 /// The current mode of the editor
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -45,6 +49,15 @@ impl Mode {
     pub fn is_visual(&self) -> bool {
         matches!(self, Mode::Visual | Mode::VisualLine | Mode::VisualBlock)
     }
+}
+
+/// Pending LSP action requested by key handler
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspAction {
+    /// Go to definition (gd)
+    GotoDefinition,
+    /// Show hover documentation (K)
+    Hover,
 }
 
 /// Rectangle representing a screen region
@@ -86,21 +99,13 @@ impl Pane {
     }
 }
 
-/// Layout for split windows
-#[derive(Debug, Clone)]
-pub enum Layout {
-    /// A single pane (leaf node)
-    Leaf(usize),
-    /// Vertical split (left | right) with ratio
-    VSplit(Box<Layout>, Box<Layout>, f32),
-    /// Horizontal split (top / bottom) with ratio
-    HSplit(Box<Layout>, Box<Layout>, f32),
-}
-
-impl Default for Layout {
-    fn default() -> Self {
-        Layout::Leaf(0)
-    }
+/// Split layout orientation for panes
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitLayout {
+    /// Side-by-side panes (divide width)
+    Vertical,
+    /// Stacked panes (divide height)
+    Horizontal,
 }
 
 /// Direction for pane navigation
@@ -245,6 +250,251 @@ impl SearchState {
     }
 }
 
+/// A position in the jump list
+#[derive(Debug, Clone)]
+pub struct JumpLocation {
+    /// Path to the file (None for scratch buffers)
+    pub path: Option<std::path::PathBuf>,
+    /// Line number
+    pub line: usize,
+    /// Column number
+    pub col: usize,
+}
+
+/// Jump list for navigation history (like Vim's Ctrl+o/Ctrl+i)
+#[derive(Debug, Default)]
+pub struct JumpList {
+    /// List of jump locations
+    jumps: Vec<JumpLocation>,
+    /// Current position in the jump list
+    /// When position == jumps.len(), we're "at the end" (current location, not navigating)
+    position: usize,
+}
+
+impl JumpList {
+    /// Check if we're at the end (not navigating history)
+    fn is_at_end(&self) -> bool {
+        self.position >= self.jumps.len()
+    }
+
+    /// Record a jump (before jumping to a new location)
+    pub fn record(&mut self, path: Option<std::path::PathBuf>, line: usize, col: usize) {
+        // When making a new jump while navigating, truncate forward history
+        if !self.is_at_end() {
+            self.jumps.truncate(self.position + 1);
+        }
+
+        // Don't record duplicate consecutive jumps
+        if let Some(last) = self.jumps.last() {
+            if last.path == path && last.line == line {
+                self.position = self.jumps.len();
+                return;
+            }
+        }
+
+        self.jumps.push(JumpLocation { path, line, col });
+        self.position = self.jumps.len();
+
+        // Limit jump list size
+        const MAX_JUMPS: usize = 100;
+        if self.jumps.len() > MAX_JUMPS {
+            self.jumps.remove(0);
+            self.position = self.jumps.len();
+        }
+    }
+
+    /// Go back in the jump list (Ctrl+o)
+    /// Takes current location to save if we're starting to navigate
+    pub fn go_back(&mut self, current_path: Option<std::path::PathBuf>, current_line: usize, current_col: usize) -> Option<&JumpLocation> {
+        // If at end and we have history, save current position first
+        if self.is_at_end() && !self.jumps.is_empty() {
+            // Only save if different from last entry
+            if let Some(last) = self.jumps.last() {
+                if last.path != current_path || last.line != current_line {
+                    self.jumps.push(JumpLocation {
+                        path: current_path,
+                        line: current_line,
+                        col: current_col,
+                    });
+                    self.position = self.jumps.len();
+                }
+            }
+        }
+
+        if self.position > 0 {
+            self.position -= 1;
+            self.jumps.get(self.position)
+        } else {
+            None
+        }
+    }
+
+    /// Go forward in the jump list (Ctrl+i)
+    pub fn go_forward(&mut self) -> Option<&JumpLocation> {
+        if self.position < self.jumps.len().saturating_sub(1) {
+            self.position += 1;
+            self.jumps.get(self.position)
+        } else {
+            None
+        }
+    }
+}
+
+/// Autocomplete state
+pub struct CompletionState {
+    /// Whether completion popup is active
+    pub active: bool,
+    /// List of completion items from LSP (original, unfiltered)
+    pub items: Vec<CompletionItem>,
+    /// Filtered indices into items, sorted by score
+    pub filtered: Vec<usize>,
+    /// Currently selected index (into filtered)
+    pub selected: usize,
+    /// Line where completion was triggered
+    pub trigger_line: usize,
+    /// Column where completion was triggered
+    pub trigger_col: usize,
+    /// Current filter text (typed since trigger)
+    pub filter_text: String,
+    /// Fuzzy matcher for filtering
+    matcher: crate::finder::FuzzyMatcher,
+    /// If true, the completion list is incomplete and typing more should re-request
+    pub is_incomplete: bool,
+}
+
+impl Default for CompletionState {
+    fn default() -> Self {
+        Self {
+            active: false,
+            items: Vec::new(),
+            filtered: Vec::new(),
+            selected: 0,
+            trigger_line: 0,
+            trigger_col: 0,
+            filter_text: String::new(),
+            matcher: crate::finder::FuzzyMatcher::new(),
+            is_incomplete: false,
+        }
+    }
+}
+
+impl CompletionState {
+    /// Show completion popup with items
+    pub fn show(&mut self, items: Vec<CompletionItem>, line: usize, col: usize, is_incomplete: bool) {
+        self.active = true;
+        self.items = items;
+        self.selected = 0;
+        self.trigger_line = line;
+        self.trigger_col = col;
+        self.filter_text.clear();
+        self.is_incomplete = is_incomplete;
+        // Initialize filtered list with all items, sorted by sortText
+        self.refilter();
+    }
+
+    /// Hide completion popup
+    pub fn hide(&mut self) {
+        self.active = false;
+        self.items.clear();
+        self.filtered.clear();
+        self.selected = 0;
+        self.filter_text.clear();
+        self.is_incomplete = false;
+    }
+
+    /// Update filter with new prefix text
+    pub fn update_filter(&mut self, prefix: &str) {
+        self.filter_text = prefix.to_string();
+        self.refilter();
+    }
+
+    /// Refilter and resort items based on current filter_text
+    fn refilter(&mut self) {
+        self.refilter_with_frecency(None);
+    }
+
+    /// Refilter completions with optional frecency scoring
+    pub fn refilter_with_frecency(&mut self, frecency: Option<&FrecencyDb>) {
+        if self.filter_text.is_empty() {
+            // No filter - show all items sorted by frecency (if available) then sortText
+            let mut indices: Vec<(usize, f64, &str)> = self.items.iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    let frecency_score = frecency
+                        .map(|f| f.score(&item.label))
+                        .unwrap_or(1.0);
+                    let sort_key = item.sort_text.as_deref().unwrap_or(&item.label);
+                    (i, frecency_score, sort_key)
+                })
+                .collect();
+            // Sort by frecency (higher first), then by sortText
+            indices.sort_by(|a, b| {
+                // First compare frecency scores (higher is better)
+                b.1.partial_cmp(&a.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.2.cmp(b.2))
+            });
+            self.filtered = indices.into_iter().map(|(i, _, _)| i).collect();
+        } else {
+            // Fuzzy filter using filterText (fallback to label), combined with frecency
+            let mut scored: Vec<(usize, f64)> = self.items.iter()
+                .enumerate()
+                .filter_map(|(i, item)| {
+                    let match_text = item.filter_text.as_deref().unwrap_or(&item.label);
+                    self.matcher.match_score(&self.filter_text, match_text).map(|fuzzy_score| {
+                        let frecency_score = frecency
+                            .map(|f| f.score(&item.label))
+                            .unwrap_or(1.0);
+                        // Combined score: fuzzy_score * frecency_boost
+                        let combined = fuzzy_score as f64 * frecency_score;
+                        (i, combined)
+                    })
+                })
+                .collect();
+            // Sort by combined score (higher is better)
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            self.filtered = scored.into_iter().map(|(i, _)| i).collect();
+        }
+        self.selected = 0;
+    }
+
+    /// Move selection up
+    pub fn select_prev(&mut self) {
+        if !self.filtered.is_empty() {
+            if self.selected > 0 {
+                self.selected -= 1;
+            } else {
+                self.selected = self.filtered.len() - 1;
+            }
+        }
+    }
+
+    /// Move selection down
+    pub fn select_next(&mut self) {
+        if !self.filtered.is_empty() {
+            self.selected = (self.selected + 1) % self.filtered.len();
+        }
+    }
+
+    /// Get currently selected item
+    pub fn selected_item(&self) -> Option<&CompletionItem> {
+        self.filtered.get(self.selected)
+            .and_then(|&idx| self.items.get(idx))
+    }
+
+    /// Get the text to insert for the selected item
+    pub fn selected_insert_text(&self) -> Option<&str> {
+        self.selected_item().map(|item| {
+            item.insert_text.as_deref().unwrap_or(&item.label)
+        })
+    }
+
+    /// Get the number of visible (filtered) items
+    pub fn visible_count(&self) -> usize {
+        self.filtered.len()
+    }
+}
+
 /// Main editor state
 pub struct Editor {
     /// All open buffers
@@ -255,8 +505,8 @@ pub struct Editor {
     panes: Vec<Pane>,
     /// Index of the currently active pane
     active_pane: usize,
-    /// Layout tree for pane arrangement
-    pub layout: Layout,
+    /// Split layout orientation
+    split_layout: SplitLayout,
     /// Cursor position (active pane's cursor)
     pub cursor: Cursor,
     /// Current mode
@@ -284,6 +534,10 @@ pub struct Editor {
     pub visual: VisualSelection,
     /// Syntax highlighting manager
     pub syntax: SyntaxManager,
+    /// Last parsed syntax version for the active buffer
+    last_syntax_version: u64,
+    /// Time of the last buffer edit (for syntax debounce)
+    last_edit_at: Option<Instant>,
     /// Configuration settings
     pub settings: Settings,
     /// Keymap lookup table
@@ -294,6 +548,24 @@ pub struct Editor {
     pub pending_external_command: Option<String>,
     /// Fuzzy finder state
     pub finder: FuzzyFinder,
+    /// LSP status message (persistent, shown in status bar)
+    pub lsp_status: Option<String>,
+    /// LSP diagnostics per file URI
+    diagnostics: HashMap<String, Vec<Diagnostic>>,
+    /// Autocomplete state
+    pub completion: CompletionState,
+    /// Pending LSP action to execute (handled by main loop)
+    pub pending_lsp_action: Option<LspAction>,
+    /// Jump list for Ctrl+o/Ctrl+i navigation
+    pub jump_list: JumpList,
+    /// Hover popup content (shown with K command)
+    pub hover_content: Option<String>,
+    /// Flag to signal that completion needs to be re-requested (for isIncomplete)
+    pub needs_completion_refresh: bool,
+    /// Frecency database for completion ranking
+    pub frecency: FrecencyDb,
+    /// Signature help popup content
+    pub signature_help: Option<crate::lsp::types::SignatureHelpResult>,
 }
 
 impl Editor {
@@ -305,7 +577,7 @@ impl Editor {
             current_buffer_idx: 0,
             panes: vec![Pane::new(0)],
             active_pane: 0,
-            layout: Layout::default(),
+            split_layout: SplitLayout::Vertical,
             cursor: Cursor::default(),
             mode: Mode::default(),
             viewport_offset: 0,
@@ -320,12 +592,74 @@ impl Editor {
             search: SearchState::default(),
             visual: VisualSelection::default(),
             syntax: SyntaxManager::new(),
+            last_syntax_version: 0,
+            last_edit_at: None,
             settings,
             keymap,
             leader_sequence: None,
             pending_external_command: None,
             finder,
+            lsp_status: None,
+            diagnostics: HashMap::new(),
+            completion: CompletionState::default(),
+            pending_lsp_action: None,
+            jump_list: JumpList::default(),
+            hover_content: None,
+            needs_completion_refresh: false,
+            frecency: FrecencyDb::load(),
+            signature_help: None,
         }
+    }
+
+    /// Record completion selection for frecency ranking
+    pub fn record_completion_use(&mut self, label: &str) {
+        self.frecency.record_use(label);
+        self.frecency.save();
+    }
+
+    /// Show completion popup with frecency-aware sorting
+    pub fn show_completions(&mut self, items: Vec<CompletionItem>, line: usize, col: usize, is_incomplete: bool) {
+        self.completion.show(items, line, col, is_incomplete);
+        self.completion.refilter_with_frecency(Some(&self.frecency));
+    }
+
+    /// Update completion filter with frecency-aware sorting
+    pub fn update_completion_filter(&mut self, prefix: &str) {
+        self.completion.update_filter(prefix);
+        self.completion.refilter_with_frecency(Some(&self.frecency));
+    }
+
+    /// Set the LSP status (persistent, shown in status bar)
+    pub fn set_lsp_status<S: Into<String>>(&mut self, msg: S) {
+        self.lsp_status = Some(msg.into());
+    }
+
+    /// Update diagnostics for a file URI
+    pub fn set_diagnostics(&mut self, uri: String, diags: Vec<Diagnostic>) {
+        self.diagnostics.insert(uri, diags);
+    }
+
+    /// Get diagnostics for the current buffer
+    pub fn current_diagnostics(&self) -> &[Diagnostic] {
+        if let Some(path) = &self.buffer().path {
+            let uri = format!("file://{}", path.canonicalize().unwrap_or(path.clone()).display());
+            self.diagnostics.get(&uri).map(|v| v.as_slice()).unwrap_or(&[])
+        } else {
+            &[]
+        }
+    }
+
+    /// Get diagnostics for a specific line in the current buffer
+    pub fn diagnostics_for_line(&self, line: usize) -> Vec<&Diagnostic> {
+        self.current_diagnostics()
+            .iter()
+            .filter(|d| d.line == line)
+            .collect()
+    }
+
+    /// Get the first diagnostic message for the cursor line (for status display)
+    pub fn diagnostic_at_cursor(&self) -> Option<&Diagnostic> {
+        self.diagnostics_for_line(self.cursor.line).into_iter().next()
     }
 
     // ============================================
@@ -352,6 +686,31 @@ impl Editor {
         self.current_buffer_idx
     }
 
+    /// Get a reference to all panes
+    pub fn panes(&self) -> &[Pane] {
+        &self.panes
+    }
+
+    /// Get the index of the active pane
+    pub fn active_pane_idx(&self) -> usize {
+        self.active_pane
+    }
+
+    /// Get a reference to all buffers
+    pub fn buffers(&self) -> &[Buffer] {
+        &self.buffers
+    }
+
+    /// Get a reference to a specific buffer by index
+    pub fn buffer_at(&self, idx: usize) -> Option<&Buffer> {
+        self.buffers.get(idx)
+    }
+
+    /// Get the current split layout
+    pub fn split_layout(&self) -> SplitLayout {
+        self.split_layout
+    }
+
     /// Switch to the next buffer
     pub fn next_buffer(&mut self) {
         if self.buffers.len() > 1 {
@@ -361,7 +720,7 @@ impl Editor {
             // Re-parse syntax for new buffer
             let path = self.buffers[self.current_buffer_idx].path.clone();
             self.syntax.set_language_from_path_option(path.as_ref());
-            self.syntax.parse(&self.buffers[self.current_buffer_idx]);
+            self.parse_current_buffer();
         }
     }
 
@@ -378,7 +737,7 @@ impl Editor {
             // Re-parse syntax for new buffer
             let path = self.buffers[self.current_buffer_idx].path.clone();
             self.syntax.set_language_from_path_option(path.as_ref());
-            self.syntax.parse(&self.buffers[self.current_buffer_idx]);
+            self.parse_current_buffer();
         }
     }
 
@@ -414,14 +773,24 @@ impl Editor {
             // Re-parse syntax for the buffer
             let path = self.buffers[self.current_buffer_idx].path.clone();
             self.syntax.set_language_from_path_option(path.as_ref());
-            self.syntax.parse(&self.buffers[self.current_buffer_idx]);
+            self.parse_current_buffer();
         }
     }
 
     /// Create a vertical split (new pane to the right)
     pub fn vsplit(&mut self, file_path: Option<std::path::PathBuf>) -> anyhow::Result<()> {
+        self.split_pane(file_path, SplitLayout::Vertical)
+    }
+
+    /// Create a horizontal split (new pane below)
+    pub fn hsplit(&mut self, file_path: Option<std::path::PathBuf>) -> anyhow::Result<()> {
+        self.split_pane(file_path, SplitLayout::Horizontal)
+    }
+
+    fn split_pane(&mut self, file_path: Option<std::path::PathBuf>, layout: SplitLayout) -> anyhow::Result<()> {
         // Save current pane state
         self.save_pane_state();
+        self.split_layout = layout;
 
         // Determine which buffer the new pane shows
         let new_buffer_idx = if let Some(path) = file_path {
@@ -448,12 +817,6 @@ impl Editor {
 
         self.set_status(format!("Pane {}/{}", self.active_pane + 1, self.panes.len()));
         Ok(())
-    }
-
-    /// Create a horizontal split (new pane below)
-    pub fn hsplit(&mut self, file_path: Option<std::path::PathBuf>) -> anyhow::Result<()> {
-        // For now, same implementation as vsplit (pane management without rendering)
-        self.vsplit(file_path)
     }
 
     /// Switch to the next pane
@@ -569,6 +932,27 @@ impl Editor {
 
     /// Open a file in the editor (replaces current buffer or adds new one)
     pub fn open_file(&mut self, path: std::path::PathBuf) -> anyhow::Result<()> {
+        // Check if file is already open in an existing buffer
+        let canonical_path = path.canonicalize().ok();
+        if let Some(existing_idx) = self.buffers.iter().position(|b| {
+            b.path.as_ref().and_then(|p| p.canonicalize().ok()) == canonical_path
+        }) {
+            // File already open, switch to that buffer
+            self.current_buffer_idx = existing_idx;
+            self.cursor = Cursor::default();
+            self.viewport_offset = 0;
+            // Sync active pane state
+            if self.active_pane < self.panes.len() {
+                self.panes[self.active_pane].buffer_idx = existing_idx;
+                self.panes[self.active_pane].cursor = self.cursor;
+                self.panes[self.active_pane].viewport_offset = self.viewport_offset;
+            }
+            // Re-parse syntax for this buffer
+            self.syntax.set_language_from_path(&path);
+            self.parse_current_buffer();
+            return Ok(());
+        }
+
         // Set up syntax highlighting based on file extension
         self.syntax.set_language_from_path(&path);
 
@@ -579,23 +963,28 @@ impl Editor {
             && self.buffers[self.current_buffer_idx].path.is_none()
         {
             self.buffers[self.current_buffer_idx] = new_buffer;
+            // Update active pane's buffer_idx (it's already pointing to current_buffer_idx)
         } else {
-            // Check if file is already open in another buffer
-            let existing = self.buffers.iter().position(|b| b.path == self.buffers[self.current_buffer_idx].path);
-            if let Some(_) = existing {
-                // File already open, just switch to it
-                // For now, just replace current buffer
-            }
             self.buffers.push(new_buffer);
             self.current_buffer_idx = self.buffers.len() - 1;
+            // Update active pane to point to the new buffer
+            if self.active_pane < self.panes.len() {
+                self.panes[self.active_pane].buffer_idx = self.current_buffer_idx;
+            }
         }
 
         self.cursor = Cursor::default();
         self.viewport_offset = 0;
         self.undo_stack.clear();
 
+        // Sync active pane's cursor and viewport
+        if self.active_pane < self.panes.len() {
+            self.panes[self.active_pane].cursor = self.cursor;
+            self.panes[self.active_pane].viewport_offset = self.viewport_offset;
+        }
+
         // Parse the buffer for syntax highlighting
-        self.syntax.parse(&self.buffers[self.current_buffer_idx]);
+        self.parse_current_buffer();
 
         Ok(())
     }
@@ -623,20 +1012,40 @@ impl Editor {
             return;
         }
 
-        // Simple horizontal split for now (side by side panes)
-        let pane_width = width / num_panes;
-        let remainder = width % num_panes;
+        match self.split_layout {
+            SplitLayout::Vertical => {
+                // Side-by-side panes
+                let pane_width = width / num_panes;
+                let remainder = width % num_panes;
 
-        let mut x = 0u16;
-        for (i, pane) in self.panes.iter_mut().enumerate() {
-            // Add remainder to last pane
-            let w = if i as u16 == num_panes - 1 {
-                pane_width + remainder
-            } else {
-                pane_width
-            };
-            pane.rect = Rect::new(x, 0, w, text_height);
-            x += w;
+                let mut x = 0u16;
+                for (i, pane) in self.panes.iter_mut().enumerate() {
+                    // Add remainder to last pane
+                    let w = if i as u16 == num_panes - 1 {
+                        pane_width + remainder
+                    } else {
+                        pane_width
+                    };
+                    pane.rect = Rect::new(x, 0, w, text_height);
+                    x += w;
+                }
+            }
+            SplitLayout::Horizontal => {
+                // Stacked panes
+                let pane_height = text_height / num_panes;
+                let remainder = text_height % num_panes;
+
+                let mut y = 0u16;
+                for (i, pane) in self.panes.iter_mut().enumerate() {
+                    let h = if i as u16 == num_panes - 1 {
+                        pane_height + remainder
+                    } else {
+                        pane_height
+                    };
+                    pane.rect = Rect::new(0, y, width, h);
+                    y += h;
+                }
+            }
         }
     }
 
@@ -676,6 +1085,12 @@ impl Editor {
         // Scroll down if cursor is below viewport (with scroll_off margin)
         if self.cursor.line + scroll_off >= self.viewport_offset + text_rows {
             self.viewport_offset = self.cursor.line + scroll_off + 1 - text_rows;
+        }
+
+        // Sync to active pane
+        if self.active_pane < self.panes.len() {
+            self.panes[self.active_pane].viewport_offset = self.viewport_offset;
+            self.panes[self.active_pane].cursor = self.cursor;
         }
     }
 
@@ -753,7 +1168,7 @@ impl Editor {
         let text = self.get_lines_text(start_line, end_line);
 
         // Delete from start of first line to end of last line (including newline)
-        let end_col = self.buffers[self.current_buffer_idx].line_len(end_line); // Include newline
+        let end_col = self.buffers[self.current_buffer_idx].line_len_including_newline(end_line);
         self.buffers[self.current_buffer_idx].delete_range(start_line, 0, end_line, end_col);
 
         // Position cursor
@@ -767,23 +1182,8 @@ impl Editor {
 
     /// Delete from cursor to motion target
     pub fn delete_motion(&mut self, motion: Motion, count: usize, register: Option<char>) {
-        if let Some((end_line, end_col)) = apply_motion(
-            &self.buffers[self.current_buffer_idx],
-            motion,
-            self.cursor.line,
-            self.cursor.col,
-            count,
-            self.text_rows(),
-        ) {
-            let (start_line, start_col, end_line, end_col) = if (end_line, end_col) < (self.cursor.line, self.cursor.col) {
-                (end_line, end_col, self.cursor.line, self.cursor.col)
-            } else {
-                (self.cursor.line, self.cursor.col, end_line, end_col)
-            };
-
-            // Get the text to be deleted for undo
-            let actual_end_col = end_col.saturating_sub(1).max(start_col);
-            let text = self.get_range_text(start_line, start_col, end_line, actual_end_col);
+        if let Some((start_line, start_col, end_line, end_col)) = self.motion_range(motion, count) {
+            let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
             // Record for undo
             self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
@@ -793,8 +1193,7 @@ impl Editor {
                 text.clone(),
             ));
 
-            // For motions like 'e', 'w', '$', we want to include the end character
-            let deleted = self.delete_range(start_line, start_col, end_line, actual_end_col);
+            let deleted = self.delete_range(start_line, start_col, end_line, end_col);
 
             self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
 
@@ -826,20 +1225,7 @@ impl Editor {
 
     /// Yank from cursor to motion target
     pub fn yank_motion(&mut self, motion: Motion, count: usize, register: Option<char>) {
-        if let Some((end_line, end_col)) = apply_motion(
-            &self.buffers[self.current_buffer_idx],
-            motion,
-            self.cursor.line,
-            self.cursor.col,
-            count,
-            self.text_rows(),
-        ) {
-            let (start_line, start_col, end_line, end_col) = if (end_line, end_col) < (self.cursor.line, self.cursor.col) {
-                (end_line, end_col, self.cursor.line, self.cursor.col)
-            } else {
-                (self.cursor.line, self.cursor.col, end_line, end_col)
-            };
-
+        if let Some((start_line, start_col, end_line, end_col)) = self.motion_range(motion, count) {
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
             self.registers.yank(register, RegisterContent::Chars(text));
             self.set_status("Yanked");
@@ -862,23 +1248,8 @@ impl Editor {
 
     /// Change from cursor to motion target (delete + insert mode)
     pub fn change_motion(&mut self, motion: Motion, count: usize, register: Option<char>) {
-        if let Some((end_line, end_col)) = apply_motion(
-            &self.buffers[self.current_buffer_idx],
-            motion,
-            self.cursor.line,
-            self.cursor.col,
-            count,
-            self.text_rows(),
-        ) {
-            let (start_line, start_col, end_line, end_col) = if (end_line, end_col) < (self.cursor.line, self.cursor.col) {
-                (end_line, end_col, self.cursor.line, self.cursor.col)
-            } else {
-                (self.cursor.line, self.cursor.col, end_line, end_col)
-            };
-
-            // Get the text to be deleted
-            let actual_end_col = end_col.saturating_sub(1).max(start_col);
-            let text = self.get_range_text(start_line, start_col, end_line, actual_end_col);
+        if let Some((start_line, start_col, end_line, end_col)) = self.motion_range(motion, count) {
+            let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
             // Begin undo group (will include the delete and subsequent inserts)
             self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
@@ -888,8 +1259,7 @@ impl Editor {
                 text.clone(),
             ));
 
-            // Delete the text
-            let deleted = self.delete_range(start_line, start_col, end_line, actual_end_col);
+            let deleted = self.delete_range(start_line, start_col, end_line, end_col);
 
             let is_small = !deleted.contains('\n');
             self.registers.delete(register, RegisterContent::Chars(deleted), is_small);
@@ -1253,6 +1623,58 @@ impl Editor {
         self.scroll_to_cursor();
     }
 
+    /// Record current position in jump list (call before jumping)
+    pub fn record_jump(&mut self) {
+        let path = self.buffer().path.clone();
+        self.jump_list.record(path, self.cursor.line, self.cursor.col);
+    }
+
+    /// Go back in jump list (Ctrl+o)
+    pub fn jump_back(&mut self) -> bool {
+        let current_path = self.buffer().path.clone();
+        let current_line = self.cursor.line;
+        let current_col = self.cursor.col;
+
+        if let Some(loc) = self.jump_list.go_back(current_path, current_line, current_col).cloned() {
+            // Check if we need to switch files
+            if loc.path != self.buffer().path {
+                if let Some(path) = loc.path {
+                    if self.open_file(path).is_err() {
+                        return false;
+                    }
+                }
+            }
+            self.cursor.line = loc.line;
+            self.cursor.col = loc.col;
+            self.clamp_cursor();
+            self.scroll_to_cursor();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Go forward in jump list (Ctrl+i)
+    pub fn jump_forward(&mut self) -> bool {
+        if let Some(loc) = self.jump_list.go_forward().cloned() {
+            // Check if we need to switch files
+            if loc.path != self.buffer().path {
+                if let Some(path) = loc.path {
+                    if self.open_file(path).is_err() {
+                        return false;
+                    }
+                }
+            }
+            self.cursor.line = loc.line;
+            self.cursor.col = loc.col;
+            self.clamp_cursor();
+            self.scroll_to_cursor();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Save to a specific file
     pub fn save_as(&mut self, path: std::path::PathBuf) -> anyhow::Result<()> {
         self.buffers[self.current_buffer_idx].path = Some(path);
@@ -1265,6 +1687,8 @@ impl Editor {
             self.buffers[self.current_buffer_idx] = Buffer::from_file(path)?;
             self.cursor = Cursor::default();
             self.viewport_offset = 0;
+            self.undo_stack.clear();
+            self.parse_current_buffer();
             self.set_status("File reloaded");
             Ok(())
         } else {
@@ -1429,12 +1853,11 @@ impl Editor {
         let line_str: String = line.chars().collect();
         let col = self.cursor.col;
 
-        if col >= line_str.len() {
-            return None;
-        }
-
         // Check if cursor is on a word character
         let chars: Vec<char> = line_str.chars().collect();
+        if col >= chars.len() {
+            return None;
+        }
         if !Self::is_word_char(chars[col]) {
             return None;
         }
@@ -1478,9 +1901,11 @@ impl Editor {
                 if let Some(line) = self.buffers[self.current_buffer_idx].line(self.cursor.line) {
                     let line_str: String = line.chars().collect();
                     let search_start = self.cursor.col + 1;
-                    if search_start < line_str.len() {
-                        if let Some(pos) = line_str[search_start..].find(pattern) {
-                            self.cursor.col = search_start + pos;
+                    let search_start_byte = Self::char_to_byte_idx(&line_str, search_start);
+                    if search_start_byte < line_str.len() {
+                        if let Some(pos) = line_str[search_start_byte..].find(pattern) {
+                            let byte_pos = search_start_byte + pos;
+                            self.cursor.col = Self::byte_to_char_idx(&line_str, byte_pos);
                             self.scroll_to_cursor();
                             return true;
                         }
@@ -1493,7 +1918,7 @@ impl Editor {
                         let line_str: String = line.chars().collect();
                         if let Some(pos) = line_str.find(pattern) {
                             self.cursor.line = line_idx;
-                            self.cursor.col = pos;
+                            self.cursor.col = Self::byte_to_char_idx(&line_str, pos);
                             self.scroll_to_cursor();
                             return true;
                         }
@@ -1508,11 +1933,12 @@ impl Editor {
                             let end_col = if line_idx == self.cursor.line {
                                 self.cursor.col
                             } else {
-                                line_str.len()
+                                line_str.chars().count()
                             };
-                            if let Some(pos) = line_str[..end_col.min(line_str.len())].find(pattern) {
+                            let end_byte = Self::char_to_byte_idx(&line_str, end_col);
+                            if let Some(pos) = line_str[..end_byte.min(line_str.len())].find(pattern) {
                                 self.cursor.line = line_idx;
-                                self.cursor.col = pos;
+                                self.cursor.col = Self::byte_to_char_idx(&line_str, pos);
                                 self.scroll_to_cursor();
                                 self.set_status("search hit BOTTOM, continuing at TOP");
                                 return true;
@@ -1527,8 +1953,9 @@ impl Editor {
                 if let Some(line) = self.buffers[self.current_buffer_idx].line(self.cursor.line) {
                     let line_str: String = line.chars().collect();
                     if self.cursor.col > 0 {
-                        if let Some(pos) = line_str[..self.cursor.col].rfind(pattern) {
-                            self.cursor.col = pos;
+                        let end_byte = Self::char_to_byte_idx(&line_str, self.cursor.col);
+                        if let Some(pos) = line_str[..end_byte].rfind(pattern) {
+                            self.cursor.col = Self::byte_to_char_idx(&line_str, pos);
                             self.scroll_to_cursor();
                             return true;
                         }
@@ -1541,7 +1968,7 @@ impl Editor {
                         let line_str: String = line.chars().collect();
                         if let Some(pos) = line_str.rfind(pattern) {
                             self.cursor.line = line_idx;
-                            self.cursor.col = pos;
+                            self.cursor.col = Self::byte_to_char_idx(&line_str, pos);
                             self.scroll_to_cursor();
                             return true;
                         }
@@ -1558,10 +1985,11 @@ impl Editor {
                             } else {
                                 0
                             };
-                            if start_col < line_str.len() {
-                                if let Some(pos) = line_str[start_col..].rfind(pattern) {
+                            let start_byte = Self::char_to_byte_idx(&line_str, start_col);
+                            if start_byte < line_str.len() {
+                                if let Some(pos) = line_str[start_byte..].rfind(pattern) {
                                     self.cursor.line = line_idx;
-                                    self.cursor.col = start_col + pos;
+                                    self.cursor.col = Self::byte_to_char_idx(&line_str, start_byte + pos);
                                     self.scroll_to_cursor();
                                     self.set_status("search hit TOP, continuing at BOTTOM");
                                     return true;
@@ -1574,6 +2002,22 @@ impl Editor {
         }
 
         false
+    }
+
+    /// Convert a character index to a byte index in a string
+    fn char_to_byte_idx(s: &str, char_idx: usize) -> usize {
+        if char_idx == 0 {
+            return 0;
+        }
+        s.char_indices()
+            .nth(char_idx)
+            .map(|(idx, _)| idx)
+            .unwrap_or_else(|| s.len())
+    }
+
+    /// Convert a byte index to a character index in a string
+    fn byte_to_char_idx(s: &str, byte_idx: usize) -> usize {
+        s[..byte_idx.min(s.len())].chars().count()
     }
 
     /// Enter visual mode (character-wise)
@@ -2482,16 +2926,119 @@ impl Editor {
 
     /// Select the current item in the finder and open it
     /// Returns (path, optional_line_number) for grep results
-    pub fn finder_select(&mut self) -> Option<(std::path::PathBuf, Option<usize>)> {
-        if let Some(item) = self.finder.selected_item() {
-            let path = item.path.clone();
-            let line = item.line;
-            self.close_finder();
-            Some((path, line))
-        } else {
-            self.close_finder();
-            None
+    pub fn finder_select(&mut self) -> Option<crate::finder::FinderItem> {
+        let item = self.finder.selected_item().cloned();
+        self.close_finder();
+        item
+    }
+
+    /// Switch to an existing buffer by index
+    pub fn switch_to_buffer(&mut self, idx: usize) -> bool {
+        if idx >= self.buffers.len() {
+            return false;
         }
+
+        self.save_pane_state();
+        self.current_buffer_idx = idx;
+        if self.active_pane < self.panes.len() {
+            self.panes[self.active_pane].buffer_idx = idx;
+            self.panes[self.active_pane].cursor = Cursor::default();
+            self.panes[self.active_pane].viewport_offset = 0;
+        }
+        self.cursor = Cursor::default();
+        self.viewport_offset = 0;
+        let path = self.buffers[self.current_buffer_idx].path.clone();
+        self.syntax.set_language_from_path_option(path.as_ref());
+        self.parse_current_buffer();
+        true
+    }
+
+    fn motion_is_inclusive(motion: Motion) -> bool {
+        matches!(
+            motion,
+            Motion::WordEnd
+                | Motion::BigWordEnd
+                | Motion::LineEnd
+                | Motion::FindChar(_)
+                | Motion::FindCharBack(_)
+                | Motion::MatchingBracket
+        )
+    }
+
+    fn motion_range(&self, motion: Motion, count: usize) -> Option<(usize, usize, usize, usize)> {
+        let (target_line, target_col) = apply_motion(
+            &self.buffers[self.current_buffer_idx],
+            motion,
+            self.cursor.line,
+            self.cursor.col,
+            count,
+            self.text_rows(),
+        )?;
+
+        let forward = (target_line, target_col) >= (self.cursor.line, self.cursor.col);
+        let inclusive = forward && Self::motion_is_inclusive(motion);
+
+        let (start_line, start_col, mut end_line, mut end_col) = if (target_line, target_col) < (self.cursor.line, self.cursor.col) {
+            (target_line, target_col, self.cursor.line, self.cursor.col)
+        } else {
+            (self.cursor.line, self.cursor.col, target_line, target_col)
+        };
+
+        if !inclusive {
+            if end_line == start_line {
+                end_col = end_col.saturating_sub(1).max(start_col);
+            } else if end_col == 0 {
+                let prev_line = end_line.saturating_sub(1);
+                let prev_len = self.buffers[self.current_buffer_idx].line_len_including_newline(prev_line);
+                end_line = prev_line;
+                end_col = prev_len.saturating_sub(1);
+            } else {
+                end_col = end_col.saturating_sub(1);
+            }
+        }
+
+        Some((start_line, start_col, end_line, end_col))
+    }
+
+    fn parse_current_buffer(&mut self) {
+        let buffer_idx = self.current_buffer_idx;
+        let buffer = &self.buffers[buffer_idx];
+        self.syntax.parse(buffer);
+        self.last_syntax_version = buffer.version();
+        self.last_edit_at = None;
+    }
+
+    pub fn maybe_update_syntax(&mut self) {
+        if self.mode == Mode::Insert {
+            return;
+        }
+
+        let version = self.buffers[self.current_buffer_idx].version();
+        if version != self.last_syntax_version {
+            self.parse_current_buffer();
+        }
+    }
+
+    pub fn note_buffer_change(&mut self) {
+        self.last_edit_at = Some(Instant::now());
+    }
+
+    pub fn maybe_update_syntax_debounced(&mut self, debounce: Duration) -> bool {
+        let Some(last) = self.last_edit_at else {
+            return false;
+        };
+        if last.elapsed() < debounce {
+            return false;
+        }
+
+        let version = self.buffers[self.current_buffer_idx].version();
+        if version != self.last_syntax_version {
+            self.parse_current_buffer();
+            return true;
+        }
+
+        self.last_edit_at = None;
+        false
     }
 }
 
