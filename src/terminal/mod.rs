@@ -401,32 +401,56 @@ impl Terminal {
         }
         print!("\u{2524}"); // ┤
 
-        // Draw items
+        // Draw items with scrolling
         let list_height = (win.height - 4) as usize; // Minus borders and input
         let total_items = editor.finder.filtered.len();
+        let scroll_offset = editor.finder.scroll_offset;
         let status = format!(" {}/{} ", editor.finder.filtered.len(), editor.finder.items.len());
+
+        // Calculate scroll indicator
+        let show_scroll_indicator = total_items > list_height;
+        let scroll_indicator_color = Color::DarkGrey;
 
         for row in 0..list_height {
             let y = win.y + 3 + row as u16;
             execute!(self.stdout, cursor::MoveTo(win.x, y), SetForegroundColor(border_color))?;
             print!("\u{2502}"); // │
 
-            if row < total_items {
-                let item_idx = editor.finder.filtered[row];
+            let list_idx = scroll_offset + row;
+            if list_idx < total_items {
+                let item_idx = editor.finder.filtered[list_idx];
                 let item = &editor.finder.items[item_idx];
-                let is_selected = row == editor.finder.selected;
+                let is_selected = list_idx == editor.finder.selected;
 
                 if is_selected {
                     execute!(self.stdout, SetBackgroundColor(selected_bg))?;
                 }
 
-                // Truncate display to fit
-                let max_len = (win.width - 3) as usize;
-                let display: String = item.display.chars().take(max_len).collect();
-                print!("{}", display);
+                // Truncate display to fit and highlight matches
+                // Leave space for scroll indicator if needed
+                let max_len = if show_scroll_indicator {
+                    (win.width - 4) as usize
+                } else {
+                    (win.width - 3) as usize
+                };
+                let display_chars: Vec<char> = item.display.chars().take(max_len).collect();
+                let match_color = Color::Yellow;
+
+                for (char_idx, ch) in display_chars.iter().enumerate() {
+                    if item.match_indices.contains(&char_idx) {
+                        execute!(self.stdout, SetForegroundColor(match_color))?;
+                        print!("{}", ch);
+                        execute!(self.stdout, ResetColor)?;
+                        if is_selected {
+                            execute!(self.stdout, SetBackgroundColor(selected_bg))?;
+                        }
+                    } else {
+                        print!("{}", ch);
+                    }
+                }
 
                 // Pad to fill line
-                for _ in display.len()..max_len {
+                for _ in display_chars.len()..max_len {
                     print!(" ");
                 }
 
@@ -435,7 +459,34 @@ impl Terminal {
                 }
             } else {
                 // Empty row
-                for _ in 1..(win.width - 1) {
+                let pad_len = if show_scroll_indicator {
+                    (win.width - 4) as usize
+                } else {
+                    (win.width - 3) as usize
+                };
+                for _ in 0..pad_len {
+                    print!(" ");
+                }
+            }
+
+            // Draw scroll indicator
+            if show_scroll_indicator {
+                // Calculate which part of the scrollbar to highlight
+                let scroll_bar_pos = if total_items > 0 {
+                    (row * total_items) / list_height
+                } else {
+                    0
+                };
+                let selected_in_range = scroll_bar_pos <= editor.finder.selected
+                    && editor.finder.selected < scroll_bar_pos + (total_items / list_height).max(1);
+
+                if selected_in_range || (row == 0 && scroll_offset == 0) || (row == list_height - 1 && scroll_offset + list_height >= total_items) {
+                    execute!(self.stdout, SetForegroundColor(Color::Cyan))?;
+                    print!("\u{2588}"); // █ (full block for thumb)
+                } else if scroll_offset > 0 || scroll_offset + list_height < total_items {
+                    execute!(self.stdout, SetForegroundColor(scroll_indicator_color))?;
+                    print!("\u{2591}"); // ░ (light shade for track)
+                } else {
                     print!(" ");
                 }
             }
@@ -1254,10 +1305,15 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
 
         // Select item
         (KeyModifiers::NONE, KeyCode::Enter) => {
-            if let Some(path) = editor.finder_select() {
+            if let Some((path, line)) = editor.finder_select() {
                 // Open the selected file
                 if let Err(e) = editor.open_file(path) {
                     editor.set_status(format!("Error opening file: {}", e));
+                } else if let Some(line_num) = line {
+                    // Jump to the line (for grep results)
+                    editor.cursor.line = line_num.saturating_sub(1);
+                    editor.cursor.col = 0;
+                    editor.scroll_to_cursor();
                 }
             }
         }
@@ -1267,6 +1323,10 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
         (KeyModifiers::CONTROL, KeyCode::Char('k')) |
         (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
             editor.finder.select_prev();
+            // Adjust scroll to keep selection visible
+            let win = crate::finder::FloatingWindow::centered(editor.term_width, editor.term_height);
+            let list_height = (win.height - 4) as usize;
+            editor.finder.adjust_scroll(list_height);
         }
 
         // Navigate down
@@ -1274,6 +1334,10 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
         (KeyModifiers::CONTROL, KeyCode::Char('j')) |
         (KeyModifiers::CONTROL, KeyCode::Char('n')) => {
             editor.finder.select_next();
+            // Adjust scroll to keep selection visible
+            let win = crate::finder::FloatingWindow::centered(editor.term_width, editor.term_height);
+            let list_height = (win.height - 4) as usize;
+            editor.finder.adjust_scroll(list_height);
         }
 
         // Backspace
@@ -1447,6 +1511,11 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
 
         Command::FindBuffers => {
             editor.open_finder_buffers();
+            CommandResult::Ok
+        }
+
+        Command::LiveGrep => {
+            editor.open_finder_grep();
             CommandResult::Ok
         }
 

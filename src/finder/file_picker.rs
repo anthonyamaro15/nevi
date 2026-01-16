@@ -24,6 +24,14 @@ impl FilePicker {
         }
     }
 
+    /// Create from config settings
+    pub fn from_settings(settings: &crate::config::FinderSettings) -> Self {
+        Self {
+            max_files: settings.max_files,
+            ignore_patterns: settings.ignore_patterns.clone(),
+        }
+    }
+
     /// Set maximum files to scan
     pub fn with_max_files(mut self, max: usize) -> Self {
         self.max_files = max;
