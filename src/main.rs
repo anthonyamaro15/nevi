@@ -19,10 +19,34 @@ fn main() -> anyhow::Result<()> {
     // Initialize editor with settings
     let mut editor = Editor::new(settings);
 
-    // Open file from command line argument if provided
-    let initial_file = env::args().nth(1).map(PathBuf::from);
-    if let Some(ref path) = initial_file {
-        editor.open_file(path.clone())?;
+    // Check command line argument - could be file or directory
+    let arg_path = env::args().nth(1).map(PathBuf::from);
+    let mut initial_file: Option<PathBuf> = None;
+    let mut open_file_picker = false;
+
+    if let Some(ref path) = arg_path {
+        // Canonicalize the path to get absolute path
+        let abs_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+
+        if abs_path.is_dir() {
+            // Directory: set as project root and open file picker
+            editor.set_project_root(abs_path);
+            open_file_picker = true;
+        } else if abs_path.is_file() || !abs_path.exists() {
+            // File (or new file): open it and set parent as project root
+            initial_file = Some(abs_path.clone());
+            if let Some(parent) = abs_path.parent() {
+                editor.set_project_root(parent.to_path_buf());
+            }
+            editor.open_file(abs_path)?;
+        }
+    }
+
+    // If no argument, use current directory as project root
+    if arg_path.is_none() {
+        if let Ok(cwd) = env::current_dir() {
+            editor.set_project_root(cwd);
+        }
     }
 
     // Initialize terminal
@@ -31,6 +55,11 @@ fn main() -> anyhow::Result<()> {
     // Get initial size
     let (width, height) = Terminal::size()?;
     editor.set_size(width, height);
+
+    // If we opened a directory, open the file picker
+    if open_file_picker {
+        editor.open_finder_files();
+    }
 
     // Initialize LSP if enabled and we have a Rust file
     let mut lsp_manager: Option<LspManager> = None;

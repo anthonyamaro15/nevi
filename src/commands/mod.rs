@@ -54,6 +54,20 @@ pub enum Command {
         /// Global flag (replace all on line vs first only)
         global: bool,
     },
+    /// :new or :touch - Create a new file
+    NewFile(PathBuf),
+    /// :delete or :rm - Delete current file (requires confirmation)
+    DeleteFile,
+    /// :delete! or :rm! - Delete current file (force, no confirmation)
+    DeleteFileForce,
+    /// :rename or :mv - Rename current file
+    RenameFile(PathBuf),
+    /// :mkdir - Create a directory
+    MakeDir(PathBuf),
+    /// :Explorer - Toggle file explorer
+    ToggleExplorer,
+    /// :Explore - Open file explorer
+    OpenExplorer,
     /// Unknown command
     Unknown(String),
 }
@@ -71,6 +85,8 @@ pub enum CommandResult {
     Quit,
     /// Run an external process (requires terminal to handle)
     RunExternal(String),
+    /// Request confirmation for delete (shows prompt, user must type :delete! to confirm)
+    ConfirmDelete(PathBuf),
 }
 
 /// Parse a command string into a Command
@@ -162,6 +178,35 @@ pub fn parse_command(input: &str) -> Command {
 
         // Clear search highlight
         "noh" | "nohlsearch" => Command::NoHighlight,
+
+        // File management commands
+        "new" | "touch" => {
+            if let Some(path) = args.filter(|s| !s.is_empty()) {
+                Command::NewFile(PathBuf::from(path))
+            } else {
+                Command::Unknown("new: missing file path".to_string())
+            }
+        }
+        "delete" | "rm" => Command::DeleteFile,
+        "delete!" | "rm!" => Command::DeleteFileForce,
+        "rename" | "mv" => {
+            if let Some(path) = args.filter(|s| !s.is_empty()) {
+                Command::RenameFile(PathBuf::from(path))
+            } else {
+                Command::Unknown("rename: missing new name".to_string())
+            }
+        }
+        "mkdir" => {
+            if let Some(path) = args.filter(|s| !s.is_empty()) {
+                Command::MakeDir(PathBuf::from(path))
+            } else {
+                Command::Unknown("mkdir: missing directory path".to_string())
+            }
+        }
+
+        // File explorer commands
+        "Explorer" | "explorer" | "ex" => Command::ToggleExplorer,
+        "Explore" | "explore" | "Ex" => Command::OpenExplorer,
 
         // Unknown command
         _ => Command::Unknown(cmd.to_string()),
