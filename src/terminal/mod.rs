@@ -3,7 +3,7 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{self, ClearType},
-    style::{SetForegroundColor, SetBackgroundColor, ResetColor, Color},
+    style::{SetForegroundColor, SetBackgroundColor, ResetColor, Color, SetAttribute, Attribute},
 };
 use std::io::{self, Write, Stdout};
 
@@ -199,6 +199,11 @@ impl Terminal {
         execute!(self.stdout, cursor::MoveTo(0, 0))?;
 
         let num_panes = editor.panes().len();
+
+        // Render file explorer sidebar if visible
+        if editor.explorer.visible {
+            self.render_explorer(editor)?;
+        }
 
         // Render all panes
         for (pane_idx, pane) in editor.panes().iter().enumerate() {
@@ -728,6 +733,121 @@ impl Terminal {
     }
 
     /// Draw separator lines between panes
+    /// Render the file explorer sidebar
+    fn render_explorer(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        let width = editor.explorer.width as usize;
+        let height = editor.text_rows();
+        let is_focused = editor.mode == Mode::Explorer;
+
+        // Colors
+        let bg_color = Color::Rgb { r: 30, g: 30, b: 30 };
+        let selected_bg = if is_focused {
+            Color::Rgb { r: 60, g: 60, b: 80 }
+        } else {
+            Color::Rgb { r: 50, g: 50, b: 50 }
+        };
+        let dir_color = Color::Rgb { r: 100, g: 180, b: 255 };
+        let file_color = Color::Rgb { r: 200, g: 200, b: 200 };
+        let separator_color = Color::DarkGrey;
+
+        // Render header with project name
+        execute!(self.stdout, cursor::MoveTo(0, 0))?;
+        execute!(self.stdout, SetBackgroundColor(bg_color))?;
+
+        let project_name = editor.project_root
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Explorer".to_string());
+
+        let header = format!(" {} ", project_name);
+        let header = if header.len() > width {
+            format!("{}…", &header[..width.saturating_sub(1)])
+        } else {
+            header
+        };
+
+        execute!(self.stdout, SetForegroundColor(Color::White))?;
+        execute!(self.stdout, SetAttribute(Attribute::Bold))?;
+        print!("{:width$}", header, width = width);
+        execute!(self.stdout, SetAttribute(Attribute::Reset))?;
+
+        // Calculate scrolling
+        let flat_view = &editor.explorer.flat_view;
+        let selected = editor.explorer.selected;
+        let list_height = height.saturating_sub(1); // -1 for header
+
+        // Calculate scroll offset to keep selection visible
+        let scroll_offset = if selected < list_height / 2 {
+            0
+        } else if selected >= flat_view.len().saturating_sub(list_height / 2) {
+            flat_view.len().saturating_sub(list_height)
+        } else {
+            selected.saturating_sub(list_height / 2)
+        };
+
+        // Render file tree
+        for row in 0..list_height {
+            let y = (row + 1) as u16; // +1 for header
+            execute!(self.stdout, cursor::MoveTo(0, y))?;
+
+            let idx = scroll_offset + row;
+            if idx < flat_view.len() {
+                let node = &flat_view[idx];
+                let is_selected = idx == selected;
+
+                // Set background
+                if is_selected {
+                    execute!(self.stdout, SetBackgroundColor(selected_bg))?;
+                } else {
+                    execute!(self.stdout, SetBackgroundColor(bg_color))?;
+                }
+
+                // Calculate indent (2 spaces per level, but skip root)
+                let indent = if node.depth > 0 {
+                    "  ".repeat(node.depth.saturating_sub(1))
+                } else {
+                    String::new()
+                };
+
+                // Get icon
+                let icon = editor.explorer.get_icon(node);
+
+                // Set colors
+                if node.is_dir {
+                    execute!(self.stdout, SetForegroundColor(dir_color))?;
+                } else {
+                    execute!(self.stdout, SetForegroundColor(file_color))?;
+                }
+
+                // Build the line
+                let line = format!("{}{} {}", indent, icon, node.name);
+                let line = if line.len() > width {
+                    format!("{}…", &line[..width.saturating_sub(1)])
+                } else {
+                    line
+                };
+
+                print!("{:width$}", line, width = width);
+            } else {
+                // Empty line
+                execute!(self.stdout, SetBackgroundColor(bg_color))?;
+                print!("{:width$}", "", width = width);
+            }
+        }
+
+        // Draw vertical separator
+        execute!(self.stdout, SetBackgroundColor(Color::Reset))?;
+        execute!(self.stdout, SetForegroundColor(separator_color))?;
+        for y in 0..height {
+            execute!(self.stdout, cursor::MoveTo(width as u16, y as u16))?;
+            print!("\u{2502}"); // │
+        }
+        execute!(self.stdout, ResetColor)?;
+
+        Ok(())
+    }
+
     fn render_pane_separators(&mut self, editor: &Editor) -> anyhow::Result<()> {
         let separator_color = Color::DarkGrey;
         let panes = editor.panes();
@@ -813,6 +933,10 @@ impl Terminal {
                     cursor::Show,
                     cursor::SetCursorStyle::BlinkingBar
                 )?;
+            }
+            Mode::Explorer => {
+                // Hide cursor in explorer mode - selection is shown visually
+                execute!(self.stdout, cursor::Hide)?;
             }
             _ => {
                 // Cursor in active pane's buffer
@@ -912,7 +1036,7 @@ impl Terminal {
                 match editor.mode {
                     Mode::Insert => execute!(self.stdout, cursor::SetCursorStyle::BlinkingBar)?,
                     Mode::Replace => execute!(self.stdout, cursor::SetCursorStyle::BlinkingUnderScore)?,
-                    Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock => {
+                    Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock | Mode::Explorer => {
                         execute!(self.stdout, cursor::SetCursorStyle::BlinkingBlock)?
                     }
                     Mode::Command | Mode::Search | Mode::Finder => {} // Handled above
@@ -963,7 +1087,15 @@ impl Terminal {
 
         let filename = editor.buffer().display_name();
         let modified = if editor.buffer().dirty { " [+]" } else { "" };
-        let left = format!(" {}{} | {}{} ", mode_str, pending, filename, modified);
+
+        // Get project name (last component of project_root)
+        let project_name = editor.project_root.as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .map(|s| format!("[{}] ", s))
+            .unwrap_or_default();
+
+        let left = format!(" {}{} | {}{}{} ", mode_str, pending, project_name, filename, modified);
 
         // Right side: LSP status, language and position
         let lsp_status = editor.lsp_status.as_deref().unwrap_or("");
@@ -2019,6 +2151,7 @@ pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
         Mode::Search => handle_search_mode(editor, key),
         Mode::Visual | Mode::VisualLine | Mode::VisualBlock => handle_visual_mode(editor, key),
         Mode::Finder => handle_finder_mode(editor, key),
+        Mode::Explorer => handle_explorer_mode(editor, key),
     }
 }
 
@@ -3008,7 +3141,163 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
     }
 }
 
+fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
+    // Handle leader key sequences (same as normal mode)
+    if let Some(ref mut sequence) = editor.leader_sequence {
+        if key.code == KeyCode::Esc {
+            editor.leader_sequence = None;
+            editor.clear_status();
+            return;
+        }
+
+        if let KeyCode::Char(c) = key.code {
+            sequence.push(c);
+            let seq = sequence.clone();
+
+            if let Some(action) = editor.keymap.get_leader_action(&seq) {
+                let action = action.clone();
+                editor.leader_sequence = None;
+                editor.clear_status();
+                execute_leader_action(editor, &action);
+                return;
+            }
+
+            if editor.keymap.is_leader_prefix(&seq) {
+                editor.set_status(format!("<leader>{}", seq));
+                return;
+            }
+
+            editor.leader_sequence = None;
+            editor.clear_status();
+            return;
+        }
+
+        editor.leader_sequence = None;
+        editor.clear_status();
+        return;
+    }
+
+    // Check if this key is the leader key
+    if editor.keymap.has_leader_mappings() && editor.keymap.is_leader_key(key) {
+        editor.leader_sequence = Some(String::new());
+        editor.set_status("<leader>");
+        return;
+    }
+
+    match (key.modifiers, key.code) {
+        // Close explorer
+        (KeyModifiers::NONE, KeyCode::Esc) |
+        (KeyModifiers::CONTROL, KeyCode::Char('[')) |
+        (KeyModifiers::NONE, KeyCode::Char('q')) => {
+            editor.close_explorer();
+        }
+
+        // Move down
+        (KeyModifiers::NONE, KeyCode::Char('j')) |
+        (KeyModifiers::NONE, KeyCode::Down) => {
+            editor.explorer.move_down();
+        }
+
+        // Move up
+        (KeyModifiers::NONE, KeyCode::Char('k')) |
+        (KeyModifiers::NONE, KeyCode::Up) => {
+            editor.explorer.move_up();
+        }
+
+        // Expand directory or open file
+        (KeyModifiers::NONE, KeyCode::Enter) |
+        (KeyModifiers::NONE, KeyCode::Char('l')) |
+        (KeyModifiers::NONE, KeyCode::Right) => {
+            if let Some(path) = editor.explorer_selected_path() {
+                if path.is_dir() {
+                    // Expand directory
+                    editor.explorer.expand();
+                } else {
+                    // Open file and switch to normal mode
+                    let path_clone = path.clone();
+                    if let Err(e) = editor.open_file(path_clone) {
+                        editor.set_status(format!("Error opening file: {}", e));
+                    } else {
+                        editor.mode = Mode::Normal;
+                    }
+                }
+            }
+        }
+
+        // Collapse directory or go to parent
+        (KeyModifiers::NONE, KeyCode::Char('h')) |
+        (KeyModifiers::NONE, KeyCode::Left) => {
+            editor.explorer.collapse();
+        }
+
+        // Toggle expand/collapse
+        (KeyModifiers::NONE, KeyCode::Tab) => {
+            editor.explorer.toggle_expand();
+        }
+
+        // Collapse all
+        (KeyModifiers::SHIFT, KeyCode::Char('W')) |
+        (KeyModifiers::NONE, KeyCode::Char('W')) => {
+            editor.explorer.collapse_all();
+        }
+
+        // Refresh
+        (KeyModifiers::SHIFT, KeyCode::Char('R')) |
+        (KeyModifiers::NONE, KeyCode::Char('R')) => {
+            editor.explorer.refresh();
+        }
+
+        // Go to parent directory
+        (KeyModifiers::NONE, KeyCode::Char('-')) => {
+            editor.explorer.go_to_parent();
+        }
+
+        // Focus editor (keep explorer open)
+        (KeyModifiers::CONTROL, KeyCode::Char('l')) => {
+            editor.unfocus_explorer();
+        }
+
+        _ => {}
+    }
+}
+
 /// Execute a parsed command
+/// Helper to create a file and open it in the editor
+fn create_and_open_file(editor: &mut Editor, path: std::path::PathBuf) -> CommandResult {
+    match std::fs::File::create(&path) {
+        Ok(_) => {
+            if let Err(e) = editor.open_file(path.clone()) {
+                CommandResult::Error(format!("Created file but failed to open: {}", e))
+            } else {
+                CommandResult::Message(format!("Created: {}", path.display()))
+            }
+        }
+        Err(e) => CommandResult::Error(format!("Failed to create file: {}", e)),
+    }
+}
+
+/// Helper to rename a file
+fn rename_file_impl(editor: &mut Editor, old_path: std::path::PathBuf, new_path: std::path::PathBuf) -> CommandResult {
+    // Create parent directories if needed
+    if let Some(parent) = new_path.parent() {
+        if !parent.exists() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return CommandResult::Error(format!("Failed to create directories: {}", e));
+            }
+        }
+    }
+
+    // Rename the file
+    match std::fs::rename(&old_path, &new_path) {
+        Ok(_) => {
+            // Update buffer path
+            editor.set_buffer_path(new_path.clone());
+            CommandResult::Message(format!("Renamed to: {}", new_path.display()))
+        }
+        Err(e) => CommandResult::Error(format!("Failed to rename: {}", e)),
+    }
+}
+
 fn execute_command(editor: &mut Editor, cmd: Command) {
     let result = match cmd {
         Command::Write(path) => {
@@ -3199,6 +3488,98 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             }
         }
 
+        Command::NewFile(path) => {
+            // Resolve path relative to project root
+            let full_path = if path.is_absolute() {
+                path
+            } else {
+                editor.working_directory().join(&path)
+            };
+
+            // Create parent directories if needed
+            if let Some(parent) = full_path.parent() {
+                if !parent.exists() {
+                    if let Err(e) = std::fs::create_dir_all(parent) {
+                        CommandResult::Error(format!("Failed to create directories: {}", e))
+                    } else {
+                        create_and_open_file(editor, full_path)
+                    }
+                } else {
+                    create_and_open_file(editor, full_path)
+                }
+            } else {
+                create_and_open_file(editor, full_path)
+            }
+        }
+
+        Command::DeleteFile => {
+            // Get current file path
+            if let Some(path) = editor.buffer().path.clone() {
+                CommandResult::ConfirmDelete(path)
+            } else {
+                CommandResult::Error("No file to delete (buffer has no path)".to_string())
+            }
+        }
+
+        Command::DeleteFileForce => {
+            // Get current file path and delete without confirmation
+            if let Some(path) = editor.buffer().path.clone() {
+                match std::fs::remove_file(&path) {
+                    Ok(_) => {
+                        // Close the buffer
+                        editor.close_current_buffer();
+                        CommandResult::Message(format!("Deleted: {}", path.display()))
+                    }
+                    Err(e) => CommandResult::Error(format!("Failed to delete: {}", e)),
+                }
+            } else {
+                CommandResult::Error("No file to delete (buffer has no path)".to_string())
+            }
+        }
+
+        Command::RenameFile(new_name) => {
+            if let Some(old_path) = editor.buffer().path.clone() {
+                // Resolve new path - if just a name, keep in same directory
+                let new_path = if new_name.is_absolute() {
+                    new_name
+                } else if new_name.components().count() == 1 {
+                    // Just a filename, keep in same directory
+                    old_path.parent().unwrap_or(std::path::Path::new(".")).join(&new_name)
+                } else {
+                    // Relative path, resolve from project root
+                    editor.working_directory().join(&new_name)
+                };
+
+                rename_file_impl(editor, old_path, new_path)
+            } else {
+                CommandResult::Error("No file to rename (buffer has no path)".to_string())
+            }
+        }
+
+        Command::MakeDir(path) => {
+            // Resolve path relative to project root
+            let full_path = if path.is_absolute() {
+                path
+            } else {
+                editor.working_directory().join(&path)
+            };
+
+            match std::fs::create_dir_all(&full_path) {
+                Ok(_) => CommandResult::Message(format!("Created directory: {}", full_path.display())),
+                Err(e) => CommandResult::Error(format!("Failed to create directory: {}", e)),
+            }
+        }
+
+        Command::ToggleExplorer => {
+            editor.toggle_explorer();
+            CommandResult::Ok
+        }
+
+        Command::OpenExplorer => {
+            editor.open_explorer();
+            CommandResult::Ok
+        }
+
         Command::Unknown(cmd) => {
             if cmd.is_empty() {
                 CommandResult::Ok
@@ -3222,6 +3603,9 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
         }
         CommandResult::RunExternal(cmd) => {
             editor.pending_external_command = Some(cmd);
+        }
+        CommandResult::ConfirmDelete(path) => {
+            editor.set_status(format!("Delete {}? Use :delete! to confirm", path.display()));
         }
     }
 }

@@ -12,6 +12,7 @@ use crate::input::{InputState, Motion, apply_motion, TextObject, TextObjectModif
 use crate::commands::CommandLine;
 use crate::syntax::SyntaxManager;
 use crate::config::{Settings, KeymapLookup};
+use crate::explorer::FileExplorer;
 use crate::finder::FuzzyFinder;
 use crate::frecency::FrecencyDb;
 use crate::lsp::types::{Diagnostic, CompletionItem};
@@ -31,6 +32,7 @@ pub enum Mode {
     VisualLine,
     VisualBlock,
     Finder,
+    Explorer,
 }
 
 impl Mode {
@@ -45,6 +47,7 @@ impl Mode {
             Mode::VisualLine => "V-LINE",
             Mode::VisualBlock => "V-BLOCK",
             Mode::Finder => "FINDER",
+            Mode::Explorer => "EXPLORER",
         }
     }
 
@@ -603,6 +606,10 @@ pub struct Editor {
     pub signature_help: Option<crate::lsp::types::SignatureHelpResult>,
     /// Incremental search matches: (line, start_col, end_col)
     pub search_matches: Vec<(usize, usize, usize)>,
+    /// Project root directory (for scoping file finder and grep)
+    pub project_root: Option<std::path::PathBuf>,
+    /// File explorer sidebar
+    pub explorer: FileExplorer,
 }
 
 impl Editor {
@@ -646,7 +653,22 @@ impl Editor {
             frecency: FrecencyDb::load(),
             signature_help: None,
             search_matches: Vec::new(),
+            project_root: None,
+            explorer: FileExplorer::new(),
         }
+    }
+
+    /// Set the project root directory
+    pub fn set_project_root(&mut self, path: std::path::PathBuf) {
+        self.project_root = Some(path.clone());
+        self.explorer.set_root(path);
+    }
+
+    /// Get the project root or current working directory
+    pub fn working_directory(&self) -> std::path::PathBuf {
+        self.project_root.clone().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        })
     }
 
     /// Record completion selection for frecency ranking
@@ -1093,6 +1115,49 @@ impl Editor {
         Ok(())
     }
 
+    /// Close the current buffer
+    pub fn close_current_buffer(&mut self) {
+        if self.buffers.len() <= 1 {
+            // If it's the last buffer, just create a new empty one
+            self.buffers[0] = Buffer::new();
+            self.cursor = Cursor::default();
+            self.viewport_offset = 0;
+            self.undo_stack.clear();
+        } else {
+            // Remove the current buffer
+            self.buffers.remove(self.current_buffer_idx);
+
+            // Adjust current_buffer_idx if needed
+            if self.current_buffer_idx >= self.buffers.len() {
+                self.current_buffer_idx = self.buffers.len() - 1;
+            }
+
+            // Update pane to point to valid buffer
+            if self.active_pane < self.panes.len() {
+                self.panes[self.active_pane].buffer_idx = self.current_buffer_idx;
+            }
+
+            // Reset cursor state
+            self.cursor = Cursor::default();
+            self.viewport_offset = 0;
+            self.undo_stack.clear();
+        }
+
+        // Sync pane state
+        if self.active_pane < self.panes.len() {
+            self.panes[self.active_pane].cursor = self.cursor;
+            self.panes[self.active_pane].viewport_offset = self.viewport_offset;
+        }
+    }
+
+    /// Set the path of the current buffer (for rename operations)
+    pub fn set_buffer_path(&mut self, path: std::path::PathBuf) {
+        self.buffers[self.current_buffer_idx].path = Some(path.clone());
+        // Update syntax highlighting for new filename
+        self.syntax.set_language_from_path(&path);
+        self.parse_current_buffer();
+    }
+
     /// Set terminal size
     pub fn set_size(&mut self, width: u16, height: u16) {
         self.term_width = width;
@@ -1109,20 +1174,28 @@ impl Editor {
     /// For now, uses simple even splits - horizontal for 2 panes
     pub fn update_pane_rects(&mut self) {
         let text_height = self.text_rows() as u16;
-        let width = self.term_width;
         let num_panes = self.panes.len() as u16;
 
         if num_panes == 0 {
             return;
         }
 
+        // Account for explorer sidebar width
+        let explorer_offset = if self.explorer.visible {
+            self.explorer.width + 1 // +1 for separator
+        } else {
+            0
+        };
+
+        let available_width = self.term_width.saturating_sub(explorer_offset);
+
         match self.split_layout {
             SplitLayout::Vertical => {
                 // Side-by-side panes
-                let pane_width = width / num_panes;
-                let remainder = width % num_panes;
+                let pane_width = available_width / num_panes;
+                let remainder = available_width % num_panes;
 
-                let mut x = 0u16;
+                let mut x = explorer_offset;
                 for (i, pane) in self.panes.iter_mut().enumerate() {
                     // Add remainder to last pane
                     let w = if i as u16 == num_panes - 1 {
@@ -1146,7 +1219,7 @@ impl Editor {
                     } else {
                         pane_height
                     };
-                    pane.rect = Rect::new(0, y, width, h);
+                    pane.rect = Rect::new(explorer_offset, y, available_width, h);
                     y += h;
                 }
             }
@@ -3594,8 +3667,8 @@ impl Editor {
 
     /// Open the fuzzy finder in file mode
     pub fn open_finder_files(&mut self) {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        self.finder.open_files(&cwd);
+        let root = self.working_directory();
+        self.finder.open_files(&root);
         self.mode = Mode::Finder;
     }
 
@@ -3616,8 +3689,8 @@ impl Editor {
 
     /// Open the fuzzy finder in grep mode (live search)
     pub fn open_finder_grep(&mut self) {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        self.finder.open_grep(&cwd);
+        let root = self.working_directory();
+        self.finder.open_grep(&root);
         self.mode = Mode::Finder;
     }
 
@@ -3625,6 +3698,66 @@ impl Editor {
     pub fn close_finder(&mut self) {
         self.mode = Mode::Normal;
         self.clear_status();
+    }
+
+    // === File Explorer Methods ===
+
+    /// Toggle the file explorer sidebar
+    pub fn toggle_explorer(&mut self) {
+        self.explorer.toggle();
+        self.update_pane_rects();
+        if self.explorer.visible {
+            self.mode = Mode::Explorer;
+        } else {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    /// Open the file explorer sidebar
+    pub fn open_explorer(&mut self) {
+        self.explorer.show();
+        self.update_pane_rects();
+        self.mode = Mode::Explorer;
+    }
+
+    /// Close the file explorer sidebar
+    pub fn close_explorer(&mut self) {
+        self.explorer.hide();
+        self.update_pane_rects();
+        if self.mode == Mode::Explorer {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    /// Focus the file explorer (without hiding it)
+    pub fn focus_explorer(&mut self) {
+        if self.explorer.visible {
+            self.mode = Mode::Explorer;
+        } else {
+            self.open_explorer();
+        }
+    }
+
+    /// Return focus to the editor from explorer
+    pub fn unfocus_explorer(&mut self) {
+        if self.mode == Mode::Explorer {
+            self.mode = Mode::Normal;
+        }
+    }
+
+    /// Get the selected file path in the explorer
+    pub fn explorer_selected_path(&self) -> Option<std::path::PathBuf> {
+        self.explorer.selected_path().cloned()
+    }
+
+    /// Reveal the current file in the explorer
+    pub fn reveal_in_explorer(&mut self) {
+        if let Some(path) = self.buffer().path.clone() {
+            if !self.explorer.visible {
+                self.explorer.show();
+            }
+            self.explorer.reveal_file(&path);
+        }
     }
 
     /// Select the current item in the finder and open it
