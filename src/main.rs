@@ -11,7 +11,6 @@ use nevi::{load_config, Editor, LspManager, LspNotification, Mode, Terminal};
 fn main() -> anyhow::Result<()> {
     // Load configuration
     let settings = load_config();
-
     // Store LSP settings before moving settings into editor
     let lsp_enabled = settings.lsp.enabled;
     let lsp_rust_command = settings.lsp.servers.rust.command.clone();
@@ -101,7 +100,10 @@ fn main() -> anyhow::Result<()> {
                         }
                         needs_redraw = true;
                     }
-                    LspNotification::Completions { items, is_incomplete } => {
+                    LspNotification::Completions {
+                        items,
+                        is_incomplete,
+                    } => {
                         // Show completion popup if we have items (with frecency sorting)
                         if !items.is_empty() {
                             let line = editor.cursor.line;
@@ -263,7 +265,8 @@ fn main() -> anyhow::Result<()> {
                             }
 
                             // Check for signature help triggers (( or ,)
-                            if editor.mode == Mode::Insert && should_trigger_signature_help(&editor) {
+                            if editor.mode == Mode::Insert && should_trigger_signature_help(&editor)
+                            {
                                 let _ = lsp.signature_help(
                                     &path,
                                     editor.cursor.line as u32,
@@ -272,7 +275,8 @@ fn main() -> anyhow::Result<()> {
                             }
 
                             // Check if signature help should be dismissed
-                            if editor.mode == Mode::Insert && should_dismiss_signature_help(&editor) {
+                            if editor.mode == Mode::Insert && should_dismiss_signature_help(&editor)
+                            {
                                 editor.signature_help = None;
                             }
                         }

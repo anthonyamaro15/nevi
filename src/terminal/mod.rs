@@ -269,8 +269,38 @@ impl Terminal {
                         highlight_cursor_line && is_cursor_line,
                     )?;
 
+                    // Track characters printed for fill calculation
+                    let mut chars_printed = if show_line_numbers { line_num_width + 1 } else { 0 } + line_str.chars().count();
+
+                    // Render ghost text on cursor line when completion is active
+                    if is_cursor_line && is_active && editor.mode == Mode::Insert && editor.completion.active {
+                        // Only show ghost text if cursor is at or near end of line
+                        let cursor_at_end = pane.cursor.col >= line_str.chars().count().saturating_sub(1);
+                        if cursor_at_end {
+                            if let Some(ghost) = editor.completion.ghost_text() {
+                                // Limit ghost text to remaining space
+                                let remaining = pane_width.saturating_sub(chars_printed);
+                                let ghost_chars: String = ghost.chars().take(remaining).collect();
+
+                                // Render ghost text in dim gray
+                                execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
+                                if highlight_cursor_line {
+                                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                                }
+                                print!("{}", ghost_chars);
+                                execute!(self.stdout, ResetColor)?;
+
+                                // Re-apply cursor line background for remaining fill
+                                if highlight_cursor_line {
+                                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                                }
+
+                                chars_printed += ghost_chars.chars().count();
+                            }
+                        }
+                    }
+
                     // Fill remaining space in pane
-                    let chars_printed = if show_line_numbers { line_num_width + 1 } else { 0 } + line_str.chars().count();
                     for _ in chars_printed..pane_width {
                         print!(" ");
                     }
@@ -653,90 +683,150 @@ impl Terminal {
         }
         print!("┘");
 
-        // Draw documentation panel if selected item has docs
+        // Draw documentation panel to the RIGHT of the completion popup
         if let Some(item) = completion.selected_item() {
             if item.detail.is_some() || item.documentation.is_some() {
-                let doc_y = bottom_row + 1;
-                let doc_width = popup_width.max(50).min(editor.term_width - popup_x - 1);
+                // Calculate doc panel dimensions
+                let doc_width: u16 = 45; // Fixed width for doc panel
+                let doc_panel_x = popup_x + popup_width + 1; // 1 char gap
 
-                // Only show if we have room
-                if doc_y + 2 < editor.term_height.saturating_sub(2) {
-                    // Draw doc panel top border
-                    execute!(self.stdout, cursor::MoveTo(popup_x, doc_y))?;
-                    execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
-                    print!("┌");
-                    for _ in 0..(doc_width - 2) {
-                        print!("─");
-                    }
-                    print!("┐");
+                // Check if there's room on the right
+                let has_room_right = doc_panel_x + doc_width < editor.term_width;
 
-                    let mut doc_row = doc_y + 1;
-                    let max_doc_rows = (editor.term_height.saturating_sub(doc_y + 3)) as usize;
+                if has_room_right {
+                    // Collect content lines for the doc panel
+                    let mut doc_lines: Vec<(String, Color)> = Vec::new();
                     let content_width = doc_width as usize - 4;
 
-                    // Show type signature
+                    // Add type signature
                     if let Some(detail) = &item.detail {
-                        if doc_row < editor.term_height.saturating_sub(2) {
-                            execute!(self.stdout, cursor::MoveTo(popup_x, doc_row))?;
-                            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
-                            print!("│");
-                            execute!(self.stdout, SetForegroundColor(Color::Cyan))?;
-                            let sig = if detail.len() > content_width {
-                                format!(" {}…", &detail[..content_width.saturating_sub(2)])
+                        // Wrap long signatures
+                        let words: Vec<&str> = detail.split_whitespace().collect();
+                        let mut current_line = String::new();
+                        for word in words {
+                            if current_line.is_empty() {
+                                current_line = word.to_string();
+                            } else if current_line.len() + 1 + word.len() <= content_width {
+                                current_line.push(' ');
+                                current_line.push_str(word);
                             } else {
-                                format!(" {:width$}", detail, width = content_width)
-                            };
-                            print!("{}", sig);
-                            execute!(self.stdout, SetForegroundColor(border_color))?;
-                            print!(" │");
-                            doc_row += 1;
-                        }
-
-                        // Separator line
-                        if doc_row < editor.term_height.saturating_sub(2) {
-                            execute!(self.stdout, cursor::MoveTo(popup_x, doc_row))?;
-                            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
-                            print!("├");
-                            for _ in 0..(doc_width - 2) {
-                                print!("─");
+                                doc_lines.push((current_line, Color::Cyan));
+                                current_line = word.to_string();
                             }
-                            print!("┤");
-                            doc_row += 1;
+                        }
+                        if !current_line.is_empty() {
+                            doc_lines.push((current_line, Color::Cyan));
                         }
                     }
 
-                    // Show documentation
+                    // Add separator if we have both signature and docs
+                    let has_separator = !doc_lines.is_empty() && item.documentation.is_some();
+
+                    // Add documentation
                     if let Some(docs) = &item.documentation {
-                        let lines: Vec<&str> = docs.lines().collect();
-                        for line in lines.iter().take(max_doc_rows.saturating_sub(2)) {
-                            if doc_row >= editor.term_height.saturating_sub(2) {
-                                break;
+                        // Clean up markdown: remove code block markers
+                        let clean_docs = docs
+                            .lines()
+                            .filter(|line| !line.starts_with("```"))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+
+                        for line in clean_docs.lines().take(10) {
+                            // Skip empty lines at the start
+                            if doc_lines.is_empty() && line.trim().is_empty() {
+                                continue;
                             }
-                            execute!(self.stdout, cursor::MoveTo(popup_x, doc_row))?;
-                            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
-                            print!("│");
-                            execute!(self.stdout, SetForegroundColor(Color::White))?;
-                            let doc_line = if line.len() > content_width {
-                                format!(" {}…", &line[..content_width.saturating_sub(2)])
+                            // Wrap long lines
+                            if line.len() <= content_width {
+                                doc_lines.push((line.to_string(), Color::Rgb { r: 180, g: 180, b: 180 }));
                             } else {
-                                format!(" {:width$}", line, width = content_width)
-                            };
-                            print!("{}", doc_line);
-                            execute!(self.stdout, SetForegroundColor(border_color))?;
-                            print!(" │");
-                            doc_row += 1;
+                                // Simple word wrap
+                                let words: Vec<&str> = line.split_whitespace().collect();
+                                let mut current_line = String::new();
+                                for word in words {
+                                    if current_line.is_empty() {
+                                        current_line = word.to_string();
+                                    } else if current_line.len() + 1 + word.len() <= content_width {
+                                        current_line.push(' ');
+                                        current_line.push_str(word);
+                                    } else {
+                                        doc_lines.push((current_line, Color::Rgb { r: 180, g: 180, b: 180 }));
+                                        current_line = word.to_string();
+                                    }
+                                }
+                                if !current_line.is_empty() {
+                                    doc_lines.push((current_line, Color::Rgb { r: 180, g: 180, b: 180 }));
+                                }
+                            }
                         }
                     }
 
-                    // Draw doc panel bottom border
-                    if doc_row < editor.term_height.saturating_sub(1) {
-                        execute!(self.stdout, cursor::MoveTo(popup_x, doc_row))?;
+                    if !doc_lines.is_empty() {
+                        // Calculate separator position (after signature lines, before doc lines)
+                        let sig_line_count = if item.detail.is_some() {
+                            doc_lines.iter().take_while(|(_, c)| *c == Color::Cyan).count()
+                        } else {
+                            0
+                        };
+
+                        // Doc panel height: content + 2 for borders + 1 for separator if needed
+                        let separator_height = if has_separator { 1 } else { 0 };
+                        let doc_height = (doc_lines.len() as u16 + 2 + separator_height).min(popup_height + 4);
+                        let available_height = editor.term_height.saturating_sub(popup_y + 2);
+                        let doc_height = doc_height.min(available_height);
+
+                        // Draw doc panel with rounded corners
+                        // Top border
+                        execute!(self.stdout, cursor::MoveTo(doc_panel_x, popup_y))?;
                         execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
-                        print!("└");
+                        print!("╭");
                         for _ in 0..(doc_width - 2) {
                             print!("─");
                         }
-                        print!("┘");
+                        print!("╮");
+
+                        // Content lines
+                        let mut row_offset = 1u16;
+                        let max_content_lines = doc_height.saturating_sub(2) as usize;
+                        let mut lines_drawn = 0;
+
+                        for (idx, (line, color)) in doc_lines.iter().enumerate().take(max_content_lines) {
+                            // Insert separator after signature lines
+                            if has_separator && idx == sig_line_count && lines_drawn < max_content_lines {
+                                execute!(self.stdout, cursor::MoveTo(doc_panel_x, popup_y + row_offset))?;
+                                execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
+                                print!("├");
+                                for _ in 0..(doc_width - 2) {
+                                    print!("─");
+                                }
+                                print!("┤");
+                                row_offset += 1;
+                                lines_drawn += 1;
+                                if lines_drawn >= max_content_lines {
+                                    break;
+                                }
+                            }
+
+                            execute!(self.stdout, cursor::MoveTo(doc_panel_x, popup_y + row_offset))?;
+                            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
+                            print!("│");
+                            execute!(self.stdout, SetForegroundColor(*color))?;
+                            let padded = format!(" {:width$}", line, width = content_width);
+                            print!("{}", &padded[..padded.len().min(content_width + 1)]);
+                            execute!(self.stdout, SetForegroundColor(border_color))?;
+                            print!(" │");
+                            row_offset += 1;
+                            lines_drawn += 1;
+                        }
+
+                        // Bottom border
+                        execute!(self.stdout, cursor::MoveTo(doc_panel_x, popup_y + row_offset))?;
+                        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
+                        print!("╰");
+                        for _ in 0..(doc_width - 2) {
+                            print!("─");
+                        }
+                        print!("╯");
                     }
                 }
             }
@@ -1735,6 +1825,40 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         KeyAction::JumpForward => {
             if !editor.jump_forward() {
                 editor.set_status("Already at newest position");
+            }
+        }
+
+        KeyAction::NextDiagnostic => {
+            if editor.goto_next_diagnostic() {
+                // Show the diagnostic message in status
+                if let Some(diag) = editor.diagnostic_at_cursor() {
+                    let prefix = match diag.severity {
+                        crate::lsp::types::DiagnosticSeverity::Error => "Error",
+                        crate::lsp::types::DiagnosticSeverity::Warning => "Warning",
+                        crate::lsp::types::DiagnosticSeverity::Information => "Info",
+                        crate::lsp::types::DiagnosticSeverity::Hint => "Hint",
+                    };
+                    editor.set_status(format!("{}: {}", prefix, diag.message));
+                }
+            } else {
+                editor.set_status("No diagnostics");
+            }
+        }
+
+        KeyAction::PrevDiagnostic => {
+            if editor.goto_prev_diagnostic() {
+                // Show the diagnostic message in status
+                if let Some(diag) = editor.diagnostic_at_cursor() {
+                    let prefix = match diag.severity {
+                        crate::lsp::types::DiagnosticSeverity::Error => "Error",
+                        crate::lsp::types::DiagnosticSeverity::Warning => "Warning",
+                        crate::lsp::types::DiagnosticSeverity::Information => "Info",
+                        crate::lsp::types::DiagnosticSeverity::Hint => "Hint",
+                    };
+                    editor.set_status(format!("{}: {}", prefix, diag.message));
+                }
+            } else {
+                editor.set_status("No diagnostics");
             }
         }
 

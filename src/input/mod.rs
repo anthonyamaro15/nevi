@@ -161,6 +161,10 @@ pub enum KeyAction {
     JumpBack,
     /// Jump forward in jump list (Ctrl+i)
     JumpForward,
+    /// Go to next diagnostic (]d)
+    NextDiagnostic,
+    /// Go to previous diagnostic ([d)
+    PrevDiagnostic,
     /// Unknown/unhandled key
     Unknown,
 }
@@ -528,6 +532,16 @@ impl InputState {
                 self.partial_key = Some('z');
                 KeyAction::Pending
             }
+            (KeyModifiers::NONE, KeyCode::Char(']')) => {
+                // ] prefix for forward navigation (]d = next diagnostic)
+                self.partial_key = Some(']');
+                KeyAction::Pending
+            }
+            (KeyModifiers::NONE, KeyCode::Char('[')) => {
+                // [ prefix for backward navigation ([d = prev diagnostic)
+                self.partial_key = Some('[');
+                KeyAction::Pending
+            }
             (KeyModifiers::NONE, KeyCode::Char('p')) => {
                 self.reset();
                 KeyAction::PasteAfter
@@ -686,7 +700,17 @@ impl InputState {
                 self.reset();
                 KeyAction::ScrollBottom
             }
-            // Other g-prefixed commands can be added here
+            // ]d - go to next diagnostic
+            (']', KeyModifiers::NONE, KeyCode::Char('d')) => {
+                self.reset();
+                KeyAction::NextDiagnostic
+            }
+            // [d - go to previous diagnostic
+            ('[', KeyModifiers::NONE, KeyCode::Char('d')) => {
+                self.reset();
+                KeyAction::PrevDiagnostic
+            }
+            // Other prefixed commands can be added here
             _ => {
                 self.reset();
                 KeyAction::Unknown

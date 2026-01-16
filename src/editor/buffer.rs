@@ -189,6 +189,32 @@ impl Buffer {
         self.char_at(line, col).map(|c| c.to_string()).unwrap_or_default()
     }
 
+    /// Get leading whitespace from a line
+    pub fn get_line_indent(&self, line_idx: usize) -> String {
+        let Some(line) = self.line(line_idx) else {
+            return String::new();
+        };
+        line.chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .collect()
+    }
+
+    /// Check if line ends with a character (ignoring trailing whitespace/newline)
+    pub fn line_ends_with(&self, line_idx: usize, target: char) -> bool {
+        let Some(line) = self.line(line_idx) else {
+            return false;
+        };
+        // Collect to string and iterate in reverse
+        let line_str: String = line.chars().collect();
+        for ch in line_str.chars().rev() {
+            if ch == '\n' || ch == ' ' || ch == '\t' {
+                continue;
+            }
+            return ch == target;
+        }
+        false
+    }
+
     /// Apply text changes for undo/redo
     /// Deletes old_text at position and inserts new_text
     pub fn apply_change(&mut self, line: usize, col: usize, old_text: &str, new_text: &str) {
