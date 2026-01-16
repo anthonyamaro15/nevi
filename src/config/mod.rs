@@ -16,6 +16,7 @@ pub struct Settings {
     pub editor: EditorSettings,
     pub theme: ThemeSettings,
     pub keymap: KeymapSettings,
+    pub finder: FinderSettings,
 }
 
 impl Default for Settings {
@@ -24,6 +25,7 @@ impl Default for Settings {
             editor: EditorSettings::default(),
             theme: ThemeSettings::default(),
             keymap: KeymapSettings::default(),
+            finder: FinderSettings::default(),
         }
     }
 }
@@ -68,6 +70,33 @@ impl Default for ThemeSettings {
     fn default() -> Self {
         Self {
             colorscheme: "onedark".to_string(),
+        }
+    }
+}
+
+/// Fuzzy finder settings
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct FinderSettings {
+    /// Additional ignore patterns (beyond .gitignore)
+    pub ignore_patterns: Vec<String>,
+    /// Maximum files to scan (default: 10000)
+    pub max_files: usize,
+    /// Maximum grep results (default: 1000)
+    pub max_grep_results: usize,
+}
+
+impl Default for FinderSettings {
+    fn default() -> Self {
+        Self {
+            ignore_patterns: vec![
+                ".git".to_string(),
+                "node_modules".to_string(),
+                "target".to_string(),
+                "*.log".to_string(),
+            ],
+            max_files: 10000,
+            max_grep_results: 1000,
         }
     }
 }

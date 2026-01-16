@@ -299,6 +299,7 @@ pub struct Editor {
 impl Editor {
     pub fn new(settings: Settings) -> Self {
         let keymap = KeymapLookup::from_settings(&settings.keymap);
+        let finder = FuzzyFinder::from_settings(&settings.finder);
         Self {
             buffers: vec![Buffer::new()],
             current_buffer_idx: 0,
@@ -323,7 +324,7 @@ impl Editor {
             keymap,
             leader_sequence: None,
             pending_external_command: None,
-            finder: FuzzyFinder::new(),
+            finder,
         }
     }
 
@@ -2466,6 +2467,13 @@ impl Editor {
         self.mode = Mode::Finder;
     }
 
+    /// Open the fuzzy finder in grep mode (live search)
+    pub fn open_finder_grep(&mut self) {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        self.finder.open_grep(&cwd);
+        self.mode = Mode::Finder;
+    }
+
     /// Close the finder and return to normal mode
     pub fn close_finder(&mut self) {
         self.mode = Mode::Normal;
@@ -2473,11 +2481,13 @@ impl Editor {
     }
 
     /// Select the current item in the finder and open it
-    pub fn finder_select(&mut self) -> Option<std::path::PathBuf> {
+    /// Returns (path, optional_line_number) for grep results
+    pub fn finder_select(&mut self) -> Option<(std::path::PathBuf, Option<usize>)> {
         if let Some(item) = self.finder.selected_item() {
             let path = item.path.clone();
+            let line = item.line;
             self.close_finder();
-            Some(path)
+            Some((path, line))
         } else {
             self.close_finder();
             None

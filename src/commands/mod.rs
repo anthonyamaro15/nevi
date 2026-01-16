@@ -39,6 +39,8 @@ pub enum Command {
     FindFiles,
     /// :FindBuffers - Open fuzzy finder for buffers
     FindBuffers,
+    /// :LiveGrep - Open fuzzy finder for live grep
+    LiveGrep,
     /// Unknown command
     Unknown(String),
 }
@@ -138,6 +140,7 @@ pub fn parse_command(input: &str) -> Command {
         // Fuzzy finder commands
         "FindFiles" | "findfiles" | "ff" | "files" => Command::FindFiles,
         "FindBuffers" | "findbuffers" | "fb" | "buffers" => Command::FindBuffers,
+        "LiveGrep" | "livegrep" | "grep" | "rg" => Command::LiveGrep,
 
         // Unknown command
         _ => Command::Unknown(cmd.to_string()),
