@@ -7,7 +7,7 @@ use crossterm::{
 };
 use std::io::{self, Write, Stdout};
 
-use crate::editor::{Editor, Mode, PaneDirection, Pane, SplitLayout};
+use crate::editor::{Editor, Mode, PaneDirection, Pane, SplitLayout, LspAction};
 use crate::input::{KeyAction, InsertPosition, Operator, TextObject, TextObjectModifier, TextObjectType};
 use crate::commands::{Command, CommandResult, parse_command};
 use crate::config::LeaderAction;
@@ -243,6 +243,16 @@ impl Terminal {
             self.render_signature_help(editor)?;
         }
 
+        // Render references picker if active
+        if editor.references_picker.is_some() {
+            self.render_references_picker(editor)?;
+        }
+
+        // Render code actions picker if active
+        if editor.code_actions_picker.is_some() {
+            self.render_code_actions_picker(editor)?;
+        }
+
         // Position cursor
         self.position_cursor(editor)?;
 
@@ -275,11 +285,14 @@ impl Terminal {
         let pane_height = rect.height as usize;
         let pane_width = rect.width as usize;
 
-        // Calculate effective text width (excluding line numbers)
+        // Sign column width (for diagnostic icons)
+        const SIGN_COLUMN_WIDTH: usize = 2;
+
+        // Calculate effective text width (excluding sign column and line numbers)
         let text_area_width = if show_line_numbers {
-            pane_width.saturating_sub(line_num_width + 1)
+            pane_width.saturating_sub(SIGN_COLUMN_WIDTH + line_num_width + 1)
         } else {
-            pane_width
+            pane_width.saturating_sub(SIGN_COLUMN_WIDTH)
         };
 
         // Calculate wrap width: use configured wrap_width or text_area_width, whichever is smaller
@@ -376,6 +389,28 @@ impl Terminal {
                     execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
                 }
 
+                // Sign column (diagnostic icons) - only on first segment
+                if segment.is_first {
+                    if has_error {
+                        execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 255, g: 100, b: 100 }))?;
+                        print!("● ");
+                        execute!(self.stdout, ResetColor)?;
+                    } else if has_warning {
+                        execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 255, g: 200, b: 100 }))?;
+                        print!("▲ ");
+                        execute!(self.stdout, ResetColor)?;
+                    } else {
+                        print!("  "); // Empty sign column
+                    }
+                } else {
+                    print!("  "); // Empty sign column for continuation lines
+                }
+
+                // Re-apply cursor line background after sign column
+                if highlight_cursor_line && is_cursor_line {
+                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                }
+
                 // Line number (only on first segment)
                 if show_line_numbers {
                     if segment.is_first {
@@ -390,10 +425,11 @@ impl Terminal {
                             format!("{:>width$} ", file_line + 1, width = line_num_width)
                         };
 
+                        // Use brighter colors for better visibility
                         let line_num_color = if has_error {
-                            Color::Red
+                            Color::Rgb { r: 255, g: 100, b: 100 } // Bright red
                         } else if has_warning {
-                            Color::Yellow
+                            Color::Rgb { r: 255, g: 200, b: 100 } // Bright yellow/orange
                         } else if is_cursor_line {
                             Color::Yellow
                         } else {
@@ -426,9 +462,51 @@ impl Terminal {
                     &editor.search_matches,
                 )?;
 
-                // Fill remaining space
-                let chars_printed = if show_line_numbers { line_num_width + 1 } else { 0 }
+                // Fill remaining space (sign column = 2)
+                let mut chars_printed = 2 + if show_line_numbers { line_num_width + 1 } else { 0 }
                     + segment_text.chars().count();
+
+                // Render inline diagnostic on first segment only
+                if segment.is_first && is_active {
+                    if let Some(diag) = line_diagnostics.first() {
+                        let remaining = pane_width.saturating_sub(chars_printed + 3);
+                        if remaining > 5 {
+                            let (color, icon) = match diag.severity {
+                                crate::lsp::types::DiagnosticSeverity::Error => (Color::Red, "●"),
+                                crate::lsp::types::DiagnosticSeverity::Warning => (Color::Yellow, "●"),
+                                crate::lsp::types::DiagnosticSeverity::Information => (Color::Blue, "●"),
+                                crate::lsp::types::DiagnosticSeverity::Hint => (Color::Cyan, "○"),
+                            };
+
+                            let msg: String = diag.message
+                                .lines()
+                                .next()
+                                .unwrap_or(&diag.message)
+                                .chars()
+                                .take(remaining)
+                                .collect();
+
+                            if highlight_cursor_line && is_cursor_line {
+                                execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                            }
+
+                            execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
+                            print!(" ");
+                            execute!(self.stdout, SetForegroundColor(color))?;
+                            print!("{}", icon);
+                            execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
+                            print!(" {}", msg);
+                            execute!(self.stdout, ResetColor)?;
+
+                            chars_printed += 3 + msg.chars().count();
+
+                            if highlight_cursor_line && is_cursor_line {
+                                execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                            }
+                        }
+                    }
+                }
+
                 for _ in chars_printed..pane_width {
                     print!(" ");
                 }
@@ -449,6 +527,8 @@ impl Terminal {
             let screen_y = rect.y + current_row as u16;
             execute!(self.stdout, cursor::MoveTo(rect.x, screen_y))?;
 
+            print!("  "); // Empty sign column
+
             execute!(self.stdout, SetForegroundColor(Color::Blue))?;
             if show_line_numbers {
                 print!("{:>width$} ~", "", width = line_num_width);
@@ -457,7 +537,8 @@ impl Terminal {
             }
             execute!(self.stdout, ResetColor)?;
 
-            let chars_printed = if show_line_numbers { line_num_width + 2 } else { 1 };
+            // Fill remaining space (sign column = 2)
+            let chars_printed = 2 + if show_line_numbers { line_num_width + 2 } else { 1 };
             for _ in chars_printed..pane_width {
                 print!(" ");
             }
@@ -501,21 +582,39 @@ impl Terminal {
             }
 
             if file_line < buffer.len_lines() {
+                // Check for diagnostics on this line (only for active pane)
+                let line_diagnostics = if is_active {
+                    editor.diagnostics_for_line(file_line)
+                } else {
+                    Vec::new()
+                };
+                let has_error = line_diagnostics.iter().any(|d| {
+                    matches!(d.severity, crate::lsp::types::DiagnosticSeverity::Error)
+                });
+                let has_warning = line_diagnostics.iter().any(|d| {
+                    matches!(d.severity, crate::lsp::types::DiagnosticSeverity::Warning)
+                });
+
+                // Sign column (diagnostic icons)
+                if has_error {
+                    execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 255, g: 100, b: 100 }))?;
+                    print!("● ");
+                    execute!(self.stdout, ResetColor)?;
+                } else if has_warning {
+                    execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 255, g: 200, b: 100 }))?;
+                    print!("▲ ");
+                    execute!(self.stdout, ResetColor)?;
+                } else {
+                    print!("  "); // Empty sign column
+                }
+
+                // Re-apply cursor line background after sign column
+                if highlight_cursor_line && is_cursor_line {
+                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                }
+
                 // Line number (if enabled)
                 if show_line_numbers {
-                    // Check for diagnostics on this line (only for active pane)
-                    let line_diagnostics = if is_active {
-                        editor.diagnostics_for_line(file_line)
-                    } else {
-                        Vec::new()
-                    };
-                    let has_error = line_diagnostics.iter().any(|d| {
-                        matches!(d.severity, crate::lsp::types::DiagnosticSeverity::Error)
-                    });
-                    let has_warning = line_diagnostics.iter().any(|d| {
-                        matches!(d.severity, crate::lsp::types::DiagnosticSeverity::Warning)
-                    });
-
                     let line_num = if show_relative && is_active {
                         // Relative line numbers: show distance from cursor, current line shows absolute
                         let distance = (file_line as isize - pane.cursor.line as isize).abs() as usize;
@@ -528,11 +627,11 @@ impl Terminal {
                         format!("{:>width$} ", file_line + 1, width = line_num_width)
                     };
 
-                    // Color line number based on diagnostics
+                    // Use brighter colors for better visibility
                     let line_num_color = if has_error {
-                        Color::Red
+                        Color::Rgb { r: 255, g: 100, b: 100 } // Bright red
                     } else if has_warning {
-                        Color::Yellow
+                        Color::Rgb { r: 255, g: 200, b: 100 } // Bright yellow/orange
                     } else if is_cursor_line {
                         Color::Yellow
                     } else {
@@ -571,8 +670,8 @@ impl Terminal {
                         &editor.search_matches,
                     )?;
 
-                    // Track characters printed for fill calculation
-                    let mut chars_printed = if show_line_numbers { line_num_width + 1 } else { 0 } + line_str.chars().count();
+                    // Track characters printed for fill calculation (sign column = 2)
+                    let mut chars_printed = 2 + if show_line_numbers { line_num_width + 1 } else { 0 } + line_str.chars().count();
 
                     // Render ghost text on cursor line when completion is active
                     if is_cursor_line && is_active && editor.mode == Mode::Insert && editor.completion.active {
@@ -602,13 +701,62 @@ impl Terminal {
                         }
                     }
 
+                    // Render inline diagnostic (virtual text) for this line
+                    if is_active {
+                        if let Some(diag) = editor.diagnostics_for_line(file_line).first() {
+                            // Calculate remaining space for diagnostic
+                            let remaining = pane_width.saturating_sub(chars_printed + 3); // 3 for " ● "
+                            if remaining > 5 {
+                                // Determine color based on severity
+                                let (color, icon) = match diag.severity {
+                                    crate::lsp::types::DiagnosticSeverity::Error => (Color::Red, "●"),
+                                    crate::lsp::types::DiagnosticSeverity::Warning => (Color::Yellow, "●"),
+                                    crate::lsp::types::DiagnosticSeverity::Information => (Color::Blue, "●"),
+                                    crate::lsp::types::DiagnosticSeverity::Hint => (Color::Cyan, "○"),
+                                };
+
+                                // Truncate message to fit
+                                let msg: String = diag.message
+                                    .lines()
+                                    .next()
+                                    .unwrap_or(&diag.message)
+                                    .chars()
+                                    .take(remaining)
+                                    .collect();
+
+                                // Apply cursor line background if needed
+                                if highlight_cursor_line && is_cursor_line {
+                                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                                }
+
+                                // Render: space, icon, space, message
+                                execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
+                                print!(" ");
+                                execute!(self.stdout, SetForegroundColor(color))?;
+                                print!("{}", icon);
+                                execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
+                                print!(" {}", msg);
+                                execute!(self.stdout, ResetColor)?;
+
+                                chars_printed += 3 + msg.chars().count();
+
+                                // Re-apply cursor line background for fill
+                                if highlight_cursor_line && is_cursor_line {
+                                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                                }
+                            }
+                        }
+                    }
+
                     // Fill remaining space in pane
                     for _ in chars_printed..pane_width {
                         print!(" ");
                     }
                 }
             } else {
-                // Empty line indicator
+                // Empty line - sign column + line indicator
+                print!("  "); // Empty sign column
+
                 execute!(self.stdout, SetForegroundColor(Color::Blue))?;
                 if show_line_numbers {
                     print!("{:>width$} ~", "", width = line_num_width);
@@ -617,8 +765,8 @@ impl Terminal {
                 }
                 execute!(self.stdout, ResetColor)?;
 
-                // Fill remaining space
-                let chars_printed = if show_line_numbers { line_num_width + 2 } else { 1 };
+                // Fill remaining space (sign column = 2)
+                let chars_printed = 2 + if show_line_numbers { line_num_width + 2 } else { 1 };
                 for _ in chars_printed..pane_width {
                     print!(" ");
                 }
@@ -947,10 +1095,11 @@ impl Terminal {
                 let (cursor_row, cursor_col) = if wrap_enabled {
                     // Calculate visual position with wrapping
                     let buffer = editor.buffer();
+                    // Account for sign column (2) + line numbers
                     let text_area_width = if show_line_numbers {
-                        active_pane.rect.width as usize - line_num_width - 1
+                        active_pane.rect.width as usize - 2 - line_num_width - 1
                     } else {
-                        active_pane.rect.width as usize
+                        active_pane.rect.width as usize - 2
                     };
                     let effective_wrap_width = wrap_width.min(text_area_width);
 
@@ -1004,7 +1153,8 @@ impl Terminal {
                         cursor_visual_col = last_segment.text.trim_end_matches('\n').chars().count();
                     }
 
-                    let col = if show_line_numbers {
+                    // Sign column (2) + line numbers + cursor position
+                    let col = 2 + if show_line_numbers {
                         line_num_width + 1 + cursor_visual_col
                     } else {
                         cursor_visual_col
@@ -1014,7 +1164,8 @@ impl Terminal {
                 } else {
                     // Original non-wrapped calculation
                     let cursor_row = editor.cursor.line.saturating_sub(active_pane.viewport_offset);
-                    let cursor_col = if show_line_numbers {
+                    // Sign column (2) + line numbers + cursor position
+                    let cursor_col = 2 + if show_line_numbers {
                         line_num_width + 1 + editor.cursor.col
                     } else {
                         editor.cursor.col
@@ -1039,7 +1190,7 @@ impl Terminal {
                     Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock | Mode::Explorer => {
                         execute!(self.stdout, cursor::SetCursorStyle::BlinkingBlock)?
                     }
-                    Mode::Command | Mode::Search | Mode::Finder => {} // Handled above
+                    Mode::Command | Mode::Search | Mode::Finder | Mode::RenamePrompt => {} // Handled above/separately
                 }
             }
         }
@@ -1133,6 +1284,16 @@ impl Terminal {
         } else if editor.mode == Mode::Search {
             // Show search prompt
             print!("{}", editor.search.display());
+        } else if editor.mode == Mode::RenamePrompt {
+            // Show rename prompt
+            execute!(self.stdout, SetForegroundColor(Color::Yellow))?;
+            print!("Rename");
+            execute!(self.stdout, ResetColor)?;
+            print!(" '{}' → ", editor.rename_original);
+            execute!(self.stdout, SetForegroundColor(Color::Green))?;
+            print!("{}", editor.rename_input);
+            execute!(self.stdout, ResetColor)?;
+            print!("_"); // Cursor indicator
         } else if let Some(ref msg) = editor.status_message {
             // Show status message
             print!("{}", msg);
@@ -1168,8 +1329,9 @@ impl Terminal {
         }
 
         // Calculate popup position (below cursor, or above if near bottom)
+        // Position at trigger_col (start of word), not current cursor position
         let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
-        let cursor_screen_col = (line_num_width + 1 + editor.cursor.col) as u16;
+        let popup_screen_col = (line_num_width + 1 + completion.trigger_col) as u16;
         let cursor_screen_row = (editor.cursor.line - editor.viewport_offset) as u16;
 
         // Calculate widths for label and detail columns (only from filtered items)
@@ -1195,31 +1357,30 @@ impl Terminal {
         let popup_width = (label_col_width + detail_col_width + 3) as u16; // +3 for borders
         let popup_width = popup_width.min(editor.term_width - 4);
 
-        // Position popup below cursor, or above if no room
-        let available_below = editor.term_height.saturating_sub(cursor_screen_row + 3);
+        // Position popup below cursor with 1 row gap, or above if no room
+        let available_below = editor.term_height.saturating_sub(cursor_screen_row + 4);
         let popup_y = if available_below >= popup_height {
-            cursor_screen_row + 1
+            cursor_screen_row + 2  // 1 row gap below cursor line
         } else {
-            cursor_screen_row.saturating_sub(popup_height)
+            cursor_screen_row.saturating_sub(popup_height + 1)  // 1 row gap above
         };
-        let popup_x = cursor_screen_col.min(editor.term_width.saturating_sub(popup_width + 2));
+        let popup_x = popup_screen_col.min(editor.term_width.saturating_sub(popup_width + 2));
 
-        // Colors
-        let border_color = Color::Rgb { r: 70, g: 70, b: 70 };
-        let bg_color = Color::Rgb { r: 25, g: 25, b: 30 };
-        let selected_bg = Color::Rgb { r: 50, g: 50, b: 90 };
-        let kind_color = Color::Rgb { r: 130, g: 180, b: 250 };
-        let detail_color = Color::Rgb { r: 120, g: 120, b: 140 };
-        let doc_bg = Color::Rgb { r: 30, g: 30, b: 35 };
+        // Colors (Zed-inspired dark theme)
+        let border_color = Color::Rgb { r: 55, g: 55, b: 65 };
+        let bg_color = Color::Rgb { r: 30, g: 30, b: 36 };
+        let selected_bg = Color::Rgb { r: 55, g: 65, b: 95 };
+        let detail_color = Color::Rgb { r: 100, g: 100, b: 115 };
+        let doc_bg = Color::Rgb { r: 35, g: 35, b: 42 };
 
-        // Draw top border
+        // Draw top border (rounded corners for Zed-style)
         execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
         execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
-        print!("┌");
+        print!("╭");
         for _ in 0..(popup_width - 2) {
             print!("─");
         }
-        print!("┐");
+        print!("╮");
 
         // Draw items - iterate over filtered indices
         let scroll_offset = if completion.selected >= max_items {
@@ -1244,12 +1405,19 @@ impl Terminal {
 
             execute!(self.stdout, SetBackgroundColor(item_bg))?;
 
-            // Kind indicator (colored)
+            // Kind indicator (colored per-kind)
+            let (r, g, b) = item.kind.color();
+            let kind_color = Color::Rgb { r, g, b };
             execute!(self.stdout, SetForegroundColor(kind_color))?;
             print!(" {} ", item.kind.short_name());
 
-            // Label
-            execute!(self.stdout, SetForegroundColor(Color::White))?;
+            // Label (brighter when selected)
+            let label_color = if is_selected {
+                Color::White
+            } else {
+                Color::Rgb { r: 220, g: 220, b: 225 }
+            };
+            execute!(self.stdout, SetForegroundColor(label_color))?;
             let available_label_width = (popup_width as usize).saturating_sub(detail_col_width + 7);
             let label = if item.label.len() > available_label_width {
                 format!("{}…", &item.label[..available_label_width.saturating_sub(1)])
@@ -1276,15 +1444,15 @@ impl Terminal {
             print!("│");
         }
 
-        // Draw bottom border
+        // Draw bottom border (rounded corners for Zed-style)
         let bottom_row = popup_y + 1 + max_items as u16;
         execute!(self.stdout, cursor::MoveTo(popup_x, bottom_row))?;
         execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
-        print!("└");
+        print!("╰");
         for _ in 0..(popup_width - 2) {
             print!("─");
         }
-        print!("┘");
+        print!("╯");
 
         // Draw documentation panel to the RIGHT of the completion popup
         if let Some(item) = completion.selected_item() {
@@ -1805,6 +1973,249 @@ impl Terminal {
         Ok(())
     }
 
+    /// Render the references picker as a floating popup
+    fn render_references_picker(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        let picker = match &editor.references_picker {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        if picker.items.is_empty() {
+            return Ok(());
+        }
+
+        // Calculate popup dimensions
+        let max_width = 80u16;
+        let max_height = 15u16;
+        let popup_width = max_width.min(editor.term_width.saturating_sub(4));
+        let popup_height = (picker.items.len() as u16 + 2).min(max_height);
+
+        // Center the popup
+        let popup_x = (editor.term_width.saturating_sub(popup_width)) / 2;
+        let popup_y = (editor.term_height.saturating_sub(popup_height)) / 2;
+
+        // Colors
+        let border_color = Color::Rgb { r: 100, g: 140, b: 180 };
+        let bg_color = Color::Rgb { r: 25, g: 25, b: 30 };
+        let selected_bg = Color::Rgb { r: 50, g: 70, b: 100 };
+        let text_color = Color::Rgb { r: 200, g: 200, b: 210 };
+        let file_color = Color::Rgb { r: 130, g: 180, b: 250 };
+        let _line_num_color = Color::Rgb { r: 180, g: 180, b: 100 };
+
+        // Draw top border
+        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        let title = " References ";
+        let title_start = (popup_width as usize - title.len()) / 2;
+        print!("╭");
+        for i in 1..(popup_width - 1) {
+            if i as usize == title_start {
+                print!("{}", title);
+            } else if i as usize > title_start && i as usize <= title_start + title.len() {
+                // Skip - part of title
+            } else {
+                print!("─");
+            }
+        }
+        print!("╮");
+
+        // Calculate visible items
+        let visible_count = (popup_height - 2) as usize;
+        let scroll_offset = if picker.selected >= visible_count {
+            picker.selected - visible_count + 1
+        } else {
+            0
+        };
+
+        // Draw items
+        for (i, idx) in (scroll_offset..(scroll_offset + visible_count)).enumerate() {
+            execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 1 + i as u16))?;
+
+            if idx >= picker.items.len() {
+                // Empty line
+                execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+                print!("│{:width$}│", "", width = (popup_width - 2) as usize);
+                continue;
+            }
+
+            let loc = &picker.items[idx];
+            let is_selected = idx == picker.selected;
+
+            let current_bg = if is_selected { selected_bg } else { bg_color };
+
+            // Border
+            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            print!("│");
+
+            // Item content
+            execute!(self.stdout, SetBackgroundColor(current_bg))?;
+
+            // Format: filename:line:col
+            let path_str = crate::lsp::uri_to_path(&loc.uri)
+                .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
+                .unwrap_or_else(|| loc.uri.clone());
+
+            let content = format!("{}:{}:{}", path_str, loc.line + 1, loc.col + 1);
+            let content_width = (popup_width - 4) as usize;
+
+            // Print with colors
+            execute!(self.stdout, SetForegroundColor(file_color))?;
+            let truncated: String = content.chars().take(content_width).collect();
+            print!(" {}", truncated);
+
+            // Pad
+            let printed = truncated.len() + 1;
+            if printed < content_width + 1 {
+                execute!(self.stdout, SetForegroundColor(text_color))?;
+                print!("{:width$}", "", width = content_width + 1 - printed);
+            }
+
+            // Closing border
+            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            print!("│");
+        }
+
+        // Draw bottom border
+        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + popup_height - 1))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        print!("╰");
+        for _ in 1..(popup_width - 1) {
+            print!("─");
+        }
+        print!("╯");
+
+        execute!(self.stdout, ResetColor)?;
+        Ok(())
+    }
+
+    /// Render the code actions picker as a floating popup
+    fn render_code_actions_picker(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        let picker = match &editor.code_actions_picker {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        if picker.items.is_empty() {
+            return Ok(());
+        }
+
+        // Calculate popup dimensions based on content
+        let max_title_len = picker.items.iter()
+            .map(|a| a.title.len())
+            .max()
+            .unwrap_or(20);
+
+        let max_width = 60u16;
+        let max_height = 12u16;
+        let popup_width = (max_title_len as u16 + 6).min(max_width).min(editor.term_width.saturating_sub(4));
+        let popup_height = (picker.items.len() as u16 + 2).min(max_height);
+
+        // Position near cursor
+        let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+        let cursor_screen_col = (2 + line_num_width + 1 + editor.cursor.col) as u16;
+        let cursor_screen_row = (editor.cursor.line - editor.viewport_offset) as u16;
+
+        let popup_x = cursor_screen_col.min(editor.term_width.saturating_sub(popup_width + 2));
+        let popup_y = if cursor_screen_row + popup_height + 1 < editor.term_height {
+            cursor_screen_row + 1
+        } else {
+            cursor_screen_row.saturating_sub(popup_height)
+        };
+
+        // Colors
+        let border_color = Color::Rgb { r: 140, g: 100, b: 180 };
+        let bg_color = Color::Rgb { r: 25, g: 25, b: 30 };
+        let selected_bg = Color::Rgb { r: 70, g: 50, b: 100 };
+        let text_color = Color::Rgb { r: 200, g: 200, b: 210 };
+        let _kind_color = Color::Rgb { r: 130, g: 180, b: 130 };
+        let preferred_color = Color::Rgb { r: 255, g: 200, b: 100 };
+
+        // Draw top border
+        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        let title = " Code Actions ";
+        let title_start = (popup_width as usize - title.len()) / 2;
+        print!("╭");
+        for i in 1..(popup_width - 1) {
+            if i as usize == title_start {
+                print!("{}", title);
+            } else if i as usize > title_start && i as usize <= title_start + title.len() {
+                // Skip
+            } else {
+                print!("─");
+            }
+        }
+        print!("╮");
+
+        // Calculate visible items
+        let visible_count = (popup_height - 2) as usize;
+        let scroll_offset = if picker.selected >= visible_count {
+            picker.selected - visible_count + 1
+        } else {
+            0
+        };
+
+        // Draw items
+        for (i, idx) in (scroll_offset..(scroll_offset + visible_count)).enumerate() {
+            execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 1 + i as u16))?;
+
+            if idx >= picker.items.len() {
+                execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+                print!("│{:width$}│", "", width = (popup_width - 2) as usize);
+                continue;
+            }
+
+            let action = &picker.items[idx];
+            let is_selected = idx == picker.selected;
+
+            let current_bg = if is_selected { selected_bg } else { bg_color };
+
+            // Border
+            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            print!("│");
+
+            // Item content
+            execute!(self.stdout, SetBackgroundColor(current_bg))?;
+
+            let content_width = (popup_width - 4) as usize;
+
+            // Preferred marker
+            if action.is_preferred {
+                execute!(self.stdout, SetForegroundColor(preferred_color))?;
+                print!("★ ");
+            } else {
+                print!("  ");
+            }
+
+            // Title
+            execute!(self.stdout, SetForegroundColor(text_color))?;
+            let title_display: String = action.title.chars().take(content_width - 2).collect();
+            print!("{}", title_display);
+
+            // Pad
+            let printed = title_display.len() + 2;
+            if printed < content_width {
+                print!("{:width$}", "", width = content_width - printed);
+            }
+
+            // Closing border
+            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            print!("│");
+        }
+
+        // Draw bottom border
+        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + popup_height - 1))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        print!("╰");
+        for _ in 1..(popup_width - 1) {
+            print!("─");
+        }
+        print!("╯");
+
+        execute!(self.stdout, ResetColor)?;
+        Ok(())
+    }
+
     /// Render the fuzzy finder floating window
     fn render_finder(&mut self, editor: &Editor) -> anyhow::Result<()> {
         let win = crate::finder::FloatingWindow::centered(editor.term_width, editor.term_height);
@@ -2131,8 +2542,98 @@ impl Drop for Terminal {
     }
 }
 
+/// Handle key input for the references picker
+fn handle_references_picker_key(editor: &mut Editor, key: KeyEvent) {
+    match (key.modifiers, key.code) {
+        // Close picker
+        (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
+            editor.hide_references_picker();
+        }
+
+        // Navigate up
+        (KeyModifiers::NONE, KeyCode::Up) | (KeyModifiers::NONE, KeyCode::Char('k')) => {
+            if let Some(ref mut picker) = editor.references_picker {
+                picker.move_up();
+            }
+        }
+
+        // Navigate down
+        (KeyModifiers::NONE, KeyCode::Down) | (KeyModifiers::NONE, KeyCode::Char('j')) => {
+            if let Some(ref mut picker) = editor.references_picker {
+                picker.move_down();
+            }
+        }
+
+        // Select and jump
+        (KeyModifiers::NONE, KeyCode::Enter) => {
+            if let Some(picker) = editor.references_picker.take() {
+                if let Some(loc) = picker.items.get(picker.selected) {
+                    if let Some(path) = crate::lsp::uri_to_path(&loc.uri) {
+                        editor.record_jump();
+                        // Open the file if different
+                        let current_path = editor.buffer().path.clone();
+                        if current_path.as_ref() != Some(&path) {
+                            let _ = editor.open_file(path);
+                        }
+                        editor.goto_line(loc.line + 1);
+                        editor.cursor.col = loc.col;
+                        editor.scroll_to_cursor();
+                    }
+                }
+            }
+        }
+
+        _ => {}
+    }
+}
+
+/// Handle key input for the code actions picker
+fn handle_code_actions_picker_key(editor: &mut Editor, key: KeyEvent) {
+    match (key.modifiers, key.code) {
+        // Close picker
+        (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
+            editor.hide_code_actions_picker();
+        }
+
+        // Navigate up
+        (KeyModifiers::NONE, KeyCode::Up) | (KeyModifiers::NONE, KeyCode::Char('k')) => {
+            if let Some(ref mut picker) = editor.code_actions_picker {
+                picker.move_up();
+            }
+        }
+
+        // Navigate down
+        (KeyModifiers::NONE, KeyCode::Down) | (KeyModifiers::NONE, KeyCode::Char('j')) => {
+            if let Some(ref mut picker) = editor.code_actions_picker {
+                picker.move_down();
+            }
+        }
+
+        // Apply selected action
+        (KeyModifiers::NONE, KeyCode::Enter) => {
+            if let Some(msg) = editor.apply_selected_code_action() {
+                editor.set_status(msg);
+            }
+        }
+
+        _ => {}
+    }
+}
+
 /// Handle a key event and update editor state
 pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
+    // Handle references picker if active
+    if editor.references_picker.is_some() {
+        handle_references_picker_key(editor, key);
+        return;
+    }
+
+    // Handle code actions picker if active
+    if editor.code_actions_picker.is_some() {
+        handle_code_actions_picker_key(editor, key);
+        return;
+    }
+
     // Clear status message on any key (except for pending operations, command mode, search mode)
     if editor.mode != Mode::Command
         && editor.mode != Mode::Search
@@ -2152,6 +2653,7 @@ pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
         Mode::Visual | Mode::VisualLine | Mode::VisualBlock => handle_visual_mode(editor, key),
         Mode::Finder => handle_finder_mode(editor, key),
         Mode::Explorer => handle_explorer_mode(editor, key),
+        Mode::RenamePrompt => handle_rename_prompt_mode(editor, key),
     }
 }
 
@@ -2440,6 +2942,19 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.pending_lsp_action = Some(crate::editor::LspAction::Hover);
         }
 
+        KeyAction::FindReferences => {
+            editor.pending_lsp_action = Some(crate::editor::LspAction::FindReferences);
+        }
+
+        KeyAction::CodeActions => {
+            editor.pending_lsp_action = Some(crate::editor::LspAction::CodeActions);
+        }
+
+        KeyAction::RenameSymbol => {
+            // Enter rename prompt mode
+            editor.enter_rename_prompt();
+        }
+
         KeyAction::JumpBack => {
             if !editor.jump_back() {
                 editor.set_status("Already at oldest position");
@@ -2571,7 +3086,12 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
             (KeyModifiers::NONE, KeyCode::Backspace) => {
                 // Continue to normal handling below
             }
-            // Regular character - let it fall through, filter will be updated after
+            // Word-ending characters - hide completion and continue
+            (_, KeyCode::Char(c)) if matches!(c, ' ' | ';' | '(' | ')' | '{' | '}' | '[' | ']' | ',' | ':') => {
+                editor.completion.hide();
+                // Continue to normal handling below
+            }
+            // Regular word character - let it fall through, filter will be updated after
             (_, KeyCode::Char(c)) if !c.is_control() => {
                 // Continue to normal handling below
             }
@@ -2784,6 +3304,39 @@ fn handle_replace_mode(editor: &mut Editor, key: KeyEvent) {
         // Regular character - replace
         (_, KeyCode::Char(c)) if !c.is_control() => {
             editor.replace_mode_char(c);
+        }
+
+        _ => {}
+    }
+}
+
+fn handle_rename_prompt_mode(editor: &mut Editor, key: KeyEvent) {
+    match (key.modifiers, key.code) {
+        // Cancel rename
+        (KeyModifiers::NONE, KeyCode::Esc) |
+        (KeyModifiers::CONTROL, KeyCode::Char('[')) |
+        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+            editor.cancel_rename();
+        }
+
+        // Confirm rename
+        (KeyModifiers::NONE, KeyCode::Enter) => {
+            editor.confirm_rename();
+        }
+
+        // Backspace
+        (KeyModifiers::NONE, KeyCode::Backspace) => {
+            editor.rename_input_backspace();
+        }
+
+        // Clear all (Ctrl+U)
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+            editor.rename_input_clear();
+        }
+
+        // Regular character input
+        (_, KeyCode::Char(c)) if !c.is_control() => {
+            editor.rename_input_char(c);
         }
 
         _ => {}
@@ -3302,14 +3855,25 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
     let result = match cmd {
         Command::Write(path) => {
             if let Some(p) = path {
+                // Save as: skip format_on_save for explicit path
                 match editor.save_as(p) {
                     Ok(()) => CommandResult::Ok,
                     Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
                 }
             } else if editor.buffer().path.is_some() {
-                match editor.save() {
-                    Ok(()) => CommandResult::Ok,
-                    Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
+                // Check if format_on_save is enabled
+                if editor.settings.editor.format_on_save {
+                    // Set flag to save after formatting completes
+                    editor.save_after_format = true;
+                    // Trigger formatting (which will save when done)
+                    editor.pending_lsp_action = Some(LspAction::Formatting);
+                    CommandResult::Message("Formatting...".to_string())
+                } else {
+                    // Format on save disabled - save directly
+                    match editor.save() {
+                        Ok(()) => CommandResult::Ok,
+                        Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
+                    }
                 }
             } else {
                 CommandResult::Error("No filename".to_string())
@@ -3577,6 +4141,30 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
 
         Command::OpenExplorer => {
             editor.open_explorer();
+            CommandResult::Ok
+        }
+
+        Command::Format => {
+            // Request formatting via LSP
+            editor.pending_lsp_action = Some(LspAction::Formatting);
+            CommandResult::Message("Formatting...".to_string())
+        }
+
+        Command::CodeAction => {
+            // Trigger code actions picker
+            editor.pending_lsp_action = Some(LspAction::CodeActions);
+            CommandResult::Ok
+        }
+
+        Command::Rename(new_name) => {
+            // Trigger LSP rename
+            editor.pending_lsp_action = Some(LspAction::RenameSymbol(new_name.clone()));
+            CommandResult::Message(format!("Renaming to '{}'...", new_name))
+        }
+
+        Command::RenamePrompt => {
+            // Enter rename prompt mode
+            editor.enter_rename_prompt();
             CommandResult::Ok
         }
 

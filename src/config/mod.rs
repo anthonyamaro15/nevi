@@ -32,6 +32,24 @@ impl Default for Settings {
     }
 }
 
+/// Autosave mode configuration
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutosaveMode {
+    /// Autosave disabled
+    Off,
+    /// Save after delay milliseconds of no edits
+    AfterDelay,
+    /// Save when editor loses focus (not yet implemented for terminal)
+    OnFocusChange,
+}
+
+impl Default for AutosaveMode {
+    fn default() -> Self {
+        AutosaveMode::Off
+    }
+}
+
 /// Editor behavior settings
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -54,6 +72,12 @@ pub struct EditorSettings {
     pub wrap_width: usize,
     /// Enable auto-pairs (auto-close brackets/quotes) (default: true)
     pub auto_pairs: bool,
+    /// Format document on save using LSP (default: false)
+    pub format_on_save: bool,
+    /// Autosave mode (default: off)
+    pub autosave: AutosaveMode,
+    /// Autosave delay in milliseconds (default: 1000)
+    pub autosave_delay_ms: u64,
 }
 
 impl Default for EditorSettings {
@@ -68,6 +92,9 @@ impl Default for EditorSettings {
             wrap: false,
             wrap_width: 80,
             auto_pairs: true,
+            format_on_save: false,
+            autosave: AutosaveMode::Off,
+            autosave_delay_ms: 1000,
         }
     }
 }
@@ -132,10 +159,55 @@ pub struct KeymapSettings {
 impl Default for KeymapSettings {
     fn default() -> Self {
         Self {
-            leader: "\\".to_string(),
+            leader: " ".to_string(), // Space as leader (common in Neovim)
             normal: Vec::new(),
             insert: Vec::new(),
-            leader_mappings: Vec::new(),
+            leader_mappings: vec![
+                // LSP actions
+                LeaderMapping {
+                    key: "ca".to_string(),
+                    action: ":codeaction".to_string(),
+                    desc: Some("Code actions".to_string()),
+                },
+                LeaderMapping {
+                    key: "rn".to_string(),
+                    action: ":rn".to_string(),
+                    desc: Some("Rename symbol".to_string()),
+                },
+                // File operations
+                LeaderMapping {
+                    key: "w".to_string(),
+                    action: ":w".to_string(),
+                    desc: Some("Save file".to_string()),
+                },
+                LeaderMapping {
+                    key: "q".to_string(),
+                    action: ":q".to_string(),
+                    desc: Some("Quit".to_string()),
+                },
+                // Finder
+                LeaderMapping {
+                    key: "ff".to_string(),
+                    action: ":FindFiles".to_string(),
+                    desc: Some("Find files".to_string()),
+                },
+                LeaderMapping {
+                    key: "fg".to_string(),
+                    action: ":LiveGrep".to_string(),
+                    desc: Some("Live grep".to_string()),
+                },
+                LeaderMapping {
+                    key: "fb".to_string(),
+                    action: ":FindBuffers".to_string(),
+                    desc: Some("Find buffers".to_string()),
+                },
+                // Explorer
+                LeaderMapping {
+                    key: "e".to_string(),
+                    action: ":Explorer".to_string(),
+                    desc: Some("Toggle explorer".to_string()),
+                },
+            ],
         }
     }
 }

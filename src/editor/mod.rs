@@ -15,7 +15,7 @@ use crate::config::{Settings, KeymapLookup};
 use crate::explorer::FileExplorer;
 use crate::finder::FuzzyFinder;
 use crate::frecency::FrecencyDb;
-use crate::lsp::types::{Diagnostic, CompletionItem};
+use crate::lsp::types::{CodeActionItem, Diagnostic, CompletionItem, Location, TextEdit};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -33,6 +33,7 @@ pub enum Mode {
     VisualBlock,
     Finder,
     Explorer,
+    RenamePrompt,
 }
 
 impl Mode {
@@ -48,6 +49,7 @@ impl Mode {
             Mode::VisualBlock => "V-BLOCK",
             Mode::Finder => "FINDER",
             Mode::Explorer => "EXPLORER",
+            Mode::RenamePrompt => "RENAME",
         }
     }
 
@@ -57,12 +59,20 @@ impl Mode {
 }
 
 /// Pending LSP action requested by key handler
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LspAction {
     /// Go to definition (gd)
     GotoDefinition,
     /// Show hover documentation (K)
     Hover,
+    /// Format document
+    Formatting,
+    /// Find references (gr)
+    FindReferences,
+    /// Show code actions (ga)
+    CodeActions,
+    /// Rename symbol
+    RenameSymbol(String),
 }
 
 /// Rectangle representing a screen region
@@ -610,6 +620,80 @@ pub struct Editor {
     pub project_root: Option<std::path::PathBuf>,
     /// File explorer sidebar
     pub explorer: FileExplorer,
+    /// Flag to indicate a formatting request is pending
+    pub pending_format: bool,
+    /// Flag to indicate we should save after formatting completes
+    pub save_after_format: bool,
+    /// References picker state
+    pub references_picker: Option<ReferencesPicker>,
+    /// Code actions picker state
+    pub code_actions_picker: Option<CodeActionsPicker>,
+    /// Rename prompt input (new name being entered)
+    pub rename_input: String,
+    /// Original word for rename (shown in prompt)
+    pub rename_original: String,
+}
+
+/// State for references picker UI
+#[derive(Debug, Clone)]
+pub struct ReferencesPicker {
+    /// List of reference locations
+    pub items: Vec<Location>,
+    /// Currently selected index
+    pub selected: usize,
+}
+
+impl ReferencesPicker {
+    pub fn new(items: Vec<Location>) -> Self {
+        Self { items, selected: 0 }
+    }
+
+    pub fn move_up(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    pub fn move_down(&mut self) {
+        if self.selected + 1 < self.items.len() {
+            self.selected += 1;
+        }
+    }
+
+    pub fn selected_item(&self) -> Option<&Location> {
+        self.items.get(self.selected)
+    }
+}
+
+/// State for code actions picker UI
+#[derive(Debug, Clone)]
+pub struct CodeActionsPicker {
+    /// List of available code actions
+    pub items: Vec<CodeActionItem>,
+    /// Currently selected index
+    pub selected: usize,
+}
+
+impl CodeActionsPicker {
+    pub fn new(items: Vec<CodeActionItem>) -> Self {
+        Self { items, selected: 0 }
+    }
+
+    pub fn move_up(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    pub fn move_down(&mut self) {
+        if self.selected + 1 < self.items.len() {
+            self.selected += 1;
+        }
+    }
+
+    pub fn selected_item(&self) -> Option<&CodeActionItem> {
+        self.items.get(self.selected)
+    }
 }
 
 impl Editor {
@@ -655,6 +739,12 @@ impl Editor {
             search_matches: Vec::new(),
             project_root: None,
             explorer: FileExplorer::new(),
+            pending_format: false,
+            save_after_format: false,
+            references_picker: None,
+            code_actions_picker: None,
+            rename_input: String::new(),
+            rename_original: String::new(),
         }
     }
 
@@ -699,10 +789,88 @@ impl Editor {
         self.diagnostics.insert(uri, diags);
     }
 
+    /// Apply text edits from LSP formatting (or other sources)
+    /// Edits are applied in reverse order to preserve positions
+    pub fn apply_text_edits(&mut self, edits: &[TextEdit]) {
+        if edits.is_empty() {
+            return;
+        }
+
+        // Sort edits by position (reverse order) so we can apply from end to start
+        let mut sorted_edits: Vec<&TextEdit> = edits.iter().collect();
+        sorted_edits.sort_by(|a, b| {
+            // Compare by end position first (descending)
+            match b.end_line.cmp(&a.end_line) {
+                std::cmp::Ordering::Equal => b.end_col.cmp(&a.end_col),
+                other => other,
+            }
+        });
+
+        // Begin an undo group for all formatting changes
+        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+
+        // Apply each edit
+        for edit in sorted_edits {
+            // Get the text being replaced for undo (end_col - 1 because get_range_text uses inclusive end)
+            let deleted_text = if edit.end_col > 0 || edit.end_line > edit.start_line {
+                self.get_range_text(
+                    edit.start_line,
+                    edit.start_col,
+                    edit.end_line,
+                    edit.end_col.saturating_sub(1),
+                )
+            } else {
+                String::new()
+            };
+
+            // Record the deletion for undo
+            if !deleted_text.is_empty() {
+                self.undo_stack.record_change(Change::delete(
+                    edit.start_line,
+                    edit.start_col,
+                    deleted_text,
+                ));
+            }
+
+            // Delete the range from the buffer (LSP end_col is exclusive)
+            if edit.end_col > 0 || edit.end_line > edit.start_line {
+                self.buffers[self.current_buffer_idx].delete_range(
+                    edit.start_line,
+                    edit.start_col,
+                    edit.end_line,
+                    edit.end_col,
+                );
+            }
+
+            // Insert the new text
+            if !edit.new_text.is_empty() {
+                self.undo_stack.record_change(Change::insert(
+                    edit.start_line,
+                    edit.start_col,
+                    edit.new_text.clone(),
+                ));
+
+                // Insert the text using insert_str method
+                self.buffers[self.current_buffer_idx].insert_str(
+                    edit.start_line,
+                    edit.start_col,
+                    &edit.new_text,
+                );
+            }
+        }
+
+        // Mark buffer as modified and invalidate syntax
+        self.buffers[self.current_buffer_idx].mark_modified();
+        self.last_edit_at = Some(Instant::now());
+
+        // Ensure cursor is in valid position
+        self.clamp_cursor();
+    }
+
     /// Get diagnostics for the current buffer
     pub fn current_diagnostics(&self) -> &[Diagnostic] {
         if let Some(path) = &self.buffer().path {
-            let uri = format!("file://{}", path.canonicalize().unwrap_or(path.clone()).display());
+            let uri = crate::lsp::path_to_uri(path);
             self.diagnostics.get(&uri).map(|v| v.as_slice()).unwrap_or(&[])
         } else {
             &[]
@@ -720,6 +888,15 @@ impl Editor {
     /// Get the first diagnostic message for the cursor line (for status display)
     pub fn diagnostic_at_cursor(&self) -> Option<&Diagnostic> {
         self.diagnostics_for_line(self.cursor.line).into_iter().next()
+    }
+
+    /// Get all diagnostics at cursor position (for code actions)
+    pub fn all_diagnostics_at_cursor(&self) -> Vec<Diagnostic> {
+        self.diagnostics_for_line(self.cursor.line)
+            .into_iter()
+            .filter(|d| d.col_start <= self.cursor.col && self.cursor.col <= d.col_end)
+            .cloned()
+            .collect()
     }
 
     /// Go to next diagnostic after cursor position
@@ -1665,10 +1842,58 @@ impl Editor {
         self.scroll_to_cursor();
     }
 
+    /// Enter rename prompt mode with the word under cursor
+    pub fn enter_rename_prompt(&mut self) {
+        let word = self.get_word_under_cursor().unwrap_or_default();
+        self.rename_original = word.clone();
+        self.rename_input = word;
+        self.mode = Mode::RenamePrompt;
+    }
+
+    /// Exit rename prompt mode and trigger rename if confirmed
+    pub fn confirm_rename(&mut self) {
+        if !self.rename_input.is_empty() && self.rename_input != self.rename_original {
+            self.pending_lsp_action = Some(LspAction::RenameSymbol(self.rename_input.clone()));
+        } else if self.rename_input.is_empty() {
+            self.set_status("Rename cancelled: empty name");
+        } else {
+            self.set_status("Rename cancelled: same name");
+        }
+        self.rename_input.clear();
+        self.rename_original.clear();
+        self.mode = Mode::Normal;
+    }
+
+    /// Cancel rename prompt and return to normal mode
+    pub fn cancel_rename(&mut self) {
+        self.rename_input.clear();
+        self.rename_original.clear();
+        self.mode = Mode::Normal;
+    }
+
+    /// Handle character input in rename prompt
+    pub fn rename_input_char(&mut self, ch: char) {
+        self.rename_input.push(ch);
+    }
+
+    /// Handle backspace in rename prompt
+    pub fn rename_input_backspace(&mut self) {
+        self.rename_input.pop();
+    }
+
+    /// Clear rename input
+    pub fn rename_input_clear(&mut self) {
+        self.rename_input.clear();
+    }
+
     /// Exit to normal mode
     pub fn enter_normal_mode(&mut self) {
         // End any current undo group
         self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+
+        // Hide any active popups
+        self.completion.hide();
+        self.signature_help = None;
 
         self.mode = Mode::Normal;
         // In normal mode, cursor can't be past last character
@@ -3875,6 +4100,59 @@ impl Editor {
 
         self.last_edit_at = None;
         false
+    }
+
+    // ============================================
+    // References and Code Actions Pickers
+    // ============================================
+
+    /// Show the references picker with the given locations
+    pub fn show_references_picker(&mut self, locations: Vec<Location>) {
+        let count = locations.len();
+        self.references_picker = Some(ReferencesPicker::new(locations));
+        self.set_status(format!("{} references - j/k to navigate, Enter to go, Esc to close", count));
+    }
+
+    /// Hide the references picker
+    pub fn hide_references_picker(&mut self) {
+        self.references_picker = None;
+    }
+
+    /// Show the code actions picker with the given actions
+    pub fn show_code_actions_picker(&mut self, actions: Vec<CodeActionItem>) {
+        let count = actions.len();
+        self.code_actions_picker = Some(CodeActionsPicker::new(actions));
+        self.set_status(format!("{} code actions - j/k to navigate, Enter to apply, Esc to close", count));
+    }
+
+    /// Hide the code actions picker
+    pub fn hide_code_actions_picker(&mut self) {
+        self.code_actions_picker = None;
+    }
+
+    /// Apply the selected code action's edits
+    pub fn apply_selected_code_action(&mut self) -> Option<String> {
+        let picker = self.code_actions_picker.take()?;
+        let action = picker.items.get(picker.selected)?;
+
+        let title = action.title.clone();
+        let mut total_edits = 0;
+
+        // Apply edits from the selected action
+        for (_uri, edits) in &action.edits {
+            // For now, only apply edits to current file
+            // TODO: Handle cross-file edits
+            self.apply_text_edits(edits);
+            total_edits += edits.len();
+        }
+
+        if total_edits > 0 {
+            Some(format!("Applied '{}' ({} edits)", title, total_edits))
+        } else if action.command.is_some() {
+            Some(format!("Action '{}' requires server-side command", title))
+        } else {
+            Some(format!("Applied '{}'", title))
+        }
     }
 }
 

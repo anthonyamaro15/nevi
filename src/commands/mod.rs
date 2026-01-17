@@ -68,6 +68,14 @@ pub enum Command {
     ToggleExplorer,
     /// :Explore - Open file explorer
     OpenExplorer,
+    /// :Format - Format document using LSP
+    Format,
+    /// :codeaction - Show code actions (LSP)
+    CodeAction,
+    /// :rename <newname> - Rename symbol under cursor (LSP)
+    Rename(String),
+    /// :rename (no args) - Enter rename prompt mode (LSP)
+    RenamePrompt,
     /// Unknown command
     Unknown(String),
 }
@@ -207,6 +215,18 @@ pub fn parse_command(input: &str) -> Command {
         // File explorer commands
         "Explorer" | "explorer" | "ex" => Command::ToggleExplorer,
         "Explore" | "explore" | "Ex" => Command::OpenExplorer,
+
+        // LSP commands
+        "Format" | "format" => Command::Format,
+        "codeaction" | "CodeAction" | "ca" => Command::CodeAction,
+        "lsprename" | "LspRename" | "rn" => {
+            if let Some(new_name) = args.filter(|s| !s.is_empty()) {
+                Command::Rename(new_name.to_string())
+            } else {
+                // No args - enter rename prompt mode
+                Command::RenamePrompt
+            }
+        }
 
         // Unknown command
         _ => Command::Unknown(cmd.to_string()),

@@ -13,6 +13,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
+use lsp_types::Url;
+
 pub use client::LspClient;
 pub use types::*;
 
@@ -160,6 +162,54 @@ impl LspManager {
             character,
         })
     }
+
+    /// Request document formatting
+    pub fn formatting(&self, path: &PathBuf) -> anyhow::Result<()> {
+        let uri = path_to_uri(path);
+        self.send(LspRequest::Formatting { uri })
+    }
+
+    /// Request find references
+    pub fn references(&self, path: &PathBuf, line: u32, character: u32) -> anyhow::Result<()> {
+        let uri = path_to_uri(path);
+        self.send(LspRequest::References {
+            uri,
+            line,
+            character,
+        })
+    }
+
+    /// Request code actions
+    pub fn code_action(
+        &self,
+        path: &PathBuf,
+        start_line: u32,
+        start_character: u32,
+        end_line: u32,
+        end_character: u32,
+        diagnostics: Vec<Diagnostic>,
+    ) -> anyhow::Result<()> {
+        let uri = path_to_uri(path);
+        self.send(LspRequest::CodeAction {
+            uri,
+            start_line,
+            start_character,
+            end_line,
+            end_character,
+            diagnostics,
+        })
+    }
+
+    /// Request rename symbol
+    pub fn rename(&self, path: &PathBuf, line: u32, character: u32, new_name: String) -> anyhow::Result<()> {
+        let uri = path_to_uri(path);
+        self.send(LspRequest::Rename {
+            uri,
+            line,
+            character,
+            new_name,
+        })
+    }
 }
 
 impl Drop for LspManager {
@@ -176,9 +226,9 @@ fn run_lsp_thread(
     request_rx: Receiver<LspRequest>,
     notification_tx: Sender<LspNotification>,
 ) {
-    // Try to spawn the LSP server
-    let mut client = match LspClient::spawn(command, args) {
-        Ok(c) => c,
+    // Try to spawn the LSP server - returns client, shared pending map, and shared stdin
+    let (mut client, pending, stdin) = match LspClient::spawn(command, args) {
+        Ok(result) => result,
         Err(e) => {
             let _ = notification_tx.send(LspNotification::Error {
                 message: format!("Failed to start LSP server: {}", e),
@@ -198,25 +248,20 @@ fn run_lsp_thread(
         }
     };
 
-    // Create tracking channel for request ID -> RequestKind mapping
-    let (tracking_tx, tracking_rx) = mpsc::channel::<(u64, RequestKind)>();
-
+    // Spawn reader thread with the shared pending map and stdin (for server requests)
+    // The pending map is populated by client methods BEFORE sending requests,
+    // so responses are guaranteed to find their request kinds
     let notification_tx_clone = notification_tx.clone();
     thread::spawn(move || {
-        client::read_messages(stdout, notification_tx_clone, tracking_rx);
+        client::read_messages(stdout, notification_tx_clone, pending, stdin);
     });
 
-    // Send initialize request and track it
-    match client.initialize(&root_path) {
-        Ok(id) => {
-            let _ = tracking_tx.send((id, RequestKind::Initialize));
-        }
-        Err(e) => {
-            let _ = notification_tx.send(LspNotification::Error {
-                message: format!("Failed to initialize LSP: {}", e),
-            });
-            return;
-        }
+    // Send initialize request (automatically tracked in pending map)
+    if let Err(e) = client.initialize(&root_path) {
+        let _ = notification_tx.send(LspNotification::Error {
+            message: format!("Failed to initialize LSP: {}", e),
+        });
+        return;
     }
 
     // Process requests
@@ -229,9 +274,7 @@ fn run_lsp_thread(
                         // Already initialized above
                     }
                     LspRequest::Shutdown => {
-                        if let Ok(id) = client.shutdown() {
-                            let _ = tracking_tx.send((id, RequestKind::Shutdown));
-                        }
+                        let _ = client.shutdown();
                         let _ = client.exit();
                         break;
                     }
@@ -275,15 +318,11 @@ fn run_lsp_thread(
                         line,
                         character,
                     } => {
-                        match client.completion(&uri, line, character) {
-                            Ok(id) => {
-                                let _ = tracking_tx.send((id, RequestKind::Completion));
-                            }
-                            Err(e) => {
-                                let _ = notification_tx.send(LspNotification::Error {
-                                    message: format!("Failed to request completion: {}", e),
-                                });
-                            }
+                        // Request is automatically tracked in pending map
+                        if let Err(e) = client.completion(&uri, line, character) {
+                            let _ = notification_tx.send(LspNotification::Error {
+                                message: format!("Failed to request completion: {}", e),
+                            });
                         }
                     }
                     LspRequest::GotoDefinition {
@@ -291,15 +330,10 @@ fn run_lsp_thread(
                         line,
                         character,
                     } => {
-                        match client.goto_definition(&uri, line, character) {
-                            Ok(id) => {
-                                let _ = tracking_tx.send((id, RequestKind::Definition));
-                            }
-                            Err(e) => {
-                                let _ = notification_tx.send(LspNotification::Error {
-                                    message: format!("Failed to request definition: {}", e),
-                                });
-                            }
+                        if let Err(e) = client.goto_definition(&uri, line, character) {
+                            let _ = notification_tx.send(LspNotification::Error {
+                                message: format!("Failed to request definition: {}", e),
+                            });
                         }
                     }
                     LspRequest::Hover {
@@ -307,15 +341,10 @@ fn run_lsp_thread(
                         line,
                         character,
                     } => {
-                        match client.hover(&uri, line, character) {
-                            Ok(id) => {
-                                let _ = tracking_tx.send((id, RequestKind::Hover));
-                            }
-                            Err(e) => {
-                                let _ = notification_tx.send(LspNotification::Error {
-                                    message: format!("Failed to request hover: {}", e),
-                                });
-                            }
+                        if let Err(e) = client.hover(&uri, line, character) {
+                            let _ = notification_tx.send(LspNotification::Error {
+                                message: format!("Failed to request hover: {}", e),
+                            });
                         }
                     }
                     LspRequest::SignatureHelp {
@@ -323,15 +352,61 @@ fn run_lsp_thread(
                         line,
                         character,
                     } => {
-                        match client.signature_help(&uri, line, character) {
-                            Ok(id) => {
-                                let _ = tracking_tx.send((id, RequestKind::SignatureHelp));
-                            }
-                            Err(e) => {
-                                let _ = notification_tx.send(LspNotification::Error {
-                                    message: format!("Failed to request signature help: {}", e),
-                                });
-                            }
+                        if let Err(e) = client.signature_help(&uri, line, character) {
+                            let _ = notification_tx.send(LspNotification::Error {
+                                message: format!("Failed to request signature help: {}", e),
+                            });
+                        }
+                    }
+                    LspRequest::Formatting { uri } => {
+                        if let Err(e) = client.formatting(&uri) {
+                            let _ = notification_tx.send(LspNotification::Error {
+                                message: format!("Failed to request formatting: {}", e),
+                            });
+                        }
+                    }
+                    LspRequest::References {
+                        uri,
+                        line,
+                        character,
+                    } => {
+                        if let Err(e) = client.references(&uri, line, character) {
+                            let _ = notification_tx.send(LspNotification::Error {
+                                message: format!("Failed to request references: {}", e),
+                            });
+                        }
+                    }
+                    LspRequest::CodeAction {
+                        uri,
+                        start_line,
+                        start_character,
+                        end_line,
+                        end_character,
+                        diagnostics,
+                    } => {
+                        if let Err(e) = client.code_action(
+                            &uri,
+                            start_line,
+                            start_character,
+                            end_line,
+                            end_character,
+                            &diagnostics,
+                        ) {
+                            let _ = notification_tx.send(LspNotification::Error {
+                                message: format!("Failed to request code actions: {}", e),
+                            });
+                        }
+                    }
+                    LspRequest::Rename {
+                        uri,
+                        line,
+                        character,
+                        new_name,
+                    } => {
+                        if let Err(e) = client.rename(&uri, line, character, &new_name) {
+                            let _ = notification_tx.send(LspNotification::Error {
+                                message: format!("Failed to request rename: {}", e),
+                            });
                         }
                     }
                 }
@@ -347,12 +422,14 @@ fn run_lsp_thread(
 /// Convert a file path to a file:// URI
 pub fn path_to_uri(path: &PathBuf) -> String {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-    format!("file://{}", canonical.display())
+    Url::from_file_path(canonical)
+        .map(|url| url.to_string())
+        .unwrap_or_else(|_| format!("file://{}", path.display()))
 }
 
 /// Convert a file:// URI back to a PathBuf
 pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
-    uri.strip_prefix("file://").map(PathBuf::from)
+    Url::parse(uri).ok().and_then(|url| url.to_file_path().ok())
 }
 
 /// Detect language ID from file extension

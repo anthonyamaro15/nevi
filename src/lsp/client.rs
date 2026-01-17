@@ -5,6 +5,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
 use lsp_types::{
@@ -17,12 +18,15 @@ use lsp_types::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use std::sync::mpsc::Receiver;
-
 use super::types::{
-    CompletionItem, CompletionKind, Diagnostic, DiagnosticSeverity, Location, LspNotification,
-    ParameterInfo, RequestKind, SignatureHelpResult, SignatureInfo,
+    CodeActionItem, CompletionItem, CompletionKind, Diagnostic, DiagnosticSeverity, Location,
+    LspNotification, ParameterInfo, RequestKind, SignatureHelpResult, SignatureInfo, TextEdit,
 };
+
+/// Shared pending requests map - maps request ID to request kind
+/// This is shared between the request sender and response reader threads
+pub type PendingRequests = Arc<Mutex<HashMap<u64, RequestKind>>>;
+pub type SharedStdin = Arc<Mutex<ChildStdin>>;
 
 /// JSON-RPC request message
 #[derive(Debug, Serialize)]
@@ -43,12 +47,19 @@ struct JsonRpcNotification {
     params: Option<Value>,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(untagged)]
+enum JsonRpcId {
+    Num(u64),
+    Str(String),
+}
+
 /// JSON-RPC response
 #[derive(Debug, Deserialize)]
 struct JsonRpcResponse {
     #[allow(dead_code)]
     jsonrpc: String,
-    id: Option<u64>,
+    id: Option<JsonRpcId>,
     result: Option<Value>,
     error: Option<JsonRpcError>,
     method: Option<String>,
@@ -61,17 +72,34 @@ struct JsonRpcError {
     message: String,
 }
 
+#[derive(Debug, Serialize)]
+struct JsonRpcResponseOut {
+    jsonrpc: &'static str,
+    id: JsonRpcId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<JsonRpcErrorOut>,
+}
+
+#[derive(Debug, Serialize)]
+struct JsonRpcErrorOut {
+    code: i64,
+    message: String,
+}
+
 /// LSP client that communicates with a language server
 pub struct LspClient {
     process: Child,
-    stdin: ChildStdin,
+    stdin: SharedStdin,
     request_id: AtomicU64,
-    pending_requests: HashMap<u64, String>, // id -> method name for tracking
+    /// Shared pending requests map - also used by the response reader thread
+    pending_requests: PendingRequests,
 }
 
 impl LspClient {
     /// Spawn a new LSP server process
-    pub fn spawn(command: &str, args: &[String]) -> Result<Self> {
+    pub fn spawn(command: &str, args: &[String]) -> Result<(Self, PendingRequests, SharedStdin)> {
         let mut process = Command::new(command)
             .args(args)
             .stdin(Stdio::piped())
@@ -81,13 +109,23 @@ impl LspClient {
             .map_err(|e| anyhow!("Failed to spawn LSP server '{}': {}", command, e))?;
 
         let stdin = process.stdin.take().ok_or_else(|| anyhow!("Failed to get stdin"))?;
+        let stdin = Arc::new(Mutex::new(stdin));
+        let stdin_clone = stdin.clone();
 
-        Ok(Self {
-            process,
-            stdin,
-            request_id: AtomicU64::new(1),
-            pending_requests: HashMap::new(),
-        })
+        // Create the shared pending requests map
+        let pending_requests = Arc::new(Mutex::new(HashMap::new()));
+        let pending_clone = pending_requests.clone();
+
+        Ok((
+            Self {
+                process,
+                stdin,
+                request_id: AtomicU64::new(1),
+                pending_requests,
+            },
+            pending_clone,
+            stdin_clone,
+        ))
     }
 
     /// Get stdout for reading responses
@@ -97,12 +135,13 @@ impl LspClient {
 
     /// Send initialize request
     pub fn initialize(&mut self, root_path: &std::path::Path) -> Result<u64> {
-        let root_uri = format!("file://{}", root_path.display());
+        let root_uri = lsp_types::Url::from_file_path(root_path)
+            .map_err(|_| anyhow!("Failed to convert root path to URI: {}", root_path.display()))?;
 
         let params = InitializeParams {
             process_id: Some(std::process::id()),
             root_path: Some(root_path.to_string_lossy().to_string()),
-            root_uri: Some(lsp_types::Url::parse(&root_uri)?),
+            root_uri: Some(root_uri.clone()),
             initialization_options: None,
             capabilities: ClientCapabilities {
                 text_document: Some(lsp_types::TextDocumentClientCapabilities {
@@ -142,7 +181,7 @@ impl LspClient {
             },
             trace: None,
             workspace_folders: Some(vec![WorkspaceFolder {
-                uri: lsp_types::Url::parse(&root_uri)?,
+                uri: root_uri.clone(),
                 name: root_path
                     .file_name()
                     .map(|s| s.to_string_lossy().to_string())
@@ -156,7 +195,7 @@ impl LspClient {
             work_done_progress_params: Default::default(),
         };
 
-        self.send_request("initialize", serde_json::to_value(params)?)
+        self.send_request("initialize", serde_json::to_value(params)?, RequestKind::Initialize)
     }
 
     /// Send initialized notification (after initialize response)
@@ -166,7 +205,7 @@ impl LspClient {
 
     /// Send shutdown request
     pub fn shutdown(&mut self) -> Result<u64> {
-        self.send_request("shutdown", Value::Null)
+        self.send_request("shutdown", Value::Null, RequestKind::Shutdown)
     }
 
     /// Send exit notification
@@ -226,7 +265,15 @@ impl LspClient {
             partial_result_params: Default::default(),
             context: None,
         };
-        self.send_request("textDocument/completion", serde_json::to_value(params)?)
+        self.send_request(
+            "textDocument/completion",
+            serde_json::to_value(params)?,
+            RequestKind::Completion {
+                uri: uri.to_string(),
+                line,
+                character,
+            },
+        )
     }
 
     /// Request go-to-definition
@@ -241,7 +288,15 @@ impl LspClient {
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
         };
-        self.send_request("textDocument/definition", serde_json::to_value(params)?)
+        self.send_request(
+            "textDocument/definition",
+            serde_json::to_value(params)?,
+            RequestKind::Definition {
+                uri: uri.to_string(),
+                line,
+                character,
+            },
+        )
     }
 
     /// Request hover information
@@ -255,7 +310,15 @@ impl LspClient {
             },
             work_done_progress_params: Default::default(),
         };
-        self.send_request("textDocument/hover", serde_json::to_value(params)?)
+        self.send_request(
+            "textDocument/hover",
+            serde_json::to_value(params)?,
+            RequestKind::Hover {
+                uri: uri.to_string(),
+                line,
+                character,
+            },
+        )
     }
 
     /// Request signature help at the given position
@@ -270,13 +333,170 @@ impl LspClient {
             work_done_progress_params: Default::default(),
             context: None,
         };
-        self.send_request("textDocument/signatureHelp", serde_json::to_value(params)?)
+        self.send_request(
+            "textDocument/signatureHelp",
+            serde_json::to_value(params)?,
+            RequestKind::SignatureHelp {
+                uri: uri.to_string(),
+                line,
+                character,
+            },
+        )
     }
 
-    /// Send a JSON-RPC request
-    fn send_request(&mut self, method: &str, params: Value) -> Result<u64> {
+    /// Request document formatting
+    pub fn formatting(&mut self, uri: &str) -> Result<u64> {
+        let params = lsp_types::DocumentFormattingParams {
+            text_document: TextDocumentIdentifier {
+                uri: lsp_types::Url::parse(uri)?,
+            },
+            options: lsp_types::FormattingOptions {
+                tab_size: 4,
+                insert_spaces: true,
+                ..Default::default()
+            },
+            work_done_progress_params: Default::default(),
+        };
+        self.send_request(
+            "textDocument/formatting",
+            serde_json::to_value(params)?,
+            RequestKind::Formatting {
+                uri: uri.to_string(),
+            },
+        )
+    }
+
+    /// Request find references
+    pub fn references(&mut self, uri: &str, line: u32, character: u32) -> Result<u64> {
+        let params = lsp_types::ReferenceParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: lsp_types::Url::parse(uri)?,
+                },
+                position: lsp_types::Position { line, character },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: lsp_types::ReferenceContext {
+                include_declaration: true,
+            },
+        };
+        self.send_request(
+            "textDocument/references",
+            serde_json::to_value(params)?,
+            RequestKind::References {
+                uri: uri.to_string(),
+                line,
+                character,
+            },
+        )
+    }
+
+    /// Request code actions
+    pub fn code_action(
+        &mut self,
+        uri: &str,
+        start_line: u32,
+        start_character: u32,
+        end_line: u32,
+        end_character: u32,
+        diagnostics: &[Diagnostic],
+    ) -> Result<u64> {
+        // Convert our diagnostics to LSP diagnostics
+        let lsp_diagnostics: Vec<lsp_types::Diagnostic> = diagnostics
+            .iter()
+            .map(|d| lsp_types::Diagnostic {
+                range: lsp_types::Range {
+                    start: lsp_types::Position {
+                        line: d.line as u32,
+                        character: d.col_start as u32,
+                    },
+                    end: lsp_types::Position {
+                        line: d.line as u32,
+                        character: d.col_end as u32,
+                    },
+                },
+                severity: Some(match d.severity {
+                    super::types::DiagnosticSeverity::Error => lsp_types::DiagnosticSeverity::ERROR,
+                    super::types::DiagnosticSeverity::Warning => lsp_types::DiagnosticSeverity::WARNING,
+                    super::types::DiagnosticSeverity::Information => lsp_types::DiagnosticSeverity::INFORMATION,
+                    super::types::DiagnosticSeverity::Hint => lsp_types::DiagnosticSeverity::HINT,
+                }),
+                message: d.message.clone(),
+                source: d.source.clone(),
+                ..Default::default()
+            })
+            .collect();
+
+        let params = lsp_types::CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: lsp_types::Url::parse(uri)?,
+            },
+            range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line: start_line,
+                    character: start_character,
+                },
+                end: lsp_types::Position {
+                    line: end_line,
+                    character: end_character,
+                },
+            },
+            context: lsp_types::CodeActionContext {
+                diagnostics: lsp_diagnostics,
+                only: None,
+                trigger_kind: Some(lsp_types::CodeActionTriggerKind::INVOKED),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        self.send_request(
+            "textDocument/codeAction",
+            serde_json::to_value(params)?,
+            RequestKind::CodeAction {
+                uri: uri.to_string(),
+                start_line,
+                start_character,
+                end_line,
+                end_character,
+            },
+        )
+    }
+
+    /// Request rename symbol
+    pub fn rename(&mut self, uri: &str, line: u32, character: u32, new_name: &str) -> Result<u64> {
+        let params = lsp_types::RenameParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: lsp_types::Url::parse(uri)?,
+                },
+                position: lsp_types::Position { line, character },
+            },
+            new_name: new_name.to_string(),
+            work_done_progress_params: Default::default(),
+        };
+        self.send_request(
+            "textDocument/rename",
+            serde_json::to_value(params)?,
+            RequestKind::Rename {
+                uri: uri.to_string(),
+                line,
+                character,
+                new_name: new_name.to_string(),
+            },
+        )
+    }
+
+    /// Send a JSON-RPC request and track it in the pending map
+    fn send_request(&mut self, method: &str, params: Value, kind: RequestKind) -> Result<u64> {
         let id = self.request_id.fetch_add(1, Ordering::SeqCst);
-        self.pending_requests.insert(id, method.to_string());
+
+        // Insert into pending map BEFORE sending the request
+        // This ensures the response handler will find the request kind
+        // even if the response arrives immediately
+        if let Ok(mut pending) = self.pending_requests.lock() {
+            pending.insert(id, kind);
+        }
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0",
@@ -285,7 +505,12 @@ impl LspClient {
             params: if params.is_null() { None } else { Some(params) },
         };
 
-        self.send_message(&serde_json::to_string(&request)?)?;
+        if let Err(err) = self.send_message(&serde_json::to_string(&request)?) {
+            if let Ok(mut pending) = self.pending_requests.lock() {
+                pending.remove(&id);
+            }
+            return Err(err);
+        }
         Ok(id)
     }
 
@@ -303,20 +528,12 @@ impl LspClient {
     /// Send a raw message with Content-Length header
     fn send_message(&mut self, content: &str) -> Result<()> {
         let message = format!("Content-Length: {}\r\n\r\n{}", content.len(), content);
-        self.stdin.write_all(message.as_bytes())?;
-        self.stdin.flush()?;
+        let mut stdin = self.stdin.lock().map_err(|_| anyhow!("Failed to lock stdin"))?;
+        stdin.write_all(message.as_bytes())?;
+        stdin.flush()?;
         Ok(())
     }
 
-    /// Get the method name for a pending request
-    pub fn get_pending_method(&self, id: u64) -> Option<&str> {
-        self.pending_requests.get(&id).map(|s| s.as_str())
-    }
-
-    /// Remove a pending request
-    pub fn remove_pending(&mut self, id: u64) {
-        self.pending_requests.remove(&id);
-    }
 }
 
 impl Drop for LspClient {
@@ -328,22 +545,21 @@ impl Drop for LspClient {
 }
 
 /// Read JSON-RPC messages from the server stdout
+///
+/// Uses a shared pending requests map that is populated by the client thread
+/// BEFORE sending requests. This eliminates the race condition where a response
+/// could arrive before tracking info was sent through a channel.
 pub fn read_messages(
     stdout: ChildStdout,
     tx: Sender<LspNotification>,
-    tracking_rx: Receiver<(u64, RequestKind)>,
+    pending: PendingRequests,
+    stdin: SharedStdin,
 ) {
     let mut reader = BufReader::new(stdout);
     let mut headers = String::new();
-    let mut pending: HashMap<u64, RequestKind> = HashMap::new();
 
     loop {
         headers.clear();
-
-        // Drain any new request trackings (non-blocking)
-        while let Ok((id, kind)) = tracking_rx.try_recv() {
-            pending.insert(id, kind);
-        }
 
         // Read headers until empty line
         let mut content_length: Option<usize> = None;
@@ -386,15 +602,20 @@ pub fn read_messages(
             Err(_) => continue,
         };
 
-        // Drain tracking channel again AFTER reading, before handling
-        // This fixes the race condition where tracking is sent while we're blocked reading
-        while let Ok((id, kind)) = tracking_rx.try_recv() {
-            pending.insert(id, kind);
+        // Handle the message using the shared pending map
+        let (notification, response_to_server) = handle_message(response, &pending);
+
+        // Send response to server if needed (for server-initiated requests)
+        if let Some(response_msg) = response_to_server {
+            if let Ok(mut stdin_lock) = stdin.lock() {
+                let _ = stdin_lock.write_all(response_msg.as_bytes());
+                let _ = stdin_lock.flush();
+            }
         }
 
-        // Handle the message with pending request tracking
-        if let Some(notification) = handle_message(response, &mut pending) {
-            if tx.send(notification).is_err() {
+        // Send notification to editor if we have one
+        if let Some(notif) = notification {
+            if tx.send(notif).is_err() {
                 return;
             }
         }
@@ -402,46 +623,64 @@ pub fn read_messages(
 }
 
 /// Handle an incoming JSON-RPC message using proper ID-based dispatch
+/// Returns (notification_to_send, optional_response_to_server)
 fn handle_message(
     msg: JsonRpcResponse,
-    pending: &mut HashMap<u64, RequestKind>,
-) -> Option<LspNotification> {
-    // Check if it's a notification (no id) - these are server-initiated
+    pending: &PendingRequests,
+) -> (Option<LspNotification>, Option<String>) {
+    // Check if it's a notification (no id) - these are server-initiated notifications
     if msg.id.is_none() {
         if let Some(method) = &msg.method {
-            return handle_notification(method, msg.params);
+            return (handle_notification(method, msg.params), None);
         }
-        return None;
+        return (None, None);
+    }
+
+    let id = msg.id.unwrap();
+
+    // Check if it's a server-initiated REQUEST (has both id AND method)
+    // These require us to send a response back
+    if let Some(method) = &msg.method {
+        let response = handle_server_request(id, method, msg.params);
+        return (None, response);
     }
 
     // It's a response to one of our requests - look up the request kind by ID
-    let id = msg.id.unwrap();
+    let id_num = match id {
+        JsonRpcId::Num(value) => value,
+        JsonRpcId::Str(_) => {
+            // Unexpected string ID for our requests; ignore.
+            return (None, None);
+        }
+    };
 
-    // Handle JSON-RPC errors
+    // Handle JSON-RPC errors - remove from pending map
     if let Some(error) = msg.error {
-        pending.remove(&id);
-        return Some(LspNotification::Error {
+        if let Ok(mut pending_map) = pending.lock() {
+            pending_map.remove(&id_num);
+        }
+        return (Some(LspNotification::Error {
             message: format!("LSP error ({}): {}", error.code, error.message),
-        });
+        }), None);
     }
 
-    // Look up what kind of request this was
-    let kind = match pending.remove(&id) {
+    // Look up what kind of request this was (and remove it from pending)
+    let kind = match pending.lock() {
+        Ok(mut pending_map) => pending_map.remove(&id_num),
+        Err(_) => None,
+    };
+
+    let kind = match kind {
         Some(k) => k,
         None => {
-            // Unknown response ID - might be initialize response before tracking started
-            // Try to detect initialize response by checking for capabilities
-            if let Some(ref result) = msg.result {
-                if result.get("capabilities").is_some() {
-                    return Some(LspNotification::Initialized);
-                }
-            }
-            return None;
+            // Unknown response ID - could be a server request we didn't handle
+            // or a timing issue. Log and ignore.
+            return (None, None);
         }
     };
 
     // Dispatch based on request kind
-    match kind {
+    let notification = match kind {
         RequestKind::Initialize => {
             Some(LspNotification::Initialized)
         }
@@ -449,31 +688,177 @@ fn handle_message(
             // Shutdown response - nothing to notify
             None
         }
-        RequestKind::Completion => {
+        RequestKind::Completion { uri, line, character } => {
             match msg.result {
-                Some(result) if !result.is_null() => handle_completion_response(result),
-                _ => Some(LspNotification::Completions { items: vec![], is_incomplete: false }),
+                Some(result) if !result.is_null() => handle_completion_response(result, uri, line, character),
+                _ => Some(LspNotification::Completions {
+                    items: vec![],
+                    is_incomplete: false,
+                    request_uri: uri,
+                    request_line: line,
+                    request_character: character,
+                }),
             }
         }
-        RequestKind::Definition => {
+        RequestKind::Definition { uri, line: _, character: _ } => {
             match msg.result {
-                Some(result) if !result.is_null() => handle_definition_response(result),
-                _ => Some(LspNotification::Definition { locations: vec![] }),
+                Some(result) if !result.is_null() => handle_definition_response(result, uri),
+                _ => Some(LspNotification::Definition { locations: vec![], request_uri: uri }),
             }
         }
-        RequestKind::Hover => {
+        RequestKind::Hover { uri, line, character } => {
             match msg.result {
-                Some(result) if !result.is_null() => handle_hover_response(result),
-                _ => Some(LspNotification::Hover { contents: None }),
+                Some(result) if !result.is_null() => handle_hover_response(result, uri, line, character),
+                _ => Some(LspNotification::Hover {
+                    contents: None,
+                    request_uri: uri,
+                    request_line: line,
+                    request_character: character,
+                }),
             }
         }
-        RequestKind::SignatureHelp => {
+        RequestKind::SignatureHelp { uri, line, character } => {
             match msg.result {
-                Some(result) if !result.is_null() => handle_signature_help_response(result),
-                _ => Some(LspNotification::SignatureHelp { help: None }),
+                Some(result) if !result.is_null() => handle_signature_help_response(result, uri, line, character),
+                _ => Some(LspNotification::SignatureHelp {
+                    help: None,
+                    request_uri: uri,
+                    request_line: line,
+                    request_character: character,
+                }),
             }
+        }
+        RequestKind::Formatting { uri } => {
+            match msg.result {
+                Some(result) if !result.is_null() => handle_formatting_response(result, uri),
+                _ => Some(LspNotification::Formatting { edits: vec![], request_uri: uri }),
+            }
+        }
+        RequestKind::References { uri, line: _, character: _ } => {
+            match msg.result {
+                Some(result) if !result.is_null() => handle_references_response(result, uri),
+                _ => Some(LspNotification::References { locations: vec![], request_uri: uri }),
+            }
+        }
+        RequestKind::CodeAction { uri, .. } => {
+            match msg.result {
+                Some(result) if !result.is_null() => handle_code_action_response(result, uri),
+                _ => Some(LspNotification::CodeActions { actions: vec![], request_uri: uri }),
+            }
+        }
+        RequestKind::Rename { uri, .. } => {
+            match msg.result {
+                Some(result) if !result.is_null() => handle_rename_response(result, uri),
+                _ => Some(LspNotification::RenameResult { edits: vec![], request_uri: uri }),
+            }
+        }
+    };
+
+    (notification, None)
+}
+
+/// Handle a server-initiated request (server is asking us something)
+/// Returns a JSON-RPC response string to send back
+fn handle_server_request(id: JsonRpcId, method: &str, params: Option<Value>) -> Option<String> {
+    match method {
+        "workspace/configuration" => {
+            // Server is asking for configuration
+            // Return empty configs for each requested item
+            let items_count = params
+                .as_ref()
+                .and_then(|p| p.get("items"))
+                .and_then(|items| items.as_array())
+                .map(|arr| arr.len())
+                .unwrap_or(1);
+
+            // Return an array of empty objects (one per requested item)
+            let result: Vec<Value> = (0..items_count).map(|_| serde_json::json!({})).collect();
+
+            build_response(JsonRpcResponseOut {
+                jsonrpc: "2.0",
+                id,
+                result: Some(Value::Array(result)),
+                error: None,
+            })
+        }
+        "client/registerCapability" => {
+            // Server wants to register dynamic capabilities
+            // Acknowledge with null result
+            build_response(JsonRpcResponseOut {
+                jsonrpc: "2.0",
+                id,
+                result: Some(Value::Null),
+                error: None,
+            })
+        }
+        "window/workDoneProgress/create" => {
+            // Server wants to create a progress indicator
+            // Acknowledge with null result
+            build_response(JsonRpcResponseOut {
+                jsonrpc: "2.0",
+                id,
+                result: Some(Value::Null),
+                error: None,
+            })
+        }
+        "workspace/workspaceFolders" => {
+            // Server wants the list of workspace folders
+            build_response(JsonRpcResponseOut {
+                jsonrpc: "2.0",
+                id,
+                result: Some(Value::Array(vec![])),
+                error: None,
+            })
+        }
+        "window/showMessageRequest" => {
+            // We don't support interactive choices; return null.
+            build_response(JsonRpcResponseOut {
+                jsonrpc: "2.0",
+                id,
+                result: Some(Value::Null),
+                error: None,
+            })
+        }
+        "client/unregisterCapability" => {
+            // Accept unregister requests
+            build_response(JsonRpcResponseOut {
+                jsonrpc: "2.0",
+                id,
+                result: Some(Value::Null),
+                error: None,
+            })
+        }
+        "workspace/applyEdit" => {
+            // We don't support workspace edits yet; explicitly reject.
+            let result = serde_json::json!({
+                "applied": false,
+                "failureReason": "workspace edits not supported",
+            });
+            build_response(JsonRpcResponseOut {
+                jsonrpc: "2.0",
+                id,
+                result: Some(result),
+                error: None,
+            })
+        }
+        _ => {
+            // Unknown server request - return method not found error
+            build_response(JsonRpcResponseOut {
+                jsonrpc: "2.0",
+                id,
+                result: None,
+                error: Some(JsonRpcErrorOut {
+                    code: -32601,
+                    message: format!("Method not found: {}", method),
+                }),
+            })
         }
     }
+}
+
+fn build_response(response: JsonRpcResponseOut) -> Option<String> {
+    let body = serde_json::to_string(&response).ok()?;
+    Some(format!("Content-Length: {}\r\n\r\n{}", body.len(), body))
 }
 
 /// Handle a server notification
@@ -525,7 +910,12 @@ fn handle_notification(method: &str, params: Option<Value>) -> Option<LspNotific
 }
 
 /// Handle completion response
-fn handle_completion_response(result: Value) -> Option<LspNotification> {
+fn handle_completion_response(
+    result: Value,
+    request_uri: String,
+    request_line: u32,
+    request_character: u32,
+) -> Option<LspNotification> {
     // Parse isIncomplete flag (defaults to false for array format)
     let is_incomplete = if result.is_object() {
         result.get("isIncomplete").and_then(|v| v.as_bool()).unwrap_or(false)
@@ -616,11 +1006,17 @@ fn handle_completion_response(result: Value) -> Option<LspNotification> {
         })
         .collect();
 
-    Some(LspNotification::Completions { items, is_incomplete })
+    Some(LspNotification::Completions {
+        items,
+        is_incomplete,
+        request_uri,
+        request_line,
+        request_character,
+    })
 }
 
 /// Handle definition response - returns all locations for multi-definition support
-fn handle_definition_response(result: Value) -> Option<LspNotification> {
+fn handle_definition_response(result: Value, request_uri: String) -> Option<LspNotification> {
     // Can be a single Location, array of Locations, or array of LocationLinks
     let locations_json = if result.is_array() {
         result.as_array()?.clone()
@@ -647,11 +1043,16 @@ fn handle_definition_response(result: Value) -> Option<LspNotification> {
         })
         .collect();
 
-    Some(LspNotification::Definition { locations })
+    Some(LspNotification::Definition { locations, request_uri })
 }
 
 /// Handle hover response
-fn handle_hover_response(result: Value) -> Option<LspNotification> {
+fn handle_hover_response(
+    result: Value,
+    request_uri: String,
+    request_line: u32,
+    request_character: u32,
+) -> Option<LspNotification> {
     let contents = result.get("contents")?;
 
     let text = if contents.is_string() {
@@ -681,15 +1082,28 @@ fn handle_hover_response(result: Value) -> Option<LspNotification> {
 
     Some(LspNotification::Hover {
         contents: Some(text),
+        request_uri,
+        request_line,
+        request_character,
     })
 }
 
 /// Handle signature help response
-fn handle_signature_help_response(result: Value) -> Option<LspNotification> {
+fn handle_signature_help_response(
+    result: Value,
+    request_uri: String,
+    request_line: u32,
+    request_character: u32,
+) -> Option<LspNotification> {
     let signatures_json = result.get("signatures")?.as_array()?;
 
     if signatures_json.is_empty() {
-        return Some(LspNotification::SignatureHelp { help: None });
+        return Some(LspNotification::SignatureHelp {
+            help: None,
+            request_uri,
+            request_line,
+            request_character,
+        });
     }
 
     let active_signature = result
@@ -770,7 +1184,12 @@ fn handle_signature_help_response(result: Value) -> Option<LspNotification> {
         .collect();
 
     if signatures.is_empty() {
-        return Some(LspNotification::SignatureHelp { help: None });
+        return Some(LspNotification::SignatureHelp {
+            help: None,
+            request_uri,
+            request_line,
+            request_character,
+        });
     }
 
     Some(LspNotification::SignatureHelp {
@@ -779,5 +1198,206 @@ fn handle_signature_help_response(result: Value) -> Option<LspNotification> {
             active_signature,
             active_parameter,
         }),
+        request_uri,
+        request_line,
+        request_character,
     })
+}
+
+/// Handle formatting response
+fn handle_formatting_response(result: Value, request_uri: String) -> Option<LspNotification> {
+    // Result is an array of TextEdits or null
+    let edits_json = result.as_array()?;
+
+    let edits: Vec<TextEdit> = edits_json
+        .iter()
+        .filter_map(|edit| {
+            let range = edit.get("range")?;
+            let start = range.get("start")?;
+            let end = range.get("end")?;
+
+            Some(TextEdit {
+                start_line: start.get("line")?.as_u64()? as usize,
+                start_col: start.get("character")?.as_u64()? as usize,
+                end_line: end.get("line")?.as_u64()? as usize,
+                end_col: end.get("character")?.as_u64()? as usize,
+                new_text: edit.get("newText")?.as_str()?.to_string(),
+            })
+        })
+        .collect();
+
+    Some(LspNotification::Formatting { edits, request_uri })
+}
+
+/// Handle references response
+fn handle_references_response(result: Value, request_uri: String) -> Option<LspNotification> {
+    // Result is an array of Locations
+    let locations_json = result.as_array()?;
+
+    let locations: Vec<Location> = locations_json
+        .iter()
+        .filter_map(|loc| {
+            let uri = loc.get("uri")?.as_str()?.to_string();
+            let range = loc.get("range")?;
+            let start = range.get("start")?;
+            let line = start.get("line")?.as_u64()? as usize;
+            let col = start.get("character")?.as_u64()? as usize;
+
+            Some(Location { uri, line, col })
+        })
+        .collect();
+
+    Some(LspNotification::References { locations, request_uri })
+}
+
+/// Handle code action response
+fn handle_code_action_response(result: Value, request_uri: String) -> Option<LspNotification> {
+    // Result is an array of CodeAction or Command
+    let actions_json = result.as_array()?;
+
+    let actions: Vec<CodeActionItem> = actions_json
+        .iter()
+        .filter_map(|action| {
+            // Can be either a Command or a CodeAction
+            let title = action.get("title")?.as_str()?.to_string();
+            let kind = action.get("kind").and_then(|k| k.as_str()).map(|s| s.to_string());
+            let is_preferred = action.get("isPreferred").and_then(|p| p.as_bool()).unwrap_or(false);
+
+            // Parse workspace edit if present
+            let mut edits: Vec<(String, Vec<TextEdit>)> = Vec::new();
+
+            if let Some(edit) = action.get("edit") {
+                if let Some(changes) = edit.get("changes").and_then(|c| c.as_object()) {
+                    for (uri, file_edits) in changes {
+                        if let Some(file_edits_arr) = file_edits.as_array() {
+                            let text_edits: Vec<TextEdit> = file_edits_arr
+                                .iter()
+                                .filter_map(|e| {
+                                    let range = e.get("range")?;
+                                    let start = range.get("start")?;
+                                    let end = range.get("end")?;
+                                    Some(TextEdit {
+                                        start_line: start.get("line")?.as_u64()? as usize,
+                                        start_col: start.get("character")?.as_u64()? as usize,
+                                        end_line: end.get("line")?.as_u64()? as usize,
+                                        end_col: end.get("character")?.as_u64()? as usize,
+                                        new_text: e.get("newText")?.as_str()?.to_string(),
+                                    })
+                                })
+                                .collect();
+                            if !text_edits.is_empty() {
+                                edits.push((uri.clone(), text_edits));
+                            }
+                        }
+                    }
+                }
+                // Also handle documentChanges format
+                if let Some(doc_changes) = edit.get("documentChanges").and_then(|c| c.as_array()) {
+                    for doc_change in doc_changes {
+                        if let (Some(text_document), Some(file_edits_arr)) = (
+                            doc_change.get("textDocument"),
+                            doc_change.get("edits").and_then(|e| e.as_array()),
+                        ) {
+                            let uri = text_document.get("uri")?.as_str()?.to_string();
+                            let text_edits: Vec<TextEdit> = file_edits_arr
+                                .iter()
+                                .filter_map(|e| {
+                                    let range = e.get("range")?;
+                                    let start = range.get("start")?;
+                                    let end = range.get("end")?;
+                                    Some(TextEdit {
+                                        start_line: start.get("line")?.as_u64()? as usize,
+                                        start_col: start.get("character")?.as_u64()? as usize,
+                                        end_line: end.get("line")?.as_u64()? as usize,
+                                        end_col: end.get("character")?.as_u64()? as usize,
+                                        new_text: e.get("newText")?.as_str()?.to_string(),
+                                    })
+                                })
+                                .collect();
+                            if !text_edits.is_empty() {
+                                edits.push((uri, text_edits));
+                            }
+                        }
+                    }
+                }
+            }
+
+            let command = action.get("command").and_then(|c| c.get("command")).and_then(|t| t.as_str()).map(|s| s.to_string());
+
+            Some(CodeActionItem {
+                title,
+                kind,
+                is_preferred,
+                edits,
+                command,
+            })
+        })
+        .collect();
+
+    Some(LspNotification::CodeActions { actions, request_uri })
+}
+
+/// Handle rename response
+fn handle_rename_response(result: Value, request_uri: String) -> Option<LspNotification> {
+    // Result is a WorkspaceEdit
+    let mut edits: Vec<(String, Vec<TextEdit>)> = Vec::new();
+
+    // Handle "changes" format
+    if let Some(changes) = result.get("changes").and_then(|c| c.as_object()) {
+        for (uri, file_edits) in changes {
+            if let Some(file_edits_arr) = file_edits.as_array() {
+                let text_edits: Vec<TextEdit> = file_edits_arr
+                    .iter()
+                    .filter_map(|e| {
+                        let range = e.get("range")?;
+                        let start = range.get("start")?;
+                        let end = range.get("end")?;
+                        Some(TextEdit {
+                            start_line: start.get("line")?.as_u64()? as usize,
+                            start_col: start.get("character")?.as_u64()? as usize,
+                            end_line: end.get("line")?.as_u64()? as usize,
+                            end_col: end.get("character")?.as_u64()? as usize,
+                            new_text: e.get("newText")?.as_str()?.to_string(),
+                        })
+                    })
+                    .collect();
+                if !text_edits.is_empty() {
+                    edits.push((uri.clone(), text_edits));
+                }
+            }
+        }
+    }
+
+    // Handle "documentChanges" format
+    if let Some(doc_changes) = result.get("documentChanges").and_then(|c| c.as_array()) {
+        for doc_change in doc_changes {
+            if let (Some(text_document), Some(file_edits_arr)) = (
+                doc_change.get("textDocument"),
+                doc_change.get("edits").and_then(|e| e.as_array()),
+            ) {
+                if let Some(uri) = text_document.get("uri").and_then(|u| u.as_str()) {
+                    let text_edits: Vec<TextEdit> = file_edits_arr
+                        .iter()
+                        .filter_map(|e| {
+                            let range = e.get("range")?;
+                            let start = range.get("start")?;
+                            let end = range.get("end")?;
+                            Some(TextEdit {
+                                start_line: start.get("line")?.as_u64()? as usize,
+                                start_col: start.get("character")?.as_u64()? as usize,
+                                end_line: end.get("line")?.as_u64()? as usize,
+                                end_col: end.get("character")?.as_u64()? as usize,
+                                new_text: e.get("newText")?.as_str()?.to_string(),
+                            })
+                        })
+                        .collect();
+                    if !text_edits.is_empty() {
+                        edits.push((uri.to_string(), text_edits));
+                    }
+                }
+            }
+        }
+    }
+
+    Some(LspNotification::RenameResult { edits, request_uri })
 }
