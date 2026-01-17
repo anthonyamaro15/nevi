@@ -14,5 +14,5 @@ pub use editor::{Editor, Mode, Buffer, Cursor, LspAction};
 pub use explorer::FileExplorer;
 pub use finder::{FuzzyFinder, FinderMode, FloatingWindow};
 pub use frecency::FrecencyDb;
-pub use lsp::{LspManager, LspNotification, LspStatus};
+pub use lsp::{LspManager, LspNotification, LspStatus, MultiLspManager, LanguageId};
 pub use terminal::Terminal;

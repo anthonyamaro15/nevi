@@ -6,15 +6,14 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use nevi::editor::LspAction;
 use nevi::lsp;
 use nevi::terminal::handle_key;
-use nevi::{load_config, AutosaveMode, Editor, LspManager, LspNotification, Mode, Terminal};
+use nevi::{load_config, AutosaveMode, Editor, LanguageId, LspNotification, Mode, MultiLspManager, Terminal};
 
 fn main() -> anyhow::Result<()> {
     // Load configuration
     let settings = load_config();
     // Store LSP settings before moving settings into editor
     let lsp_enabled = settings.lsp.enabled;
-    let lsp_rust_command = settings.lsp.servers.rust.command.clone();
-    let lsp_rust_args = settings.lsp.servers.rust.args.clone();
+    let lsp_servers = settings.lsp.servers.clone();
     // Store autosave settings
     let autosave_mode = settings.editor.autosave.clone();
     let autosave_delay = Duration::from_millis(settings.editor.autosave_delay_ms);
@@ -64,11 +63,10 @@ fn main() -> anyhow::Result<()> {
         editor.open_finder_files();
     }
 
-    // Initialize LSP if enabled
-    // Start LSP even in project mode (when opening a directory) so it's ready when files are opened
-    let mut lsp_manager: Option<LspManager> = None;
+    // Initialize Multi-LSP manager if enabled
+    // Servers are started lazily when files of that type are opened
+    let mut multi_lsp: Option<MultiLspManager> = None;
     let mut lsp_current_file: Option<PathBuf> = None; // Track which file LSP knows about
-    let mut lsp_ready = false; // Track if LSP has finished initializing
 
     if lsp_enabled {
         // Determine workspace root - prefer project root, fall back to file's workspace
@@ -80,23 +78,22 @@ fn main() -> anyhow::Result<()> {
             env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
         };
 
-        // Start LSP with the workspace root
-        // NOTE: Don't send did_open yet - wait for Initialized notification first
-        match LspManager::start(&lsp_rust_command, &lsp_rust_args, workspace_root.clone()) {
-            Ok(mgr) => {
-                lsp_manager = Some(mgr);
-                editor.set_lsp_status("LSP: starting...");
-            }
-            Err(e) => {
-                editor.set_lsp_status(format!("LSP: failed - {}", e));
-            }
-        }
+        // Create MultiLspManager with all server configs
+        let mgr = MultiLspManager::new(
+            workspace_root,
+            lsp_servers.rust,
+            lsp_servers.typescript,
+            lsp_servers.javascript,
+            lsp_servers.css,
+            lsp_servers.json,
+        );
+        multi_lsp = Some(mgr);
+        editor.set_lsp_status("LSP: (no server)");
     }
 
     let debounce = Duration::from_millis(200);
     let poll_timeout = Duration::from_millis(16);
     let mut needs_redraw = true;
-    let mut lsp_document_version = 1;
 
     // Autosave state: track when the last edit occurred
     // When autosave_pending is Some, an autosave is scheduled for that time
@@ -110,19 +107,19 @@ fn main() -> anyhow::Result<()> {
     // Main event loop
     loop {
         // Process LSP notifications (non-blocking)
-        if let Some(ref mut lsp) = lsp_manager {
-            while let Some(notification) = lsp.try_recv() {
+        if let Some(ref mut mlsp) = multi_lsp {
+            for (lang, notification) in mlsp.poll_notifications() {
                 match notification {
                     LspNotification::Initialized => {
-                        lsp_ready = true;
-                        editor.set_lsp_status("LSP: ready");
+                        // Update status - server is now ready
+                        let current_path = editor.buffer().path.clone();
+                        editor.set_lsp_status(mlsp.status(current_path.as_ref().map(|p| p.as_path())));
 
-                        // Now that LSP is ready, send did_open for current file if it's a Rust file
-                        if let Some(path) = editor.buffer().path.clone() {
-                            if path.extension().map_or(false, |ext| ext == "rs") {
+                        // Now that this server is ready, send did_open for current file if it matches
+                        if let Some(path) = current_path {
+                            if LanguageId::from_path(&path) == Some(lang) {
                                 let text = editor.buffer().content();
-                                lsp_document_version = 1;
-                                if let Err(e) = lsp.did_open(&path, &text) {
+                                if let Err(e) = mlsp.did_open(&path, &text) {
                                     editor.set_lsp_status(format!("LSP: open error: {}", e));
                                 }
                                 lsp_current_file = Some(path);
@@ -131,9 +128,8 @@ fn main() -> anyhow::Result<()> {
                         needs_redraw = true;
                     }
                     LspNotification::Error { message } => {
-                        // Mark LSP as not ready so we stop sending requests to failed server
-                        lsp_ready = false;
-                        editor.set_lsp_status(format!("LSP: error - {}", message));
+                        // Update status with error
+                        editor.set_lsp_status(format!("LSP {}: error - {}", lang.as_lsp_id(), message));
                         needs_redraw = true;
                     }
                     LspNotification::Diagnostics { uri, diagnostics } => {
@@ -333,11 +329,8 @@ fn main() -> anyhow::Result<()> {
 
                             // Send didChange to LSP so it knows about the formatted content
                             if let Some(path) = editor.buffer().path.clone() {
-                                if path.extension().map_or(false, |ext| ext == "rs") {
-                                    lsp_document_version += 1;
-                                    let text = editor.buffer().content();
-                                    let _ = lsp.did_change(&path, lsp_document_version, &text);
-                                }
+                                let text = editor.buffer().content();
+                                let _ = mlsp.did_change(&path, &text);
                             }
                         }
                         // Clear the pending format flag
@@ -464,11 +457,8 @@ fn main() -> anyhow::Result<()> {
                                 ));
                                 // Send didChange to LSP for current file
                                 if let Some(path) = editor.buffer().path.clone() {
-                                    if path.extension().map_or(false, |ext| ext == "rs") {
-                                        lsp_document_version += 1;
-                                        let text = editor.buffer().content();
-                                        let _ = lsp.did_change(&path, lsp_document_version, &text);
-                                    }
+                                    let text = editor.buffer().content();
+                                    let _ = mlsp.did_change(&path, &text);
                                 }
                             }
                         }
@@ -513,11 +503,11 @@ fn main() -> anyhow::Result<()> {
                     && key.code == KeyCode::Char(' ');
 
                 if manual_completion {
-                    // Request completion from LSP (only if ready)
-                    if lsp_ready {
-                        if let Some(ref lsp) = lsp_manager {
-                            if let Some(path) = editor.buffer().path.clone() {
-                                let _ = lsp.completion(
+                    // Request completion from LSP (only if ready for this file type)
+                    if let Some(ref mut mlsp) = multi_lsp {
+                        if let Some(path) = editor.buffer().path.clone() {
+                            if mlsp.is_ready_for_file(&path) {
+                                let _ = mlsp.completion(
                                     &path,
                                     editor.cursor.line as u32,
                                     editor.cursor.col as u32,
@@ -531,40 +521,47 @@ fn main() -> anyhow::Result<()> {
 
                 // Handle pending LSP actions (gd, K) - only if LSP is ready
                 if let Some(action) = editor.pending_lsp_action.take() {
-                    if !lsp_ready {
-                        editor.set_status("LSP not ready");
-                    } else if let Some(ref lsp) = lsp_manager {
+                    if let Some(ref mut mlsp) = multi_lsp {
                         if let Some(path) = editor.buffer().path.clone() {
-                            let line = editor.cursor.line as u32;
-                            let col = editor.cursor.col as u32;
-                            match action {
-                                LspAction::GotoDefinition => {
-                                    let _ = lsp.goto_definition(&path, line, col);
+                            if !mlsp.is_ready_for_file(&path) {
+                                // Try to start server for this file type
+                                if let Err(e) = mlsp.ensure_server_for_file(&path) {
+                                    editor.set_status(format!("LSP: {}", e));
+                                } else {
+                                    editor.set_status("LSP starting...");
                                 }
-                                LspAction::Hover => {
-                                    let _ = lsp.hover(&path, line, col);
-                                }
-                                LspAction::Formatting => {
-                                    editor.pending_format = true;
-                                    let _ = lsp.formatting(&path);
-                                }
-                                LspAction::FindReferences => {
-                                    let _ = lsp.references(&path, line, col);
-                                }
-                                LspAction::CodeActions => {
-                                    // Get diagnostics at cursor position
-                                    let diagnostics = editor.all_diagnostics_at_cursor();
-                                    let _ = lsp.code_action(
-                                        &path,
-                                        line,
-                                        col,
-                                        line,
-                                        col,
-                                        diagnostics,
-                                    );
-                                }
-                                LspAction::RenameSymbol(new_name) => {
-                                    let _ = lsp.rename(&path, line, col, new_name);
+                            } else {
+                                let line = editor.cursor.line as u32;
+                                let col = editor.cursor.col as u32;
+                                match action {
+                                    LspAction::GotoDefinition => {
+                                        let _ = mlsp.goto_definition(&path, line, col);
+                                    }
+                                    LspAction::Hover => {
+                                        let _ = mlsp.hover(&path, line, col);
+                                    }
+                                    LspAction::Formatting => {
+                                        editor.pending_format = true;
+                                        let _ = mlsp.formatting(&path);
+                                    }
+                                    LspAction::FindReferences => {
+                                        let _ = mlsp.references(&path, line, col);
+                                    }
+                                    LspAction::CodeActions => {
+                                        // Get diagnostics at cursor position
+                                        let diagnostics = editor.all_diagnostics_at_cursor();
+                                        let _ = mlsp.code_action(
+                                            &path,
+                                            line,
+                                            col,
+                                            line,
+                                            col,
+                                            diagnostics,
+                                        );
+                                    }
+                                    LspAction::RenameSymbol(new_name) => {
+                                        let _ = mlsp.rename(&path, line, col, new_name);
+                                    }
                                 }
                             }
                         } else {
@@ -577,30 +574,36 @@ fn main() -> anyhow::Result<()> {
 
                 // Check if the current file has changed (e.g., opened from finder)
                 // If so, notify LSP with did_close for old file and did_open for new file
-                // Only do this when LSP is ready (has finished initializing)
                 let current_file = editor.buffer().path.clone();
-                if lsp_ready && current_file != lsp_current_file {
-                    if let Some(ref lsp) = lsp_manager {
+                if current_file != lsp_current_file {
+                    if let Some(ref mut mlsp) = multi_lsp {
                         // Close the old file if we had one
                         if let Some(ref old_path) = lsp_current_file {
-                            if old_path.extension().map_or(false, |ext| ext == "rs") {
-                                let _ = lsp.did_close(old_path);
-                            }
+                            let _ = mlsp.did_close(old_path);
                         }
 
-                        // Open the new file if it's a Rust file
+                        // Try to start server for new file type and open the file
                         if let Some(ref new_path) = current_file {
-                            if new_path.extension().map_or(false, |ext| ext == "rs") {
-                                let text = editor.buffer().content();
-                                lsp_document_version = 1; // Reset version for new file
-                                if let Err(e) = lsp.did_open(new_path, &text) {
-                                    editor.set_lsp_status(format!("LSP: open error: {}", e));
-                                } else {
-                                    editor.set_lsp_status("LSP: ready");
+                            // Ensure server is started for this file type
+                            match mlsp.ensure_server_for_file(new_path) {
+                                Ok(Some(lang)) => {
+                                    editor.set_lsp_status(format!("LSP: {} starting...", lang.as_lsp_id()));
                                 }
-                            } else {
-                                // Non-Rust file - clear LSP status
-                                editor.set_lsp_status("LSP: (not Rust)");
+                                Ok(None) => {
+                                    // No LSP for this file type
+                                    editor.set_lsp_status(mlsp.status(Some(new_path.as_path())));
+                                }
+                                Err(e) => {
+                                    editor.set_lsp_status(format!("LSP: failed - {}", e));
+                                }
+                            }
+
+                            // If server is ready, send did_open
+                            if mlsp.is_ready_for_file(new_path) {
+                                let text = editor.buffer().content();
+                                if let Err(e) = mlsp.did_open(new_path, &text) {
+                                    editor.set_lsp_status(format!("LSP: open error: {}", e));
+                                }
                             }
                         }
                     }
@@ -616,53 +619,50 @@ fn main() -> anyhow::Result<()> {
                         autosave_pending = Some(Instant::now() + autosave_delay);
                     }
 
-                    // Send document change to LSP (only if ready)
-                    if lsp_ready {
-                        if let Some(ref lsp) = lsp_manager {
-                            if let Some(path) = editor.buffer().path.clone() {
-                                if path.extension().map_or(false, |ext| ext == "rs") {
-                                    lsp_document_version += 1;
-                                    let text = editor.buffer().content();
-                                    let _ = lsp.did_change(&path, lsp_document_version, &text);
+                    // Send document change to LSP (only if ready for this file type)
+                    if let Some(ref mut mlsp) = multi_lsp {
+                        if let Some(path) = editor.buffer().path.clone() {
+                            if mlsp.is_ready_for_file(&path) {
+                                let text = editor.buffer().content();
+                                let _ = mlsp.did_change(&path, &text);
 
-                                    // Check for auto-completion triggers (. or :: or word chars)
-                                    // Use debouncing to avoid flooding LSP with requests
-                                    if editor.mode == Mode::Insert && should_trigger_completion(&editor) {
-                                        completion_pending = Some((
-                                            Instant::now(),
-                                            path.clone(),
-                                            editor.cursor.line as u32,
-                                            editor.cursor.col as u32,
-                                        ));
-                                    }
+                                // Check for auto-completion triggers (. or :: or word chars)
+                                // Use debouncing to avoid flooding LSP with requests
+                                if editor.mode == Mode::Insert && should_trigger_completion(&editor) {
+                                    completion_pending = Some((
+                                        Instant::now(),
+                                        path.clone(),
+                                        editor.cursor.line as u32,
+                                        editor.cursor.col as u32,
+                                    ));
+                                }
 
-                                    // Check for signature help triggers (( or ,)
-                                    if editor.mode == Mode::Insert && should_trigger_signature_help(&editor)
-                                    {
-                                        let _ = lsp.signature_help(
-                                            &path,
-                                            editor.cursor.line as u32,
-                                            editor.cursor.col as u32,
-                                        );
-                                    }
+                                // Check for signature help triggers (( or ,)
+                                if editor.mode == Mode::Insert && should_trigger_signature_help(&editor)
+                                {
+                                    let _ = mlsp.signature_help(
+                                        &path,
+                                        editor.cursor.line as u32,
+                                        editor.cursor.col as u32,
+                                    );
                                 }
                             }
                         }
                     }
 
-                    // Check if signature help should be dismissed (don't need lsp_ready)
+                    // Check if signature help should be dismissed
                     if editor.mode == Mode::Insert && should_dismiss_signature_help(&editor) {
                         editor.signature_help = None;
                     }
                 }
 
                 // Handle isIncomplete: re-request completions if filter text changed
-                if lsp_ready && editor.needs_completion_refresh {
+                if editor.needs_completion_refresh {
                     editor.needs_completion_refresh = false;
-                    if let Some(ref lsp) = lsp_manager {
+                    if let Some(ref mut mlsp) = multi_lsp {
                         if let Some(path) = editor.buffer().path.clone() {
-                            if path.extension().map_or(false, |ext| ext == "rs") {
-                                let _ = lsp.completion(
+                            if mlsp.is_ready_for_file(&path) {
+                                let _ = mlsp.completion(
                                     &path,
                                     editor.cursor.line as u32,
                                     editor.cursor.col as u32,
@@ -685,11 +685,13 @@ fn main() -> anyhow::Result<()> {
         if let Some((request_time, ref path, line, col)) = completion_pending {
             if request_time.elapsed() >= completion_debounce {
                 // Only send if still in insert mode and cursor hasn't moved significantly
-                if lsp_ready && editor.mode == Mode::Insert {
-                    if let Some(ref lsp) = lsp_manager {
-                        // Verify cursor position matches (user might have moved)
-                        if editor.cursor.line as u32 == line && editor.cursor.col as u32 == col {
-                            let _ = lsp.completion(path, line, col);
+                if editor.mode == Mode::Insert {
+                    if let Some(ref mut mlsp) = multi_lsp {
+                        if mlsp.is_ready_for_file(path) {
+                            // Verify cursor position matches (user might have moved)
+                            if editor.cursor.line as u32 == line && editor.cursor.col as u32 == col {
+                                let _ = mlsp.completion(path, line, col);
+                            }
                         }
                     }
                 }
@@ -729,9 +731,9 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Shutdown LSP gracefully
-    if let Some(mut lsp) = lsp_manager {
-        lsp.shutdown();
+    // Shutdown all LSP servers gracefully
+    if let Some(mut mlsp) = multi_lsp {
+        mlsp.shutdown();
     }
 
     Ok(())

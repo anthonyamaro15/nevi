@@ -260,15 +260,49 @@ impl Default for LspSettings {
 #[serde(default)]
 pub struct LspServers {
     pub rust: LspServerConfig,
+    pub typescript: LspServerConfig,
+    pub javascript: LspServerConfig,
+    pub css: LspServerConfig,
+    pub json: LspServerConfig,
 }
 
 impl Default for LspServers {
     fn default() -> Self {
         Self {
             rust: LspServerConfig {
+                enabled: true,
                 command: "rust-analyzer".to_string(),
                 args: Vec::new(),
                 root_patterns: vec!["Cargo.toml".to_string(), "rust-project.json".to_string()],
+                file_extensions: vec!["rs".to_string()],
+            },
+            typescript: LspServerConfig {
+                enabled: true,
+                command: "typescript-language-server".to_string(),
+                args: vec!["--stdio".to_string()],
+                root_patterns: vec!["tsconfig.json".to_string(), "package.json".to_string()],
+                file_extensions: vec!["ts".to_string(), "tsx".to_string(), "mts".to_string(), "cts".to_string()],
+            },
+            javascript: LspServerConfig {
+                enabled: true,
+                command: "typescript-language-server".to_string(),
+                args: vec!["--stdio".to_string()],
+                root_patterns: vec!["jsconfig.json".to_string(), "package.json".to_string()],
+                file_extensions: vec!["js".to_string(), "jsx".to_string(), "mjs".to_string(), "cjs".to_string()],
+            },
+            css: LspServerConfig {
+                enabled: true,
+                command: "vscode-css-language-server".to_string(),
+                args: vec!["--stdio".to_string()],
+                root_patterns: vec!["package.json".to_string()],
+                file_extensions: vec!["css".to_string(), "scss".to_string(), "sass".to_string(), "less".to_string()],
+            },
+            json: LspServerConfig {
+                enabled: true,
+                command: "vscode-json-language-server".to_string(),
+                args: vec!["--stdio".to_string()],
+                root_patterns: vec!["package.json".to_string()],
+                file_extensions: vec!["json".to_string(), "jsonc".to_string()],
             },
         }
     }
@@ -277,6 +311,9 @@ impl Default for LspServers {
 /// Configuration for a single language server
 #[derive(Debug, Clone, Deserialize)]
 pub struct LspServerConfig {
+    /// Enable this language server (default: true)
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     /// Command to run the server
     pub command: String,
     /// Arguments to pass to the server
@@ -285,6 +322,13 @@ pub struct LspServerConfig {
     /// Files that indicate the project root
     #[serde(default)]
     pub root_patterns: Vec<String>,
+    /// File extensions this server handles
+    #[serde(default)]
+    pub file_extensions: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Get the path to the config file
