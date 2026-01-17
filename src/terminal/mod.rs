@@ -3013,6 +3013,42 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.add_surrounding(text_object, surround_char);
         }
 
+        KeyAction::ToggleCommentLine => {
+            editor.toggle_comment_line();
+        }
+
+        KeyAction::ToggleCommentMotion(motion, count) => {
+            // Calculate the line range based on the motion
+            let start_line = editor.cursor.line;
+            let (end_line, _) = crate::input::apply_motion(
+                editor.buffer(),
+                motion,
+                editor.cursor.line,
+                editor.cursor.col,
+                count,
+                editor.text_rows(),
+            ).unwrap_or((start_line, 0));
+
+            let (first, last) = if start_line <= end_line {
+                (start_line, end_line)
+            } else {
+                (end_line, start_line)
+            };
+
+            editor.toggle_comment_lines(first, last);
+        }
+
+        KeyAction::ToggleCommentVisual => {
+            let (start_line, _, end_line, _) = editor.get_visual_range();
+            let (first, last) = if start_line <= end_line {
+                (start_line, end_line)
+            } else {
+                (end_line, start_line)
+            };
+            editor.toggle_comment_lines(first, last);
+            editor.enter_normal_mode();
+        }
+
         KeyAction::Unknown => {
             // Unknown key, ignore
         }
@@ -3458,6 +3494,28 @@ fn handle_search_mode(editor: &mut Editor, key: KeyEvent) {
 fn handle_visual_mode(editor: &mut Editor, key: KeyEvent) {
     use crate::input::Motion;
 
+    // Handle gc for comment toggle (after g was pressed)
+    if editor.input_state.pending_comment {
+        editor.input_state.pending_comment = false;
+        if matches!(key.code, KeyCode::Char('c')) {
+            // gc in visual mode - toggle comments on selection
+            let (start_line, _, end_line, _) = editor.get_visual_range();
+            let (first, last) = if start_line <= end_line {
+                (start_line, end_line)
+            } else {
+                (end_line, start_line)
+            };
+            editor.toggle_comment_lines(first, last);
+            editor.enter_normal_mode();
+            return;
+        }
+        // If not 'c', fall through to normal handling (e.g., gg)
+        if matches!(key.code, KeyCode::Char('g')) {
+            editor.apply_motion(Motion::FileStart, 1);
+            return;
+        }
+    }
+
     // Handle text object selection (after i or a was pressed)
     if let Some(modifier) = editor.input_state.pending_text_object.take() {
         let object_type = match (key.modifiers, key.code) {
@@ -3587,9 +3645,10 @@ fn handle_visual_mode(editor: &mut Editor, key: KeyEvent) {
             editor.apply_motion(Motion::MatchingBracket, 1);
         }
 
-        // File motions
+        // File motions and gc for comment toggle
         (KeyModifiers::NONE, KeyCode::Char('g')) => {
-            // Note: would need to handle gg sequence, for now just go to start
+            // Set pending_comment flag for gc sequence in visual mode
+            editor.input_state.pending_comment = true;
         }
         (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
             editor.apply_motion(Motion::FileEnd, 1);

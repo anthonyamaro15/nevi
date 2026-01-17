@@ -46,6 +46,8 @@ pub struct InputState {
     pub pending_surround_add: bool,
     /// Text object for surround add operation
     pub surround_add_object: Option<TextObject>,
+    /// Pending comment toggle (gc waiting for motion or second c)
+    pub pending_comment: bool,
 }
 
 /// Operators that can be combined with motions
@@ -188,6 +190,12 @@ pub enum KeyAction {
     ChangeSurround(char, char),
     /// Add surrounding to text object (ys)
     AddSurround(TextObject, char),
+    /// Toggle comment on current line (gcc)
+    ToggleCommentLine,
+    /// Toggle comment with motion (gc{motion})
+    ToggleCommentMotion(Motion, usize),
+    /// Toggle comment on visual selection
+    ToggleCommentVisual,
     /// Unknown/unhandled key
     Unknown,
 }
@@ -223,6 +231,7 @@ impl InputState {
         self.pending_surround_change = None;
         self.pending_surround_add = false;
         self.surround_add_object = None;
+        self.pending_comment = false;
         // Note: last_find_char is NOT reset - it persists for ; and , repeats
     }
 
@@ -390,6 +399,11 @@ impl InputState {
                 return KeyAction::Unknown;
             }
             return self.handle_text_object_type(modifier, key);
+        }
+
+        // Handle pending comment toggle (gc waiting for motion or 'c')
+        if self.pending_comment {
+            return self.handle_comment_motion(key, count);
         }
 
         match (key.modifiers, key.code) {
@@ -845,6 +859,11 @@ impl InputState {
                 self.reset();
                 KeyAction::FindReferences
             }
+            // gc - comment toggle (waits for motion or 'c' for line)
+            ('g', KeyModifiers::NONE, KeyCode::Char('c')) => {
+                self.pending_comment = true;
+                KeyAction::Pending
+            }
             // zz - scroll cursor to center of screen
             ('z', KeyModifiers::NONE, KeyCode::Char('z')) => {
                 self.reset();
@@ -1025,6 +1044,103 @@ impl InputState {
                 KeyAction::Pending
             }
             _ => KeyAction::Unknown,
+        }
+    }
+
+    /// Handle motion after gc (comment toggle)
+    fn handle_comment_motion(&mut self, key: KeyEvent, count: usize) -> KeyAction {
+        match (key.modifiers, key.code) {
+            // gcc - toggle comment on current line
+            (KeyModifiers::NONE, KeyCode::Char('c')) => {
+                self.reset();
+                KeyAction::ToggleCommentLine
+            }
+            // Escape cancels
+            (_, KeyCode::Esc) => {
+                self.reset();
+                KeyAction::Pending
+            }
+            // Line motions
+            (KeyModifiers::NONE, KeyCode::Char('j')) | (_, KeyCode::Down) => {
+                self.reset();
+                KeyAction::ToggleCommentMotion(Motion::Down, count)
+            }
+            (KeyModifiers::NONE, KeyCode::Char('k')) | (_, KeyCode::Up) => {
+                self.reset();
+                KeyAction::ToggleCommentMotion(Motion::Up, count)
+            }
+            // Word motions
+            (KeyModifiers::NONE, KeyCode::Char('w')) => {
+                self.reset();
+                KeyAction::ToggleCommentMotion(Motion::WordForward, count)
+            }
+            (KeyModifiers::SHIFT, KeyCode::Char('W')) => {
+                self.reset();
+                KeyAction::ToggleCommentMotion(Motion::BigWordForward, count)
+            }
+            (KeyModifiers::NONE, KeyCode::Char('b')) => {
+                self.reset();
+                KeyAction::ToggleCommentMotion(Motion::WordBackward, count)
+            }
+            (KeyModifiers::SHIFT, KeyCode::Char('B')) => {
+                self.reset();
+                KeyAction::ToggleCommentMotion(Motion::BigWordBackward, count)
+            }
+            (KeyModifiers::NONE, KeyCode::Char('e')) => {
+                self.reset();
+                KeyAction::ToggleCommentMotion(Motion::WordEnd, count)
+            }
+            // Line position motions
+            (KeyModifiers::NONE, KeyCode::Char('0')) => {
+                self.reset();
+                KeyAction::ToggleCommentMotion(Motion::LineStart, count)
+            }
+            (_, KeyCode::Char('$')) => {
+                self.reset();
+                KeyAction::ToggleCommentMotion(Motion::LineEnd, count)
+            }
+            (_, KeyCode::Char('^')) => {
+                self.reset();
+                KeyAction::ToggleCommentMotion(Motion::FirstNonBlank, count)
+            }
+            // Paragraph motions
+            (_, KeyCode::Char('}')) => {
+                self.reset();
+                KeyAction::ToggleCommentMotion(Motion::ParagraphForward, count)
+            }
+            (_, KeyCode::Char('{')) => {
+                self.reset();
+                KeyAction::ToggleCommentMotion(Motion::ParagraphBackward, count)
+            }
+            // File motions
+            (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
+                self.reset();
+                if self.count.is_some() {
+                    KeyAction::ToggleCommentMotion(Motion::GotoLine(count), 1)
+                } else {
+                    KeyAction::ToggleCommentMotion(Motion::FileEnd, 1)
+                }
+            }
+            // gg - file start (need to handle 'g' prefix)
+            (KeyModifiers::NONE, KeyCode::Char('g')) => {
+                // Set partial_key to handle gg
+                self.partial_key = Some('g');
+                // Keep pending_comment true for gcgg
+                KeyAction::Pending
+            }
+            // Text object support (gcip, gciw, etc.)
+            (KeyModifiers::NONE, KeyCode::Char('i')) => {
+                self.pending_text_object = Some(TextObjectModifier::Inner);
+                KeyAction::Pending
+            }
+            (KeyModifiers::NONE, KeyCode::Char('a')) => {
+                self.pending_text_object = Some(TextObjectModifier::Around);
+                KeyAction::Pending
+            }
+            _ => {
+                self.reset();
+                KeyAction::Unknown
+            }
         }
     }
 }
