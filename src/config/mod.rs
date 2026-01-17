@@ -87,7 +87,7 @@ impl Default for EditorSettings {
             line_numbers: true,
             relative_numbers: false,
             cursor_line: false,
-            scroll_off: 0,
+            scroll_off: 8, // Neovim-like default
             auto_indent: true,
             wrap: false,
             wrap_width: 80,
@@ -346,9 +346,128 @@ pub fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|p| p.join("nevi/config.toml"))
 }
 
+/// Template config file with comments explaining all options
+/// This is generated when no config file exists
+fn default_config_template() -> &'static str {
+    r#"# Nevi Configuration
+# This file is for overriding default settings.
+# All vim/neovim keybindings work out of the box - you don't need to configure them here.
+# Only add settings you want to change from the defaults.
+
+# ============================================================================
+# EDITOR SETTINGS
+# ============================================================================
+# [editor]
+# tab_width = 4              # Spaces per tab
+# line_numbers = true        # Show line numbers
+# relative_numbers = false   # Show relative line numbers
+# cursor_line = false        # Highlight current line
+# scroll_off = 8             # Lines to keep visible above/below cursor
+# auto_indent = true         # Smart indentation on new lines
+# wrap = false               # Soft word wrap
+# wrap_width = 80            # Column to wrap at
+# auto_pairs = true          # Auto-close brackets and quotes
+# format_on_save = false     # Format with LSP on save
+# autosave = "off"           # Options: "off", "after_delay", "on_focus_change"
+# autosave_delay_ms = 1000   # Delay for after_delay mode
+
+# ============================================================================
+# THEME
+# ============================================================================
+# [theme]
+# colorscheme = "onedark"    # Color scheme name
+
+# ============================================================================
+# FINDER (Fuzzy file picker, grep)
+# ============================================================================
+# [finder]
+# ignore_patterns = [".git", "node_modules", "target", "*.log"]
+# max_files = 10000          # Max files to scan
+# max_grep_results = 1000    # Max grep results
+
+# ============================================================================
+# KEYMAP
+# ============================================================================
+# All standard vim keybindings work by default (hjkl, w, b, e, d, c, y, etc.)
+# Leader key is Space by default.
+#
+# Default leader mappings (built-in):
+#   <leader>w   - Save file
+#   <leader>q   - Quit
+#   <leader>ff  - Find files
+#   <leader>fg  - Live grep
+#   <leader>fb  - Find buffers
+#   <leader>e   - Toggle file explorer
+#   <leader>ca  - Code actions
+#   <leader>rn  - Rename symbol
+#   <leader>gg  - Open lazygit
+#
+# To add or override leader mappings:
+# [keymap]
+# leader = " "  # Space (default)
+#
+# [[keymap.leader_mappings]]
+# key = "w"
+# action = ":w"
+# desc = "Save file"
+#
+# To remap keys in normal mode:
+# [[keymap.normal]]
+# from = "H"
+# to = "^"
+#
+# [[keymap.normal]]
+# from = "L"
+# to = "$"
+
+# ============================================================================
+# LSP (Language Server Protocol)
+# ============================================================================
+# LSP servers are auto-detected and enabled by default.
+# Supported: rust-analyzer, typescript-language-server, vscode-css-language-server, vscode-json-language-server
+#
+# To disable LSP entirely:
+# [lsp]
+# enabled = false
+#
+# To configure a specific server:
+# [lsp.servers.rust]
+# enabled = true
+# command = "rust-analyzer"
+# args = []
+#
+# [lsp.servers.typescript]
+# enabled = true
+# command = "typescript-language-server"
+# args = ["--stdio"]
+"#
+}
+
+/// Ensure config directory and template file exist
+fn ensure_config_exists() {
+    let Some(path) = config_path() else {
+        return;
+    };
+
+    // Create config directory if it doesn't exist
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+
+    // Create template config if it doesn't exist
+    if !path.exists() {
+        let _ = std::fs::write(&path, default_config_template());
+    }
+}
+
 /// Load settings from the config file
 /// Returns default settings if the file doesn't exist or can't be parsed
 pub fn load_config() -> Settings {
+    // Ensure config file exists (creates template if not)
+    ensure_config_exists();
+
     let Some(path) = config_path() else {
         return Settings::default();
     };

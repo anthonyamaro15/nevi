@@ -3663,6 +3663,181 @@ impl Editor {
         }
     }
 
+    // ============================================
+    // Comment toggle operations (gcc, gc{motion})
+    // ============================================
+
+    /// Toggle comment on the current line (gcc command)
+    pub fn toggle_comment_line(&mut self) {
+        self.toggle_comment_lines(self.cursor.line, self.cursor.line);
+    }
+
+    /// Toggle comment on a range of lines (gc{motion} command)
+    /// Uses the vim convention: if any line is uncommented, comment all; otherwise uncomment all
+    pub fn toggle_comment_lines(&mut self, start_line: usize, end_line: usize) {
+        let language = self.syntax.language_name();
+        let comment_start = crate::syntax::get_comment_string(language);
+        let comment_end = crate::syntax::get_comment_end(language);
+        let buffer = &self.buffers[self.current_buffer_idx];
+
+        // Determine if we should comment or uncomment
+        // If any line is not commented, we comment all; if all are commented, uncomment all
+        let mut all_commented = true;
+        for line_num in start_line..=end_line {
+            if line_num >= buffer.len_lines() {
+                break;
+            }
+            if !self.is_line_commented(line_num, comment_start) {
+                all_commented = false;
+                break;
+            }
+        }
+
+        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+
+        if all_commented {
+            // Uncomment all lines
+            for line_num in start_line..=end_line {
+                if line_num >= self.buffers[self.current_buffer_idx].len_lines() {
+                    break;
+                }
+                self.uncomment_line(line_num, comment_start, comment_end);
+            }
+        } else {
+            // Comment all lines
+            for line_num in start_line..=end_line {
+                if line_num >= self.buffers[self.current_buffer_idx].len_lines() {
+                    break;
+                }
+                self.comment_line(line_num, comment_start, comment_end);
+            }
+        }
+
+        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.buffers[self.current_buffer_idx].mark_modified();
+    }
+
+    /// Check if a line is commented
+    fn is_line_commented(&self, line_num: usize, comment_start: &str) -> bool {
+        let buffer = &self.buffers[self.current_buffer_idx];
+        if let Some(line) = buffer.line(line_num) {
+            let line_str: String = line.chars().collect();
+            let trimmed = line_str.trim_start();
+            // Empty lines are considered "commented" for the all_commented check
+            if trimmed.is_empty() {
+                return true;
+            }
+            trimmed.starts_with(comment_start.trim_end())
+        } else {
+            true
+        }
+    }
+
+    /// Comment a single line
+    fn comment_line(&mut self, line_num: usize, comment_start: &str, comment_end: Option<&str>) {
+        let buffer = &self.buffers[self.current_buffer_idx];
+        if let Some(line) = buffer.line(line_num) {
+            let line_str: String = line.chars().collect();
+            let line_str = line_str.trim_end_matches('\n');
+
+            // Find the indentation
+            let indent_len = line_str.len() - line_str.trim_start().len();
+
+            // Skip empty lines
+            if line_str.trim().is_empty() {
+                return;
+            }
+
+            // Record deletion of entire line content
+            self.undo_stack.record_change(Change::delete(
+                line_num,
+                0,
+                line_str.to_string(),
+            ));
+
+            // Build new line with comment
+            let indent = &line_str[..indent_len];
+            let content = &line_str[indent_len..];
+            let new_line = if let Some(end) = comment_end {
+                format!("{}{}{}{}", indent, comment_start, content, end)
+            } else {
+                format!("{}{}{}", indent, comment_start, content)
+            };
+
+            // Delete old content and insert new
+            let old_len = self.buffers[self.current_buffer_idx].line_len(line_num);
+            for _ in 0..old_len {
+                self.buffers[self.current_buffer_idx].delete_char(line_num, 0);
+            }
+
+            self.undo_stack.record_change(Change::insert(
+                line_num,
+                0,
+                new_line.clone(),
+            ));
+            self.buffers[self.current_buffer_idx].insert_str(line_num, 0, &new_line);
+        }
+    }
+
+    /// Uncomment a single line
+    fn uncomment_line(&mut self, line_num: usize, comment_start: &str, comment_end: Option<&str>) {
+        let buffer = &self.buffers[self.current_buffer_idx];
+        if let Some(line) = buffer.line(line_num) {
+            let line_str: String = line.chars().collect();
+            let line_str = line_str.trim_end_matches('\n');
+            let trimmed = line_str.trim_start();
+
+            // Check if line is commented
+            let comment_prefix = comment_start.trim_end();
+            if !trimmed.starts_with(comment_prefix) {
+                return;
+            }
+
+            let indent_len = line_str.len() - trimmed.len();
+            let indent = &line_str[..indent_len];
+
+            // Remove comment prefix
+            let mut content = &trimmed[comment_prefix.len()..];
+
+            // Remove leading space after comment if present
+            if content.starts_with(' ') {
+                content = &content[1..];
+            }
+
+            // Remove comment suffix if present
+            if let Some(end) = comment_end {
+                let end_trimmed = end.trim_start();
+                if content.ends_with(end_trimmed) {
+                    content = &content[..content.len() - end_trimmed.len()];
+                    // Remove trailing space before comment end
+                    content = content.trim_end();
+                }
+            }
+
+            // Record deletion of entire line content
+            self.undo_stack.record_change(Change::delete(
+                line_num,
+                0,
+                line_str.to_string(),
+            ));
+
+            let new_line = format!("{}{}", indent, content);
+
+            // Delete old content and insert new
+            let old_len = self.buffers[self.current_buffer_idx].line_len(line_num);
+            for _ in 0..old_len {
+                self.buffers[self.current_buffer_idx].delete_char(line_num, 0);
+            }
+
+            self.undo_stack.record_change(Change::insert(
+                line_num,
+                0,
+                new_line.clone(),
+            ));
+            self.buffers[self.current_buffer_idx].insert_str(line_num, 0, &new_line);
+        }
+    }
+
     /// Get the open and close characters for a surround pair
     fn get_surround_pair(c: char) -> (char, char) {
         match c {

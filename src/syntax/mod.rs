@@ -370,3 +370,33 @@ fn buffer_to_string(buffer: &Buffer) -> String {
     }
     result
 }
+
+/// Get the line comment string for a language
+/// Returns the comment prefix (e.g., "// " for Rust/JS, "# " for Python)
+pub fn get_comment_string(language: Option<&str>) -> &'static str {
+    match language {
+        Some("rust") => "// ",
+        Some("javascript") | Some("typescript") | Some("tsx") => "// ",
+        Some("css") => "/* ",  // CSS only has block comments, but we use line-style
+        Some("json") => "// ",  // JSON doesn't support comments, but some tools allow //
+        Some("markdown") => "<!-- ",  // HTML-style for markdown
+        Some("python") => "# ",
+        Some("bash") | Some("shell") => "# ",
+        Some("lua") => "-- ",
+        Some("yaml") | Some("toml") => "# ",
+        Some("go") | Some("c") | Some("cpp") | Some("java") | Some("swift") => "// ",
+        Some("ruby") | Some("perl") => "# ",
+        Some("html") | Some("xml") => "<!-- ",
+        _ => "// ",  // Default fallback
+    }
+}
+
+/// Get the closing comment string for block-style comments (if any)
+/// Returns None for line-style comments like //
+pub fn get_comment_end(language: Option<&str>) -> Option<&'static str> {
+    match language {
+        Some("css") => Some(" */"),
+        Some("markdown") | Some("html") | Some("xml") => Some(" -->"),
+        _ => None,
+    }
+}
