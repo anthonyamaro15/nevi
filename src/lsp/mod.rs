@@ -265,7 +265,8 @@ fn run_lsp_thread(
     }
 
     // Process requests
-    let mut initialized = false;
+    // Note: 'initialized' notification is now sent immediately by the reader thread
+    // when it receives the initialize response, before any other requests
     loop {
         match request_rx.recv() {
             Ok(request) => {
@@ -284,15 +285,6 @@ fn run_lsp_thread(
                         version,
                         text,
                     } => {
-                        // Send initialized notification if we haven't yet
-                        if !initialized {
-                            if let Err(e) = client.initialized() {
-                                let _ = notification_tx.send(LspNotification::Error {
-                                    message: format!("Failed to send initialized: {}", e),
-                                });
-                            }
-                            initialized = true;
-                        }
                         if let Err(e) = client.did_open(&uri, &language_id, version, &text) {
                             let _ = notification_tx.send(LspNotification::Error {
                                 message: format!("Failed to send didOpen: {}", e),

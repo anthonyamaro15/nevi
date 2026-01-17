@@ -102,6 +102,11 @@ fn main() -> anyhow::Result<()> {
     // When autosave_pending is Some, an autosave is scheduled for that time
     let mut autosave_pending: Option<Instant> = None;
 
+    // Completion debouncing: delay completion requests to avoid flooding LSP
+    // Stores (request_time, path, line, col) - request is sent after debounce period
+    let completion_debounce = Duration::from_millis(50);
+    let mut completion_pending: Option<(Instant, PathBuf, u32, u32)> = None;
+
     // Main event loop
     loop {
         // Process LSP notifications (non-blocking)
@@ -126,6 +131,8 @@ fn main() -> anyhow::Result<()> {
                         needs_redraw = true;
                     }
                     LspNotification::Error { message } => {
+                        // Mark LSP as not ready so we stop sending requests to failed server
+                        lsp_ready = false;
                         editor.set_lsp_status(format!("LSP: error - {}", message));
                         needs_redraw = true;
                     }
@@ -239,17 +246,31 @@ fn main() -> anyhow::Result<()> {
                     LspNotification::Hover {
                         contents,
                         request_uri,
-                        request_line: _,
-                        request_character: _,
+                        request_line,
+                        request_character,
                     } => {
                         // Validate response is for current file
                         let current_uri = editor.buffer().path.as_ref()
                             .map(|p| lsp::path_to_uri(p));
                         if current_uri.as_ref() != Some(&request_uri) {
-                            // Stale response - ignore
+                            // Stale response - wrong file
                             needs_redraw = true;
                             continue;
                         }
+
+                        // Validate cursor position hasn't moved too far
+                        // Allow some tolerance (user might have moved slightly while waiting)
+                        let cursor_line = editor.cursor.line as u32;
+                        let cursor_col = editor.cursor.col as u32;
+                        let line_diff = (cursor_line as i32 - request_line as i32).abs();
+                        let col_diff = (cursor_col as i32 - request_character as i32).abs();
+
+                        if line_diff > 2 || (line_diff == 0 && col_diff > 10) {
+                            // Cursor moved too far - discard stale hover
+                            needs_redraw = true;
+                            continue;
+                        }
+
                         // Handle hover - show popup with full content
                         match contents {
                             Some(text) => {
@@ -265,17 +286,27 @@ fn main() -> anyhow::Result<()> {
                     LspNotification::SignatureHelp {
                         help,
                         request_uri,
-                        request_line: _,
+                        request_line,
                         request_character: _,
                     } => {
                         // Validate response is for current file
                         let current_uri = editor.buffer().path.as_ref()
                             .map(|p| lsp::path_to_uri(p));
                         if current_uri.as_ref() != Some(&request_uri) {
-                            // Stale response - ignore
+                            // Stale response - wrong file
                             needs_redraw = true;
                             continue;
                         }
+
+                        // Validate cursor is still on the same line
+                        // Signature help is tied to function call position
+                        let cursor_line = editor.cursor.line as u32;
+                        if cursor_line != request_line {
+                            // Cursor moved to different line - signature help is stale
+                            needs_redraw = true;
+                            continue;
+                        }
+
                         // Store signature help for rendering
                         editor.signature_help = help;
                         needs_redraw = true;
@@ -394,6 +425,8 @@ fn main() -> anyhow::Result<()> {
                             // Apply rename edits to all affected files
                             let mut total_edits = 0;
                             let mut files_changed = 0;
+                            let mut errors: Vec<String> = Vec::new();
+
                             for (uri, file_edits) in edits {
                                 if let Some(path) = lsp::uri_to_path(&uri) {
                                     // Check if this is the current file
@@ -403,22 +436,33 @@ fn main() -> anyhow::Result<()> {
                                         total_edits += file_edits.len();
                                         files_changed += 1;
                                     } else {
-                                        // For other files, we need to open, edit, and save them
-                                        // This is more complex - for now just note it
-                                        editor.set_status(format!(
-                                            "Rename affects {} files - only current file modified",
-                                            files_changed + 1
-                                        ));
+                                        // Apply edits to other files: read, modify, write
+                                        match apply_edits_to_file(&path, &file_edits) {
+                                            Ok(edit_count) => {
+                                                total_edits += edit_count;
+                                                files_changed += 1;
+                                            }
+                                            Err(e) => {
+                                                errors.push(format!("{}: {}", path.display(), e));
+                                            }
+                                        }
                                     }
                                 }
                             }
-                            if total_edits > 0 {
+
+                            if !errors.is_empty() {
+                                editor.set_status(format!(
+                                    "Rename: {} error(s) - {}",
+                                    errors.len(),
+                                    errors.first().unwrap_or(&String::new())
+                                ));
+                            } else if total_edits > 0 {
                                 editor.set_status(format!(
                                     "Renamed: {} edits in {} file(s)",
                                     total_edits,
                                     files_changed
                                 ));
-                                // Send didChange to LSP
+                                // Send didChange to LSP for current file
                                 if let Some(path) = editor.buffer().path.clone() {
                                     if path.extension().map_or(false, |ext| ext == "rs") {
                                         lsp_document_version += 1;
@@ -581,13 +625,15 @@ fn main() -> anyhow::Result<()> {
                                     let text = editor.buffer().content();
                                     let _ = lsp.did_change(&path, lsp_document_version, &text);
 
-                                    // Check for auto-completion triggers (. or ::)
+                                    // Check for auto-completion triggers (. or :: or word chars)
+                                    // Use debouncing to avoid flooding LSP with requests
                                     if editor.mode == Mode::Insert && should_trigger_completion(&editor) {
-                                        let _ = lsp.completion(
-                                            &path,
+                                        completion_pending = Some((
+                                            Instant::now(),
+                                            path.clone(),
                                             editor.cursor.line as u32,
                                             editor.cursor.col as u32,
-                                        );
+                                        ));
                                     }
 
                                     // Check for signature help triggers (( or ,)
@@ -633,6 +679,22 @@ fn main() -> anyhow::Result<()> {
             }
         } else if editor.maybe_update_syntax_debounced(debounce) {
             needs_redraw = true;
+        }
+
+        // Check for pending completion requests (debounced)
+        if let Some((request_time, ref path, line, col)) = completion_pending {
+            if request_time.elapsed() >= completion_debounce {
+                // Only send if still in insert mode and cursor hasn't moved significantly
+                if lsp_ready && editor.mode == Mode::Insert {
+                    if let Some(ref lsp) = lsp_manager {
+                        // Verify cursor position matches (user might have moved)
+                        if editor.cursor.line as u32 == line && editor.cursor.col as u32 == col {
+                            let _ = lsp.completion(path, line, col);
+                        }
+                    }
+                }
+                completion_pending = None;
+            }
         }
 
         // Check for autosave (only if not in modal/picker and buffer has file path)
@@ -767,6 +829,80 @@ fn calculate_word_start(editor: &Editor, line_idx: usize, col: usize) -> usize {
     }
 
     col
+}
+
+/// Apply LSP text edits to a file on disk
+/// Reads the file, applies edits in reverse order, and writes back
+fn apply_edits_to_file(path: &std::path::Path, edits: &[lsp::types::TextEdit]) -> anyhow::Result<usize> {
+    use std::fs;
+
+    // Read the file content
+    let content = fs::read_to_string(path)?;
+    let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+
+    // Handle files that end with newline (lines() strips the trailing newline)
+    if content.ends_with('\n') && !lines.is_empty() {
+        // Add empty string to represent the trailing newline
+    }
+
+    // Sort edits by position (reverse order) so we can apply from end to start
+    let mut sorted_edits: Vec<&lsp::types::TextEdit> = edits.iter().collect();
+    sorted_edits.sort_by(|a, b| {
+        match b.end_line.cmp(&a.end_line) {
+            std::cmp::Ordering::Equal => b.end_col.cmp(&a.end_col),
+            other => other,
+        }
+    });
+
+    // Apply each edit
+    for edit in &sorted_edits {
+        // Delete the range
+        if edit.start_line < lines.len() {
+            if edit.start_line == edit.end_line {
+                // Single line edit
+                let line = &mut lines[edit.start_line];
+                let start = edit.start_col.min(line.len());
+                let end = edit.end_col.min(line.len());
+                line.replace_range(start..end, &edit.new_text);
+            } else {
+                // Multi-line edit
+                let start_line_content = if edit.start_line < lines.len() {
+                    lines[edit.start_line].chars().take(edit.start_col).collect::<String>()
+                } else {
+                    String::new()
+                };
+                let end_line_content = if edit.end_line < lines.len() {
+                    lines[edit.end_line].chars().skip(edit.end_col).collect::<String>()
+                } else {
+                    String::new()
+                };
+
+                // Remove the affected lines
+                let remove_start = edit.start_line;
+                let remove_end = (edit.end_line + 1).min(lines.len());
+                lines.drain(remove_start..remove_end);
+
+                // Insert the new content
+                let new_content = format!("{}{}{}", start_line_content, edit.new_text, end_line_content);
+                let new_lines: Vec<String> = new_content.lines().map(|s| s.to_string()).collect();
+                for (i, line) in new_lines.into_iter().enumerate() {
+                    lines.insert(edit.start_line + i, line);
+                }
+            }
+        }
+    }
+
+    // Write back to file
+    let new_content = lines.join("\n");
+    // Preserve trailing newline if original had one
+    let final_content = if content.ends_with('\n') && !new_content.ends_with('\n') {
+        format!("{}\n", new_content)
+    } else {
+        new_content
+    };
+    fs::write(path, final_content)?;
+
+    Ok(sorted_edits.len())
 }
 
 /// Check if we should auto-trigger signature help based on the character just typed

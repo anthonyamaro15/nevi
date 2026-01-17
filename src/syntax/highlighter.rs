@@ -53,6 +53,13 @@ pub fn get_line_highlights(
         return spans; // Graceful degradation: no highlighting for this line
     }
 
+    // Extract the line content for byte-to-char conversion
+    let line_content = &source[line_start_byte..line_end_byte];
+
+    // Build a byte-to-char mapping for this line
+    // This converts tree-sitter byte offsets to character indices for rendering
+    let byte_to_char = build_byte_to_char_map(line_content);
+
     let root = tree.root_node();
 
     // Query only the nodes that intersect with this line
@@ -75,12 +82,16 @@ pub fn get_line_highlights(
                     continue;
                 }
 
-                // Clamp to line boundaries and convert to column indices
+                // Clamp to line boundaries (in bytes)
                 let start_byte = node_start.max(line_start_byte);
                 let end_byte = node_end.min(line_end_byte);
 
-                let start_col = start_byte - line_start_byte;
-                let end_col = end_byte - line_start_byte;
+                // Convert byte offsets (relative to line start) to char indices
+                let start_byte_rel = start_byte - line_start_byte;
+                let end_byte_rel = end_byte - line_start_byte;
+
+                let start_col = byte_offset_to_char_index(&byte_to_char, start_byte_rel);
+                let end_col = byte_offset_to_char_index(&byte_to_char, end_byte_rel);
 
                 if start_col < end_col {
                     spans.push(HighlightSpan {
@@ -97,6 +108,41 @@ pub fn get_line_highlights(
     spans.sort_by_key(|s| s.start_col);
 
     spans
+}
+
+/// Build a mapping from byte offsets to char indices for a given string
+/// Returns a vector where index is byte offset and value is char index
+fn build_byte_to_char_map(s: &str) -> Vec<usize> {
+    let mut map = Vec::with_capacity(s.len() + 1);
+    let mut char_idx = 0;
+
+    for (byte_idx, _c) in s.char_indices() {
+        // Fill in the mapping for all bytes of this character
+        while map.len() < byte_idx {
+            map.push(char_idx);
+        }
+        map.push(char_idx);
+        char_idx += 1;
+    }
+
+    // Fill remaining bytes (for the end position)
+    while map.len() <= s.len() {
+        map.push(char_idx);
+    }
+
+    map
+}
+
+/// Convert a byte offset to a char index using the precomputed map
+fn byte_offset_to_char_index(byte_to_char: &[usize], byte_offset: usize) -> usize {
+    if byte_offset < byte_to_char.len() {
+        byte_to_char[byte_offset]
+    } else if !byte_to_char.is_empty() {
+        // Past the end - return the last char index
+        *byte_to_char.last().unwrap()
+    } else {
+        0
+    }
 }
 
 /// Get the highlight query for Rust
@@ -171,7 +217,7 @@ pub fn rust_highlight_query() -> &'static str {
 /// Get the highlight query for JavaScript/JSX
 pub fn javascript_highlight_query() -> &'static str {
     r##"
-; Comments
+; Comments (highest priority)
 (comment) @comment
 
 ; Strings
@@ -181,35 +227,124 @@ pub fn javascript_highlight_query() -> &'static str {
 ; Numbers
 (number) @number
 
-; Booleans
+; Constants/Booleans
 (true) @constant
 (false) @constant
 (null) @constant
+(undefined) @constant
 
-; Functions
+; Keywords - control flow
+"if" @keyword
+"else" @keyword
+"switch" @keyword
+"case" @keyword
+"default" @keyword
+"for" @keyword
+"while" @keyword
+"do" @keyword
+"break" @keyword
+"continue" @keyword
+"return" @keyword
+"throw" @keyword
+"try" @keyword
+"catch" @keyword
+"finally" @keyword
+
+; Keywords - declarations
+"const" @keyword
+"let" @keyword
+"var" @keyword
+"function" @keyword
+"class" @keyword
+"extends" @keyword
+"static" @keyword
+"get" @keyword
+"set" @keyword
+"async" @keyword
+"await" @keyword
+"yield" @keyword
+"new" @keyword
+"delete" @keyword
+"typeof" @keyword
+"instanceof" @keyword
+"in" @keyword
+"of" @keyword
+
+; Keywords - modules
+"import" @keyword
+"from" @keyword
+"export" @keyword
+"as" @keyword
+
+; Function definitions
 (function_declaration name: (identifier) @function)
-(call_expression function: (identifier) @function.call)
+(generator_function_declaration name: (identifier) @function)
+(method_definition name: (property_identifier) @function)
+(arrow_function) @function
 
-; Classes
+; Function calls
+(call_expression function: (identifier) @function.call)
+(call_expression function: (member_expression property: (property_identifier) @function.call))
+
+; Class definitions
 (class_declaration name: (identifier) @type)
 
-; Properties
-(property_identifier) @property
+; Variable declarations
+(variable_declarator name: (identifier) @variable)
 
-; JSX
+; Parameters
+(formal_parameters (identifier) @variable)
+
+; Properties and fields
+(property_identifier) @property
+(shorthand_property_identifier) @property
+
+; Object keys
+(pair key: (property_identifier) @property)
+
+; This and super
+(this) @variable.builtin
+(super) @variable.builtin
+
+; JSX elements
 (jsx_opening_element name: (identifier) @tag)
 (jsx_closing_element name: (identifier) @tag)
 (jsx_self_closing_element name: (identifier) @tag)
+(jsx_attribute (property_identifier) @property)
 
-; This
-(this) @variable.builtin
+; Operators
+"=" @operator
+"+=" @operator
+"-=" @operator
+"*=" @operator
+"/=" @operator
+"+" @operator
+"-" @operator
+"*" @operator
+"/" @operator
+"%" @operator
+"==" @operator
+"===" @operator
+"!=" @operator
+"!==" @operator
+"<" @operator
+">" @operator
+"<=" @operator
+">=" @operator
+"&&" @operator
+"||" @operator
+"!" @operator
+"?" @operator
+":" @operator
+"=>" @operator
+"..." @operator
 "##
 }
 
 /// Get the highlight query for TypeScript
 pub fn typescript_highlight_query() -> &'static str {
     r##"
-; Comments
+; Comments (highest priority)
 (comment) @comment
 
 ; Strings
@@ -219,34 +354,160 @@ pub fn typescript_highlight_query() -> &'static str {
 ; Numbers
 (number) @number
 
-; Booleans
+; Constants/Booleans
 (true) @constant
 (false) @constant
 (null) @constant
+(undefined) @constant
 
-; Functions
-(function_declaration name: (identifier) @function)
-(call_expression function: (identifier) @function.call)
+; Keywords - control flow
+"if" @keyword
+"else" @keyword
+"switch" @keyword
+"case" @keyword
+"default" @keyword
+"for" @keyword
+"while" @keyword
+"do" @keyword
+"break" @keyword
+"continue" @keyword
+"return" @keyword
+"throw" @keyword
+"try" @keyword
+"catch" @keyword
+"finally" @keyword
 
-; Types
+; Keywords - declarations
+"const" @keyword
+"let" @keyword
+"var" @keyword
+"function" @keyword
+"class" @keyword
+"extends" @keyword
+"implements" @keyword
+"static" @keyword
+"get" @keyword
+"set" @keyword
+"async" @keyword
+"await" @keyword
+"yield" @keyword
+"new" @keyword
+"delete" @keyword
+"typeof" @keyword
+"instanceof" @keyword
+"in" @keyword
+"of" @keyword
+"readonly" @keyword
+"private" @keyword
+"public" @keyword
+"protected" @keyword
+"abstract" @keyword
+
+; Keywords - TypeScript specific
+"interface" @keyword
+"type" @keyword
+"enum" @keyword
+"namespace" @keyword
+"module" @keyword
+"declare" @keyword
+"keyof" @keyword
+"infer" @keyword
+"is" @keyword
+"asserts" @keyword
+"satisfies" @keyword
+
+; Keywords - modules
+"import" @keyword
+"from" @keyword
+"export" @keyword
+"as" @keyword
+
+; Type annotations
 (type_identifier) @type
 (predefined_type) @type
 
-; Interfaces
+; Interface and type declarations
 (interface_declaration name: (type_identifier) @type)
+(type_alias_declaration name: (type_identifier) @type)
+(enum_declaration name: (identifier) @type)
 
-; Properties
+; Generic types
+(generic_type name: (type_identifier) @type)
+(type_parameter name: (type_identifier) @type)
+
+; Function definitions
+(function_declaration name: (identifier) @function)
+(generator_function_declaration name: (identifier) @function)
+(method_definition name: (property_identifier) @function)
+(method_signature name: (property_identifier) @function)
+(arrow_function) @function
+
+; Function calls
+(call_expression function: (identifier) @function.call)
+(call_expression function: (member_expression property: (property_identifier) @function.call))
+
+; Class definitions
+(class_declaration name: (type_identifier) @type)
+
+; Variable declarations
+(variable_declarator name: (identifier) @variable)
+
+; Parameters
+(required_parameter pattern: (identifier) @variable)
+(optional_parameter pattern: (identifier) @variable)
+
+; Properties and fields
 (property_identifier) @property
+(shorthand_property_identifier) @property
+(public_field_definition name: (property_identifier) @property)
 
-; This
+; Object keys
+(pair key: (property_identifier) @property)
+
+; This and super
 (this) @variable.builtin
+(super) @variable.builtin
+
+; Decorators
+(decorator "@" @attribute)
+(decorator (identifier) @attribute)
+(decorator (call_expression function: (identifier) @attribute))
+
+; Operators
+"=" @operator
+"+=" @operator
+"-=" @operator
+"*=" @operator
+"/=" @operator
+"+" @operator
+"-" @operator
+"*" @operator
+"/" @operator
+"%" @operator
+"==" @operator
+"===" @operator
+"!=" @operator
+"!==" @operator
+"<" @operator
+">" @operator
+"<=" @operator
+">=" @operator
+"&&" @operator
+"||" @operator
+"!" @operator
+"?" @operator
+":" @operator
+"=>" @operator
+"..." @operator
+"|" @operator
+"&" @operator
 "##
 }
 
 /// Get the highlight query for TSX (TypeScript + JSX)
 pub fn tsx_highlight_query() -> &'static str {
     r##"
-; Comments
+; Comments (highest priority)
 (comment) @comment
 
 ; Strings
@@ -256,32 +517,159 @@ pub fn tsx_highlight_query() -> &'static str {
 ; Numbers
 (number) @number
 
-; Booleans
+; Constants/Booleans
 (true) @constant
 (false) @constant
 (null) @constant
+(undefined) @constant
 
-; Functions
-(function_declaration name: (identifier) @function)
-(call_expression function: (identifier) @function.call)
+; Keywords - control flow
+"if" @keyword
+"else" @keyword
+"switch" @keyword
+"case" @keyword
+"default" @keyword
+"for" @keyword
+"while" @keyword
+"do" @keyword
+"break" @keyword
+"continue" @keyword
+"return" @keyword
+"throw" @keyword
+"try" @keyword
+"catch" @keyword
+"finally" @keyword
 
-; Types
+; Keywords - declarations
+"const" @keyword
+"let" @keyword
+"var" @keyword
+"function" @keyword
+"class" @keyword
+"extends" @keyword
+"implements" @keyword
+"static" @keyword
+"get" @keyword
+"set" @keyword
+"async" @keyword
+"await" @keyword
+"yield" @keyword
+"new" @keyword
+"delete" @keyword
+"typeof" @keyword
+"instanceof" @keyword
+"in" @keyword
+"of" @keyword
+"readonly" @keyword
+"private" @keyword
+"public" @keyword
+"protected" @keyword
+"abstract" @keyword
+
+; Keywords - TypeScript specific
+"interface" @keyword
+"type" @keyword
+"enum" @keyword
+"namespace" @keyword
+"module" @keyword
+"declare" @keyword
+"keyof" @keyword
+"infer" @keyword
+"is" @keyword
+"asserts" @keyword
+"satisfies" @keyword
+
+; Keywords - modules
+"import" @keyword
+"from" @keyword
+"export" @keyword
+"as" @keyword
+
+; Type annotations
 (type_identifier) @type
 (predefined_type) @type
 
-; Interfaces
+; Interface and type declarations
 (interface_declaration name: (type_identifier) @type)
+(type_alias_declaration name: (type_identifier) @type)
+(enum_declaration name: (identifier) @type)
 
-; Properties
+; Generic types
+(generic_type name: (type_identifier) @type)
+(type_parameter name: (type_identifier) @type)
+
+; Function definitions
+(function_declaration name: (identifier) @function)
+(generator_function_declaration name: (identifier) @function)
+(method_definition name: (property_identifier) @function)
+(method_signature name: (property_identifier) @function)
+(arrow_function) @function
+
+; Function calls
+(call_expression function: (identifier) @function.call)
+(call_expression function: (member_expression property: (property_identifier) @function.call))
+
+; Class definitions
+(class_declaration name: (type_identifier) @type)
+
+; Variable declarations
+(variable_declarator name: (identifier) @variable)
+
+; Parameters
+(required_parameter pattern: (identifier) @variable)
+(optional_parameter pattern: (identifier) @variable)
+
+; Properties and fields
 (property_identifier) @property
+(shorthand_property_identifier) @property
+(public_field_definition name: (property_identifier) @property)
 
-; JSX
+; Object keys
+(pair key: (property_identifier) @property)
+
+; This and super
+(this) @variable.builtin
+(super) @variable.builtin
+
+; Decorators
+(decorator "@" @attribute)
+(decorator (identifier) @attribute)
+(decorator (call_expression function: (identifier) @attribute))
+
+; JSX elements
 (jsx_opening_element name: (identifier) @tag)
 (jsx_closing_element name: (identifier) @tag)
 (jsx_self_closing_element name: (identifier) @tag)
+(jsx_attribute (property_identifier) @property)
 
-; This
-(this) @variable.builtin
+; Operators
+"=" @operator
+"+=" @operator
+"-=" @operator
+"*=" @operator
+"/=" @operator
+"+" @operator
+"-" @operator
+"*" @operator
+"/" @operator
+"%" @operator
+"==" @operator
+"===" @operator
+"!=" @operator
+"!==" @operator
+"<" @operator
+">" @operator
+"<=" @operator
+">=" @operator
+"&&" @operator
+"||" @operator
+"!" @operator
+"?" @operator
+":" @operator
+"=>" @operator
+"..." @operator
+"|" @operator
+"&" @operator
 "##
 }
 
@@ -315,4 +703,74 @@ pub fn scss_highlight_query() -> &'static str {
     // SCSS uses the same CSS grammar with some extensions
     // We'll use the CSS query which covers most SCSS syntax
     css_highlight_query()
+}
+
+/// Get the highlight query for JSON
+pub fn json_highlight_query() -> &'static str {
+    r##"
+; Strings (keys and values)
+(string) @string
+
+; Object keys (property names)
+(pair key: (string) @property)
+
+; Numbers
+(number) @number
+
+; Booleans
+(true) @constant
+(false) @constant
+
+; Null
+(null) @constant
+
+; Punctuation - optional, can be noisy
+; "{" @punctuation
+; "}" @punctuation
+; "[" @punctuation
+; "]" @punctuation
+; ":" @punctuation
+; "," @punctuation
+"##
+}
+
+/// Get the highlight query for Markdown
+pub fn markdown_highlight_query() -> &'static str {
+    r##"
+; Headings
+(atx_heading) @keyword
+(setext_heading) @keyword
+
+; Code blocks
+(fenced_code_block) @string
+(indented_code_block) @string
+(code_span) @string
+
+; Links
+(link_destination) @string
+(link_text) @property
+(link_label) @property
+
+; Images
+(image) @property
+
+; Emphasis
+(emphasis) @variable
+(strong_emphasis) @variable
+
+; Block quotes
+(block_quote) @comment
+
+; Lists
+(list_marker_minus) @operator
+(list_marker_plus) @operator
+(list_marker_star) @operator
+(list_marker_dot) @operator
+
+; Thematic breaks (horizontal rules)
+(thematic_break) @comment
+
+; HTML in markdown
+(html_block) @tag
+"##
 }
