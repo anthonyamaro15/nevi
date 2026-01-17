@@ -175,6 +175,11 @@ fn parse_action(action: &str) -> LeaderAction {
 /// - Special keys: "<CR>", "<Esc>", "<Tab>", "<BS>", "<Space>"
 /// - Function keys: "<F1>" through "<F12>"
 pub fn parse_key_notation(s: &str) -> Option<KeyEvent> {
+    // Handle single space character before trimming (since space is a valid leader key)
+    if s == " " {
+        return Some(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    }
+
     let s = s.trim();
 
     if s.is_empty() {
@@ -307,6 +312,43 @@ mod tests {
         let key = parse_key_notation("<Space>").unwrap();
         assert_eq!(key.code, KeyCode::Char(' '));
         assert_eq!(key.modifiers, KeyModifiers::NONE);
+    }
+
+    #[test]
+    fn test_parse_literal_space() {
+        // Test that a literal space " " parses correctly as a leader key
+        let key = parse_key_notation(" ").unwrap();
+        assert_eq!(key.code, KeyCode::Char(' '));
+        assert_eq!(key.modifiers, KeyModifiers::NONE);
+    }
+
+    #[test]
+    fn test_leader_key_with_literal_space() {
+        // This tests the default config where leader = " " (literal space)
+        use super::super::KeymapSettings;
+
+        let settings = KeymapSettings {
+            leader: " ".to_string(),  // Literal space, as used in default config
+            normal: vec![],
+            insert: vec![],
+            leader_mappings: vec![
+                super::super::LeaderMapping {
+                    key: "m".to_string(),
+                    action: ":HarpoonAdd".to_string(),
+                    desc: Some("Add to harpoon".to_string()),
+                },
+            ],
+        };
+
+        let lookup = KeymapLookup::from_settings(&settings);
+        let space_key = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
+
+        assert!(lookup.has_leader_mappings(), "Should have leader mappings");
+        assert!(lookup.is_leader_key(space_key), "Literal space should be recognized as leader key");
+
+        // Check we can look up the mapping
+        let action = lookup.get_leader_action("m");
+        assert!(action.is_some(), "Should find 'm' mapping");
     }
 
     #[test]

@@ -76,6 +76,12 @@ pub enum Command {
     Rename(String),
     /// :rename (no args) - Enter rename prompt mode (LSP)
     RenamePrompt,
+    /// :HarpoonAdd - Add current file to harpoon
+    HarpoonAdd,
+    /// :HarpoonMenu - Toggle harpoon menu
+    HarpoonMenu,
+    /// :Harpoon1-4 - Jump to harpoon slot
+    HarpoonJump(usize),
     /// Unknown command
     Unknown(String),
 }
@@ -227,6 +233,14 @@ pub fn parse_command(input: &str) -> Command {
                 Command::RenamePrompt
             }
         }
+
+        // Harpoon commands
+        "HarpoonAdd" | "harpoonadd" => Command::HarpoonAdd,
+        "HarpoonMenu" | "harpoonmenu" => Command::HarpoonMenu,
+        "Harpoon1" | "harpoon1" => Command::HarpoonJump(1),
+        "Harpoon2" | "harpoon2" => Command::HarpoonJump(2),
+        "Harpoon3" | "harpoon3" => Command::HarpoonJump(3),
+        "Harpoon4" | "harpoon4" => Command::HarpoonJump(4),
 
         // Unknown command
         _ => Command::Unknown(cmd.to_string()),

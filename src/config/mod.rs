@@ -207,6 +207,43 @@ impl Default for KeymapSettings {
                     action: ":Explorer".to_string(),
                     desc: Some("Toggle explorer".to_string()),
                 },
+                // Git
+                LeaderMapping {
+                    key: "gg".to_string(),
+                    action: ":LazyGit".to_string(),
+                    desc: Some("Open lazygit".to_string()),
+                },
+                // Harpoon
+                LeaderMapping {
+                    key: "m".to_string(),
+                    action: ":HarpoonAdd".to_string(),
+                    desc: Some("Add to harpoon".to_string()),
+                },
+                LeaderMapping {
+                    key: "h".to_string(),
+                    action: ":HarpoonMenu".to_string(),
+                    desc: Some("Harpoon menu".to_string()),
+                },
+                LeaderMapping {
+                    key: "1".to_string(),
+                    action: ":Harpoon1".to_string(),
+                    desc: Some("Harpoon file 1".to_string()),
+                },
+                LeaderMapping {
+                    key: "2".to_string(),
+                    action: ":Harpoon2".to_string(),
+                    desc: Some("Harpoon file 2".to_string()),
+                },
+                LeaderMapping {
+                    key: "3".to_string(),
+                    action: ":Harpoon3".to_string(),
+                    desc: Some("Harpoon file 3".to_string()),
+                },
+                LeaderMapping {
+                    key: "4".to_string(),
+                    action: ":Harpoon4".to_string(),
+                    desc: Some("Harpoon file 4".to_string()),
+                },
             ],
         }
     }
@@ -464,6 +501,8 @@ fn ensure_config_exists() {
 
 /// Load settings from the config file
 /// Returns default settings if the file doesn't exist or can't be parsed
+/// User settings are merged with defaults - user values take precedence,
+/// but default leader mappings are preserved unless explicitly overridden.
 pub fn load_config() -> Settings {
     // Ensure config file exists (creates template if not)
     ensure_config_exists();
@@ -477,8 +516,13 @@ pub fn load_config() -> Settings {
     }
 
     match std::fs::read_to_string(&path) {
-        Ok(content) => match toml::from_str(&content) {
-            Ok(settings) => settings,
+        Ok(content) => match toml::from_str::<Settings>(&content) {
+            Ok(mut user_settings) => {
+                // Merge leader mappings: defaults + user overrides
+                user_settings.keymap.leader_mappings =
+                    merge_leader_mappings(&user_settings.keymap.leader_mappings);
+                user_settings
+            }
             Err(e) => {
                 eprintln!("Warning: Failed to parse config file: {}", e);
                 Settings::default()
@@ -489,4 +533,25 @@ pub fn load_config() -> Settings {
             Settings::default()
         }
     }
+}
+
+/// Merge user leader mappings with defaults.
+/// User mappings take precedence for the same key.
+fn merge_leader_mappings(user_mappings: &[LeaderMapping]) -> Vec<LeaderMapping> {
+    let defaults = KeymapSettings::default().leader_mappings;
+
+    // Collect user-defined keys for quick lookup
+    let user_keys: std::collections::HashSet<&str> =
+        user_mappings.iter().map(|m| m.key.as_str()).collect();
+
+    // Start with defaults that aren't overridden by user
+    let mut merged: Vec<LeaderMapping> = defaults
+        .into_iter()
+        .filter(|m| !user_keys.contains(m.key.as_str()))
+        .collect();
+
+    // Add all user mappings
+    merged.extend(user_mappings.iter().cloned());
+
+    merged
 }

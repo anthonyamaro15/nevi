@@ -4,6 +4,7 @@ pub mod editor;
 pub mod explorer;
 pub mod finder;
 pub mod frecency;
+pub mod harpoon;
 pub mod input;
 pub mod lsp;
 pub mod syntax;
@@ -11,6 +12,7 @@ pub mod terminal;
 
 pub use config::{load_config, Settings, KeymapLookup, LeaderAction, AutosaveMode};
 pub use editor::{Editor, Mode, Buffer, Cursor, LspAction};
+pub use harpoon::Harpoon;
 pub use explorer::FileExplorer;
 pub use finder::{FuzzyFinder, FinderMode, FloatingWindow};
 pub use frecency::FrecencyDb;
