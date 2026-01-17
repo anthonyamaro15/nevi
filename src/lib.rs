@@ -9,7 +9,7 @@ pub mod lsp;
 pub mod syntax;
 pub mod terminal;
 
-pub use config::{load_config, Settings, KeymapLookup, LeaderAction};
+pub use config::{load_config, Settings, KeymapLookup, LeaderAction, AutosaveMode};
 pub use editor::{Editor, Mode, Buffer, Cursor, LspAction};
 pub use explorer::FileExplorer;
 pub use finder::{FuzzyFinder, FinderMode, FloatingWindow};

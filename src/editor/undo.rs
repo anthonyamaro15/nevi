@@ -1,3 +1,8 @@
+use std::time::{Duration, Instant};
+
+/// Default interval for grouping edits (300ms)
+const DEFAULT_GROUP_INTERVAL: Duration = Duration::from_millis(300);
+
 /// A single change that can be undone/redone
 #[derive(Debug, Clone)]
 pub struct Change {
@@ -83,7 +88,7 @@ impl UndoEntry {
 }
 
 /// Manages the undo/redo history
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct UndoStack {
     /// Stack of undoable entries
     undo_stack: Vec<UndoEntry>,
@@ -93,26 +98,52 @@ pub struct UndoStack {
     current_entry: Option<UndoEntry>,
     /// Maximum number of undo entries to keep
     max_entries: usize,
+    /// Time of last edit (for grouping rapid edits)
+    last_edit_time: Option<Instant>,
+    /// Interval for grouping edits (edits within this interval are merged)
+    group_interval: Duration,
 }
 
-impl UndoStack {
-    pub fn new() -> Self {
+impl Default for UndoStack {
+    fn default() -> Self {
         Self {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             current_entry: None,
             max_entries: 1000,
+            last_edit_time: None,
+            group_interval: DEFAULT_GROUP_INTERVAL,
         }
+    }
+}
+
+impl UndoStack {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Start a new undo group (call before making changes)
+    /// If the last edit was within the group_interval, the existing group is continued
     pub fn begin_undo_group(&mut self, cursor_line: usize, cursor_col: usize) {
-        // Finalize any existing group first
+        let now = Instant::now();
+
+        // Check if we should continue the existing group (rapid edits)
+        let should_continue = self.last_edit_time.map_or(false, |last_time| {
+            now.duration_since(last_time) < self.group_interval
+        });
+
+        if should_continue && self.current_entry.is_some() {
+            // Continue existing group - don't finalize
+            return;
+        }
+
+        // Finalize any existing group and start a new one
         self.end_undo_group(cursor_line, cursor_col);
         self.current_entry = Some(UndoEntry::new(cursor_line, cursor_col));
     }
 
     /// End the current undo group (call after changes are done)
+    /// Also resets the edit timing so the next edit starts a fresh group
     pub fn end_undo_group(&mut self, cursor_line: usize, cursor_col: usize) {
         if let Some(mut entry) = self.current_entry.take() {
             if !entry.is_empty() {
@@ -126,10 +157,15 @@ impl UndoStack {
                 }
             }
         }
+        // Reset timing so next edit starts a fresh group
+        self.last_edit_time = None;
     }
 
     /// Record a change in the current undo group
     pub fn record_change(&mut self, change: Change) {
+        // Update last edit time for grouping
+        self.last_edit_time = Some(Instant::now());
+
         if let Some(ref mut entry) = self.current_entry {
             entry.push(change);
         } else {
@@ -143,6 +179,9 @@ impl UndoStack {
 
     /// Pop an entry from the undo stack
     pub fn pop_undo(&mut self) -> Option<UndoEntry> {
+        // Reset timing - undo operation breaks the edit sequence
+        self.last_edit_time = None;
+
         // First finalize any current entry
         if let Some(entry) = self.current_entry.take() {
             if !entry.is_empty() {
@@ -161,6 +200,9 @@ impl UndoStack {
 
     /// Pop an entry from the redo stack
     pub fn pop_redo(&mut self) -> Option<UndoEntry> {
+        // Reset timing - redo operation breaks the edit sequence
+        self.last_edit_time = None;
+
         if let Some(entry) = self.redo_stack.pop() {
             // Move back to undo stack
             self.undo_stack.push(entry.clone());
@@ -195,5 +237,6 @@ impl UndoStack {
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.current_entry = None;
+        self.last_edit_time = None;
     }
 }

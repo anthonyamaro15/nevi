@@ -2,15 +2,68 @@
 
 use std::path::PathBuf;
 
+/// A text edit returned by LSP formatting
+#[derive(Debug, Clone)]
+pub struct TextEdit {
+    /// Start line (0-indexed)
+    pub start_line: usize,
+    /// Start column (0-indexed)
+    pub start_col: usize,
+    /// End line (0-indexed)
+    pub end_line: usize,
+    /// End column (0-indexed)
+    pub end_col: usize,
+    /// New text to insert
+    pub new_text: String,
+}
+
 /// Kind of LSP request - used for tracking responses
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Includes request context so responses can be validated against current state
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestKind {
     Initialize,
     Shutdown,
-    Completion,
-    Definition,
-    Hover,
-    SignatureHelp,
+    Completion {
+        uri: String,
+        line: u32,
+        character: u32,
+    },
+    Definition {
+        uri: String,
+        line: u32,
+        character: u32,
+    },
+    Hover {
+        uri: String,
+        line: u32,
+        character: u32,
+    },
+    SignatureHelp {
+        uri: String,
+        line: u32,
+        character: u32,
+    },
+    Formatting {
+        uri: String,
+    },
+    References {
+        uri: String,
+        line: u32,
+        character: u32,
+    },
+    CodeAction {
+        uri: String,
+        start_line: u32,
+        start_character: u32,
+        end_line: u32,
+        end_character: u32,
+    },
+    Rename {
+        uri: String,
+        line: u32,
+        character: u32,
+        new_name: String,
+    },
 }
 
 /// Requests sent from the editor to the LSP client thread
@@ -67,6 +120,36 @@ pub enum LspRequest {
         line: u32,
         character: u32,
     },
+
+    /// Request document formatting
+    Formatting {
+        uri: String,
+    },
+
+    /// Request find references
+    References {
+        uri: String,
+        line: u32,
+        character: u32,
+    },
+
+    /// Request code actions
+    CodeAction {
+        uri: String,
+        start_line: u32,
+        start_character: u32,
+        end_line: u32,
+        end_character: u32,
+        diagnostics: Vec<Diagnostic>,
+    },
+
+    /// Request rename symbol
+    Rename {
+        uri: String,
+        line: u32,
+        character: u32,
+        new_name: String,
+    },
 }
 
 /// Notifications sent from the LSP client thread to the editor
@@ -89,25 +172,83 @@ pub enum LspNotification {
         items: Vec<CompletionItem>,
         /// If true, the completion list is incomplete and typing more should re-request
         is_incomplete: bool,
+        /// Request context for validation
+        request_uri: String,
+        request_line: u32,
+        request_character: u32,
     },
 
     /// Definition location result (may have multiple locations for traits, etc.)
     Definition {
         locations: Vec<Location>,
+        /// Request context for validation
+        request_uri: String,
     },
 
     /// Hover information result
     Hover {
         contents: Option<String>,
+        /// Request context for validation
+        request_uri: String,
+        request_line: u32,
+        request_character: u32,
     },
 
     /// Signature help result
     SignatureHelp {
         help: Option<SignatureHelpResult>,
+        /// Request context for validation
+        request_uri: String,
+        request_line: u32,
+        request_character: u32,
     },
 
     /// Server status update
     Status { message: String },
+
+    /// Formatting result with text edits to apply
+    Formatting {
+        edits: Vec<TextEdit>,
+        /// Request context for validation
+        request_uri: String,
+    },
+
+    /// References result
+    References {
+        locations: Vec<Location>,
+        /// Request context for validation
+        request_uri: String,
+    },
+
+    /// Code actions result
+    CodeActions {
+        actions: Vec<CodeActionItem>,
+        /// Request context for validation
+        request_uri: String,
+    },
+
+    /// Rename result with workspace edits
+    RenameResult {
+        /// Edits grouped by file URI
+        edits: Vec<(String, Vec<TextEdit>)>,
+        /// Request context for validation
+        request_uri: String,
+    },
+}
+
+/// A code action item from LSP
+#[derive(Debug, Clone)]
+pub struct CodeActionItem {
+    /// Display title for the action
+    pub title: String,
+    /// Kind of action (quickfix, refactor, etc.)
+    pub kind: Option<String>,
+    /// Whether this is the preferred action
+    pub is_preferred: bool,
+    /// Edits to apply (if any)
+    pub edits: Vec<(String, Vec<TextEdit>)>,
+    /// Command to execute (if any)
+    pub command: Option<String>,
 }
 
 /// Signature help information
@@ -213,34 +354,91 @@ pub enum CompletionKind {
 }
 
 impl CompletionKind {
-    /// Get a short display character for the kind
+    /// Get a short display icon for the kind (Zed-style)
+    pub fn icon(&self) -> &'static str {
+        match self {
+            CompletionKind::Text => "󰦨",      // text icon
+            CompletionKind::Method => "󰊕",     // method/function
+            CompletionKind::Function => "󰊕",   // function
+            CompletionKind::Constructor => "", // constructor
+            CompletionKind::Field => "󰜢",      // field
+            CompletionKind::Variable => "󰀫",   // variable
+            CompletionKind::Class => "󰠱",      // class
+            CompletionKind::Interface => "󰜰",  // interface
+            CompletionKind::Module => "󰏗",     // module/package
+            CompletionKind::Property => "󰖷",   // property
+            CompletionKind::Unit => "󰑭",       // unit
+            CompletionKind::Value => "󰎠",      // value
+            CompletionKind::Enum => "󰕘",       // enum
+            CompletionKind::Keyword => "󰌋",    // keyword
+            CompletionKind::Snippet => "󰩫",    // snippet
+            CompletionKind::Color => "󰏘",      // color
+            CompletionKind::File => "󰈔",       // file
+            CompletionKind::Reference => "󰈇",  // reference
+            CompletionKind::Folder => "󰉋",     // folder
+            CompletionKind::EnumMember => "󰕘", // enum member
+            CompletionKind::Constant => "󰏿",   // constant
+            CompletionKind::Struct => "󰙅",     // struct
+            CompletionKind::Event => "󰉁",      // event
+            CompletionKind::Operator => "󰆕",   // operator
+            CompletionKind::TypeParameter => "󰊄", // type parameter
+        }
+    }
+
+    /// Get a short ASCII display character for the kind (fallback)
     pub fn short_name(&self) -> &'static str {
         match self {
             CompletionKind::Text => "T",
-            CompletionKind::Method => "M",
-            CompletionKind::Function => "F",
-            CompletionKind::Constructor => "C",
-            CompletionKind::Field => "f",
-            CompletionKind::Variable => "V",
+            CompletionKind::Method => "m",
+            CompletionKind::Function => "f",
+            CompletionKind::Constructor => "c",
+            CompletionKind::Field => "F",
+            CompletionKind::Variable => "v",
             CompletionKind::Class => "C",
             CompletionKind::Interface => "I",
-            CompletionKind::Module => "m",
+            CompletionKind::Module => "M",
             CompletionKind::Property => "P",
             CompletionKind::Unit => "U",
-            CompletionKind::Value => "v",
+            CompletionKind::Value => "V",
             CompletionKind::Enum => "E",
             CompletionKind::Keyword => "K",
             CompletionKind::Snippet => "S",
             CompletionKind::Color => "c",
-            CompletionKind::File => "F",
+            CompletionKind::File => "f",
             CompletionKind::Reference => "R",
             CompletionKind::Folder => "D",
             CompletionKind::EnumMember => "e",
             CompletionKind::Constant => "c",
-            CompletionKind::Struct => "S",
+            CompletionKind::Struct => "s",
             CompletionKind::Event => "E",
             CompletionKind::Operator => "O",
-            CompletionKind::TypeParameter => "T",
+            CompletionKind::TypeParameter => "t",
+        }
+    }
+
+    /// Get the color for this kind (RGB values)
+    pub fn color(&self) -> (u8, u8, u8) {
+        match self {
+            // Functions/Methods - Blue
+            CompletionKind::Method | CompletionKind::Function => (97, 175, 239),
+            // Types/Classes - Yellow/Orange
+            CompletionKind::Class | CompletionKind::Interface | CompletionKind::Struct => (229, 192, 123),
+            // Variables/Fields - Cyan
+            CompletionKind::Variable | CompletionKind::Field | CompletionKind::Property => (86, 182, 194),
+            // Constants/Values - Purple
+            CompletionKind::Constant | CompletionKind::Value | CompletionKind::EnumMember => (198, 120, 221),
+            // Enums - Green
+            CompletionKind::Enum => (152, 195, 121),
+            // Keywords - Red/Pink
+            CompletionKind::Keyword => (224, 108, 117),
+            // Snippets - Gray
+            CompletionKind::Snippet => (150, 150, 160),
+            // Modules - Teal
+            CompletionKind::Module => (78, 201, 176),
+            // Constructors - Orange
+            CompletionKind::Constructor => (209, 154, 102),
+            // Default - Light blue
+            _ => (130, 180, 250),
         }
     }
 }

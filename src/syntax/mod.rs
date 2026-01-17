@@ -57,7 +57,12 @@ impl SyntaxManager {
 
         match extension {
             Some("rs") => self.set_rust_language(),
-            // Add more languages here as needed
+            Some("js") | Some("mjs") | Some("cjs") => self.set_javascript_language(),
+            Some("jsx") => self.set_javascript_language(), // JSX uses same parser
+            Some("ts") | Some("mts") | Some("cts") => self.set_typescript_language(),
+            Some("tsx") => self.set_tsx_language(),
+            Some("css") => self.set_css_language(),
+            Some("scss") | Some("sass") => self.set_css_language(), // SCSS uses CSS parser
             _ => {
                 self.language = None;
                 self.query = None;
@@ -109,6 +114,102 @@ impl SyntaxManager {
             }
             Err(e) => {
                 self.language = Some(format!("rust (lang error: {:?})", e));
+            }
+        }
+    }
+
+    /// Set up JavaScript language parser
+    fn set_javascript_language(&mut self) {
+        let language = tree_sitter_javascript::LANGUAGE;
+        match self.parser.set_language(&language.into()) {
+            Ok(()) => {
+                self.language = Some("javascript".to_string());
+
+                let query_source = highlighter::javascript_highlight_query();
+                match Query::new(&language.into(), query_source) {
+                    Ok(query) => {
+                        self.query = Some(query);
+                    }
+                    Err(e) => {
+                        self.language = Some(format!("javascript (query error: {:?})", e));
+                        self.query = None;
+                    }
+                }
+            }
+            Err(e) => {
+                self.language = Some(format!("javascript (lang error: {:?})", e));
+            }
+        }
+    }
+
+    /// Set up TypeScript language parser
+    fn set_typescript_language(&mut self) {
+        let language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT;
+        match self.parser.set_language(&language.into()) {
+            Ok(()) => {
+                self.language = Some("typescript".to_string());
+
+                let query_source = highlighter::typescript_highlight_query();
+                match Query::new(&language.into(), query_source) {
+                    Ok(query) => {
+                        self.query = Some(query);
+                    }
+                    Err(e) => {
+                        self.language = Some(format!("typescript (query error: {:?})", e));
+                        self.query = None;
+                    }
+                }
+            }
+            Err(e) => {
+                self.language = Some(format!("typescript (lang error: {:?})", e));
+            }
+        }
+    }
+
+    /// Set up TSX (TypeScript + JSX) language parser
+    fn set_tsx_language(&mut self) {
+        let language = tree_sitter_typescript::LANGUAGE_TSX;
+        match self.parser.set_language(&language.into()) {
+            Ok(()) => {
+                self.language = Some("tsx".to_string());
+
+                let query_source = highlighter::tsx_highlight_query();
+                match Query::new(&language.into(), query_source) {
+                    Ok(query) => {
+                        self.query = Some(query);
+                    }
+                    Err(e) => {
+                        self.language = Some(format!("tsx (query error: {:?})", e));
+                        self.query = None;
+                    }
+                }
+            }
+            Err(e) => {
+                self.language = Some(format!("tsx (lang error: {:?})", e));
+            }
+        }
+    }
+
+    /// Set up CSS language parser
+    fn set_css_language(&mut self) {
+        let language = tree_sitter_css::LANGUAGE;
+        match self.parser.set_language(&language.into()) {
+            Ok(()) => {
+                self.language = Some("css".to_string());
+
+                let query_source = highlighter::css_highlight_query();
+                match Query::new(&language.into(), query_source) {
+                    Ok(query) => {
+                        self.query = Some(query);
+                    }
+                    Err(e) => {
+                        self.language = Some(format!("css (query error: {:?})", e));
+                        self.query = None;
+                    }
+                }
+            }
+            Err(e) => {
+                self.language = Some(format!("css (lang error: {:?})", e));
             }
         }
     }

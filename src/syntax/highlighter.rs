@@ -4,6 +4,10 @@ use tree_sitter::{Query, QueryCursor, Tree};
 
 use super::theme::Theme;
 
+/// Maximum query byte range to prevent freezing on minified files
+/// (e.g., minified JavaScript with 100KB+ single lines)
+const MAX_QUERY_BYTES: usize = 16 * 1024; // 16KB
+
 /// A highlighted span within a line
 #[derive(Debug, Clone, Copy)]
 pub struct HighlightSpan {
@@ -40,6 +44,13 @@ pub fn get_line_highlights(
     };
     if line_end_byte < line_start_byte {
         line_end_byte = line_start_byte;
+    }
+
+    // Skip highlighting for very long lines (e.g., minified files)
+    // This prevents the editor from freezing on pathological input
+    let line_byte_len = line_end_byte.saturating_sub(line_start_byte);
+    if line_byte_len > MAX_QUERY_BYTES {
+        return spans; // Graceful degradation: no highlighting for this line
     }
 
     let root = tree.root_node();
@@ -155,4 +166,153 @@ pub fn rust_highlight_query() -> &'static str {
 ; Lifetime
 (lifetime) @label
 "##
+}
+
+/// Get the highlight query for JavaScript/JSX
+pub fn javascript_highlight_query() -> &'static str {
+    r##"
+; Comments
+(comment) @comment
+
+; Strings
+(string) @string
+(template_string) @string
+
+; Numbers
+(number) @number
+
+; Booleans
+(true) @constant
+(false) @constant
+(null) @constant
+
+; Functions
+(function_declaration name: (identifier) @function)
+(call_expression function: (identifier) @function.call)
+
+; Classes
+(class_declaration name: (identifier) @type)
+
+; Properties
+(property_identifier) @property
+
+; JSX
+(jsx_opening_element name: (identifier) @tag)
+(jsx_closing_element name: (identifier) @tag)
+(jsx_self_closing_element name: (identifier) @tag)
+
+; This
+(this) @variable.builtin
+"##
+}
+
+/// Get the highlight query for TypeScript
+pub fn typescript_highlight_query() -> &'static str {
+    r##"
+; Comments
+(comment) @comment
+
+; Strings
+(string) @string
+(template_string) @string
+
+; Numbers
+(number) @number
+
+; Booleans
+(true) @constant
+(false) @constant
+(null) @constant
+
+; Functions
+(function_declaration name: (identifier) @function)
+(call_expression function: (identifier) @function.call)
+
+; Types
+(type_identifier) @type
+(predefined_type) @type
+
+; Interfaces
+(interface_declaration name: (type_identifier) @type)
+
+; Properties
+(property_identifier) @property
+
+; This
+(this) @variable.builtin
+"##
+}
+
+/// Get the highlight query for TSX (TypeScript + JSX)
+pub fn tsx_highlight_query() -> &'static str {
+    r##"
+; Comments
+(comment) @comment
+
+; Strings
+(string) @string
+(template_string) @string
+
+; Numbers
+(number) @number
+
+; Booleans
+(true) @constant
+(false) @constant
+(null) @constant
+
+; Functions
+(function_declaration name: (identifier) @function)
+(call_expression function: (identifier) @function.call)
+
+; Types
+(type_identifier) @type
+(predefined_type) @type
+
+; Interfaces
+(interface_declaration name: (type_identifier) @type)
+
+; Properties
+(property_identifier) @property
+
+; JSX
+(jsx_opening_element name: (identifier) @tag)
+(jsx_closing_element name: (identifier) @tag)
+(jsx_self_closing_element name: (identifier) @tag)
+
+; This
+(this) @variable.builtin
+"##
+}
+
+/// Get the highlight query for CSS
+pub fn css_highlight_query() -> &'static str {
+    r##"
+; Comments
+(comment) @comment
+
+; Selectors
+(tag_name) @tag
+(class_name) @type
+(id_name) @constant
+
+; Properties
+(property_name) @property
+(plain_value) @string
+(integer_value) @number
+(float_value) @number
+
+; Strings
+(string_value) @string
+
+; At-rules
+(at_keyword) @keyword
+"##
+}
+
+/// Get the highlight query for SCSS (extends CSS)
+pub fn scss_highlight_query() -> &'static str {
+    // SCSS uses the same CSS grammar with some extensions
+    // We'll use the CSS query which covers most SCSS syntax
+    css_highlight_query()
 }

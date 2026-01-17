@@ -18,6 +18,7 @@ pub enum HighlightGroup {
     Namespace,
     Label,
     Property,
+    Tag,
 }
 
 impl HighlightGroup {
@@ -41,6 +42,7 @@ impl HighlightGroup {
             "namespace" => Some(Self::Namespace),
             "label" => Some(Self::Label),
             "property" => Some(Self::Property),
+            "tag" => Some(Self::Tag),
             _ => None,
         }
     }
@@ -73,6 +75,7 @@ impl Theme {
         colors.insert(HighlightGroup::Namespace, Color::Rgb { r: 97, g: 175, b: 239 });   // Blue
         colors.insert(HighlightGroup::Label, Color::Rgb { r: 224, g: 108, b: 117 });      // Red
         colors.insert(HighlightGroup::Property, Color::Rgb { r: 224, g: 108, b: 117 });   // Red
+        colors.insert(HighlightGroup::Tag, Color::Rgb { r: 224, g: 108, b: 117 });        // Red (JSX/HTML tags)
 
         Self {
             name: "default".to_string(),

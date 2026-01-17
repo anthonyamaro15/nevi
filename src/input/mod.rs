@@ -176,6 +176,12 @@ pub enum KeyAction {
     NextDiagnostic,
     /// Go to previous diagnostic ([d)
     PrevDiagnostic,
+    /// Find references (gr)
+    FindReferences,
+    /// Show code actions (ga)
+    CodeActions,
+    /// Rename symbol (leader+rn or F2)
+    RenameSymbol,
     /// Delete surrounding (ds)
     DeleteSurround(char),
     /// Change surrounding (cs)
@@ -833,6 +839,11 @@ impl InputState {
             ('g', KeyModifiers::NONE, KeyCode::Char('d')) => {
                 self.reset();
                 KeyAction::GotoDefinition
+            }
+            // gr - find references (LSP)
+            ('g', KeyModifiers::NONE, KeyCode::Char('r')) => {
+                self.reset();
+                KeyAction::FindReferences
             }
             // zz - scroll cursor to center of screen
             ('z', KeyModifiers::NONE, KeyCode::Char('z')) => {

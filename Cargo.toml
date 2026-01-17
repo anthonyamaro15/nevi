@@ -24,6 +24,9 @@ unicode-segmentation = "1.10"
 # Syntax highlighting
 tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
+tree-sitter-javascript = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-css = "0.23"
 streaming-iterator = "0.1"
 
 # System clipboard
