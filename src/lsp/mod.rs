@@ -7,6 +7,7 @@
 //! - Hover documentation
 
 mod client;
+pub mod multi;
 pub mod types;
 
 use std::path::PathBuf;
@@ -16,6 +17,7 @@ use std::thread::{self, JoinHandle};
 use lsp_types::Url;
 
 pub use client::LspClient;
+pub use multi::{LanguageId, MultiLspManager};
 pub use types::*;
 
 /// Manager for the LSP client thread

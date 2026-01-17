@@ -215,461 +215,184 @@ pub fn rust_highlight_query() -> &'static str {
 }
 
 /// Get the highlight query for JavaScript/JSX
+/// Written for nevi based on tree-sitter-javascript node types
 pub fn javascript_highlight_query() -> &'static str {
     r##"
-; Comments (highest priority)
+; Literals and constants
 (comment) @comment
-
-; Strings
 (string) @string
 (template_string) @string
-
-; Numbers
+(regex) @string
 (number) @number
-
-; Constants/Booleans
 (true) @constant
 (false) @constant
 (null) @constant
 (undefined) @constant
 
-; Keywords - control flow
-"if" @keyword
-"else" @keyword
-"switch" @keyword
-"case" @keyword
-"default" @keyword
-"for" @keyword
-"while" @keyword
-"do" @keyword
-"break" @keyword
-"continue" @keyword
-"return" @keyword
-"throw" @keyword
-"try" @keyword
-"catch" @keyword
-"finally" @keyword
+; Keywords - using tree-sitter's bracket syntax for grouping
+["import" "export" "from" "as" "default"] @keyword
+["const" "let" "var" "function" "class" "extends" "static" "get" "set"] @keyword
+["async" "await" "yield" "new" "delete" "typeof" "instanceof" "in" "of" "void" "with"] @keyword
+["if" "else" "switch" "case" "for" "while" "do" "break" "continue" "return" "throw" "try" "catch" "finally"] @keyword
 
-; Keywords - declarations
-"const" @keyword
-"let" @keyword
-"var" @keyword
-"function" @keyword
-"class" @keyword
-"extends" @keyword
-"static" @keyword
-"get" @keyword
-"set" @keyword
-"async" @keyword
-"await" @keyword
-"yield" @keyword
-"new" @keyword
-"delete" @keyword
-"typeof" @keyword
-"instanceof" @keyword
-"in" @keyword
-"of" @keyword
-
-; Keywords - modules
-"import" @keyword
-"from" @keyword
-"export" @keyword
-"as" @keyword
-
-; Function definitions
+; Functions - definitions and calls
 (function_declaration name: (identifier) @function)
-(generator_function_declaration name: (identifier) @function)
+(function_expression name: (identifier) @function)
 (method_definition name: (property_identifier) @function)
-(arrow_function) @function
+(call_expression function: (identifier) @function)
+(call_expression function: (member_expression property: (property_identifier) @function))
 
-; Function calls
-(call_expression function: (identifier) @function.call)
-(call_expression function: (member_expression property: (property_identifier) @function.call))
-
-; Class definitions
+; Classes and types
 (class_declaration name: (identifier) @type)
+(new_expression constructor: (identifier) @type)
 
-; Variable declarations
-(variable_declarator name: (identifier) @variable)
-
-; Parameters
-(formal_parameters (identifier) @variable)
-
-; Properties and fields
+; Properties
 (property_identifier) @property
 (shorthand_property_identifier) @property
 
-; Object keys
-(pair key: (property_identifier) @property)
-
-; This and super
-(this) @variable.builtin
-(super) @variable.builtin
+; Variables - general catch-all
+(identifier) @variable
+(this) @variable
+(super) @variable
 
 ; JSX elements
-(jsx_opening_element name: (identifier) @tag)
-(jsx_closing_element name: (identifier) @tag)
-(jsx_self_closing_element name: (identifier) @tag)
-(jsx_attribute (property_identifier) @property)
+(jsx_opening_element (identifier) @tag)
+(jsx_closing_element (identifier) @tag)
+(jsx_self_closing_element (identifier) @tag)
+(jsx_attribute (property_identifier) @attribute)
 
 ; Operators
-"=" @operator
-"+=" @operator
-"-=" @operator
-"*=" @operator
-"/=" @operator
-"+" @operator
-"-" @operator
-"*" @operator
-"/" @operator
-"%" @operator
-"==" @operator
-"===" @operator
-"!=" @operator
-"!==" @operator
-"<" @operator
-">" @operator
-"<=" @operator
-">=" @operator
-"&&" @operator
-"||" @operator
-"!" @operator
-"?" @operator
-":" @operator
-"=>" @operator
-"..." @operator
+["=" "+=" "-=" "*=" "/=" "%=" "+" "-" "*" "/" "%" "==" "===" "!=" "!==" "<" ">" "<=" ">=" "&&" "||" "!" "=>" "..." "??" "&" "|" "^" "~"] @operator
 "##
 }
 
 /// Get the highlight query for TypeScript
+/// Written for nevi based on tree-sitter-typescript node types
 pub fn typescript_highlight_query() -> &'static str {
     r##"
-; Comments (highest priority)
+; Literals and constants
 (comment) @comment
-
-; Strings
 (string) @string
 (template_string) @string
-
-; Numbers
+(regex) @string
 (number) @number
-
-; Constants/Booleans
 (true) @constant
 (false) @constant
 (null) @constant
 (undefined) @constant
 
-; Keywords - control flow
-"if" @keyword
-"else" @keyword
-"switch" @keyword
-"case" @keyword
-"default" @keyword
-"for" @keyword
-"while" @keyword
-"do" @keyword
-"break" @keyword
-"continue" @keyword
-"return" @keyword
-"throw" @keyword
-"try" @keyword
-"catch" @keyword
-"finally" @keyword
-
-; Keywords - declarations
-"const" @keyword
-"let" @keyword
-"var" @keyword
-"function" @keyword
-"class" @keyword
-"extends" @keyword
-"implements" @keyword
-"static" @keyword
-"get" @keyword
-"set" @keyword
-"async" @keyword
-"await" @keyword
-"yield" @keyword
-"new" @keyword
-"delete" @keyword
-"typeof" @keyword
-"instanceof" @keyword
-"in" @keyword
-"of" @keyword
-"readonly" @keyword
-"private" @keyword
-"public" @keyword
-"protected" @keyword
-"abstract" @keyword
+; Keywords - JS base
+["import" "export" "from" "as" "default"] @keyword
+["const" "let" "var" "function" "class" "extends" "static" "get" "set"] @keyword
+["async" "await" "yield" "new" "delete" "typeof" "instanceof" "in" "of" "void" "with"] @keyword
+["if" "else" "switch" "case" "for" "while" "do" "break" "continue" "return" "throw" "try" "catch" "finally"] @keyword
 
 ; Keywords - TypeScript specific
-"interface" @keyword
-"type" @keyword
-"enum" @keyword
-"namespace" @keyword
-"module" @keyword
-"declare" @keyword
-"keyof" @keyword
-"infer" @keyword
-"is" @keyword
-"asserts" @keyword
-"satisfies" @keyword
+["type" "interface" "enum" "namespace" "module" "declare" "implements"] @keyword
+["public" "private" "protected" "readonly" "abstract" "override"] @keyword
+["keyof" "infer" "is" "asserts" "satisfies"] @keyword
 
-; Keywords - modules
-"import" @keyword
-"from" @keyword
-"export" @keyword
-"as" @keyword
-
-; Type annotations
+; Type annotations - TypeScript's key feature
 (type_identifier) @type
 (predefined_type) @type
-
-; Interface and type declarations
-(interface_declaration name: (type_identifier) @type)
 (type_alias_declaration name: (type_identifier) @type)
+(interface_declaration name: (type_identifier) @type)
 (enum_declaration name: (identifier) @type)
 
-; Generic types
-(generic_type name: (type_identifier) @type)
-(type_parameter name: (type_identifier) @type)
-
-; Function definitions
+; Functions - definitions and calls
 (function_declaration name: (identifier) @function)
-(generator_function_declaration name: (identifier) @function)
+(function_expression name: (identifier) @function)
 (method_definition name: (property_identifier) @function)
-(method_signature name: (property_identifier) @function)
-(arrow_function) @function
+(call_expression function: (identifier) @function)
+(call_expression function: (member_expression property: (property_identifier) @function))
 
-; Function calls
-(call_expression function: (identifier) @function.call)
-(call_expression function: (member_expression property: (property_identifier) @function.call))
-
-; Class definitions
+; Classes and constructors
 (class_declaration name: (type_identifier) @type)
+(new_expression constructor: (identifier) @type)
 
-; Variable declarations
-(variable_declarator name: (identifier) @variable)
-
-; Parameters
-(required_parameter pattern: (identifier) @variable)
-(optional_parameter pattern: (identifier) @variable)
-
-; Properties and fields
+; Properties
 (property_identifier) @property
 (shorthand_property_identifier) @property
-(public_field_definition name: (property_identifier) @property)
 
-; Object keys
-(pair key: (property_identifier) @property)
-
-; This and super
-(this) @variable.builtin
-(super) @variable.builtin
+; Variables - general catch-all
+(identifier) @variable
+(this) @variable
+(super) @variable
 
 ; Decorators
 (decorator "@" @attribute)
 (decorator (identifier) @attribute)
-(decorator (call_expression function: (identifier) @attribute))
 
 ; Operators
-"=" @operator
-"+=" @operator
-"-=" @operator
-"*=" @operator
-"/=" @operator
-"+" @operator
-"-" @operator
-"*" @operator
-"/" @operator
-"%" @operator
-"==" @operator
-"===" @operator
-"!=" @operator
-"!==" @operator
-"<" @operator
-">" @operator
-"<=" @operator
-">=" @operator
-"&&" @operator
-"||" @operator
-"!" @operator
-"?" @operator
-":" @operator
-"=>" @operator
-"..." @operator
-"|" @operator
-"&" @operator
+["=" "+=" "-=" "*=" "/=" "%=" "+" "-" "*" "/" "%" "==" "===" "!=" "!==" "<" ">" "<=" ">=" "&&" "||" "!" "=>" "..." "??" "&" "|" "^" "~"] @operator
 "##
 }
 
 /// Get the highlight query for TSX (TypeScript + JSX)
+/// Written for nevi based on tree-sitter-typescript node types
 pub fn tsx_highlight_query() -> &'static str {
     r##"
-; Comments (highest priority)
+; Literals and constants
 (comment) @comment
-
-; Strings
 (string) @string
 (template_string) @string
-
-; Numbers
+(regex) @string
 (number) @number
-
-; Constants/Booleans
 (true) @constant
 (false) @constant
 (null) @constant
 (undefined) @constant
 
-; Keywords - control flow
-"if" @keyword
-"else" @keyword
-"switch" @keyword
-"case" @keyword
-"default" @keyword
-"for" @keyword
-"while" @keyword
-"do" @keyword
-"break" @keyword
-"continue" @keyword
-"return" @keyword
-"throw" @keyword
-"try" @keyword
-"catch" @keyword
-"finally" @keyword
-
-; Keywords - declarations
-"const" @keyword
-"let" @keyword
-"var" @keyword
-"function" @keyword
-"class" @keyword
-"extends" @keyword
-"implements" @keyword
-"static" @keyword
-"get" @keyword
-"set" @keyword
-"async" @keyword
-"await" @keyword
-"yield" @keyword
-"new" @keyword
-"delete" @keyword
-"typeof" @keyword
-"instanceof" @keyword
-"in" @keyword
-"of" @keyword
-"readonly" @keyword
-"private" @keyword
-"public" @keyword
-"protected" @keyword
-"abstract" @keyword
+; Keywords - JS base
+["import" "export" "from" "as" "default"] @keyword
+["const" "let" "var" "function" "class" "extends" "static" "get" "set"] @keyword
+["async" "await" "yield" "new" "delete" "typeof" "instanceof" "in" "of" "void" "with"] @keyword
+["if" "else" "switch" "case" "for" "while" "do" "break" "continue" "return" "throw" "try" "catch" "finally"] @keyword
 
 ; Keywords - TypeScript specific
-"interface" @keyword
-"type" @keyword
-"enum" @keyword
-"namespace" @keyword
-"module" @keyword
-"declare" @keyword
-"keyof" @keyword
-"infer" @keyword
-"is" @keyword
-"asserts" @keyword
-"satisfies" @keyword
+["type" "interface" "enum" "namespace" "module" "declare" "implements"] @keyword
+["public" "private" "protected" "readonly" "abstract" "override"] @keyword
+["keyof" "infer" "is" "asserts" "satisfies"] @keyword
 
-; Keywords - modules
-"import" @keyword
-"from" @keyword
-"export" @keyword
-"as" @keyword
-
-; Type annotations
+; Type annotations - TypeScript's key feature
 (type_identifier) @type
 (predefined_type) @type
-
-; Interface and type declarations
-(interface_declaration name: (type_identifier) @type)
 (type_alias_declaration name: (type_identifier) @type)
+(interface_declaration name: (type_identifier) @type)
 (enum_declaration name: (identifier) @type)
 
-; Generic types
-(generic_type name: (type_identifier) @type)
-(type_parameter name: (type_identifier) @type)
-
-; Function definitions
+; Functions - definitions and calls
 (function_declaration name: (identifier) @function)
-(generator_function_declaration name: (identifier) @function)
+(function_expression name: (identifier) @function)
 (method_definition name: (property_identifier) @function)
-(method_signature name: (property_identifier) @function)
-(arrow_function) @function
+(call_expression function: (identifier) @function)
+(call_expression function: (member_expression property: (property_identifier) @function))
 
-; Function calls
-(call_expression function: (identifier) @function.call)
-(call_expression function: (member_expression property: (property_identifier) @function.call))
-
-; Class definitions
+; Classes and constructors
 (class_declaration name: (type_identifier) @type)
+(new_expression constructor: (identifier) @type)
 
-; Variable declarations
-(variable_declarator name: (identifier) @variable)
-
-; Parameters
-(required_parameter pattern: (identifier) @variable)
-(optional_parameter pattern: (identifier) @variable)
-
-; Properties and fields
+; Properties
 (property_identifier) @property
 (shorthand_property_identifier) @property
-(public_field_definition name: (property_identifier) @property)
 
-; Object keys
-(pair key: (property_identifier) @property)
+; Variables - general catch-all
+(identifier) @variable
+(this) @variable
+(super) @variable
 
-; This and super
-(this) @variable.builtin
-(super) @variable.builtin
+; JSX elements - React components and HTML tags
+(jsx_opening_element (identifier) @tag)
+(jsx_closing_element (identifier) @tag)
+(jsx_self_closing_element (identifier) @tag)
+(jsx_attribute (property_identifier) @attribute)
 
 ; Decorators
 (decorator "@" @attribute)
 (decorator (identifier) @attribute)
-(decorator (call_expression function: (identifier) @attribute))
-
-; JSX elements
-(jsx_opening_element name: (identifier) @tag)
-(jsx_closing_element name: (identifier) @tag)
-(jsx_self_closing_element name: (identifier) @tag)
-(jsx_attribute (property_identifier) @property)
 
 ; Operators
-"=" @operator
-"+=" @operator
-"-=" @operator
-"*=" @operator
-"/=" @operator
-"+" @operator
-"-" @operator
-"*" @operator
-"/" @operator
-"%" @operator
-"==" @operator
-"===" @operator
-"!=" @operator
-"!==" @operator
-"<" @operator
-">" @operator
-"<=" @operator
-">=" @operator
-"&&" @operator
-"||" @operator
-"!" @operator
-"?" @operator
-":" @operator
-"=>" @operator
-"..." @operator
-"|" @operator
-"&" @operator
+["=" "+=" "-=" "*=" "/=" "%=" "+" "-" "*" "/" "%" "==" "===" "!=" "!==" "<" ">" "<=" ">=" "&&" "||" "!" "=>" "..." "??" "&" "|" "^" "~"] @operator
 "##
 }
 
