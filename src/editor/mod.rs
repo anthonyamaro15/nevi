@@ -863,6 +863,9 @@ impl Editor {
         self.buffers[self.current_buffer_idx].mark_modified();
         self.last_edit_at = Some(Instant::now());
 
+        // End the undo group so LSP edits are a single undo operation
+        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+
         // Ensure cursor is in valid position
         self.clamp_cursor();
     }

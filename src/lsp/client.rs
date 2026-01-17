@@ -544,6 +544,22 @@ impl Drop for LspClient {
     }
 }
 
+/// Send initialized notification using shared stdin
+/// This is called from the reader thread immediately after receiving initialize response
+fn send_initialized_notification(stdin: &SharedStdin) -> Result<()> {
+    let notification = json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    });
+    let content = serde_json::to_string(&notification)?;
+    let message = format!("Content-Length: {}\r\n\r\n{}", content.len(), content);
+    let mut stdin = stdin.lock().map_err(|_| anyhow!("Failed to lock stdin"))?;
+    stdin.write_all(message.as_bytes())?;
+    stdin.flush()?;
+    Ok(())
+}
+
 /// Read JSON-RPC messages from the server stdout
 ///
 /// Uses a shared pending requests map that is populated by the client thread
@@ -610,6 +626,16 @@ pub fn read_messages(
             if let Ok(mut stdin_lock) = stdin.lock() {
                 let _ = stdin_lock.write_all(response_msg.as_bytes());
                 let _ = stdin_lock.flush();
+            }
+        }
+
+        // If this is the Initialize response, send 'initialized' notification immediately
+        // This must happen before any other requests are sent to the server
+        if let Some(LspNotification::Initialized) = &notification {
+            if let Err(e) = send_initialized_notification(&stdin) {
+                let _ = tx.send(LspNotification::Error {
+                    message: format!("Failed to send initialized: {}", e),
+                });
             }
         }
 

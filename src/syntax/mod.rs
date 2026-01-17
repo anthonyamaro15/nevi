@@ -63,6 +63,8 @@ impl SyntaxManager {
             Some("tsx") => self.set_tsx_language(),
             Some("css") => self.set_css_language(),
             Some("scss") | Some("sass") => self.set_css_language(), // SCSS uses CSS parser
+            Some("json") => self.set_json_language(),
+            Some("md") | Some("markdown") => self.set_markdown_language(),
             _ => {
                 self.language = None;
                 self.query = None;
@@ -210,6 +212,54 @@ impl SyntaxManager {
             }
             Err(e) => {
                 self.language = Some(format!("css (lang error: {:?})", e));
+            }
+        }
+    }
+
+    /// Set up JSON language parser
+    fn set_json_language(&mut self) {
+        let language = tree_sitter_json::LANGUAGE;
+        match self.parser.set_language(&language.into()) {
+            Ok(()) => {
+                self.language = Some("json".to_string());
+
+                let query_source = highlighter::json_highlight_query();
+                match Query::new(&language.into(), query_source) {
+                    Ok(query) => {
+                        self.query = Some(query);
+                    }
+                    Err(e) => {
+                        self.language = Some(format!("json (query error: {:?})", e));
+                        self.query = None;
+                    }
+                }
+            }
+            Err(e) => {
+                self.language = Some(format!("json (lang error: {:?})", e));
+            }
+        }
+    }
+
+    /// Set up Markdown language parser
+    fn set_markdown_language(&mut self) {
+        let language = tree_sitter_md::LANGUAGE;
+        match self.parser.set_language(&language.into()) {
+            Ok(()) => {
+                self.language = Some("markdown".to_string());
+
+                let query_source = highlighter::markdown_highlight_query();
+                match Query::new(&language.into(), query_source) {
+                    Ok(query) => {
+                        self.query = Some(query);
+                    }
+                    Err(e) => {
+                        self.language = Some(format!("markdown (query error: {:?})", e));
+                        self.query = None;
+                    }
+                }
+            }
+            Err(e) => {
+                self.language = Some(format!("markdown (lang error: {:?})", e));
             }
         }
     }
