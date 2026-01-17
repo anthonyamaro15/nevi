@@ -620,6 +620,8 @@ pub struct Editor {
     pub project_root: Option<std::path::PathBuf>,
     /// File explorer sidebar
     pub explorer: FileExplorer,
+    /// Harpoon quick file marks
+    pub harpoon: crate::harpoon::Harpoon,
     /// Flag to indicate a formatting request is pending
     pub pending_format: bool,
     /// Flag to indicate we should save after formatting completes
@@ -739,6 +741,7 @@ impl Editor {
             search_matches: Vec::new(),
             project_root: None,
             explorer: FileExplorer::new(),
+            harpoon: crate::harpoon::Harpoon::new(),
             pending_format: false,
             save_after_format: false,
             references_picker: None,
@@ -751,7 +754,8 @@ impl Editor {
     /// Set the project root directory
     pub fn set_project_root(&mut self, path: std::path::PathBuf) {
         self.project_root = Some(path.clone());
-        self.explorer.set_root(path);
+        self.explorer.set_root(path.clone());
+        self.harpoon.set_project_root(path);
     }
 
     /// Get the project root or current working directory

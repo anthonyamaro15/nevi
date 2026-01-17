@@ -196,6 +196,16 @@ pub enum KeyAction {
     ToggleCommentMotion(Motion, usize),
     /// Toggle comment on visual selection
     ToggleCommentVisual,
+    /// Harpoon: add current file to marks (<leader>m)
+    HarpoonAdd,
+    /// Harpoon: toggle menu (<leader>h)
+    HarpoonMenu,
+    /// Harpoon: jump to slot 1-4 (<leader>1-4)
+    HarpoonJump(usize),
+    /// Harpoon: next file (]h)
+    HarpoonNext,
+    /// Harpoon: previous file ([h)
+    HarpoonPrev,
     /// Unknown/unhandled key
     Unknown,
 }
@@ -888,6 +898,16 @@ impl InputState {
             ('[', KeyModifiers::NONE, KeyCode::Char('d')) => {
                 self.reset();
                 KeyAction::PrevDiagnostic
+            }
+            // ]h - go to next harpoon file
+            (']', KeyModifiers::NONE, KeyCode::Char('h')) => {
+                self.reset();
+                KeyAction::HarpoonNext
+            }
+            // [h - go to previous harpoon file
+            ('[', KeyModifiers::NONE, KeyCode::Char('h')) => {
+                self.reset();
+                KeyAction::HarpoonPrev
             }
             // Other prefixed commands can be added here
             _ => {
