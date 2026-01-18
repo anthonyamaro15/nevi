@@ -1720,9 +1720,18 @@ impl Terminal {
         let popup_height = (display_lines.len() + 2).min(20) as u16;
 
         // Calculate popup position (above cursor if possible)
+        // Account for active pane's position on screen
+        let active_pane = &editor.panes()[editor.active_pane_idx()];
+        let pane_x = active_pane.rect.x;
+        let pane_y = active_pane.rect.y;
+
         let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
-        let cursor_screen_col = (line_num_width + 1 + editor.cursor.col) as u16;
-        let cursor_screen_row = (editor.cursor.line - editor.viewport_offset) as u16;
+        let cursor_in_pane_col = (line_num_width + 1 + editor.cursor.col) as u16;
+        let cursor_in_pane_row = (editor.cursor.line - editor.viewport_offset) as u16;
+
+        // Convert to screen coordinates
+        let cursor_screen_col = pane_x + cursor_in_pane_col;
+        let cursor_screen_row = pane_y + cursor_in_pane_row;
 
         let popup_y = if cursor_screen_row >= popup_height + 1 {
             cursor_screen_row - popup_height
@@ -3060,6 +3069,8 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
 
         KeyAction::Motion(motion, count) => {
             editor.apply_motion(motion, count);
+            // Clear search highlights on non-search movement (like Neovim)
+            editor.clear_search_highlights();
         }
 
         KeyAction::OperatorMotion(op, motion, count) => {

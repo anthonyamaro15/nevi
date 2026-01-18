@@ -2346,6 +2346,11 @@ impl Editor {
         self.search_matches.clear();
     }
 
+    /// Clear search highlights (called on non-search movement)
+    pub fn clear_search_highlights(&mut self) {
+        self.search_matches.clear();
+    }
+
     /// Update incremental search matches based on current search input
     /// This finds all matches in the buffer and highlights them while typing
     pub fn update_incremental_search(&mut self) {
