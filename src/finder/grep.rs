@@ -1,11 +1,13 @@
 use std::path::Path;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use ignore::WalkBuilder;
+use grep_regex::RegexMatcherBuilder;
+use grep_searcher::{SearcherBuilder, sinks::UTF8};
 
 use super::FinderItem;
 
-/// Live grep searcher that respects .gitignore
+/// Live grep searcher using ripgrep's grep crate for fast searching
 pub struct GrepSearcher {
     /// Maximum number of results
     max_results: usize,
@@ -104,16 +106,31 @@ impl GrepSearcher {
         false
     }
 
-    /// Search for a pattern in all files under root
+    /// Search for a pattern in all files under root using ripgrep's grep crate
     pub fn search(&self, root: &Path, pattern: &str) -> Vec<FinderItem> {
         if pattern.is_empty() {
             return Vec::new();
         }
 
-        const MAX_GREP_FILE_BYTES: u64 = 2_000_000;
+        // Escape regex special characters for literal search, then make case-insensitive
+        let escaped_pattern = regex::escape(pattern);
+
+        // Build a case-insensitive matcher
+        let matcher = match RegexMatcherBuilder::new()
+            .case_insensitive(true)
+            .build(&escaped_pattern)
+        {
+            Ok(m) => m,
+            Err(_) => return Vec::new(),
+        };
+
+        // Build searcher with line numbers
+        let mut searcher = SearcherBuilder::new()
+            .line_number(true)
+            .build();
 
         let mut results = Vec::new();
-        let pattern_lower = pattern.to_lowercase();
+        let result_count = Arc::new(AtomicUsize::new(0));
 
         // Walk directory respecting .gitignore
         let walker = WalkBuilder::new(root)
@@ -125,7 +142,8 @@ impl GrepSearcher {
             .build();
 
         for entry in walker.flatten() {
-            if results.len() >= self.max_results {
+            // Check if we've hit the max results
+            if result_count.load(Ordering::Relaxed) >= self.max_results {
                 break;
             }
 
@@ -146,51 +164,58 @@ impl GrepSearcher {
                 continue;
             }
 
-            if let Ok(meta) = path.metadata() {
-                if meta.len() > MAX_GREP_FILE_BYTES {
-                    continue;
-                }
-            }
+            // Use grep-searcher for fast searching
+            let rel_path = path
+                .strip_prefix(root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .to_string();
 
-            // Search file contents
-            if let Ok(file) = File::open(path) {
-                let reader = BufReader::new(file);
+            let path_buf = path.to_path_buf();
+            let max_results = self.max_results;
+            let count_ref = Arc::clone(&result_count);
 
-                for (line_num, line_result) in reader.lines().enumerate() {
-                    if results.len() >= self.max_results {
-                        break;
+            // Collect matches from this file
+            let mut file_results: Vec<FinderItem> = Vec::new();
+
+            let search_result = searcher.search_path(
+                &matcher,
+                path,
+                UTF8(|line_num, line| {
+                    // Check limit
+                    if count_ref.load(Ordering::Relaxed) >= max_results {
+                        return Ok(false); // Stop searching
                     }
 
-                    if let Ok(line) = line_result {
-                        // Case-insensitive search
-                        if line.to_lowercase().contains(&pattern_lower) {
-                            let rel_path = path
-                                .strip_prefix(root)
-                                .unwrap_or(path)
-                                .to_string_lossy();
+                    // Truncate long lines (safely handle UTF-8)
+                    let line_trimmed = line.trim();
+                    let line_display = if line_trimmed.chars().count() > 100 {
+                        let truncated: String = line_trimmed.chars().take(100).collect();
+                        format!("{}...", truncated)
+                    } else {
+                        line_trimmed.to_string()
+                    };
 
-                            // Truncate long lines (safely handle UTF-8)
-                            let line_display = if line.chars().count() > 100 {
-                                let truncated: String = line.chars().take(100).collect();
-                                format!("{}...", truncated)
-                            } else {
-                                line.clone()
-                            };
+                    let display = format!(
+                        "{}:{}: {}",
+                        rel_path,
+                        line_num,
+                        line_display
+                    );
 
-                            let display = format!(
-                                "{}:{}: {}",
-                                rel_path,
-                                line_num + 1,
-                                line_display.trim()
-                            );
+                    let item = FinderItem::new(display, path_buf.clone())
+                        .with_line(line_num as usize);
 
-                            let item = FinderItem::new(display, path.to_path_buf())
-                                .with_line(line_num + 1);
+                    file_results.push(item);
+                    count_ref.fetch_add(1, Ordering::Relaxed);
 
-                            results.push(item);
-                        }
-                    }
-                }
+                    Ok(true)
+                }),
+            );
+
+            // Ignore search errors (binary files, permission denied, etc.)
+            if search_result.is_ok() {
+                results.extend(file_results);
             }
         }
 

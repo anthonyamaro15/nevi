@@ -50,6 +50,10 @@ serde_json = "1.0"        # JSON serialization for LSP messages
 
 # Floating terminal
 portable-pty = "0.8"      # Cross-platform PTY support
+grep-regex = "0.1.14"
+grep-searcher = "0.1.16"
+grep-matcher = "0.1.8"
+regex = "1.12.2"
 
 [profile.release]
 lto = true
