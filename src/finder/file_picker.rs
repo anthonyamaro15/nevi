@@ -12,23 +12,66 @@ pub struct FilePicker {
 }
 
 impl FilePicker {
+    /// Default ignore patterns for common build/cache directories
+    fn default_ignore_patterns() -> Vec<String> {
+        vec![
+            // Version control
+            ".git".to_string(),
+            ".svn".to_string(),
+            ".hg".to_string(),
+            // Dependencies
+            "node_modules".to_string(),
+            "vendor".to_string(),
+            // Build outputs
+            "target".to_string(),
+            "build".to_string(),
+            "dist".to_string(),
+            "out".to_string(),
+            ".next".to_string(),
+            ".nuxt".to_string(),
+            ".output".to_string(),
+            // Build output pattern (aws-build, my-build, etc.)
+            "*-build".to_string(),
+            // Cache directories
+            ".cache".to_string(),
+            "__pycache__".to_string(),
+            ".pytest_cache".to_string(),
+            ".mypy_cache".to_string(),
+            // IDE/Editor
+            ".idea".to_string(),
+            ".vscode".to_string(),
+            // Logs and temp files
+            "*.log".to_string(),
+            "*.tmp".to_string(),
+            "*.bak".to_string(),
+            // Coverage and test outputs
+            "coverage".to_string(),
+            ".nyc_output".to_string(),
+            // Package lock files (optional, can be removed)
+            // "package-lock.json".to_string(),
+            // "yarn.lock".to_string(),
+        ]
+    }
+
     pub fn new() -> Self {
         Self {
             max_files: 10000,
-            ignore_patterns: vec![
-                ".git".to_string(),
-                "node_modules".to_string(),
-                "target".to_string(),
-                "*.log".to_string(),
-            ],
+            ignore_patterns: Self::default_ignore_patterns(),
         }
     }
 
-    /// Create from config settings
+    /// Create from config settings (merges with defaults)
     pub fn from_settings(settings: &crate::config::FinderSettings) -> Self {
+        // Start with defaults, then add user patterns
+        let mut patterns = Self::default_ignore_patterns();
+        for pattern in &settings.ignore_patterns {
+            if !patterns.contains(pattern) {
+                patterns.push(pattern.clone());
+            }
+        }
         Self {
             max_files: settings.max_files,
-            ignore_patterns: settings.ignore_patterns.clone(),
+            ignore_patterns: patterns,
         }
     }
 
@@ -94,14 +137,35 @@ impl FilePicker {
         let path_str = path.to_string_lossy();
 
         for pattern in &self.ignore_patterns {
-            if pattern.starts_with('*') {
-                // Extension pattern like *.log
-                let ext = &pattern[1..];
-                if path_str.ends_with(ext) {
+            if pattern.starts_with('*') && pattern.ends_with('*') {
+                // Contains pattern like *build* (matches anywhere)
+                let middle = &pattern[1..pattern.len()-1];
+                if path_str.contains(middle) {
                     return true;
                 }
+            } else if pattern.starts_with('*') {
+                // Suffix pattern like *.log or *-build
+                let suffix = &pattern[1..];
+                // Check if any path component ends with this suffix
+                for component in path.components() {
+                    if let std::path::Component::Normal(name) = component {
+                        if name.to_string_lossy().ends_with(suffix) {
+                            return true;
+                        }
+                    }
+                }
+            } else if pattern.ends_with('*') {
+                // Prefix pattern like build*
+                let prefix = &pattern[..pattern.len()-1];
+                for component in path.components() {
+                    if let std::path::Component::Normal(name) = component {
+                        if name.to_string_lossy().starts_with(prefix) {
+                            return true;
+                        }
+                    }
+                }
             } else {
-                // Directory/file name pattern
+                // Exact directory/file name pattern
                 for component in path.components() {
                     if let std::path::Component::Normal(name) = component {
                         if name.to_string_lossy() == *pattern {

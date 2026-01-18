@@ -2450,6 +2450,8 @@ impl Terminal {
 
     /// Render the fuzzy finder floating window
     fn render_finder(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        use crate::finder::FuzzyFinder;
+
         let win = crate::finder::FloatingWindow::centered(editor.term_width, editor.term_height);
 
         // Border colors
@@ -2457,8 +2459,13 @@ impl Terminal {
         let title_color = Color::Cyan;
         let selected_bg = Color::Rgb { r: 60, g: 60, b: 100 };
         let input_bg = Color::Rgb { r: 30, g: 30, b: 40 };
+        let mode_color = if editor.finder.is_normal_mode() {
+            Color::Rgb { r: 100, g: 180, b: 100 } // Green for normal
+        } else {
+            Color::Rgb { r: 180, g: 140, b: 80 } // Orange for insert
+        };
 
-        // Draw top border
+        // Draw top border with title
         execute!(self.stdout, cursor::MoveTo(win.x, win.y), SetForegroundColor(border_color))?;
         print!("\u{250c}"); // ┌
         let title = match editor.finder.mode {
@@ -2480,41 +2487,19 @@ impl Terminal {
         }
         print!("\u{2510}"); // ┐
 
-        // Draw input line (row after top border)
-        execute!(self.stdout, cursor::MoveTo(win.x, win.y + 1))?;
-        print!("\u{2502}"); // │
-        execute!(self.stdout, SetBackgroundColor(input_bg), ResetColor)?;
-        execute!(self.stdout, SetBackgroundColor(input_bg))?;
-        print!(">");
-        let query_display: String = editor.finder.query.chars().take((win.width - 4) as usize).collect();
-        print!("{}", query_display);
-        // Pad to fill line
-        for _ in (query_display.len() + 1)..(win.width - 2) as usize {
-            print!(" ");
-        }
-        execute!(self.stdout, ResetColor, SetForegroundColor(border_color))?;
-        print!("\u{2502}"); // │
-
-        // Draw separator
-        execute!(self.stdout, cursor::MoveTo(win.x, win.y + 2))?;
-        print!("\u{251c}"); // ├
-        for _ in 1..(win.width - 1) {
-            print!("\u{2500}"); // ─
-        }
-        print!("\u{2524}"); // ┤
-
-        // Draw items with scrolling
-        let list_height = (win.height - 4) as usize; // Minus borders and input
+        // Layout: top border, items list, separator, input line, bottom border
+        // Height calculation: total height - 4 (top border, separator, input, bottom border)
+        let list_height = (win.height - 4) as usize;
         let total_items = editor.finder.filtered.len();
         let scroll_offset = editor.finder.scroll_offset;
-        let status = format!(" {}/{} ", editor.finder.filtered.len(), editor.finder.items.len());
 
         // Calculate scroll indicator
         let show_scroll_indicator = total_items > list_height;
         let scroll_indicator_color = Color::DarkGrey;
 
+        // Draw items with scrolling (starts at row 1, after top border)
         for row in 0..list_height {
-            let y = win.y + 3 + row as u16;
+            let y = win.y + 1 + row as u16;
             execute!(self.stdout, cursor::MoveTo(win.x, y), SetForegroundColor(border_color))?;
             print!("\u{2502}"); // │
 
@@ -2528,23 +2513,41 @@ impl Terminal {
                     execute!(self.stdout, SetBackgroundColor(selected_bg))?;
                 }
 
+                // Get file icon (2-3 chars including space)
+                let icon = FuzzyFinder::get_file_icon(&item.path);
+                execute!(self.stdout, SetForegroundColor(Color::White))?;
+                print!("{} ", icon);
+
                 // Truncate display to fit and highlight matches
-                // Leave space for scroll indicator if needed
-                let max_len = if show_scroll_indicator {
-                    (win.width - 4) as usize
+                // Leave space for icon (3 chars) and scroll indicator if needed
+                let icon_width = 3; // icon + space
+                let base_width = if show_scroll_indicator {
+                    (win.width as usize).saturating_sub(4)
                 } else {
-                    (win.width - 3) as usize
+                    (win.width as usize).saturating_sub(3)
                 };
+                let max_len = base_width.saturating_sub(icon_width);
                 let display_chars: Vec<char> = item.display.chars().take(max_len).collect();
                 let match_color = Color::Yellow;
+
+                // Reset foreground color for text
+                if is_selected {
+                    execute!(self.stdout, SetForegroundColor(Color::White))?;
+                } else {
+                    execute!(self.stdout, ResetColor)?;
+                    if is_selected {
+                        execute!(self.stdout, SetBackgroundColor(selected_bg))?;
+                    }
+                }
 
                 for (char_idx, ch) in display_chars.iter().enumerate() {
                     if item.match_indices.contains(&char_idx) {
                         execute!(self.stdout, SetForegroundColor(match_color))?;
                         print!("{}", ch);
-                        execute!(self.stdout, ResetColor)?;
                         if is_selected {
-                            execute!(self.stdout, SetBackgroundColor(selected_bg))?;
+                            execute!(self.stdout, SetForegroundColor(Color::White), SetBackgroundColor(selected_bg))?;
+                        } else {
+                            execute!(self.stdout, ResetColor)?;
                         }
                     } else {
                         print!("{}", ch);
@@ -2562,9 +2565,9 @@ impl Terminal {
             } else {
                 // Empty row
                 let pad_len = if show_scroll_indicator {
-                    (win.width - 4) as usize
+                    (win.width as usize).saturating_sub(4)
                 } else {
-                    (win.width - 3) as usize
+                    (win.width as usize).saturating_sub(3)
                 };
                 for _ in 0..pad_len {
                     print!(" ");
@@ -2597,7 +2600,50 @@ impl Terminal {
             print!("\u{2502}"); // │
         }
 
-        // Draw bottom border with status
+        // Draw separator above input
+        let sep_y = win.y + 1 + list_height as u16;
+        execute!(self.stdout, cursor::MoveTo(win.x, sep_y), SetForegroundColor(border_color))?;
+        print!("\u{251c}"); // ├
+        for _ in 1..(win.width - 1) {
+            print!("\u{2500}"); // ─
+        }
+        print!("\u{2524}"); // ┤
+
+        // Draw input line (above bottom border)
+        let input_y = sep_y + 1;
+        execute!(self.stdout, cursor::MoveTo(win.x, input_y), SetForegroundColor(border_color))?;
+        print!("\u{2502}"); // │
+        execute!(self.stdout, SetBackgroundColor(input_bg))?;
+
+        // Mode indicator
+        let mode_str = if editor.finder.is_normal_mode() { "N" } else { "I" };
+        execute!(self.stdout, SetForegroundColor(mode_color))?;
+        print!("[{}]", mode_str);
+        execute!(self.stdout, SetForegroundColor(Color::White))?;
+        print!(" > ");
+
+        // Query text
+        let prefix_len = 6; // "[N] > " or "[I] > "
+        let query_display: String = editor.finder.query.chars().take((win.width - prefix_len as u16 - 3) as usize).collect();
+        print!("{}", query_display);
+
+        // Show cursor position indicator in insert mode
+        if !editor.finder.is_normal_mode() {
+            execute!(self.stdout, SetForegroundColor(Color::Cyan))?;
+            print!("│"); // Cursor indicator
+            execute!(self.stdout, SetForegroundColor(Color::White))?;
+        }
+
+        // Pad to fill line
+        let used = prefix_len + query_display.len() + if editor.finder.is_normal_mode() { 0 } else { 1 };
+        for _ in used..(win.width - 2) as usize {
+            print!(" ");
+        }
+        execute!(self.stdout, ResetColor, SetForegroundColor(border_color))?;
+        print!("\u{2502}"); // │
+
+        // Draw bottom border with count indicator
+        let status = format!(" {}/{} ", editor.finder.filtered.len(), editor.finder.items.len());
         execute!(self.stdout, cursor::MoveTo(win.x, win.y + win.height - 1), SetForegroundColor(border_color))?;
         print!("\u{2514}"); // └
         let status_start = (win.width as usize - status.len()) / 2;
@@ -4072,12 +4118,32 @@ fn handle_visual_mode(editor: &mut Editor, key: KeyEvent) {
 }
 
 fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
+    // Check if we're in normal mode for vim-like navigation
+    let is_normal_mode = editor.finder.is_normal_mode();
+
+    // Helper to adjust scroll after navigation
+    let adjust_scroll = |editor: &mut Editor| {
+        let win = crate::finder::FloatingWindow::centered(editor.term_width, editor.term_height);
+        let list_height = (win.height - 4) as usize;
+        editor.finder.adjust_scroll(list_height);
+    };
+
     match (key.modifiers, key.code) {
-        // Cancel finder
-        (KeyModifiers::NONE, KeyCode::Esc) |
-        (KeyModifiers::CONTROL, KeyCode::Char('[')) |
+        // Cancel finder - Ctrl+c always closes
         (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
             editor.close_finder();
+        }
+
+        // Esc behavior depends on mode
+        (KeyModifiers::NONE, KeyCode::Esc) |
+        (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
+            if is_normal_mode {
+                // In normal mode, Esc closes the finder
+                editor.close_finder();
+            } else {
+                // In insert mode, Esc switches to normal mode
+                editor.finder.enter_normal_mode();
+            }
         }
 
         // Select item
@@ -4101,26 +4167,49 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
             }
         }
 
-        // Navigate up
+        // Navigate up - works in both modes
         (KeyModifiers::NONE, KeyCode::Up) |
         (KeyModifiers::CONTROL, KeyCode::Char('k')) |
         (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
             editor.finder.select_prev();
-            // Adjust scroll to keep selection visible
-            let win = crate::finder::FloatingWindow::centered(editor.term_width, editor.term_height);
-            let list_height = (win.height - 4) as usize;
-            editor.finder.adjust_scroll(list_height);
+            adjust_scroll(editor);
         }
 
-        // Navigate down
+        // Navigate down - works in both modes
         (KeyModifiers::NONE, KeyCode::Down) |
         (KeyModifiers::CONTROL, KeyCode::Char('j')) |
         (KeyModifiers::CONTROL, KeyCode::Char('n')) => {
             editor.finder.select_next();
-            // Adjust scroll to keep selection visible
-            let win = crate::finder::FloatingWindow::centered(editor.term_width, editor.term_height);
-            let list_height = (win.height - 4) as usize;
-            editor.finder.adjust_scroll(list_height);
+            adjust_scroll(editor);
+        }
+
+        // Normal mode specific: j/k for navigation
+        (KeyModifiers::NONE, KeyCode::Char('j')) if is_normal_mode => {
+            editor.finder.select_next();
+            adjust_scroll(editor);
+        }
+        (KeyModifiers::NONE, KeyCode::Char('k')) if is_normal_mode => {
+            editor.finder.select_prev();
+            adjust_scroll(editor);
+        }
+
+        // Normal mode: 'i' to enter insert mode
+        (KeyModifiers::NONE, KeyCode::Char('i')) if is_normal_mode => {
+            editor.finder.enter_insert_mode();
+        }
+
+        // Normal mode: 'gg' to go to top (simplified to just 'g' for now)
+        (KeyModifiers::NONE, KeyCode::Char('g')) if is_normal_mode => {
+            editor.finder.selected = 0;
+            editor.finder.scroll_offset = 0;
+        }
+
+        // Normal mode: 'G' to go to bottom
+        (KeyModifiers::SHIFT, KeyCode::Char('G')) if is_normal_mode => {
+            if !editor.finder.filtered.is_empty() {
+                editor.finder.selected = editor.finder.filtered.len() - 1;
+                adjust_scroll(editor);
+            }
         }
 
         // Backspace
@@ -4128,9 +4217,9 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
             editor.finder.delete_char_before();
         }
 
-        // Regular character - accept any modifier combination for printable chars
-        // Some terminals may report SHIFT for uppercase or special chars like _
+        // Regular character - insert mode types, normal mode switches to insert first
         (_, KeyCode::Char(c)) if !c.is_control() => {
+            // insert_char already switches to insert mode if needed
             editor.finder.insert_char(c);
         }
 

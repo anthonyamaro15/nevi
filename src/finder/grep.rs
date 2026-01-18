@@ -9,20 +9,99 @@ use super::FinderItem;
 pub struct GrepSearcher {
     /// Maximum number of results
     max_results: usize,
+    /// Ignore patterns (same as file picker)
+    ignore_patterns: Vec<String>,
 }
 
 impl GrepSearcher {
+    /// Default ignore patterns (same as file picker)
+    fn default_ignore_patterns() -> Vec<String> {
+        vec![
+            // Version control
+            ".git".to_string(),
+            ".svn".to_string(),
+            // Dependencies
+            "node_modules".to_string(),
+            "vendor".to_string(),
+            // Build outputs
+            "target".to_string(),
+            "build".to_string(),
+            "dist".to_string(),
+            "out".to_string(),
+            ".next".to_string(),
+            ".nuxt".to_string(),
+            ".output".to_string(),
+            "*-build".to_string(),
+            // Cache directories
+            ".cache".to_string(),
+            "__pycache__".to_string(),
+            // IDE/Editor
+            ".idea".to_string(),
+            ".vscode".to_string(),
+            // Coverage
+            "coverage".to_string(),
+            ".nyc_output".to_string(),
+        ]
+    }
+
     pub fn new() -> Self {
         Self {
             max_results: 1000,
+            ignore_patterns: Self::default_ignore_patterns(),
         }
     }
 
     /// Create from config settings
     pub fn from_settings(settings: &crate::config::FinderSettings) -> Self {
+        let mut patterns = Self::default_ignore_patterns();
+        for pattern in &settings.ignore_patterns {
+            if !patterns.contains(pattern) {
+                patterns.push(pattern.clone());
+            }
+        }
         Self {
             max_results: settings.max_grep_results,
+            ignore_patterns: patterns,
         }
+    }
+
+    /// Check if a path should be ignored
+    fn should_ignore(&self, path: &Path) -> bool {
+        for pattern in &self.ignore_patterns {
+            if pattern.starts_with('*') && pattern.ends_with('*') {
+                let middle = &pattern[1..pattern.len()-1];
+                if path.to_string_lossy().contains(middle) {
+                    return true;
+                }
+            } else if pattern.starts_with('*') {
+                let suffix = &pattern[1..];
+                for component in path.components() {
+                    if let std::path::Component::Normal(name) = component {
+                        if name.to_string_lossy().ends_with(suffix) {
+                            return true;
+                        }
+                    }
+                }
+            } else if pattern.ends_with('*') {
+                let prefix = &pattern[..pattern.len()-1];
+                for component in path.components() {
+                    if let std::path::Component::Normal(name) = component {
+                        if name.to_string_lossy().starts_with(prefix) {
+                            return true;
+                        }
+                    }
+                }
+            } else {
+                for component in path.components() {
+                    if let std::path::Component::Normal(name) = component {
+                        if name.to_string_lossy() == *pattern {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Search for a pattern in all files under root
@@ -57,6 +136,11 @@ impl GrepSearcher {
 
             let path = entry.path();
 
+            // Skip ignored paths (build directories, etc.)
+            if self.should_ignore(path) {
+                continue;
+            }
+
             // Skip binary files by extension
             if self.is_binary_extension(path) {
                 continue;
@@ -85,9 +169,10 @@ impl GrepSearcher {
                                 .unwrap_or(path)
                                 .to_string_lossy();
 
-                            // Truncate long lines
-                            let line_display = if line.len() > 100 {
-                                format!("{}...", &line[..100])
+                            // Truncate long lines (safely handle UTF-8)
+                            let line_display = if line.chars().count() > 100 {
+                                let truncated: String = line.chars().take(100).collect();
+                                format!("{}...", truncated)
                             } else {
                                 line.clone()
                             };

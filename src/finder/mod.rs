@@ -16,6 +16,16 @@ pub enum FinderMode {
     Buffers,
 }
 
+/// Input mode for the fuzzy finder (like vim modes)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FinderInputMode {
+    /// Insert mode - typing adds to query
+    #[default]
+    Insert,
+    /// Normal mode - j/k navigate, typing switches to insert
+    Normal,
+}
+
 /// An item in the finder list
 #[derive(Debug, Clone)]
 pub struct FinderItem {
@@ -83,8 +93,10 @@ impl FloatingWindow {
 
 /// The main fuzzy finder state
 pub struct FuzzyFinder {
-    /// Current mode
+    /// Current mode (Files/Grep/Buffers)
     pub mode: FinderMode,
+    /// Input mode (Insert/Normal for vim-like navigation)
+    pub input_mode: FinderInputMode,
     /// Query string
     pub query: String,
     /// Cursor position in query
@@ -113,6 +125,7 @@ impl FuzzyFinder {
     pub fn new() -> Self {
         Self {
             mode: FinderMode::Files,
+            input_mode: FinderInputMode::Insert,
             query: String::new(),
             cursor: 0,
             items: Vec::new(),
@@ -131,6 +144,7 @@ impl FuzzyFinder {
     pub fn from_settings(settings: &crate::config::FinderSettings) -> Self {
         Self {
             mode: FinderMode::Files,
+            input_mode: FinderInputMode::Insert,
             query: String::new(),
             cursor: 0,
             items: Vec::new(),
@@ -148,6 +162,7 @@ impl FuzzyFinder {
     /// Open the finder in file mode
     pub fn open_files(&mut self, cwd: &std::path::Path) {
         self.mode = FinderMode::Files;
+        self.input_mode = FinderInputMode::Insert;
         self.query.clear();
         self.cursor = 0;
         self.selected = 0;
@@ -162,6 +177,7 @@ impl FuzzyFinder {
     /// Open the finder in buffer mode
     pub fn open_buffers(&mut self, buffer_names: Vec<(usize, String, PathBuf)>) {
         self.mode = FinderMode::Buffers;
+        self.input_mode = FinderInputMode::Insert;
         self.query.clear();
         self.cursor = 0;
         self.selected = 0;
@@ -184,6 +200,7 @@ impl FuzzyFinder {
     /// Open the finder in grep mode (live search)
     pub fn open_grep(&mut self, cwd: &std::path::Path) {
         self.mode = FinderMode::Grep;
+        self.input_mode = FinderInputMode::Insert;
         self.query.clear();
         self.cursor = 0;
         self.selected = 0;
@@ -196,8 +213,77 @@ impl FuzzyFinder {
         self.populated = true;
     }
 
+    /// Enter normal mode (for j/k navigation)
+    pub fn enter_normal_mode(&mut self) {
+        self.input_mode = FinderInputMode::Normal;
+    }
+
+    /// Enter insert mode (for typing)
+    pub fn enter_insert_mode(&mut self) {
+        self.input_mode = FinderInputMode::Insert;
+    }
+
+    /// Check if in normal mode
+    pub fn is_normal_mode(&self) -> bool {
+        self.input_mode == FinderInputMode::Normal
+    }
+
+    /// Get icon for a file based on extension
+    pub fn get_file_icon(path: &std::path::Path) -> &'static str {
+        let ext = path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+
+        match ext.to_lowercase().as_str() {
+            // Programming languages
+            "rs" => "🦀",
+            "py" => "🐍",
+            "js" | "mjs" | "cjs" => "󰌞",
+            "ts" | "mts" | "cts" => "󰛦",
+            "tsx" | "jsx" => "⚛",
+            "go" => "󰟓",
+            "rb" => "💎",
+            "java" => "☕",
+            "c" | "h" => "󰙱",
+            "cpp" | "cc" | "cxx" | "hpp" => "󰙲",
+            "cs" => "󰌛",
+            "php" => "󰌟",
+            "swift" => "󰛥",
+            "kt" | "kts" => "󱈙",
+            // Web
+            "html" | "htm" => "󰌝",
+            "css" => "󰌜",
+            "scss" | "sass" => "󰟬",
+            "json" => "󰘦",
+            "xml" => "󰗀",
+            "svg" => "󰜡",
+            // Config/Data
+            "yaml" | "yml" => "󰈙",
+            "toml" => "󰔵",
+            "ini" | "cfg" | "conf" => "⚙",
+            "env" => "󰈙",
+            // Documents
+            "md" | "markdown" => "󰍔",
+            "txt" => "󰈙",
+            "pdf" => "󰈦",
+            "doc" | "docx" => "󰈬",
+            // Images
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico" => "󰋩",
+            // Shell
+            "sh" | "bash" | "zsh" | "fish" => "󰆍",
+            // Git
+            "gitignore" | "gitattributes" => "󰊢",
+            // Lock files
+            "lock" => "󰌾",
+            // Default
+            _ => "󰈙",
+        }
+    }
+
     /// Insert a character at the cursor position
     pub fn insert_char(&mut self, ch: char) {
+        // Typing always switches to insert mode
+        self.input_mode = FinderInputMode::Insert;
         self.query.insert(self.cursor, ch);
         self.cursor += 1;
         self.update_filter();
