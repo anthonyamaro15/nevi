@@ -243,6 +243,11 @@ impl Terminal {
             self.render_signature_help(editor)?;
         }
 
+        // Render diagnostic floating popup if active
+        if editor.show_diagnostic_float {
+            self.render_diagnostic_float(editor)?;
+        }
+
         // Render references picker if active
         if editor.references_picker.is_some() {
             self.render_references_picker(editor)?;
@@ -1358,12 +1363,15 @@ impl Terminal {
                 crate::lsp::types::DiagnosticSeverity::Hint => (Color::Cyan, "Hint"),
             };
             execute!(self.stdout, SetForegroundColor(color))?;
-            // Truncate message to fit terminal width
+            // Take only the first line of the message (LSP messages can be multi-line)
+            let first_line = diag.message.lines().next().unwrap_or(&diag.message);
+            // Truncate message to fit terminal width (use chars count for proper Unicode handling)
             let max_len = editor.term_width as usize - prefix.len() - 3;
-            let msg = if diag.message.len() > max_len {
-                format!("{}...", &diag.message[..max_len.saturating_sub(3)])
+            let msg: String = first_line.chars().take(max_len).collect();
+            let msg = if first_line.chars().count() > max_len {
+                format!("{}...", &msg[..msg.len().saturating_sub(3)])
             } else {
-                diag.message.clone()
+                msg
             };
             print!("{}: {}", prefix, msg);
             execute!(self.stdout, ResetColor)?;
@@ -2032,6 +2040,118 @@ impl Terminal {
 
         // Draw bottom border
         execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 2))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        print!("╰");
+        for _ in 1..(popup_width - 1) {
+            print!("─");
+        }
+        print!("╯");
+
+        execute!(self.stdout, ResetColor)?;
+        Ok(())
+    }
+
+    /// Render the diagnostic floating popup (like vim.diagnostic.open_float())
+    fn render_diagnostic_float(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        let diagnostics = editor.diagnostics_for_line(editor.cursor.line);
+        if diagnostics.is_empty() {
+            return Ok(());
+        }
+
+        // Prepare diagnostic lines with numbers
+        let mut lines: Vec<(Color, String)> = Vec::new();
+        lines.push((Color::White, "Diagnostics:".to_string()));
+
+        for (idx, diag) in diagnostics.iter().enumerate() {
+            let (color, prefix) = match diag.severity {
+                crate::lsp::types::DiagnosticSeverity::Error => (Color::Red, ""),
+                crate::lsp::types::DiagnosticSeverity::Warning => (Color::Yellow, ""),
+                crate::lsp::types::DiagnosticSeverity::Information => (Color::Blue, ""),
+                crate::lsp::types::DiagnosticSeverity::Hint => (Color::Cyan, ""),
+            };
+
+            // Split message into lines and indent continuation lines
+            for (line_idx, msg_line) in diag.message.lines().enumerate() {
+                if line_idx == 0 {
+                    lines.push((color, format!("{}. {} {}", idx + 1, prefix, msg_line)));
+                } else {
+                    // Indent continuation lines
+                    lines.push((color, format!("   {}", msg_line)));
+                }
+            }
+        }
+
+        // Calculate popup dimensions
+        let max_line_width = lines.iter().map(|(_, l)| l.chars().count()).max().unwrap_or(20);
+        let popup_width = (max_line_width + 4).min(editor.term_width as usize - 4) as u16;
+        let popup_height = (lines.len() + 2).min(editor.term_height as usize - 4) as u16;
+        let content_width = (popup_width - 4) as usize;
+
+        // Position popup below the cursor line
+        let active_pane = &editor.panes()[editor.active_pane_idx()];
+        let cursor_row = (editor.cursor.line.saturating_sub(active_pane.viewport_offset)) as u16;
+        let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+
+        // Try to position below cursor, or above if not enough space
+        let popup_y = if cursor_row + 1 + popup_height < editor.term_height.saturating_sub(2) {
+            cursor_row + 1
+        } else if cursor_row > popup_height {
+            cursor_row - popup_height
+        } else {
+            1 // Fallback to near top
+        };
+
+        // Position at the left edge of text area
+        let popup_x = (2 + line_num_width) as u16;
+
+        // Colors
+        let border_color = Color::Rgb { r: 100, g: 100, b: 140 };
+        let bg_color = Color::Rgb { r: 30, g: 30, b: 45 };
+        let title_color = Color::Rgb { r: 180, g: 180, b: 200 };
+
+        // Draw top border with title
+        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        print!("╭");
+        for _ in 1..(popup_width - 1) {
+            print!("─");
+        }
+        print!("╮");
+
+        // Draw content lines
+        let visible_lines = (popup_height - 2) as usize;
+        for (i, (color, line)) in lines.iter().take(visible_lines).enumerate() {
+            execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 1 + i as u16))?;
+            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            print!("│ ");
+
+            // Determine text color based on line type
+            let text_color = if i == 0 { title_color } else { *color };
+            execute!(self.stdout, SetForegroundColor(text_color))?;
+
+            // Truncate line to fit
+            let display_line: String = line.chars().take(content_width).collect();
+            print!("{}", display_line);
+
+            // Pad remaining space
+            let line_len = display_line.chars().count();
+            if line_len < content_width {
+                print!("{:width$}", "", width = content_width - line_len);
+            }
+
+            execute!(self.stdout, SetForegroundColor(border_color))?;
+            print!(" │");
+        }
+
+        // Fill remaining rows if content is shorter than popup
+        for i in lines.len()..visible_lines {
+            execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 1 + i as u16))?;
+            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            print!("│ {:width$} │", "", width = content_width);
+        }
+
+        // Draw bottom border
+        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + popup_height - 1))?;
         execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
         print!("╰");
         for _ in 1..(popup_width - 1) {
@@ -3491,6 +3611,20 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             }
         }
 
+        KeyAction::ShowDiagnosticFloat => {
+            // Toggle diagnostic floating popup
+            if editor.show_diagnostic_float {
+                editor.show_diagnostic_float = false;
+            } else {
+                let diagnostics = editor.diagnostics_for_line(editor.cursor.line);
+                if !diagnostics.is_empty() {
+                    editor.show_diagnostic_float = true;
+                } else {
+                    editor.set_status("No diagnostics on this line");
+                }
+            }
+        }
+
         KeyAction::DeleteSurround(surround_char) => {
             editor.delete_surrounding(surround_char);
         }
@@ -4740,6 +4874,16 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
         Command::FindDiagnostics => {
             editor.open_finder_diagnostics();
             CommandResult::Ok
+        }
+
+        Command::DiagnosticFloat => {
+            let diagnostics = editor.diagnostics_for_line(editor.cursor.line);
+            if !diagnostics.is_empty() {
+                editor.show_diagnostic_float = true;
+                CommandResult::Ok
+            } else {
+                CommandResult::Message("No diagnostics on this line".to_string())
+            }
         }
 
         Command::NoHighlight => {

@@ -129,6 +129,10 @@ fn main() -> anyhow::Result<()> {
     let completion_debounce = Duration::from_millis(50);
     let mut completion_pending: Option<(Instant, PathBuf, u32, u32)> = None;
 
+    // Track which completion item we've already requested resolve for
+    // (to avoid spamming resolve requests on every key press)
+    let mut last_resolved_completion: Option<String> = None;
+
     // Main event loop
     loop {
         // Process LSP notifications (non-blocking)
@@ -489,6 +493,15 @@ fn main() -> anyhow::Result<()> {
                         }
                         needs_redraw = true;
                     }
+                    LspNotification::CompletionResolved { label, documentation, detail } => {
+                        // Update the completion item with resolved documentation
+                        let has_doc = documentation.is_some();
+                        let has_detail = detail.is_some();
+                        editor.update_completion_item_documentation(&label, documentation, detail);
+                        // Always show debug info in status to trace the flow
+                        editor.set_status(format!("Resolved '{}': doc={}, detail={}", label, has_doc, has_detail));
+                        needs_redraw = true;
+                    }
                 }
             }
         }
@@ -506,6 +519,18 @@ fn main() -> anyhow::Result<()> {
                         match auth {
                             AuthStatus::SignedIn { user } => {
                                 editor.set_status(format!("Copilot: Signed in as {}", user));
+                                // Copilot just became ready - send did_open for current file
+                                // This handles the case where the file was opened before Copilot was ready
+                                if let Some(path) = editor.buffer().path.clone() {
+                                    let uri = lsp::path_to_uri(&path);
+                                    let text = editor.buffer().content();
+                                    let version = editor.buffer().version() as i32;
+                                    let lang_id = LanguageId::from_path(&path)
+                                        .map(|l| l.as_lsp_id().to_string())
+                                        .unwrap_or_else(|| "plaintext".to_string());
+                                    let _ = cop.did_open(&uri, &lang_id, version, &text);
+                                    copilot_current_file = Some(path);
+                                }
                             }
                             AuthStatus::NotSignedIn => {
                                 editor.set_status("Copilot: Run :CopilotAuth to sign in");
@@ -579,6 +604,8 @@ fn main() -> anyhow::Result<()> {
             if let Some(key) = terminal.read_key()? {
                 // Dismiss hover popup on any key press
                 editor.hover_content = None;
+                // Dismiss diagnostic float on any key press (it can be reopened with gl)
+                editor.show_diagnostic_float = false;
 
                 // Check for manual completion trigger (Ctrl+Space) in insert mode
                 let manual_completion = editor.mode == Mode::Insert
@@ -600,6 +627,36 @@ fn main() -> anyhow::Result<()> {
                     }
                 } else {
                     handle_key(&mut editor, key);
+                }
+
+                // Check if we should resolve completion item documentation
+                // Only resolve when selection changes (tracked by last_resolved_label)
+                if editor.completion.active {
+                    if let Some(item) = editor.completion.selected_item() {
+                        let current_label = &item.label;
+                        // Resolve if: no documentation AND has raw_data AND not already resolved
+                        let should_resolve = item.documentation.is_none()
+                            && item.raw_data.is_some()
+                            && last_resolved_completion.as_ref() != Some(current_label);
+
+                        if should_resolve {
+                            last_resolved_completion = Some(current_label.clone());
+                            if let Some(ref mut mlsp) = multi_lsp {
+                                if let Some(path) = editor.buffer().path.clone() {
+                                    if mlsp.is_ready_for_file(&path) {
+                                        let raw_data = item.raw_data.clone().unwrap();
+                                        let label = item.label.clone();
+                                        // Debug: show when resolve is triggered
+                                        editor.set_status(format!("Resolving '{}'...", label));
+                                        let _ = mlsp.completion_resolve(&path, raw_data, label);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Clear tracking when completion popup closes
+                    last_resolved_completion = None;
                 }
 
                 // Handle pending LSP actions (gd, K) - only if LSP is ready
@@ -749,6 +806,7 @@ fn main() -> anyhow::Result<()> {
                 }
 
                 // Track file changes for Copilot and send did_open/did_close
+                // Only update copilot_current_file when did_open is actually sent
                 let copilot_file = editor.buffer().path.clone();
                 if copilot_file != copilot_current_file {
                     if let Some(ref mut cop) = copilot {
@@ -769,9 +827,10 @@ fn main() -> anyhow::Result<()> {
                                     .unwrap_or_else(|| "plaintext".to_string());
                                 let _ = cop.did_open(&uri, &lang_id, version, &text);
                             }
+                            // Only update tracking when we actually sent did_open
+                            copilot_current_file = copilot_file;
                         }
                     }
-                    copilot_current_file = copilot_file;
                 }
 
                 let new_version = editor.buffer().version();
@@ -812,7 +871,12 @@ fn main() -> anyhow::Result<()> {
 
                                 // Check for auto-completion triggers (. or :: or word chars)
                                 // Use debouncing to avoid flooding LSP with requests
-                                if editor.mode == Mode::Insert && should_trigger_completion(&editor) {
+                                // Don't re-trigger if completion popup is already active (preserves resolved docs)
+                                // Explicit triggers like Ctrl+Space or isIncomplete refresh bypass this
+                                if editor.mode == Mode::Insert
+                                    && !editor.completion.active
+                                    && should_trigger_completion(&editor)
+                                {
                                     completion_pending = Some((
                                         Instant::now(),
                                         path.clone(),

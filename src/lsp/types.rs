@@ -64,6 +64,10 @@ pub enum RequestKind {
         character: u32,
         new_name: String,
     },
+    CompletionResolve {
+        /// Label of the item being resolved (for matching response to item)
+        label: String,
+    },
 }
 
 /// Requests sent from the editor to the LSP client thread
@@ -98,6 +102,14 @@ pub enum LspRequest {
         uri: String,
         line: u32,
         character: u32,
+    },
+
+    /// Resolve a completion item to get full documentation
+    CompletionResolve {
+        /// The raw LSP completion item to resolve
+        item: serde_json::Value,
+        /// Label for matching the response to the item
+        label: String,
     },
 
     /// Request go-to-definition
@@ -234,6 +246,16 @@ pub enum LspNotification {
         /// Request context for validation
         request_uri: String,
     },
+
+    /// Resolved completion item with documentation
+    CompletionResolved {
+        /// Label of the item that was resolved
+        label: String,
+        /// Resolved documentation
+        documentation: Option<String>,
+        /// Resolved detail (may be updated too)
+        detail: Option<String>,
+    },
 }
 
 /// A code action item from LSP
@@ -321,6 +343,8 @@ pub struct CompletionItem {
     pub filter_text: Option<String>,
     /// Text used for sorting (if different from label)
     pub sort_text: Option<String>,
+    /// Raw LSP item data for completionItem/resolve
+    pub raw_data: Option<serde_json::Value>,
 }
 
 /// Kind of completion item

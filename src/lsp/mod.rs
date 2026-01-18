@@ -135,6 +135,11 @@ impl LspManager {
         })
     }
 
+    /// Resolve a completion item to get full documentation
+    pub fn completion_resolve(&self, item: serde_json::Value, label: String) -> anyhow::Result<()> {
+        self.send(LspRequest::CompletionResolve { item, label })
+    }
+
     /// Request go-to-definition
     pub fn goto_definition(&self, path: &PathBuf, line: u32, character: u32) -> anyhow::Result<()> {
         let uri = path_to_uri(path);
@@ -316,6 +321,13 @@ fn run_lsp_thread(
                         if let Err(e) = client.completion(&uri, line, character) {
                             let _ = notification_tx.send(LspNotification::Error {
                                 message: format!("Failed to request completion: {}", e),
+                            });
+                        }
+                    }
+                    LspRequest::CompletionResolve { item, label } => {
+                        if let Err(e) = client.completion_resolve(item, label) {
+                            let _ = notification_tx.send(LspNotification::Error {
+                                message: format!("Failed to resolve completion: {}", e),
                             });
                         }
                     }
