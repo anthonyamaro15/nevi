@@ -82,6 +82,8 @@ pub enum Command {
     HarpoonMenu,
     /// :Harpoon1-4 - Jump to harpoon slot
     HarpoonJump(usize),
+    /// :Terminal - Toggle floating terminal
+    ToggleTerminal,
     /// Unknown command
     Unknown(String),
 }
@@ -241,6 +243,9 @@ pub fn parse_command(input: &str) -> Command {
         "Harpoon2" | "harpoon2" => Command::HarpoonJump(2),
         "Harpoon3" | "harpoon3" => Command::HarpoonJump(3),
         "Harpoon4" | "harpoon4" => Command::HarpoonJump(4),
+
+        // Terminal command
+        "Terminal" | "terminal" | "term" => Command::ToggleTerminal,
 
         // Unknown command
         _ => Command::Unknown(cmd.to_string()),

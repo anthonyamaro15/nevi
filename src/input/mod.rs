@@ -821,6 +821,24 @@ impl InputState {
                 KeyAction::Pending
             }
 
+            // Direct pane navigation (Ctrl+h/j/k/l) - alternative to Ctrl-w h/j/k/l
+            (KeyModifiers::CONTROL, KeyCode::Char('h')) => {
+                self.reset();
+                KeyAction::WindowLeft
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('j')) => {
+                self.reset();
+                KeyAction::WindowDown
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('k')) => {
+                self.reset();
+                KeyAction::WindowUp
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('l')) => {
+                self.reset();
+                KeyAction::WindowRight
+            }
+
             // Jump list navigation
             (KeyModifiers::CONTROL, KeyCode::Char('o')) => {
                 self.reset();

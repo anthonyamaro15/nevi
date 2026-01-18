@@ -258,6 +258,11 @@ impl Terminal {
             self.render_harpoon_menu(editor)?;
         }
 
+        // Render floating terminal if visible
+        if editor.floating_terminal.is_visible() {
+            self.render_floating_terminal(editor)?;
+        }
+
         // Position cursor
         self.position_cursor(editor)?;
 
@@ -2324,6 +2329,116 @@ impl Terminal {
         Ok(())
     }
 
+    /// Render the floating terminal
+    fn render_floating_terminal(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        // Calculate terminal dimensions (60% of screen, centered)
+        let term_width = (editor.term_width as f32 * 0.6) as u16;
+        let term_height = (editor.term_height as f32 * 0.6) as u16;
+
+        // Ensure minimum size
+        let term_width = term_width.max(40);
+        let term_height = term_height.max(10);
+
+        // Center the terminal
+        let term_x = (editor.term_width.saturating_sub(term_width)) / 2;
+        let term_y = (editor.term_height.saturating_sub(term_height)) / 2;
+
+        // Colors
+        let border_color = Color::Rgb { r: 100, g: 180, b: 100 };
+        let bg_color = Color::Rgb { r: 20, g: 20, b: 25 };
+        let text_color = Color::Rgb { r: 200, g: 200, b: 200 };
+        let title_color = Color::Rgb { r: 150, g: 220, b: 150 };
+
+        // Draw top border with title
+        execute!(self.stdout, cursor::MoveTo(term_x, term_y))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        let title = " Terminal ";
+        let close_hint = " [<C-\\>] ";
+        let title_start = 2usize;
+        let close_start = (term_width as usize).saturating_sub(close_hint.len() + 2);
+
+        print!("╭");
+        for i in 1..(term_width - 1) {
+            let i = i as usize;
+            if i == title_start {
+                execute!(self.stdout, SetForegroundColor(title_color))?;
+                print!("{}", title);
+                execute!(self.stdout, SetForegroundColor(border_color))?;
+            } else if i > title_start && i < title_start + title.len() {
+                // Skip - title already printed
+            } else if i == close_start {
+                execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 100, g: 100, b: 110 }))?;
+                print!("{}", close_hint);
+                execute!(self.stdout, SetForegroundColor(border_color))?;
+            } else if i > close_start && i < close_start + close_hint.len() {
+                // Skip - close hint already printed
+            } else {
+                print!("─");
+            }
+        }
+        print!("╮");
+
+        // Get terminal content
+        let content_height = (term_height - 2) as usize;
+        let content_width = (term_width - 2) as usize;
+        let lines = editor.floating_terminal.get_visible_lines(content_height, content_width);
+        let (cursor_row, cursor_col) = editor.floating_terminal.get_cursor_pos();
+
+        // Draw terminal content
+        for (row, line) in lines.iter().enumerate() {
+            execute!(self.stdout, cursor::MoveTo(term_x, term_y + 1 + row as u16))?;
+            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            print!("│");
+
+            execute!(self.stdout, SetForegroundColor(text_color), SetBackgroundColor(bg_color))?;
+
+            // Print line content, padding to fill width
+            let display: String = line.chars().take(content_width).collect();
+            print!("{:<width$}", display, width = content_width);
+
+            execute!(self.stdout, SetForegroundColor(border_color))?;
+            print!("│");
+        }
+
+        // Fill remaining rows if content is shorter
+        for row in lines.len()..content_height {
+            execute!(self.stdout, cursor::MoveTo(term_x, term_y + 1 + row as u16))?;
+            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            print!("│");
+            execute!(self.stdout, SetForegroundColor(text_color))?;
+            print!("{:<width$}", "", width = content_width);
+            execute!(self.stdout, SetForegroundColor(border_color))?;
+            print!("│");
+        }
+
+        // Draw bottom border
+        execute!(self.stdout, cursor::MoveTo(term_x, term_y + term_height - 1))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        print!("╰");
+        for _ in 1..(term_width - 1) {
+            print!("─");
+        }
+        print!("╯");
+
+        execute!(self.stdout, ResetColor)?;
+
+        // Position cursor inside the terminal
+        let cursor_x = term_x + 1 + cursor_col.min(content_width.saturating_sub(1)) as u16;
+        let cursor_y = term_y + 1 + cursor_row.min(content_height.saturating_sub(1)) as u16;
+        execute!(self.stdout, cursor::MoveTo(cursor_x, cursor_y))?;
+
+        Ok(())
+    }
+
+    /// Render only the floating terminal overlay (for efficient updates)
+    pub fn render_terminal_only(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        if editor.floating_terminal.is_visible() {
+            self.render_floating_terminal(editor)?;
+            self.stdout.flush()?;
+        }
+        Ok(())
+    }
+
     /// Render the fuzzy finder floating window
     fn render_finder(&mut self, editor: &Editor) -> anyhow::Result<()> {
         let win = crate::finder::FloatingWindow::centered(editor.term_width, editor.term_height);
@@ -2806,6 +2921,32 @@ fn handle_harpoon_menu_key(editor: &mut Editor, key: KeyEvent) {
 
 /// Handle a key event and update editor state
 pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
+    // Check for floating terminal toggle (Ctrl-\) - works in any mode
+    // Note: Ctrl-\ sends ASCII 28 (File Separator) on Unix terminals
+    // We check for both the character and the raw control code
+    let is_ctrl_backslash = match (key.modifiers, key.code) {
+        (KeyModifiers::CONTROL, KeyCode::Char('\\')) => true,
+        (KeyModifiers::CONTROL, KeyCode::Char('4')) => true,  // Ctrl-4 = Ctrl-\ on some terminals
+        (_, KeyCode::Char('\x1c')) => true,  // ASCII 28 = File Separator (Ctrl-\)
+        _ => false,
+    };
+    if is_ctrl_backslash {
+        editor.floating_terminal.toggle();
+        return;
+    }
+
+    // If floating terminal is visible, handle its keys
+    if editor.floating_terminal.is_visible() {
+        // Escape closes the terminal (alternative to Ctrl-\)
+        if key.code == KeyCode::Esc && key.modifiers.is_empty() {
+            editor.floating_terminal.toggle();
+            return;
+        }
+        // All other keys go to the terminal
+        editor.floating_terminal.send_key(key);
+        return;
+    }
+
     // Handle references picker if active
     if editor.references_picker.is_some() {
         handle_references_picker_key(editor, key);
@@ -4483,6 +4624,11 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             } else {
                 CommandResult::Error(format!("Harpoon slot {} is empty", slot))
             }
+        }
+
+        Command::ToggleTerminal => {
+            editor.floating_terminal.toggle();
+            CommandResult::Ok
         }
 
         Command::Unknown(cmd) => {

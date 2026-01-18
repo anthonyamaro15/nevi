@@ -48,6 +48,9 @@ nucleo = "0.5"            # Fast fuzzy matching
 lsp-types = "0.95"        # LSP protocol types
 serde_json = "1.0"        # JSON serialization for LSP messages
 
+# Floating terminal
+portable-pty = "0.8"      # Cross-platform PTY support
+
 [profile.release]
 lto = true
 codegen-units = 1

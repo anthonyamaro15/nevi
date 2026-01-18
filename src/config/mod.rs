@@ -244,6 +244,13 @@ impl Default for KeymapSettings {
                     action: ":Harpoon4".to_string(),
                     desc: Some("Harpoon file 4".to_string()),
                 },
+                // Terminal - disabled due to rendering flicker issues
+                // See NEOVIM_PARITY.md "On Hold" section for details
+                // LeaderMapping {
+                //     key: "t".to_string(),
+                //     action: ":Terminal".to_string(),
+                //     desc: Some("Toggle terminal".to_string()),
+                // },
             ],
         }
     }
