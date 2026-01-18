@@ -229,54 +229,84 @@ impl FuzzyFinder {
     }
 
     /// Get icon for a file based on extension
+    /// Uses 2-character type indicators for consistent terminal width
     pub fn get_file_icon(path: &std::path::Path) -> &'static str {
         let ext = path.extension()
             .and_then(|e| e.to_str())
             .unwrap_or("");
 
-        match ext.to_lowercase().as_str() {
-            // Programming languages
-            "rs" => "🦀",
-            "py" => "🐍",
-            "js" | "mjs" | "cjs" => "󰌞",
-            "ts" | "mts" | "cts" => "󰛦",
-            "tsx" | "jsx" => "⚛",
-            "go" => "󰟓",
-            "rb" => "💎",
-            "java" => "☕",
-            "c" | "h" => "󰙱",
-            "cpp" | "cc" | "cxx" | "hpp" => "󰙲",
-            "cs" => "󰌛",
-            "php" => "󰌟",
-            "swift" => "󰛥",
-            "kt" | "kts" => "󱈙",
-            // Web
-            "html" | "htm" => "󰌝",
-            "css" => "󰌜",
-            "scss" | "sass" => "󰟬",
-            "json" => "󰘦",
-            "xml" => "󰗀",
-            "svg" => "󰜡",
-            // Config/Data
-            "yaml" | "yml" => "󰈙",
-            "toml" => "󰔵",
-            "ini" | "cfg" | "conf" => "⚙",
-            "env" => "󰈙",
-            // Documents
-            "md" | "markdown" => "󰍔",
-            "txt" => "󰈙",
-            "pdf" => "󰈦",
-            "doc" | "docx" => "󰈬",
-            // Images
-            "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico" => "󰋩",
-            // Shell
-            "sh" | "bash" | "zsh" | "fish" => "󰆍",
-            // Git
-            "gitignore" | "gitattributes" => "󰊢",
-            // Lock files
-            "lock" => "󰌾",
-            // Default
-            _ => "󰈙",
+        // Check for special filenames first
+        let filename = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+
+        match filename.to_lowercase().as_str() {
+            ".gitignore" | ".gitattributes" => "GT",
+            ".env" | ".env.local" | ".env.development" | ".env.production" => "EN",
+            ".prettierrc" | ".prettierrc.json" => "PR",
+            ".eslintrc" | ".eslintrc.json" | ".eslintrc.js" => "ES",
+            "dockerfile" => "DK",
+            "makefile" => "MK",
+            "cargo.toml" => "RS",
+            "package.json" => "PK",
+            "tsconfig.json" => "TS",
+            _ => {
+                // Fall back to extension-based icons
+                match ext.to_lowercase().as_str() {
+                    // Programming languages
+                    "rs" => "RS",
+                    "py" => "PY",
+                    "js" | "mjs" | "cjs" => "JS",
+                    "ts" | "mts" | "cts" => "TS",
+                    "tsx" => "TX",
+                    "jsx" => "JX",
+                    "go" => "GO",
+                    "rb" => "RB",
+                    "java" => "JV",
+                    "c" => "C ",
+                    "h" => "H ",
+                    "cpp" | "cc" | "cxx" => "C+",
+                    "hpp" => "H+",
+                    "cs" => "C#",
+                    "php" => "HP",
+                    "swift" => "SW",
+                    "kt" | "kts" => "KT",
+                    "lua" => "LU",
+                    // Web
+                    "html" | "htm" => "HT",
+                    "css" => "CS",
+                    "scss" | "sass" => "SC",
+                    "vue" => "VU",
+                    "svelte" => "SV",
+                    // Data/Config
+                    "json" | "jsonc" => "JS",
+                    "xml" => "XM",
+                    "yaml" | "yml" => "YM",
+                    "toml" => "TM",
+                    "ini" | "cfg" | "conf" => "CF",
+                    "env" => "EN",
+                    // Documents
+                    "md" | "markdown" => "MD",
+                    "txt" => "TX",
+                    "pdf" => "PD",
+                    "doc" | "docx" => "DC",
+                    // Images
+                    "png" => "PN",
+                    "jpg" | "jpeg" => "JP",
+                    "gif" => "GF",
+                    "svg" => "SV",
+                    "webp" => "WP",
+                    "ico" => "IC",
+                    // Shell
+                    "sh" | "bash" => "SH",
+                    "zsh" => "ZS",
+                    "fish" => "FS",
+                    // Lock files
+                    "lock" => "LK",
+                    // Default
+                    _ => "  ",
+                }
+            }
         }
     }
 

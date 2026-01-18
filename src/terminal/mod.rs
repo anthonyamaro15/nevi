@@ -2513,9 +2513,25 @@ impl Terminal {
                     execute!(self.stdout, SetBackgroundColor(selected_bg))?;
                 }
 
-                // Get file icon (2-3 chars including space)
+                // Get file type indicator (2 chars + space)
                 let icon = FuzzyFinder::get_file_icon(&item.path);
-                execute!(self.stdout, SetForegroundColor(Color::White))?;
+                let icon_color = match icon {
+                    "RS" => Color::Rgb { r: 255, g: 100, b: 50 },   // Rust - orange
+                    "TS" | "TX" => Color::Rgb { r: 50, g: 150, b: 255 }, // TypeScript - blue
+                    "JS" | "JX" => Color::Rgb { r: 255, g: 220, b: 50 }, // JavaScript - yellow
+                    "PY" => Color::Rgb { r: 80, g: 180, b: 80 },    // Python - green
+                    "GO" => Color::Rgb { r: 100, g: 200, b: 220 },  // Go - cyan
+                    "RB" => Color::Rgb { r: 220, g: 50, b: 50 },    // Ruby - red
+                    "HT" => Color::Rgb { r: 230, g: 100, b: 50 },   // HTML - orange
+                    "CS" | "SC" => Color::Rgb { r: 100, g: 150, b: 255 }, // CSS - blue
+                    "MD" => Color::Rgb { r: 150, g: 150, b: 150 },  // Markdown - gray
+                    "YM" | "TM" | "CF" => Color::Rgb { r: 180, g: 140, b: 100 }, // Config - tan
+                    "GT" => Color::Rgb { r: 240, g: 80, b: 50 },    // Git - red-orange
+                    "EN" => Color::Rgb { r: 255, g: 200, b: 50 },   // Env - yellow
+                    "SH" | "ZS" | "FS" => Color::Rgb { r: 100, g: 200, b: 100 }, // Shell - green
+                    _ => Color::Rgb { r: 120, g: 120, b: 120 },     // Default - gray
+                };
+                execute!(self.stdout, SetForegroundColor(icon_color))?;
                 print!("{} ", icon);
 
                 // Truncate display to fit and highlight matches
