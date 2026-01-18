@@ -634,6 +634,8 @@ pub struct Editor {
     pub rename_input: String,
     /// Original word for rename (shown in prompt)
     pub rename_original: String,
+    /// Floating terminal
+    pub floating_terminal: crate::floating_terminal::FloatingTerminal,
 }
 
 /// State for references picker UI
@@ -748,6 +750,7 @@ impl Editor {
             code_actions_picker: None,
             rename_input: String::new(),
             rename_original: String::new(),
+            floating_terminal: crate::floating_terminal::FloatingTerminal::new(),
         }
     }
 
@@ -755,7 +758,8 @@ impl Editor {
     pub fn set_project_root(&mut self, path: std::path::PathBuf) {
         self.project_root = Some(path.clone());
         self.explorer.set_root(path.clone());
-        self.harpoon.set_project_root(path);
+        self.harpoon.set_project_root(path.clone());
+        self.floating_terminal.set_working_dir(path);
     }
 
     /// Get the project root or current working directory
@@ -3975,11 +3979,19 @@ impl Editor {
         } else {
             self.viewport_offset = 0;
         }
+        // Sync to active pane for rendering
+        if self.active_pane < self.panes.len() {
+            self.panes[self.active_pane].viewport_offset = self.viewport_offset;
+        }
     }
 
     /// Scroll viewport so cursor is at top of screen (zt command)
     pub fn scroll_cursor_top(&mut self) {
         self.viewport_offset = self.cursor.line;
+        // Sync to active pane for rendering
+        if self.active_pane < self.panes.len() {
+            self.panes[self.active_pane].viewport_offset = self.viewport_offset;
+        }
     }
 
     /// Scroll viewport so cursor is at bottom of screen (zb command)
@@ -3989,6 +4001,10 @@ impl Editor {
             self.viewport_offset = self.cursor.line - text_rows + 1;
         } else {
             self.viewport_offset = 0;
+        }
+        // Sync to active pane for rendering
+        if self.active_pane < self.panes.len() {
+            self.panes[self.active_pane].viewport_offset = self.viewport_offset;
         }
     }
 

@@ -468,6 +468,11 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        // Process floating terminal output if visible
+        if editor.floating_terminal.is_visible() {
+            editor.floating_terminal.process_output();
+        }
+
         if needs_redraw {
             // Update size before render
             if let Ok((w, h)) = Terminal::size() {
