@@ -14,6 +14,7 @@ pub enum FinderMode {
     Files,
     Grep,
     Buffers,
+    Diagnostics,
 }
 
 /// Input mode for the fuzzy finder (like vim modes)
@@ -210,6 +211,21 @@ impl FuzzyFinder {
         // Start with empty results - will populate as user types
         self.items.clear();
         self.filtered.clear();
+        self.populated = true;
+    }
+
+    /// Open the finder in diagnostics mode
+    /// Takes diagnostic items pre-formatted by the editor
+    pub fn open_diagnostics(&mut self, diagnostic_items: Vec<FinderItem>) {
+        self.mode = FinderMode::Diagnostics;
+        self.input_mode = FinderInputMode::Insert;
+        self.query.clear();
+        self.cursor = 0;
+        self.selected = 0;
+        self.scroll_offset = 0;
+
+        self.items = diagnostic_items;
+        self.filtered = (0..self.items.len()).collect();
         self.populated = true;
     }
 

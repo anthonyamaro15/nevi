@@ -41,6 +41,8 @@ pub enum Command {
     FindBuffers,
     /// :LiveGrep - Open fuzzy finder for live grep
     LiveGrep,
+    /// :FindDiagnostics - Open fuzzy finder for LSP diagnostics
+    FindDiagnostics,
     /// :noh or :nohlsearch - Clear search highlights
     NoHighlight,
     /// :s/pattern/replacement/flags or :%s/pattern/replacement/flags - Search and replace
@@ -191,6 +193,7 @@ pub fn parse_command(input: &str) -> Command {
         "FindFiles" | "findfiles" | "ff" | "files" => Command::FindFiles,
         "FindBuffers" | "findbuffers" | "fb" | "buffers" => Command::FindBuffers,
         "LiveGrep" | "livegrep" | "grep" | "rg" => Command::LiveGrep,
+        "FindDiagnostics" | "finddiagnostics" | "diagnostics" | "diag" | "fd" => Command::FindDiagnostics,
 
         // Clear search highlight
         "noh" | "nohlsearch" => Command::NoHighlight,
