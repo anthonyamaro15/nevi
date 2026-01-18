@@ -178,6 +178,8 @@ pub enum KeyAction {
     NextDiagnostic,
     /// Go to previous diagnostic ([d)
     PrevDiagnostic,
+    /// Show diagnostic floating popup (<leader>d)
+    ShowDiagnosticFloat,
     /// Find references (gr)
     FindReferences,
     /// Show code actions (ga)
@@ -894,6 +896,11 @@ impl InputState {
             ('g', KeyModifiers::NONE, KeyCode::Char('r')) => {
                 self.reset();
                 KeyAction::FindReferences
+            }
+            // gl - show line diagnostic floating popup
+            ('g', KeyModifiers::NONE, KeyCode::Char('l')) => {
+                self.reset();
+                KeyAction::ShowDiagnosticFloat
             }
             // gc - comment toggle (waits for motion or 'c' for line)
             ('g', KeyModifiers::NONE, KeyCode::Char('c')) => {

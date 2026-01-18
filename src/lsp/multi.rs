@@ -229,6 +229,19 @@ impl MultiLspManager {
         Ok(())
     }
 
+    /// Resolve a completion item to get full documentation
+    pub fn completion_resolve(&mut self, path: &PathBuf, item: serde_json::Value, label: String) -> anyhow::Result<()> {
+        let lang = LanguageId::from_path(path)
+            .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
+
+        if let Some(instance) = self.get_instance_mut(lang) {
+            if instance.ready {
+                instance.manager.completion_resolve(item, label)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Request hover information for a file
     pub fn hover(&mut self, path: &PathBuf, line: u32, character: u32) -> anyhow::Result<()> {
         let lang = LanguageId::from_path(path)

@@ -614,6 +614,8 @@ pub struct Editor {
     pub frecency: FrecencyDb,
     /// Signature help popup content
     pub signature_help: Option<crate::lsp::types::SignatureHelpResult>,
+    /// Show diagnostic floating popup at cursor
+    pub show_diagnostic_float: bool,
     /// Incremental search matches: (line, start_col, end_col)
     pub search_matches: Vec<(usize, usize, usize)>,
     /// Project root directory (for scoping file finder and grep)
@@ -780,6 +782,7 @@ impl Editor {
             needs_completion_refresh: false,
             frecency: FrecencyDb::load(),
             signature_help: None,
+            show_diagnostic_float: false,
             search_matches: Vec::new(),
             project_root: None,
             explorer: FileExplorer::new(),
@@ -827,6 +830,27 @@ impl Editor {
     pub fn update_completion_filter(&mut self, prefix: &str) {
         self.completion.update_filter(prefix);
         self.completion.refilter_with_frecency(Some(&self.frecency));
+    }
+
+    /// Update a completion item with resolved documentation
+    pub fn update_completion_item_documentation(
+        &mut self,
+        label: &str,
+        documentation: Option<String>,
+        detail: Option<String>,
+    ) {
+        // Find the item by label and update its documentation
+        for item in &mut self.completion.items {
+            if item.label == label {
+                if documentation.is_some() {
+                    item.documentation = documentation;
+                }
+                if detail.is_some() {
+                    item.detail = detail;
+                }
+                break;
+            }
+        }
     }
 
     /// Set the LSP status (persistent, shown in status bar)
@@ -1947,6 +1971,7 @@ impl Editor {
         // Hide any active popups
         self.completion.hide();
         self.signature_help = None;
+        self.show_diagnostic_float = false;
 
         self.mode = Mode::Normal;
         // In normal mode, cursor can't be past last character
@@ -4077,6 +4102,7 @@ impl Editor {
                 // Move to first non-blank
                 self.cursor.col = self.find_first_non_blank(self.cursor.line);
                 self.clamp_cursor();
+                self.scroll_to_cursor();
             }
             Motion::ScreenMiddle => {
                 // M - move to middle of visible screen
@@ -4087,6 +4113,7 @@ impl Editor {
                 // Move to first non-blank
                 self.cursor.col = self.find_first_non_blank(self.cursor.line);
                 self.clamp_cursor();
+                self.scroll_to_cursor();
             }
             Motion::ScreenBottom => {
                 // L - move to bottom of visible screen (- count lines from bottom)
@@ -4098,6 +4125,7 @@ impl Editor {
                 // Move to first non-blank
                 self.cursor.col = self.find_first_non_blank(self.cursor.line);
                 self.clamp_cursor();
+                self.scroll_to_cursor();
             }
             _ => {
                 // Use standard motion handling

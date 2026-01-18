@@ -148,7 +148,17 @@ impl LspClient {
                     completion: Some(lsp_types::CompletionClientCapabilities {
                         completion_item: Some(lsp_types::CompletionItemCapability {
                             snippet_support: Some(false),
-                            documentation_format: Some(vec![lsp_types::MarkupKind::PlainText]),
+                            documentation_format: Some(vec![
+                                lsp_types::MarkupKind::PlainText,
+                                lsp_types::MarkupKind::Markdown,
+                            ]),
+                            // Tell server we support resolving documentation and detail lazily
+                            resolve_support: Some(lsp_types::CompletionItemCapabilityResolveSupport {
+                                properties: vec![
+                                    "documentation".to_string(),
+                                    "detail".to_string(),
+                                ],
+                            }),
                             ..Default::default()
                         }),
                         ..Default::default()
@@ -487,6 +497,16 @@ impl LspClient {
         )
     }
 
+    /// Resolve a completion item to get full documentation
+    /// Takes the raw LSP completion item data and the label for tracking
+    pub fn completion_resolve(&mut self, item: Value, label: String) -> Result<u64> {
+        self.send_request(
+            "completionItem/resolve",
+            item,
+            RequestKind::CompletionResolve { label },
+        )
+    }
+
     /// Send a JSON-RPC request and track it in the pending map
     fn send_request(&mut self, method: &str, params: Value, kind: RequestKind) -> Result<u64> {
         let id = self.request_id.fetch_add(1, Ordering::SeqCst);
@@ -778,6 +798,12 @@ fn handle_message(
                 _ => Some(LspNotification::RenameResult { edits: vec![], request_uri: uri }),
             }
         }
+        RequestKind::CompletionResolve { label } => {
+            match msg.result {
+                Some(result) if !result.is_null() => handle_completion_resolve_response(result, label),
+                _ => Some(LspNotification::CompletionResolved { label, documentation: None, detail: None }),
+            }
+        }
     };
 
     (notification, None)
@@ -1028,6 +1054,7 @@ fn handle_completion_response(
                 insert_text,
                 filter_text,
                 sort_text,
+                raw_data: Some(item.clone()),
             })
         })
         .collect();
@@ -1426,4 +1453,31 @@ fn handle_rename_response(result: Value, request_uri: String) -> Option<LspNotif
     }
 
     Some(LspNotification::RenameResult { edits, request_uri })
+}
+
+/// Handle completionItem/resolve response
+fn handle_completion_resolve_response(result: Value, label: String) -> Option<LspNotification> {
+    // Extract documentation from the resolved item
+    let documentation = result
+        .get("documentation")
+        .and_then(|d| {
+            if d.is_string() {
+                d.as_str().map(|s| s.to_string())
+            } else {
+                // MarkupContent format: { kind: "markdown"|"plaintext", value: "..." }
+                d.get("value").and_then(|v| v.as_str()).map(|s| s.to_string())
+            }
+        });
+
+    // Also extract detail if it was updated
+    let detail = result
+        .get("detail")
+        .and_then(|d| d.as_str())
+        .map(|s| s.to_string());
+
+    Some(LspNotification::CompletionResolved {
+        label,
+        documentation,
+        detail,
+    })
 }

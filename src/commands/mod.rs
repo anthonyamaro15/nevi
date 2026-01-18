@@ -43,6 +43,8 @@ pub enum Command {
     LiveGrep,
     /// :FindDiagnostics - Open fuzzy finder for LSP diagnostics
     FindDiagnostics,
+    /// :DiagnosticFloat - Show diagnostic floating popup at cursor line
+    DiagnosticFloat,
     /// :noh or :nohlsearch - Clear search highlights
     NoHighlight,
     /// :s/pattern/replacement/flags or :%s/pattern/replacement/flags - Search and replace
@@ -202,6 +204,7 @@ pub fn parse_command(input: &str) -> Command {
         "FindBuffers" | "findbuffers" | "fb" | "buffers" => Command::FindBuffers,
         "LiveGrep" | "livegrep" | "grep" | "rg" => Command::LiveGrep,
         "FindDiagnostics" | "finddiagnostics" | "diagnostics" | "diag" | "fd" => Command::FindDiagnostics,
+        "DiagnosticFloat" | "diagnosticfloat" | "df" | "linediag" => Command::DiagnosticFloat,
 
         // Clear search highlight
         "noh" | "nohlsearch" => Command::NoHighlight,

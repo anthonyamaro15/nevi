@@ -208,6 +208,11 @@ impl Default for KeymapSettings {
                     action: ":FindDiagnostics".to_string(),
                     desc: Some("Find diagnostics".to_string()),
                 },
+                LeaderMapping {
+                    key: "D".to_string(),
+                    action: ":DiagnosticFloat".to_string(),
+                    desc: Some("Show line diagnostic".to_string()),
+                },
                 // Explorer
                 LeaderMapping {
                     key: "e".to_string(),
