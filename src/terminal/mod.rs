@@ -2521,11 +2521,12 @@ impl Terminal {
                 // Truncate display to fit and highlight matches
                 // Leave space for icon (3 chars) and scroll indicator if needed
                 let icon_width = 3; // icon + space
-                let max_len = if show_scroll_indicator {
-                    (win.width - 4) as usize - icon_width
+                let base_width = if show_scroll_indicator {
+                    (win.width as usize).saturating_sub(4)
                 } else {
-                    (win.width - 3) as usize - icon_width
+                    (win.width as usize).saturating_sub(3)
                 };
+                let max_len = base_width.saturating_sub(icon_width);
                 let display_chars: Vec<char> = item.display.chars().take(max_len).collect();
                 let match_color = Color::Yellow;
 
@@ -2564,9 +2565,9 @@ impl Terminal {
             } else {
                 // Empty row
                 let pad_len = if show_scroll_indicator {
-                    (win.width - 4) as usize
+                    (win.width as usize).saturating_sub(4)
                 } else {
-                    (win.width - 3) as usize
+                    (win.width as usize).saturating_sub(3)
                 };
                 for _ in 0..pad_len {
                     print!(" ");

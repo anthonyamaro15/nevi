@@ -425,9 +425,27 @@ fn default_config_template() -> &'static str {
 # FINDER (Fuzzy file picker, grep)
 # ============================================================================
 # [finder]
-# ignore_patterns = [".git", "node_modules", "target", "*.log"]
 # max_files = 10000          # Max files to scan
 # max_grep_results = 1000    # Max grep results
+#
+# Add extra ignore patterns (these are ADDED to defaults, not replacing):
+# ignore_patterns = ["my-folder", "*.generated.ts"]
+#
+# Default patterns already ignored:
+#   Version control:  .git, .svn, .hg
+#   Dependencies:     node_modules, vendor
+#   Build outputs:    target, build, dist, out, .next, .nuxt, .output, *-build
+#   Cache:            .cache, __pycache__, .pytest_cache, .mypy_cache
+#   IDE/Editor:       .idea, .vscode
+#   Coverage:         coverage, .nyc_output
+#   File patterns:    *.log, *.tmp, *.bak
+#
+# Pattern syntax:
+#   "build"     - exact match
+#   "*.log"     - ends with .log
+#   "*-build"   - ends with -build (matches aws-build, my-build, etc.)
+#   "tmp*"      - starts with tmp
+#   "*test*"    - contains test
 
 # ============================================================================
 # KEYMAP
