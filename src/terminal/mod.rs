@@ -2472,6 +2472,7 @@ impl Terminal {
             crate::finder::FinderMode::Files => " Find Files ",
             crate::finder::FinderMode::Grep => " Live Grep ",
             crate::finder::FinderMode::Buffers => " Buffers ",
+            crate::finder::FinderMode::Diagnostics => " Diagnostics ",
         };
         let title_start = (win.width as usize - title.len()) / 2;
         for i in 1..(win.width - 1) {
@@ -2556,7 +2557,41 @@ impl Terminal {
                     }
                 }
 
+                // For diagnostics mode, color the severity indicator
+                let is_diagnostics_mode = editor.finder.mode == crate::finder::FinderMode::Diagnostics;
+                let mut skip_severity_coloring = 0;
+
+                // Check for severity prefix and render it with color
+                if is_diagnostics_mode && display_chars.len() >= 3 {
+                    let prefix: String = display_chars[0..3].iter().collect();
+                    let severity_color = match prefix.as_str() {
+                        "[E]" => Some(Color::Rgb { r: 255, g: 80, b: 80 }),   // Red for errors
+                        "[W]" => Some(Color::Rgb { r: 255, g: 200, b: 50 }),  // Yellow for warnings
+                        "[I]" => Some(Color::Rgb { r: 100, g: 180, b: 255 }), // Blue for info
+                        "[H]" => Some(Color::Rgb { r: 150, g: 150, b: 150 }), // Gray for hints
+                        _ => None,
+                    };
+
+                    if let Some(color) = severity_color {
+                        execute!(self.stdout, SetForegroundColor(color))?;
+                        print!("{}", prefix);
+                        skip_severity_coloring = 3;
+
+                        // Reset to normal text color
+                        if is_selected {
+                            execute!(self.stdout, SetForegroundColor(Color::White), SetBackgroundColor(selected_bg))?;
+                        } else {
+                            execute!(self.stdout, ResetColor)?;
+                        }
+                    }
+                }
+
                 for (char_idx, ch) in display_chars.iter().enumerate() {
+                    // Skip chars already printed as severity indicator
+                    if char_idx < skip_severity_coloring {
+                        continue;
+                    }
+
                     if item.match_indices.contains(&char_idx) {
                         execute!(self.stdout, SetForegroundColor(match_color))?;
                         print!("{}", ch);
@@ -4584,6 +4619,11 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
 
         Command::LiveGrep => {
             editor.open_finder_grep();
+            CommandResult::Ok
+        }
+
+        Command::FindDiagnostics => {
+            editor.open_finder_diagnostics();
             CommandResult::Ok
         }
 

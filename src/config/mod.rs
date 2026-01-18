@@ -201,6 +201,11 @@ impl Default for KeymapSettings {
                     action: ":FindBuffers".to_string(),
                     desc: Some("Find buffers".to_string()),
                 },
+                LeaderMapping {
+                    key: "d".to_string(),
+                    action: ":FindDiagnostics".to_string(),
+                    desc: Some("Find diagnostics".to_string()),
+                },
                 // Explorer
                 LeaderMapping {
                     key: "e".to_string(),

@@ -4122,6 +4122,85 @@ impl Editor {
         self.mode = Mode::Finder;
     }
 
+    /// Open the fuzzy finder in diagnostics mode
+    pub fn open_finder_diagnostics(&mut self) {
+        use crate::finder::FinderItem;
+        use crate::lsp::types::DiagnosticSeverity;
+
+        let mut diagnostic_items: Vec<FinderItem> = Vec::new();
+        let cwd = self.working_directory();
+
+        // Collect diagnostics from all files, sorted by severity (errors first)
+        let mut all_diags: Vec<(&String, &crate::lsp::types::Diagnostic)> = self
+            .diagnostics
+            .iter()
+            .flat_map(|(uri, diags)| diags.iter().map(move |d| (uri, d)))
+            .collect();
+
+        // Sort: errors first, then warnings, then info/hints
+        all_diags.sort_by(|(_, a), (_, b)| {
+            let a_severity = match a.severity {
+                DiagnosticSeverity::Error => 0,
+                DiagnosticSeverity::Warning => 1,
+                DiagnosticSeverity::Information => 2,
+                DiagnosticSeverity::Hint => 3,
+            };
+            let b_severity = match b.severity {
+                DiagnosticSeverity::Error => 0,
+                DiagnosticSeverity::Warning => 1,
+                DiagnosticSeverity::Information => 2,
+                DiagnosticSeverity::Hint => 3,
+            };
+            a_severity.cmp(&b_severity).then_with(|| a.line.cmp(&b.line))
+        });
+
+        for (uri, diag) in all_diags {
+            // Get relative path from URI
+            let path = if uri.starts_with("file://") {
+                std::path::PathBuf::from(&uri[7..])
+            } else {
+                std::path::PathBuf::from(uri)
+            };
+
+            let rel_path = path
+                .strip_prefix(&cwd)
+                .unwrap_or(&path)
+                .to_string_lossy();
+
+            // Format: [E/W] line:col message | filepath
+            let severity_indicator = match diag.severity {
+                DiagnosticSeverity::Error => "[E]",
+                DiagnosticSeverity::Warning => "[W]",
+                DiagnosticSeverity::Information => "[I]",
+                DiagnosticSeverity::Hint => "[H]",
+            };
+
+            // Truncate message if too long
+            let msg = if diag.message.len() > 60 {
+                format!("{}...", &diag.message.chars().take(57).collect::<String>())
+            } else {
+                diag.message.clone()
+            };
+
+            let display = format!(
+                "{} {}:{} {} | {}",
+                severity_indicator,
+                diag.line + 1, // Convert 0-indexed to 1-indexed
+                diag.col_start + 1,
+                msg,
+                rel_path
+            );
+
+            let item = FinderItem::new(display, path.clone())
+                .with_line(diag.line + 1); // 1-indexed for jumping
+
+            diagnostic_items.push(item);
+        }
+
+        self.finder.open_diagnostics(diagnostic_items);
+        self.mode = Mode::Finder;
+    }
+
     /// Close the finder and return to normal mode
     pub fn close_finder(&mut self) {
         self.mode = Mode::Normal;
