@@ -18,6 +18,7 @@ pub struct Settings {
     pub keymap: KeymapSettings,
     pub finder: FinderSettings,
     pub lsp: LspSettings,
+    pub copilot: CopilotSettings,
 }
 
 impl Default for Settings {
@@ -28,6 +29,7 @@ impl Default for Settings {
             keymap: KeymapSettings::default(),
             finder: FinderSettings::default(),
             lsp: LspSettings::default(),
+            copilot: CopilotSettings::default(),
         }
     }
 }
@@ -378,6 +380,40 @@ pub struct LspServerConfig {
 
 fn default_true() -> bool {
     true
+}
+
+/// GitHub Copilot settings
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CopilotSettings {
+    /// Enable Copilot (default: true)
+    pub enabled: bool,
+    /// Path to the Copilot language server (auto-detected if empty)
+    pub server_path: String,
+    /// Path to Node.js executable (auto-detected if empty)
+    pub node_path: String,
+    /// Debounce delay in milliseconds before requesting completions (default: 150)
+    pub debounce_ms: u64,
+    /// Automatically trigger completions in insert mode (default: true)
+    pub auto_trigger: bool,
+    /// Hide ghost text when LSP completion popup is visible (default: true)
+    pub hide_during_completion: bool,
+    /// Languages where Copilot is disabled (default: empty)
+    pub disabled_languages: Vec<String>,
+}
+
+impl Default for CopilotSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            server_path: String::new(),
+            node_path: String::new(),
+            debounce_ms: 150,
+            auto_trigger: true,
+            hide_during_completion: true,
+            disabled_languages: Vec::new(),
+        }
+    }
 }
 
 /// Get the path to the config file
