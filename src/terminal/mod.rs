@@ -711,6 +711,48 @@ impl Terminal {
                         }
                     }
 
+                    // Render Copilot ghost text on cursor line
+                    // Note: Copilot ghost text can coexist with LSP completion popup
+                    // (the popup shows as a dropdown, ghost text shows inline after cursor)
+                    if is_cursor_line && is_active && editor.mode == Mode::Insert
+                        && editor.copilot_ghost.is_some()
+                    {
+                        if let Some(ref ghost) = editor.copilot_ghost {
+                            // Only show if trigger position matches cursor
+                            if ghost.trigger_line == file_line && ghost.trigger_col <= pane.cursor.col {
+                                let remaining = pane_width.saturating_sub(chars_printed);
+                                let ghost_chars: String = ghost.inline_text.chars().take(remaining).collect();
+                                let ghost_len = ghost_chars.chars().count();
+
+                                // Render Copilot ghost text in a slightly different gray
+                                execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 100, g: 100, b: 110 }))?;
+                                if highlight_cursor_line {
+                                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                                }
+                                print!("{}", ghost_chars);
+
+                                // Show count if multiple completions
+                                if !ghost.count_display.is_empty() {
+                                    let count_remaining = remaining.saturating_sub(ghost_len + 1);
+                                    if count_remaining >= ghost.count_display.len() {
+                                        execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 80, g: 80, b: 90 }))?;
+                                        print!(" {}", ghost.count_display);
+                                        chars_printed += 1 + ghost.count_display.len();
+                                    }
+                                }
+
+                                execute!(self.stdout, ResetColor)?;
+
+                                // Re-apply cursor line background for remaining fill
+                                if highlight_cursor_line {
+                                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                                }
+
+                                chars_printed += ghost_len;
+                            }
+                        }
+                    }
+
                     // Render inline diagnostic (virtual text) for this line
                     if is_active {
                         if let Some(diag) = editor.diagnostics_for_line(file_line).first() {
@@ -1340,9 +1382,18 @@ impl Terminal {
 
         // Calculate popup position (below cursor, or above if near bottom)
         // Position at trigger_col (start of word), not current cursor position
+        // Account for active pane's position on screen
+        let active_pane = &editor.panes()[editor.active_pane_idx()];
+        let pane_x = active_pane.rect.x;
+        let pane_y = active_pane.rect.y;
+
         let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
-        let popup_screen_col = (line_num_width + 1 + completion.trigger_col) as u16;
-        let cursor_screen_row = (editor.cursor.line - editor.viewport_offset) as u16;
+        let cursor_in_pane_col = (line_num_width + 1 + completion.trigger_col) as u16;
+        let cursor_in_pane_row = (editor.cursor.line.saturating_sub(active_pane.viewport_offset)) as u16;
+
+        // Convert to screen coordinates
+        let popup_screen_col = pane_x + cursor_in_pane_col;
+        let cursor_screen_row = pane_y + cursor_in_pane_row;
 
         // Calculate widths for label and detail columns (only from filtered items)
         let max_label_len = completion.filtered.iter()
@@ -3531,6 +3582,23 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             }
         }
 
+        // Copilot actions - these are handled by the main event loop
+        // They set flags that main.rs picks up
+        KeyAction::CopilotAccept => {
+            // Signal to main loop to accept Copilot completion
+            editor.pending_copilot_action = Some(crate::editor::CopilotAction::Auth);
+            // Note: Actual accept is handled in main.rs with access to CopilotManager
+        }
+        KeyAction::CopilotNextCompletion => {
+            // Signal to main loop to cycle next
+        }
+        KeyAction::CopilotPrevCompletion => {
+            // Signal to main loop to cycle prev
+        }
+        KeyAction::CopilotDismiss => {
+            // Signal to main loop to dismiss
+        }
+
         KeyAction::Unknown => {
             // Unknown key, ignore
         }
@@ -3616,6 +3684,53 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
             // Any other key hides completion and continues normal handling
             _ => {
                 editor.completion.hide();
+            }
+        }
+    }
+
+    // Handle Copilot keybindings when ghost text is visible
+    if editor.copilot_ghost.is_some() {
+        match (key.modifiers, key.code) {
+            // Accept Copilot completion with Ctrl+L
+            (KeyModifiers::CONTROL, KeyCode::Char('l')) => {
+                // Signal to main loop to accept completion
+                editor.pending_copilot_action = Some(crate::editor::CopilotAction::Accept);
+                return;
+            }
+            // Cycle to next completion with Alt+]
+            (KeyModifiers::ALT, KeyCode::Char(']')) => {
+                editor.pending_copilot_action = Some(crate::editor::CopilotAction::CycleNext);
+                return;
+            }
+            // Cycle to previous completion with Alt+[
+            (KeyModifiers::ALT, KeyCode::Char('[')) => {
+                editor.pending_copilot_action = Some(crate::editor::CopilotAction::CyclePrev);
+                return;
+            }
+            // Dismiss on Esc (will fall through to enter normal mode below)
+            (KeyModifiers::NONE, KeyCode::Esc) => {
+                editor.copilot_ghost = None;
+                editor.pending_copilot_action = Some(crate::editor::CopilotAction::Dismiss);
+                // Continue to enter normal mode below
+            }
+            // Movement keys dismiss ghost text
+            (KeyModifiers::NONE, KeyCode::Left)
+            | (KeyModifiers::NONE, KeyCode::Right)
+            | (KeyModifiers::NONE, KeyCode::Up)
+            | (KeyModifiers::NONE, KeyCode::Down)
+            | (KeyModifiers::NONE, KeyCode::Home)
+            | (KeyModifiers::NONE, KeyCode::End)
+            | (KeyModifiers::NONE, KeyCode::PageUp)
+            | (KeyModifiers::NONE, KeyCode::PageDown) => {
+                editor.copilot_ghost = None;
+                editor.pending_copilot_action = Some(crate::editor::CopilotAction::Dismiss);
+                // Continue to handle the movement
+            }
+            // Word characters and other typing - let ghost text persist
+            // Stale detection in main.rs will dismiss if cursor moves before trigger
+            _ => {
+                // Don't dismiss - ghost text stays visible while typing continues
+                // The main loop's stale detection handles invalidation
             }
         }
     }
@@ -4784,6 +4899,24 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
 
         Command::ToggleTerminal => {
             editor.floating_terminal.toggle();
+            CommandResult::Ok
+        }
+
+        // Copilot commands - these are handled by main.rs through editor flags
+        Command::CopilotAuth => {
+            editor.pending_copilot_action = Some(crate::editor::CopilotAction::Auth);
+            CommandResult::Ok
+        }
+        Command::CopilotSignOut => {
+            editor.pending_copilot_action = Some(crate::editor::CopilotAction::SignOut);
+            CommandResult::Ok
+        }
+        Command::CopilotStatus => {
+            editor.pending_copilot_action = Some(crate::editor::CopilotAction::Status);
+            CommandResult::Ok
+        }
+        Command::CopilotToggle => {
+            editor.pending_copilot_action = Some(crate::editor::CopilotAction::Toggle);
             CommandResult::Ok
         }
 

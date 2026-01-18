@@ -3,10 +3,11 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use nevi::editor::LspAction;
+use nevi::editor::{LspAction, CopilotAction, CopilotGhostText};
 use nevi::lsp;
 use nevi::terminal::handle_key;
 use nevi::{load_config, AutosaveMode, Editor, LanguageId, LspNotification, Mode, MultiLspManager, Terminal};
+use nevi::copilot::{utf16_to_utf8_col, AuthStatus, CopilotCompletion, CopilotManager, CopilotNotification, CopilotStatus};
 
 fn main() -> anyhow::Result<()> {
     // Load configuration
@@ -17,6 +18,8 @@ fn main() -> anyhow::Result<()> {
     // Store autosave settings
     let autosave_mode = settings.editor.autosave.clone();
     let autosave_delay = Duration::from_millis(settings.editor.autosave_delay_ms);
+    // Store Copilot settings
+    let copilot_settings = settings.copilot.clone();
 
     // Initialize editor with settings
     let mut editor = Editor::new(settings);
@@ -90,6 +93,28 @@ fn main() -> anyhow::Result<()> {
         multi_lsp = Some(mgr);
         editor.set_lsp_status("LSP: (no server)");
     }
+
+    // Initialize Copilot manager if enabled
+    let mut copilot: Option<CopilotManager> = None;
+    if copilot_settings.enabled {
+        let mut mgr = CopilotManager::new(copilot_settings);
+        // Try to start the Copilot server
+        match mgr.start() {
+            Ok(()) => {
+                // Started successfully, will get Initialized notification later
+            }
+            Err(e) => {
+                // Failed to start - show status but don't block the editor
+                editor.set_status(format!("Copilot: {}", e));
+            }
+        }
+        copilot = Some(mgr);
+    }
+
+    // Copilot debouncing: delay completion requests
+    let copilot_debounce = Duration::from_millis(150);
+    let mut copilot_last_request: Option<Instant> = None;
+    let mut copilot_current_file: Option<PathBuf> = None; // Track which file Copilot knows about
 
     let debounce = Duration::from_millis(200);
     let poll_timeout = Duration::from_millis(16);
@@ -468,6 +493,59 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        // Process Copilot notifications (non-blocking)
+        if let Some(ref mut cop) = copilot {
+            let notifications = cop.poll_notifications();
+            for notif in notifications {
+                match notif {
+                    CopilotNotification::Initialized => {
+                        // Server initialized, check auth status
+                        needs_redraw = true;
+                    }
+                    CopilotNotification::AuthStatus(ref auth) => {
+                        match auth {
+                            AuthStatus::SignedIn { user } => {
+                                editor.set_status(format!("Copilot: Signed in as {}", user));
+                            }
+                            AuthStatus::NotSignedIn => {
+                                editor.set_status("Copilot: Run :CopilotAuth to sign in");
+                            }
+                            AuthStatus::SigningIn => {
+                                editor.set_status("Copilot: Signing in...");
+                            }
+                            AuthStatus::Failed { message } => {
+                                editor.set_status(format!("Copilot: Auth failed - {}", message));
+                            }
+                        }
+                        needs_redraw = true;
+                    }
+                    CopilotNotification::SignInRequired(ref info) => {
+                        // Show device code to user
+                        editor.set_status(format!(
+                            "Copilot: Visit {} and enter code: {}",
+                            info.verification_uri, info.user_code
+                        ));
+                        needs_redraw = true;
+                    }
+                    CopilotNotification::Completions(_) => {
+                        // Update ghost text from Copilot manager
+                        // Note: We allow ghost text to coexist with LSP completion popup
+                        // (similar to how VSCode shows both simultaneously)
+                        sync_copilot_ghost(&mut editor, cop);
+                        needs_redraw = true;
+                    }
+                    CopilotNotification::Error { ref message } => {
+                        editor.set_status(format!("Copilot error: {}", message));
+                        needs_redraw = true;
+                    }
+                    CopilotNotification::Status { message } => {
+                        // Log status messages (could show in debug mode)
+                        let _ = message; // Suppress unused warning
+                    }
+                }
+            }
+        }
+
         // Process floating terminal output if visible
         if editor.floating_terminal.is_visible() {
             editor.floating_terminal.process_output();
@@ -577,6 +655,61 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
 
+                // Handle pending Copilot actions
+                if let Some(action) = editor.pending_copilot_action.take() {
+                    if let Some(ref mut cop) = copilot {
+                        match action {
+                            CopilotAction::Auth => {
+                                if let Err(e) = cop.sign_in() {
+                                    editor.set_status(format!("Copilot auth error: {}", e));
+                                } else {
+                                    editor.set_status("Copilot: Check for sign-in prompt...");
+                                }
+                            }
+                            CopilotAction::SignOut => {
+                                if let Err(e) = cop.sign_out() {
+                                    editor.set_status(format!("Copilot sign-out error: {}", e));
+                                } else {
+                                    editor.set_status("Copilot: Signed out");
+                                }
+                            }
+                            CopilotAction::Status => {
+                                editor.set_status(cop.status_string());
+                            }
+                            CopilotAction::Toggle => {
+                                cop.toggle();
+                                if cop.is_enabled() {
+                                    editor.set_status("Copilot: Enabled");
+                                } else {
+                                    editor.set_status("Copilot: Disabled");
+                                    editor.copilot_ghost = None;
+                                }
+                            }
+                            CopilotAction::Accept => {
+                                // Accept the current Copilot completion
+                                if let Some(completion) = cop.accept_completion() {
+                                    apply_copilot_completion(&mut editor, &completion);
+                                    editor.copilot_ghost = None;
+                                }
+                            }
+                            CopilotAction::CycleNext => {
+                                cop.cycle_next();
+                                sync_copilot_ghost(&mut editor, cop);
+                            }
+                            CopilotAction::CyclePrev => {
+                                cop.cycle_prev();
+                                sync_copilot_ghost(&mut editor, cop);
+                            }
+                            CopilotAction::Dismiss => {
+                                cop.reject_completions();
+                                editor.copilot_ghost = None;
+                            }
+                        }
+                    } else {
+                        editor.set_status("Copilot not available");
+                    }
+                }
+
                 // Check if the current file has changed (e.g., opened from finder)
                 // If so, notify LSP with did_close for old file and did_open for new file
                 let current_file = editor.buffer().path.clone();
@@ -615,6 +748,32 @@ fn main() -> anyhow::Result<()> {
                     lsp_current_file = current_file.clone();
                 }
 
+                // Track file changes for Copilot and send did_open/did_close
+                let copilot_file = editor.buffer().path.clone();
+                if copilot_file != copilot_current_file {
+                    if let Some(ref mut cop) = copilot {
+                        if cop.status == CopilotStatus::Ready {
+                            // Close the old file if we had one
+                            if let Some(ref old_path) = copilot_current_file {
+                                let old_uri = lsp::path_to_uri(old_path);
+                                let _ = cop.did_close(&old_uri);
+                            }
+
+                            // Open the new file
+                            if let Some(ref new_path) = copilot_file {
+                                let uri = lsp::path_to_uri(new_path);
+                                let text = editor.buffer().content();
+                                let version = editor.buffer().version() as i32;
+                                let lang_id = LanguageId::from_path(new_path)
+                                    .map(|l| l.as_lsp_id().to_string())
+                                    .unwrap_or_else(|| "plaintext".to_string());
+                                let _ = cop.did_open(&uri, &lang_id, version, &text);
+                            }
+                        }
+                    }
+                    copilot_current_file = copilot_file;
+                }
+
                 let new_version = editor.buffer().version();
                 if new_version != prev_version {
                     editor.note_buffer_change();
@@ -630,6 +789,26 @@ fn main() -> anyhow::Result<()> {
                             if mlsp.is_ready_for_file(&path) {
                                 let text = editor.buffer().content();
                                 let _ = mlsp.did_change(&path, &text);
+                            }
+                        }
+                    }
+
+                    // Send document change to Copilot
+                    if let Some(ref mut cop) = copilot {
+                        if cop.status == CopilotStatus::Ready {
+                            if let Some(path) = editor.buffer().path.clone() {
+                                let uri = lsp::path_to_uri(&path);
+                                let text = editor.buffer().content();
+                                let version = editor.buffer().version() as i32;
+                                let _ = cop.did_change(&uri, version, &text);
+                            }
+                        }
+                    }
+
+                    // Continue LSP triggers
+                    if let Some(ref mut mlsp) = multi_lsp {
+                        if let Some(path) = editor.buffer().path.clone() {
+                            if mlsp.is_ready_for_file(&path) {
 
                                 // Check for auto-completion triggers (. or :: or word chars)
                                 // Use debouncing to avoid flooding LSP with requests
@@ -653,6 +832,90 @@ fn main() -> anyhow::Result<()> {
                                 }
                             }
                         }
+                    }
+
+                    // Request Copilot completions (with debouncing)
+                    if let Some(ref mut cop) = copilot {
+                        if cop.is_enabled() && cop.status == CopilotStatus::Ready {
+                            // Clear stale ghost text if cursor moved to different line
+                            // or moved BEFORE the trigger column (typing backwards/deleting)
+                            let is_stale = cop.ghost_text.as_ref().map_or(false, |g| {
+                                g.trigger_line != editor.cursor.line || editor.cursor.col < g.trigger_col
+                            });
+                            if is_stale {
+                                cop.reject_completions();
+                                editor.copilot_ghost = None;
+                            }
+
+                            // Check if we should request new completions
+                            // Request when: in insert mode and no current ghost text
+                            // Note: We allow requests even with LSP popup active (they can coexist)
+                            let ghost_renderable = cop.ghost_text.as_ref().map_or(false, |ghost| {
+                                if !ghost.visible {
+                                    return false;
+                                }
+                                if ghost.trigger_line != editor.cursor.line || editor.cursor.col < ghost.trigger_col {
+                                    return false;
+                                }
+                                ghost.current()
+                                    .and_then(|completion| copilot_inline_completion(&editor, completion))
+                                    .map(|(inline, _)| !inline.is_empty())
+                                    .unwrap_or(false)
+                            });
+                            let should_request = editor.mode == Mode::Insert && !ghost_renderable;
+
+                            if should_request {
+                                let now = Instant::now();
+                                let can_request = match copilot_last_request {
+                                    Some(last) => now.duration_since(last) >= copilot_debounce,
+                                    None => true,
+                                };
+
+                                if can_request {
+                                    if let Some(path) = editor.buffer().path.clone() {
+                                        // Get current line content for UTF-16 conversion
+                                        let line_content = editor.buffer().line(editor.cursor.line)
+                                            .map(|l| l.to_string())
+                                            .unwrap_or_default();
+
+                                        // Get full source content (required by Copilot)
+                                        let source = editor.buffer().content();
+
+                                        // Get language ID
+                                        let lang_id = LanguageId::from_path(&path)
+                                            .map(|l| l.as_lsp_id().to_string())
+                                            .unwrap_or_else(|| "plaintext".to_string());
+
+                                        // Get relative path
+                                        let relative_path = editor.project_root.as_ref()
+                                            .and_then(|root| path.strip_prefix(root).ok())
+                                            .map(|p| p.to_string_lossy().to_string())
+                                            .unwrap_or_else(|| path.to_string_lossy().to_string());
+
+                                        let uri = lsp::path_to_uri(&path);
+                                        let version = editor.buffer().version() as i32;
+
+                                        let _ = cop.request_completions_with_line(
+                                            &uri,
+                                            version,
+                                            editor.cursor.line,
+                                            editor.cursor.col,
+                                            &line_content,
+                                            &source,
+                                            &lang_id,
+                                            &relative_path,
+                                            4, // tab_size
+                                            true, // insert_spaces
+                                        );
+                                        copilot_last_request = Some(now);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Update editor ghost text from Copilot state
+                        // Note: Ghost text can coexist with LSP completion popup
+                        sync_copilot_ghost(&mut editor, cop);
                     }
 
                     // Check if signature help should be dismissed
@@ -952,6 +1215,165 @@ fn should_dismiss_signature_help(editor: &Editor) -> bool {
     }
 
     false
+}
+
+fn sync_copilot_ghost(editor: &mut Editor, cop: &mut CopilotManager) {
+    let ghost_state = match cop.ghost_text.as_ref() {
+        Some(ghost_state) if ghost_state.visible => ghost_state,
+        _ => {
+            editor.copilot_ghost = None;
+            return;
+        }
+    };
+
+    let Some(completion) = ghost_state.current() else {
+        editor.copilot_ghost = None;
+        cop.ghost_text = None;
+        return;
+    };
+
+    if let Some((inline, additional)) = copilot_inline_completion(editor, completion) {
+        editor.copilot_ghost = Some(CopilotGhostText {
+            inline_text: inline,
+            additional_lines: additional,
+            trigger_line: ghost_state.trigger_line,
+            trigger_col: ghost_state.trigger_col,
+            count_display: ghost_state.count_display(),
+        });
+    } else {
+        editor.copilot_ghost = None;
+        cop.ghost_text = None;
+    }
+}
+
+fn copilot_inline_completion(
+    editor: &Editor,
+    completion: &CopilotCompletion,
+) -> Option<(String, Vec<String>)> {
+    let start_line = completion.range.start.line as usize;
+    let end_line = completion.range.end.line as usize;
+    if start_line != editor.cursor.line {
+        return None;
+    }
+
+    let line_text = editor.buffer().line(start_line)
+        .map(|l| l.to_string())
+        .unwrap_or_default();
+    let line_text = line_text.trim_end_matches('\n');
+
+    let start_col = utf16_to_utf8_col(line_text, completion.range.start.character);
+    let _end_col = utf16_to_utf8_col(line_text, completion.range.end.character);
+
+    if editor.cursor.col < start_col {
+        return None;
+    }
+
+    let prefix_len = editor.cursor.col.saturating_sub(start_col);
+    let prefix: String = line_text.chars().skip(start_col).take(prefix_len).collect();
+
+    let completion_text = completion.text.as_str();
+    let suffix = if completion_text.starts_with(&prefix) {
+        completion_text.chars().skip(prefix.chars().count()).collect()
+    } else {
+        let prefix_trimmed = prefix.trim_start_matches(|c| c == ' ' || c == '\t');
+        let completion_trimmed = completion_text.trim_start_matches(|c| c == ' ' || c == '\t');
+        if !completion_trimmed.starts_with(prefix_trimmed) {
+            return None;
+        }
+        completion_trimmed.chars().skip(prefix_trimmed.chars().count()).collect()
+    };
+
+    let suffix: String = suffix;
+    if suffix.is_empty() {
+        return None;
+    }
+
+    let mut lines = suffix.lines();
+    let inline = lines.next().unwrap_or("").to_string();
+    let additional_lines = lines.map(|s| s.to_string()).collect();
+
+    Some((inline, additional_lines))
+}
+
+fn apply_copilot_completion(editor: &mut Editor, completion: &CopilotCompletion) {
+    let start_line = completion.range.start.line as usize;
+    let end_line = completion.range.end.line as usize;
+    if end_line < start_line {
+        return;
+    }
+
+    let max_line = editor.buffer().len_lines().saturating_sub(1);
+    if start_line > max_line || end_line > max_line {
+        return;
+    }
+
+    let start_line_text = editor.buffer().line(start_line)
+        .map(|l| l.to_string())
+        .unwrap_or_default();
+    let start_line_text = start_line_text.trim_end_matches('\n');
+    let start_col = utf16_to_utf8_col(start_line_text, completion.range.start.character);
+
+    let end_line_text = editor.buffer().line(end_line)
+        .map(|l| l.to_string())
+        .unwrap_or_default();
+    let end_line_text = end_line_text.trim_end_matches('\n');
+    let mut end_col = utf16_to_utf8_col(end_line_text, completion.range.end.character);
+    if start_line == end_line && editor.cursor.line == start_line && editor.cursor.col > end_col {
+        end_col = editor.cursor.col;
+    }
+
+    // Force a new undo group so acceptance is a separate step from typing.
+    editor.undo_stack.end_undo_group(editor.cursor.line, editor.cursor.col);
+    editor.undo_stack.begin_undo_group(editor.cursor.line, editor.cursor.col);
+
+    if end_line > start_line || end_col > start_col {
+        let deleted_text = if end_col > 0 || end_line > start_line {
+            editor.get_range_text(
+                start_line,
+                start_col,
+                end_line,
+                end_col.saturating_sub(1),
+            )
+        } else {
+            String::new()
+        };
+
+        if !deleted_text.is_empty() {
+            editor.undo_stack.record_change(nevi::editor::Change::delete(
+                start_line,
+                start_col,
+                deleted_text,
+            ));
+        }
+
+        editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+    }
+
+    if !completion.text.is_empty() {
+        editor.undo_stack.record_change(nevi::editor::Change::insert(
+            start_line,
+            start_col,
+            completion.text.clone(),
+        ));
+        editor.buffer_mut().insert_str(start_line, start_col, &completion.text);
+    }
+
+    let mut new_line = start_line;
+    let mut new_col = start_col;
+    for ch in completion.text.chars() {
+        if ch == '\n' {
+            new_line += 1;
+            new_col = 0;
+        } else {
+            new_col += 1;
+        }
+    }
+
+    editor.cursor.line = new_line;
+    editor.cursor.col = new_col;
+    editor.clamp_cursor();
+    editor.scroll_to_cursor();
+    editor.undo_stack.end_undo_group(editor.cursor.line, editor.cursor.col);
 }
 
 /// Find the workspace root by looking for Cargo.toml

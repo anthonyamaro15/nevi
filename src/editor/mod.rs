@@ -636,6 +636,46 @@ pub struct Editor {
     pub rename_original: String,
     /// Floating terminal
     pub floating_terminal: crate::floating_terminal::FloatingTerminal,
+    /// Pending Copilot action to execute (handled by main loop)
+    pub pending_copilot_action: Option<CopilotAction>,
+    /// Copilot ghost text state (updated from main loop)
+    pub copilot_ghost: Option<CopilotGhostText>,
+}
+
+/// Copilot ghost text state for rendering
+#[derive(Debug, Clone)]
+pub struct CopilotGhostText {
+    /// Text to display inline after cursor
+    pub inline_text: String,
+    /// Additional lines to display as virtual lines
+    pub additional_lines: Vec<String>,
+    /// Line where ghost text was triggered
+    pub trigger_line: usize,
+    /// Column where ghost text was triggered
+    pub trigger_col: usize,
+    /// Completion count display (e.g., "1/3")
+    pub count_display: String,
+}
+
+/// Copilot action to execute
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopilotAction {
+    /// Initiate sign-in
+    Auth,
+    /// Sign out
+    SignOut,
+    /// Show status
+    Status,
+    /// Toggle on/off
+    Toggle,
+    /// Accept current ghost text completion
+    Accept,
+    /// Cycle to next completion
+    CycleNext,
+    /// Cycle to previous completion
+    CyclePrev,
+    /// Dismiss ghost text
+    Dismiss,
 }
 
 /// State for references picker UI
@@ -751,6 +791,8 @@ impl Editor {
             rename_input: String::new(),
             rename_original: String::new(),
             floating_terminal: crate::floating_terminal::FloatingTerminal::new(),
+            pending_copilot_action: None,
+            copilot_ghost: None,
         }
     }
 

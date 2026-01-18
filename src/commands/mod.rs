@@ -86,6 +86,14 @@ pub enum Command {
     HarpoonJump(usize),
     /// :Terminal - Toggle floating terminal
     ToggleTerminal,
+    /// :CopilotAuth - Initiate Copilot sign-in
+    CopilotAuth,
+    /// :CopilotSignOut - Sign out of Copilot
+    CopilotSignOut,
+    /// :CopilotStatus - Show Copilot status
+    CopilotStatus,
+    /// :CopilotToggle - Toggle Copilot on/off
+    CopilotToggle,
     /// Unknown command
     Unknown(String),
 }
@@ -249,6 +257,12 @@ pub fn parse_command(input: &str) -> Command {
 
         // Terminal command
         "Terminal" | "terminal" | "term" => Command::ToggleTerminal,
+
+        // Copilot commands
+        "CopilotAuth" | "copilotauth" | "Copilot" | "copilot" => Command::CopilotAuth,
+        "CopilotSignOut" | "copilotsignout" => Command::CopilotSignOut,
+        "CopilotStatus" | "copilotstatus" => Command::CopilotStatus,
+        "CopilotToggle" | "copilottoggle" => Command::CopilotToggle,
 
         // Unknown command
         _ => Command::Unknown(cmd.to_string()),

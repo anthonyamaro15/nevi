@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod config;
+pub mod copilot;
 pub mod editor;
 pub mod explorer;
 pub mod finder;
@@ -11,8 +12,10 @@ pub mod lsp;
 pub mod syntax;
 pub mod terminal;
 
-pub use config::{load_config, Settings, KeymapLookup, LeaderAction, AutosaveMode};
-pub use editor::{Editor, Mode, Buffer, Cursor, LspAction};
+pub use config::{load_config, Settings, KeymapLookup, LeaderAction, AutosaveMode, CopilotSettings};
+pub use copilot::{CopilotManager, CopilotStatus, GhostTextState};
+pub use copilot::types::CopilotNotification;
+pub use editor::{Editor, Mode, Buffer, Cursor, LspAction, CopilotAction, CopilotGhostText};
 pub use floating_terminal::FloatingTerminal;
 pub use harpoon::Harpoon;
 pub use explorer::FileExplorer;

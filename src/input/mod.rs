@@ -206,6 +206,14 @@ pub enum KeyAction {
     HarpoonNext,
     /// Harpoon: previous file ([h)
     HarpoonPrev,
+    /// Copilot: accept ghost text completion (Tab in insert mode)
+    CopilotAccept,
+    /// Copilot: cycle to next completion (Alt+])
+    CopilotNextCompletion,
+    /// Copilot: cycle to previous completion (Alt+[)
+    CopilotPrevCompletion,
+    /// Copilot: dismiss ghost text (Esc, handled specially)
+    CopilotDismiss,
     /// Unknown/unhandled key
     Unknown,
 }
