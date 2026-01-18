@@ -1128,16 +1128,25 @@ impl Terminal {
                 )?;
             }
             Mode::Finder => {
-                // Cursor in finder input
-                let win = crate::finder::FloatingWindow::centered(editor.term_width, editor.term_height);
-                let cursor_x = win.x + 2 + editor.finder.cursor as u16;
-                let cursor_y = win.y + 1;
-                execute!(
-                    self.stdout,
-                    cursor::MoveTo(cursor_x, cursor_y),
-                    cursor::Show,
-                    cursor::SetCursorStyle::BlinkingBar
-                )?;
+                if editor.finder.is_normal_mode() {
+                    // Hide cursor in normal mode - selection is shown visually
+                    execute!(self.stdout, cursor::Hide)?;
+                } else {
+                    // Cursor in finder input line (at bottom of finder window)
+                    let win = crate::finder::FloatingWindow::centered(editor.term_width, editor.term_height);
+                    // Input line is 2 rows above the bottom border:
+                    // bottom border at win.y + win.height - 1
+                    // input line at win.y + win.height - 2
+                    let input_y = win.y + win.height - 2;
+                    // Cursor x: border(1) + mode indicator "[I] "(4) + "> "(2) + cursor position
+                    let cursor_x = win.x + 1 + 6 + editor.finder.cursor as u16;
+                    execute!(
+                        self.stdout,
+                        cursor::MoveTo(cursor_x, input_y),
+                        cursor::Show,
+                        cursor::SetCursorStyle::BlinkingBar
+                    )?;
+                }
             }
             Mode::Explorer => {
                 // Hide cursor in explorer mode - selection is shown visually
@@ -2670,12 +2679,23 @@ impl Terminal {
         let scroll_indicator_color = Color::DarkGrey;
 
         // Draw items with scrolling (starts at row 1, after top border)
+        // Telescope-style: best matches at BOTTOM (closest to input)
+        let visible_count = list_height.min(total_items.saturating_sub(scroll_offset));
+        let first_item_row = list_height - visible_count; // Empty rows above items
+
         for row in 0..list_height {
             let y = win.y + 1 + row as u16;
             execute!(self.stdout, cursor::MoveTo(win.x, y), SetForegroundColor(border_color))?;
             print!("\u{2502}"); // │
 
-            let list_idx = scroll_offset + row;
+            // Reverse display: row 0 = least relevant, bottom row = best match
+            let list_idx = if row >= first_item_row {
+                // Map row to item index (reversed)
+                scroll_offset + (list_height - 1 - row)
+            } else {
+                usize::MAX // Empty row marker
+            };
+
             if list_idx < total_items {
                 let item_idx = editor.finder.filtered[list_idx];
                 let item = &editor.finder.items[item_idx];
@@ -2849,15 +2869,8 @@ impl Terminal {
         let query_display: String = editor.finder.query.chars().take((win.width - prefix_len as u16 - 3) as usize).collect();
         print!("{}", query_display);
 
-        // Show cursor position indicator in insert mode
-        if !editor.finder.is_normal_mode() {
-            execute!(self.stdout, SetForegroundColor(Color::Cyan))?;
-            print!("│"); // Cursor indicator
-            execute!(self.stdout, SetForegroundColor(Color::White))?;
-        }
-
-        // Pad to fill line
-        let used = prefix_len + query_display.len() + if editor.finder.is_normal_mode() { 0 } else { 1 };
+        // Pad to fill line (terminal cursor will be positioned separately)
+        let used = prefix_len + query_display.len();
         for _ in used..(win.width - 2) as usize {
             print!(" ");
         }
