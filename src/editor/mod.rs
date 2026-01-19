@@ -8,7 +8,7 @@ pub use cursor::Cursor;
 pub use register::{RegisterContent, Registers};
 pub use undo::{Change, UndoEntry, UndoStack};
 
-use crate::input::{InputState, Motion, apply_motion, TextObject, TextObjectModifier, TextObjectType};
+use crate::input::{InputState, Motion, apply_motion, TextObject, TextObjectModifier, TextObjectType, CaseOperator};
 use crate::commands::CommandLine;
 use crate::syntax::SyntaxManager;
 use crate::config::{Settings, KeymapLookup};
@@ -4134,6 +4134,150 @@ impl Editor {
         if let Some((start_line, _, end_line, _)) = self.find_text_object_range(text_object) {
             self.dedent_lines(start_line, end_line);
         }
+    }
+
+    // ============================================
+    // Case transformation operations
+    // ============================================
+
+    /// Transform the case of text in a range
+    pub fn transform_case(&mut self, start_line: usize, start_col: usize, end_line: usize, end_col: usize, op: CaseOperator) {
+        let text = self.get_range_text(start_line, start_col, end_line, end_col);
+        if text.is_empty() {
+            return;
+        }
+
+        let transformed: String = match op {
+            CaseOperator::Lowercase => text.to_lowercase(),
+            CaseOperator::Uppercase => text.to_uppercase(),
+            CaseOperator::ToggleCase => text.chars().map(|c| {
+                if c.is_lowercase() {
+                    c.to_uppercase().next().unwrap_or(c)
+                } else if c.is_uppercase() {
+                    c.to_lowercase().next().unwrap_or(c)
+                } else {
+                    c
+                }
+            }).collect(),
+        };
+
+        if text == transformed {
+            return;
+        }
+
+        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+
+        // Record deletion of original text
+        self.undo_stack.record_change(Change::delete(
+            start_line,
+            start_col,
+            text.clone(),
+        ));
+
+        // Delete the original text
+        self.buffers[self.current_buffer_idx].delete_range(start_line, start_col, end_line, end_col + 1);
+
+        // Record and insert the transformed text
+        self.undo_stack.record_change(Change::insert(
+            start_line,
+            start_col,
+            transformed.clone(),
+        ));
+        self.buffers[self.current_buffer_idx].insert_str(start_line, start_col, &transformed);
+
+        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.buffers[self.current_buffer_idx].mark_modified();
+        self.clamp_cursor();
+    }
+
+    /// Case transformation with motion (gu{motion}, gU{motion}, g~{motion})
+    pub fn case_motion(&mut self, op: CaseOperator, motion: Motion, count: usize) {
+        if let Some((start_line, start_col, end_line, end_col)) = self.motion_range(motion, count) {
+            self.transform_case(start_line, start_col, end_line, end_col, op);
+            // Move cursor to start of range
+            self.cursor.line = start_line;
+            self.cursor.col = start_col;
+        }
+    }
+
+    /// Case transformation on current line (guu, gUU, g~~)
+    pub fn case_line(&mut self, op: CaseOperator, count: usize) {
+        let start_line = self.cursor.line;
+        let buffer = &self.buffers[self.current_buffer_idx];
+        let end_line = (start_line + count.saturating_sub(1)).min(buffer.len_lines().saturating_sub(1));
+
+        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+
+        for line_num in start_line..=end_line {
+            if let Some(line) = self.buffers[self.current_buffer_idx].line(line_num) {
+                let line_str: String = line.chars().collect();
+                let line_str = line_str.trim_end_matches('\n');
+                if line_str.is_empty() {
+                    continue;
+                }
+
+                let transformed: String = match op {
+                    CaseOperator::Lowercase => line_str.to_lowercase(),
+                    CaseOperator::Uppercase => line_str.to_uppercase(),
+                    CaseOperator::ToggleCase => line_str.chars().map(|c| {
+                        if c.is_lowercase() {
+                            c.to_uppercase().next().unwrap_or(c)
+                        } else if c.is_uppercase() {
+                            c.to_lowercase().next().unwrap_or(c)
+                        } else {
+                            c
+                        }
+                    }).collect(),
+                };
+
+                if line_str != transformed {
+                    // Record deletion
+                    self.undo_stack.record_change(Change::delete(
+                        line_num,
+                        0,
+                        line_str.to_string(),
+                    ));
+
+                    // Delete old content
+                    let old_len = self.buffers[self.current_buffer_idx].line_len(line_num);
+                    for _ in 0..old_len {
+                        self.buffers[self.current_buffer_idx].delete_char(line_num, 0);
+                    }
+
+                    // Record and insert new content
+                    self.undo_stack.record_change(Change::insert(
+                        line_num,
+                        0,
+                        transformed.clone(),
+                    ));
+                    self.buffers[self.current_buffer_idx].insert_str(line_num, 0, &transformed);
+                }
+            }
+        }
+
+        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.buffers[self.current_buffer_idx].mark_modified();
+
+        // Move cursor to first non-blank of start line
+        self.cursor.line = start_line;
+        self.cursor.col = self.find_first_non_blank(start_line);
+        self.clamp_cursor();
+    }
+
+    /// Case transformation on text object (guiw, gUaw, etc.)
+    pub fn case_text_object(&mut self, op: CaseOperator, text_object: TextObject) {
+        if let Some((start_line, start_col, end_line, end_col)) = self.find_text_object_range(text_object) {
+            self.transform_case(start_line, start_col, end_line, end_col, op);
+            // Move cursor to start of text object
+            self.cursor.line = start_line;
+            self.cursor.col = start_col;
+        }
+    }
+
+    /// Case transformation on visual selection
+    pub fn case_visual(&mut self, op: CaseOperator) {
+        let (start_line, start_col, end_line, end_col) = self.get_visual_range();
+        self.transform_case(start_line, start_col, end_line, end_col, op);
     }
 
     /// Get the open and close characters for a surround pair

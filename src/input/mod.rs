@@ -48,6 +48,8 @@ pub struct InputState {
     pub surround_add_object: Option<TextObject>,
     /// Pending comment toggle (gc waiting for motion or second c)
     pub pending_comment: bool,
+    /// Pending case operator (gu, gU, g~ waiting for motion)
+    pub pending_case_operator: Option<CaseOperator>,
 }
 
 /// Operators that can be combined with motions
@@ -58,6 +60,14 @@ pub enum Operator {
     Yank,    // y
     Indent,  // >
     Dedent,  // <
+}
+
+/// Case transformation operators
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaseOperator {
+    Lowercase,   // gu
+    Uppercase,   // gU
+    ToggleCase,  // g~
 }
 
 /// Text object modifier (inner vs around)
@@ -198,6 +208,12 @@ pub enum KeyAction {
     ToggleCommentMotion(Motion, usize),
     /// Toggle comment on visual selection
     ToggleCommentVisual,
+    /// Case transformation with motion (gu{motion}, gU{motion}, g~{motion})
+    CaseMotion(CaseOperator, Motion, usize),
+    /// Case transformation on current line (guu, gUU, g~~)
+    CaseLine(CaseOperator, usize),
+    /// Case transformation on text object (guiw, gUaw, etc.)
+    CaseTextObject(CaseOperator, TextObject),
     /// Harpoon: add current file to marks (<leader>m)
     HarpoonAdd,
     /// Harpoon: toggle menu (<leader>h)
@@ -252,6 +268,7 @@ impl InputState {
         self.pending_surround_add = false;
         self.surround_add_object = None;
         self.pending_comment = false;
+        self.pending_case_operator = None;
         // Note: last_find_char is NOT reset - it persists for ; and , repeats
     }
 
@@ -424,6 +441,11 @@ impl InputState {
         // Handle pending comment toggle (gc waiting for motion or 'c')
         if self.pending_comment {
             return self.handle_comment_motion(key, count);
+        }
+
+        // Handle pending case operator (gu, gU, g~ waiting for motion)
+        if let Some(case_op) = self.pending_case_operator {
+            return self.handle_case_motion(case_op, key, count);
         }
 
         match (key.modifiers, key.code) {
@@ -930,6 +952,21 @@ impl InputState {
                 self.pending_comment = true;
                 KeyAction::Pending
             }
+            // gu - lowercase (waits for motion)
+            ('g', KeyModifiers::NONE, KeyCode::Char('u')) => {
+                self.pending_case_operator = Some(CaseOperator::Lowercase);
+                KeyAction::Pending
+            }
+            // gU - uppercase (waits for motion)
+            ('g', KeyModifiers::SHIFT, KeyCode::Char('U')) => {
+                self.pending_case_operator = Some(CaseOperator::Uppercase);
+                KeyAction::Pending
+            }
+            // g~ - toggle case (waits for motion)
+            ('g', KeyModifiers::SHIFT, KeyCode::Char('~')) | ('g', KeyModifiers::NONE, KeyCode::Char('~')) => {
+                self.pending_case_operator = Some(CaseOperator::ToggleCase);
+                KeyAction::Pending
+            }
             // zz - scroll cursor to center of screen
             ('z', KeyModifiers::NONE, KeyCode::Char('z')) => {
                 self.reset();
@@ -1013,6 +1050,9 @@ impl InputState {
             if let Some(op) = self.pending_operator.take() {
                 self.reset();
                 KeyAction::OperatorTextObject(op, text_object)
+            } else if let Some(case_op) = self.pending_case_operator.take() {
+                self.reset();
+                KeyAction::CaseTextObject(case_op, text_object)
             } else {
                 // In visual mode, just select the text object
                 self.reset();
@@ -1205,6 +1245,116 @@ impl InputState {
                 KeyAction::Pending
             }
             // Text object support (gcip, gciw, etc.)
+            (KeyModifiers::NONE, KeyCode::Char('i')) => {
+                self.pending_text_object = Some(TextObjectModifier::Inner);
+                KeyAction::Pending
+            }
+            (KeyModifiers::NONE, KeyCode::Char('a')) => {
+                self.pending_text_object = Some(TextObjectModifier::Around);
+                KeyAction::Pending
+            }
+            _ => {
+                self.reset();
+                KeyAction::Unknown
+            }
+        }
+    }
+
+    /// Handle motion after gu/gU/g~ (case transformation)
+    fn handle_case_motion(&mut self, case_op: CaseOperator, key: KeyEvent, count: usize) -> KeyAction {
+        match (key.modifiers, key.code) {
+            // guu, gUU, g~~ - operate on current line
+            (KeyModifiers::NONE, KeyCode::Char('u')) if case_op == CaseOperator::Lowercase => {
+                self.reset();
+                KeyAction::CaseLine(case_op, count)
+            }
+            (KeyModifiers::SHIFT, KeyCode::Char('U')) if case_op == CaseOperator::Uppercase => {
+                self.reset();
+                KeyAction::CaseLine(case_op, count)
+            }
+            (KeyModifiers::SHIFT, KeyCode::Char('~')) | (KeyModifiers::NONE, KeyCode::Char('~'))
+                if case_op == CaseOperator::ToggleCase => {
+                self.reset();
+                KeyAction::CaseLine(case_op, count)
+            }
+            // Escape cancels
+            (_, KeyCode::Esc) => {
+                self.reset();
+                KeyAction::Pending
+            }
+            // Line motions
+            (KeyModifiers::NONE, KeyCode::Char('j')) | (_, KeyCode::Down) => {
+                self.reset();
+                KeyAction::CaseMotion(case_op, Motion::Down, count)
+            }
+            (KeyModifiers::NONE, KeyCode::Char('k')) | (_, KeyCode::Up) => {
+                self.reset();
+                KeyAction::CaseMotion(case_op, Motion::Up, count)
+            }
+            // Word motions
+            (KeyModifiers::NONE, KeyCode::Char('w')) => {
+                self.reset();
+                KeyAction::CaseMotion(case_op, Motion::WordForward, count)
+            }
+            (KeyModifiers::SHIFT, KeyCode::Char('W')) => {
+                self.reset();
+                KeyAction::CaseMotion(case_op, Motion::BigWordForward, count)
+            }
+            (KeyModifiers::NONE, KeyCode::Char('b')) => {
+                self.reset();
+                KeyAction::CaseMotion(case_op, Motion::WordBackward, count)
+            }
+            (KeyModifiers::SHIFT, KeyCode::Char('B')) => {
+                self.reset();
+                KeyAction::CaseMotion(case_op, Motion::BigWordBackward, count)
+            }
+            (KeyModifiers::NONE, KeyCode::Char('e')) => {
+                self.reset();
+                KeyAction::CaseMotion(case_op, Motion::WordEnd, count)
+            }
+            (KeyModifiers::SHIFT, KeyCode::Char('E')) => {
+                self.reset();
+                KeyAction::CaseMotion(case_op, Motion::BigWordEnd, count)
+            }
+            // Line position motions
+            (KeyModifiers::NONE, KeyCode::Char('0')) => {
+                self.reset();
+                KeyAction::CaseMotion(case_op, Motion::LineStart, count)
+            }
+            (_, KeyCode::Char('$')) => {
+                self.reset();
+                KeyAction::CaseMotion(case_op, Motion::LineEnd, count)
+            }
+            (_, KeyCode::Char('^')) => {
+                self.reset();
+                KeyAction::CaseMotion(case_op, Motion::FirstNonBlank, count)
+            }
+            // Paragraph motions
+            (_, KeyCode::Char('}')) => {
+                self.reset();
+                KeyAction::CaseMotion(case_op, Motion::ParagraphForward, count)
+            }
+            (_, KeyCode::Char('{')) => {
+                self.reset();
+                KeyAction::CaseMotion(case_op, Motion::ParagraphBackward, count)
+            }
+            // File motions
+            (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
+                self.reset();
+                if self.count.is_some() {
+                    KeyAction::CaseMotion(case_op, Motion::GotoLine(count), 1)
+                } else {
+                    KeyAction::CaseMotion(case_op, Motion::FileEnd, 1)
+                }
+            }
+            // gg - file start (need to handle 'g' prefix)
+            (KeyModifiers::NONE, KeyCode::Char('g')) => {
+                // Set partial_key to handle gg
+                self.partial_key = Some('g');
+                // Keep pending_case_operator for gugg, gUgg, g~gg
+                KeyAction::Pending
+            }
+            // Text object support (guiw, gUaw, etc.)
             (KeyModifiers::NONE, KeyCode::Char('i')) => {
                 self.pending_text_object = Some(TextObjectModifier::Inner);
                 KeyAction::Pending
