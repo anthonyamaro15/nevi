@@ -572,3 +572,80 @@ pub fn html_highlight_query() -> &'static str {
 ; (text) @variable
 "##
 }
+
+/// Get the highlight query for Python
+pub fn python_highlight_query() -> &'static str {
+    r##"
+; Comments
+(comment) @comment
+
+; Strings (including docstrings)
+(string) @string
+
+; Numbers
+(integer) @number
+(float) @number
+
+; Boolean and None literals
+(true) @constant
+(false) @constant
+(none) @constant
+
+; Keywords - these are named nodes in tree-sitter-python
+[
+  "import"
+  "from"
+  "as"
+  "def"
+  "class"
+  "return"
+  "yield"
+  "pass"
+  "break"
+  "continue"
+  "if"
+  "elif"
+  "else"
+  "for"
+  "in"
+  "while"
+  "try"
+  "except"
+  "finally"
+  "raise"
+  "with"
+  "assert"
+  "del"
+  "global"
+  "nonlocal"
+  "lambda"
+  "and"
+  "or"
+  "not"
+  "is"
+  "async"
+  "await"
+  "match"
+  "case"
+] @keyword
+
+; Function definitions
+(function_definition name: (identifier) @function)
+
+; Function calls
+(call function: (identifier) @function)
+(call function: (attribute attribute: (identifier) @function))
+
+; Class definitions
+(class_definition name: (identifier) @type)
+
+; Decorators
+(decorator (identifier) @attribute)
+
+; Type annotations
+(type (identifier) @type)
+
+; Attribute access
+(attribute attribute: (identifier) @property)
+"##
+}

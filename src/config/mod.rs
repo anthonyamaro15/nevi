@@ -329,6 +329,7 @@ pub struct LspServers {
     pub toml: LspServerConfig,
     pub markdown: LspServerConfig,
     pub html: LspServerConfig,
+    pub python: LspServerConfig,
 }
 
 impl Default for LspServers {
@@ -389,6 +390,19 @@ impl Default for LspServers {
                 args: vec!["--stdio".to_string()],
                 root_patterns: vec!["package.json".to_string()],
                 file_extensions: vec!["html".to_string(), "htm".to_string()],
+            },
+            python: LspServerConfig {
+                enabled: true,
+                command: "pyright-langserver".to_string(),
+                args: vec!["--stdio".to_string()],
+                root_patterns: vec![
+                    "pyproject.toml".to_string(),
+                    "setup.py".to_string(),
+                    "setup.cfg".to_string(),
+                    "requirements.txt".to_string(),
+                    "pyrightconfig.json".to_string(),
+                ],
+                file_extensions: vec!["py".to_string(), "pyi".to_string()],
             },
         }
     }

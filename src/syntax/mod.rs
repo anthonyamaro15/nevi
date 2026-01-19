@@ -67,6 +67,7 @@ impl SyntaxManager {
             Some("md") | Some("markdown") => self.set_markdown_language(),
             Some("toml") => self.set_toml_language(),
             Some("html") | Some("htm") => self.set_html_language(),
+            Some("py") | Some("pyi") | Some("pyw") => self.set_python_language(),
             _ => {
                 self.language = None;
                 self.query = None;
@@ -310,6 +311,30 @@ impl SyntaxManager {
             }
             Err(e) => {
                 self.language = Some(format!("html (lang error: {:?})", e));
+            }
+        }
+    }
+
+    /// Set up Python language parser
+    fn set_python_language(&mut self) {
+        let language = tree_sitter_python::LANGUAGE;
+        match self.parser.set_language(&language.into()) {
+            Ok(()) => {
+                self.language = Some("python".to_string());
+
+                let query_source = highlighter::python_highlight_query();
+                match Query::new(&language.into(), query_source) {
+                    Ok(query) => {
+                        self.query = Some(query);
+                    }
+                    Err(e) => {
+                        self.language = Some(format!("python (query error: {:?})", e));
+                        self.query = None;
+                    }
+                }
+            }
+            Err(e) => {
+                self.language = Some(format!("python (lang error: {:?})", e));
             }
         }
     }

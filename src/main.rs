@@ -100,6 +100,7 @@ fn main() -> anyhow::Result<()> {
             lsp_servers.toml,
             lsp_servers.markdown,
             lsp_servers.html,
+            lsp_servers.python,
         );
         multi_lsp = Some(mgr);
         editor.set_lsp_status("LSP: (no server)");
