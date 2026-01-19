@@ -1,0 +1,97 @@
+# Dracula Theme for Nevi
+# Based on the Dracula color scheme (https://draculatheme.com)
+
+[palette]
+bg = "#282a36"
+bg_dark = "#21222c"
+bg_lighter = "#343746"
+fg = "#f8f8f2"
+selection = "#44475a"
+comment = "#6272a4"
+cyan = "#8be9fd"
+green = "#50fa7b"
+orange = "#ffb86c"
+pink = "#ff79c6"
+purple = "#bd93f9"
+red = "#ff5555"
+yellow = "#f1fa8c"
+
+[syntax]
+keyword = { fg = "pink" }
+function = { fg = "green" }
+type = { fg = "cyan", italic = true }
+string = { fg = "yellow" }
+number = { fg = "purple" }
+comment = { fg = "comment", italic = true }
+operator = { fg = "pink" }
+punctuation = { fg = "fg" }
+variable = { fg = "fg" }
+constant = { fg = "purple" }
+attribute = { fg = "green" }
+namespace = { fg = "cyan" }
+label = { fg = "cyan" }
+property = { fg = "cyan" }
+tag = { fg = "pink" }
+
+[ui]
+background = "bg"
+foreground = "fg"
+cursor_line = "#343746"
+selection = "selection"
+line_number = "comment"
+line_number_active = "fg"
+visual_bg = "selection"
+
+[ui.statusline]
+background = "bg_dark"
+foreground = "fg"
+mode_normal = "purple"
+mode_insert = "green"
+mode_visual = "pink"
+mode_command = "orange"
+mode_replace = "red"
+
+[ui.popup]
+background = "bg_dark"
+border = "#44475a"
+selection = "#44475a"
+
+[ui.completion]
+background = "#21222c"
+border = "#44475a"
+selected = "#44475a"
+match = "cyan"
+detail = "#6272a4"
+
+[ui.finder]
+background = "#21222c"
+border = "#6272a4"
+selected = "#44475a"
+match = "cyan"
+prompt = "purple"
+
+[ui.search]
+match_bg = "yellow"
+match_fg = "#282a36"
+
+[ui.explorer]
+background = "bg_dark"
+border = "#44475a"
+selected = "#44475a"
+directory = "purple"
+
+[ui.harpoon]
+background = "bg_dark"
+border = "#44475a"
+selected = "#44475a"
+
+[diagnostic]
+error = "red"
+warning = "orange"
+info = "cyan"
+hint = "purple"
+
+[git]
+added = "green"
+modified = "orange"
+deleted = "red"

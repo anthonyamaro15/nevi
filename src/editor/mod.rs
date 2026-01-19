@@ -16,6 +16,7 @@ use crate::explorer::FileExplorer;
 use crate::finder::FuzzyFinder;
 use crate::frecency::FrecencyDb;
 use crate::lsp::types::{CodeActionItem, Diagnostic, CompletionItem, Location, TextEdit};
+use crate::theme::ThemeManager;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -646,6 +647,10 @@ pub struct Editor {
     git_diffs: HashMap<String, crate::git::GitDiff>,
     /// Cached git repository (if project is in git)
     git_repo: Option<crate::git::GitRepo>,
+    /// Theme manager for colors and themes
+    pub theme_manager: ThemeManager,
+    /// Theme picker state (Some if picker is open)
+    pub theme_picker: Option<ThemePicker>,
 }
 
 /// Copilot ghost text state for rendering
@@ -746,10 +751,55 @@ impl CodeActionsPicker {
     }
 }
 
+/// State for theme picker UI
+#[derive(Debug, Clone)]
+pub struct ThemePicker {
+    /// List of available themes (name, is_bundled)
+    pub items: Vec<(String, bool)>,
+    /// Currently selected index
+    pub selected: usize,
+}
+
+impl ThemePicker {
+    pub fn new(items: Vec<(&str, bool)>) -> Self {
+        Self {
+            items: items.into_iter().map(|(s, b)| (s.to_string(), b)).collect(),
+            selected: 0,
+        }
+    }
+
+    pub fn move_up(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    pub fn move_down(&mut self) {
+        if self.selected + 1 < self.items.len() {
+            self.selected += 1;
+        }
+    }
+
+    pub fn selected_name(&self) -> Option<&str> {
+        self.items.get(self.selected).map(|(name, _)| name.as_str())
+    }
+}
+
 impl Editor {
     pub fn new(settings: Settings) -> Self {
         let keymap = KeymapLookup::from_settings(&settings.keymap);
         let finder = FuzzyFinder::from_settings(&settings.finder);
+
+        // Initialize theme manager with bundled + user themes
+        let mut theme_manager = ThemeManager::new();
+        theme_manager.load_user_themes();
+        // Set initial theme from config
+        theme_manager.set_theme(&settings.theme.colorscheme);
+
+        // Create syntax manager and sync it with the UI theme
+        let mut syntax = SyntaxManager::new();
+        syntax.sync_theme(theme_manager.theme());
+
         Self {
             buffers: vec![Buffer::new()],
             current_buffer_idx: 0,
@@ -769,7 +819,7 @@ impl Editor {
             undo_stack: UndoStack::new(),
             search: SearchState::default(),
             visual: VisualSelection::default(),
-            syntax: SyntaxManager::new(),
+            syntax,
             last_syntax_version: 0,
             last_edit_at: None,
             settings,
@@ -802,6 +852,8 @@ impl Editor {
             copilot_ghost: None,
             git_diffs: HashMap::new(),
             git_repo: None,
+            theme_manager,
+            theme_picker: None,
         }
     }
 
@@ -811,6 +863,49 @@ impl Editor {
         self.explorer.set_root(path.clone());
         self.harpoon.set_project_root(path.clone());
         self.floating_terminal.set_working_dir(path);
+    }
+
+    /// Get the current theme
+    pub fn theme(&self) -> &crate::theme::Theme {
+        self.theme_manager.theme()
+    }
+
+    /// Set theme by name and sync syntax highlighting
+    pub fn set_theme(&mut self, name: &str) -> bool {
+        if self.theme_manager.set_theme(name) {
+            self.syntax.sync_theme(self.theme_manager.theme());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Open the theme picker
+    pub fn open_theme_picker(&mut self) {
+        let items = self.theme_manager.list_themes_sorted();
+        self.theme_picker = Some(ThemePicker::new(items));
+        self.theme_manager.start_preview();
+    }
+
+    /// Close the theme picker
+    pub fn close_theme_picker(&mut self, confirm: bool) {
+        if confirm {
+            self.theme_manager.confirm_preview();
+            // Sync syntax colors with confirmed theme
+            self.syntax.sync_theme(self.theme_manager.theme());
+        } else {
+            self.theme_manager.cancel_preview();
+            // Sync syntax colors with restored theme
+            self.syntax.sync_theme(self.theme_manager.theme());
+        }
+        self.theme_picker = None;
+    }
+
+    /// Preview a theme in the picker
+    pub fn preview_theme(&mut self, name: &str) {
+        if self.theme_manager.preview_theme(name) {
+            self.syntax.sync_theme(self.theme_manager.theme());
+        }
     }
 
     /// Get the project root or current working directory

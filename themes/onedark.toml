@@ -1,0 +1,97 @@
+# One Dark Theme for Nevi
+# Inspired by Atom's One Dark theme
+
+[palette]
+red = "#e06c75"
+green = "#98c379"
+yellow = "#e5c07b"
+blue = "#61afef"
+purple = "#c678dd"
+cyan = "#56b6c2"
+orange = "#d19a66"
+gray = "#5c6370"
+fg = "#abb2bf"
+bg = "#282c34"
+bg_dark = "#21252b"
+bg_lighter = "#2c313c"
+selection = "#3e4451"
+
+[syntax]
+keyword = { fg = "purple" }
+function = { fg = "blue" }
+type = { fg = "yellow" }
+string = { fg = "green" }
+number = { fg = "orange" }
+comment = { fg = "gray", italic = true }
+operator = { fg = "cyan" }
+punctuation = { fg = "fg" }
+variable = { fg = "red" }
+constant = { fg = "orange" }
+attribute = { fg = "yellow" }
+namespace = { fg = "blue" }
+label = { fg = "red" }
+property = { fg = "red" }
+tag = { fg = "red" }
+
+[ui]
+background = "bg"
+foreground = "fg"
+cursor_line = "#2c313c"
+selection = "#3e4451"
+line_number = "gray"
+line_number_active = "fg"
+visual_bg = "#3e4451"
+
+[ui.statusline]
+background = "bg_dark"
+foreground = "fg"
+mode_normal = "blue"
+mode_insert = "green"
+mode_visual = "purple"
+mode_command = "yellow"
+mode_replace = "red"
+
+[ui.popup]
+background = "bg_dark"
+border = "#373741"
+selection = "#374d5f"
+
+[ui.completion]
+background = "#1e1e24"
+border = "#373741"
+selected = "#374d5f"
+match = "yellow"
+detail = "#64646f"
+
+[ui.finder]
+background = "#19191e"
+border = "#646464"
+selected = "#3c3c64"
+match = "yellow"
+prompt = "blue"
+
+[ui.search]
+match_bg = "#b4a03c"
+match_fg = "#000000"
+
+[ui.explorer]
+background = "bg_dark"
+border = "#373741"
+selected = "#374d5f"
+directory = "blue"
+
+[ui.harpoon]
+background = "bg_dark"
+border = "#373741"
+selected = "#374d5f"
+
+[diagnostic]
+error = "#ff6464"
+warning = "#ffc864"
+info = "blue"
+hint = "cyan"
+
+[git]
+added = "green"
+modified = "yellow"
+deleted = "red"

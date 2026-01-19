@@ -805,6 +805,7 @@ dependencies = [
  "streaming-iterator",
  "thiserror",
  "toml",
+ "toml_edit",
  "tree-sitter",
  "tree-sitter-css",
  "tree-sitter-javascript",
