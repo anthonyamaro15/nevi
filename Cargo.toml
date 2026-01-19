@@ -55,6 +55,10 @@ grep-searcher = "0.1.16"
 grep-matcher = "0.1.8"
 regex = "1.12.2"
 
+# Git integration
+git2 = "0.19"
+similar = "2.6"
+
 [profile.release]
 lto = true
 codegen-units = 1

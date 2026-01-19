@@ -6,6 +6,7 @@ pub mod explorer;
 pub mod finder;
 pub mod floating_terminal;
 pub mod frecency;
+pub mod git;
 pub mod harpoon;
 pub mod input;
 pub mod lsp;
