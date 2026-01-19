@@ -3913,6 +3913,10 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.goto_mark_exact(name);
         }
 
+        KeyAction::ReselectVisual => {
+            editor.reselect_visual();
+        }
+
         KeyAction::EnterInsert(pos) => {
             match pos {
                 InsertPosition::AtCursor => editor.enter_insert_mode(),

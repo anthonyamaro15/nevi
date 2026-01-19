@@ -919,6 +919,7 @@ impl Editor {
             theme_manager,
             theme_picker: None,
             marks: Marks::new(),
+            last_visual_selection: None,
         }
     }
 
@@ -3120,7 +3121,28 @@ impl Editor {
 
     /// Exit visual mode
     pub fn exit_visual_mode(&mut self) {
+        // Save the visual selection for gv command
+        if self.mode.is_visual() {
+            self.last_visual_selection = Some(LastVisualSelection {
+                mode: self.mode,
+                anchor_line: self.visual.anchor_line,
+                anchor_col: self.visual.anchor_col,
+                cursor_line: self.cursor.line,
+                cursor_col: self.cursor.col,
+            });
+        }
         self.mode = Mode::Normal;
+    }
+
+    /// Reselect the last visual selection (gv command)
+    pub fn reselect_visual(&mut self) {
+        if let Some(ref sel) = self.last_visual_selection.clone() {
+            self.visual = VisualSelection::new(sel.anchor_line, sel.anchor_col);
+            self.cursor.line = sel.cursor_line;
+            self.cursor.col = sel.cursor_col;
+            self.mode = sel.mode;
+            self.clamp_cursor();
+        }
     }
 
     /// Toggle between visual and visual line mode

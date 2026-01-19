@@ -244,6 +244,8 @@ pub enum KeyAction {
     GotoMarkLine(char),
     /// Jump to mark exact position (`{a-z} or `{A-Z})
     GotoMarkExact(char),
+    /// Reselect last visual selection (gv)
+    ReselectVisual,
     /// Unknown/unhandled key
     Unknown,
 }
@@ -1029,6 +1031,11 @@ impl InputState {
             ('g', KeyModifiers::SHIFT, KeyCode::Char('~')) | ('g', KeyModifiers::NONE, KeyCode::Char('~')) => {
                 self.pending_case_operator = Some(CaseOperator::ToggleCase);
                 KeyAction::Pending
+            }
+            // gv - reselect last visual selection
+            ('g', KeyModifiers::NONE, KeyCode::Char('v')) => {
+                self.reset();
+                KeyAction::ReselectVisual
             }
             // zz - scroll cursor to center of screen
             ('z', KeyModifiers::NONE, KeyCode::Char('z')) => {
