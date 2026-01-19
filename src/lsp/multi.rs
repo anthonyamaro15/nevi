@@ -18,6 +18,7 @@ pub enum LanguageId {
     Css,
     Json,
     Toml,
+    Markdown,
 }
 
 impl LanguageId {
@@ -30,6 +31,7 @@ impl LanguageId {
             "css" | "scss" | "sass" | "less" => Some(Self::Css),
             "json" | "jsonc" => Some(Self::Json),
             "toml" => Some(Self::Toml),
+            "md" | "markdown" => Some(Self::Markdown),
             _ => None,
         }
     }
@@ -50,6 +52,7 @@ impl LanguageId {
             Self::Css => "css",
             Self::Json => "json",
             Self::Toml => "toml",
+            Self::Markdown => "markdown",
         }
     }
 }
@@ -82,6 +85,7 @@ impl MultiLspManager {
         css_config: LspServerConfig,
         json_config: LspServerConfig,
         toml_config: LspServerConfig,
+        markdown_config: LspServerConfig,
     ) -> Self {
         let mut configs = HashMap::new();
         configs.insert(LanguageId::Rust, rust_config);
@@ -90,6 +94,7 @@ impl MultiLspManager {
         configs.insert(LanguageId::Css, css_config);
         configs.insert(LanguageId::Json, json_config);
         configs.insert(LanguageId::Toml, toml_config);
+        configs.insert(LanguageId::Markdown, markdown_config);
 
         Self {
             instances: HashMap::new(),

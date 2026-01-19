@@ -327,6 +327,7 @@ pub struct LspServers {
     pub css: LspServerConfig,
     pub json: LspServerConfig,
     pub toml: LspServerConfig,
+    pub markdown: LspServerConfig,
 }
 
 impl Default for LspServers {
@@ -373,6 +374,13 @@ impl Default for LspServers {
                 args: vec!["lsp".to_string(), "stdio".to_string()],
                 root_patterns: vec!["Cargo.toml".to_string(), "pyproject.toml".to_string()],
                 file_extensions: vec!["toml".to_string()],
+            },
+            markdown: LspServerConfig {
+                enabled: false, // Disabled by default - marksman has limited LSP support
+                command: "marksman".to_string(),
+                args: vec!["server".to_string()],
+                root_patterns: vec![".marksman.toml".to_string()],
+                file_extensions: vec!["md".to_string(), "markdown".to_string()],
             },
         }
     }
