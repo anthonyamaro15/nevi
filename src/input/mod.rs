@@ -56,6 +56,10 @@ pub struct InputState {
     pub pending_goto_mark_line: bool,
     /// Pending goto mark exact (` waiting for mark name)
     pub pending_goto_mark_exact: bool,
+    /// Pending record macro (q waiting for register name)
+    pub pending_record_macro: bool,
+    /// Pending play macro (@ waiting for register name)
+    pub pending_play_macro: bool,
 }
 
 /// Operators that can be combined with motions
@@ -246,6 +250,14 @@ pub enum KeyAction {
     GotoMarkExact(char),
     /// Reselect last visual selection (gv)
     ReselectVisual,
+    /// Start recording a macro to register (q{a-z})
+    StartRecordMacro(char),
+    /// Stop recording a macro (q while recording)
+    StopRecordMacro,
+    /// Play a macro from register (@{a-z})
+    PlayMacro(char, usize),
+    /// Replay last executed macro (@@)
+    ReplayLastMacro(usize),
     /// Unknown/unhandled key
     Unknown,
 }
@@ -286,6 +298,8 @@ impl InputState {
         self.pending_set_mark = false;
         self.pending_goto_mark_line = false;
         self.pending_goto_mark_exact = false;
+        self.pending_record_macro = false;
+        self.pending_play_macro = false;
         // Note: last_find_char is NOT reset - it persists for ; and , repeats
     }
 
@@ -499,6 +513,34 @@ impl InputState {
             return KeyAction::Unknown;
         }
 
+        // Handle pending record macro (q waiting for register)
+        if self.pending_record_macro {
+            if let KeyCode::Char(c) = key.code {
+                if c.is_ascii_lowercase() {
+                    self.reset();
+                    return KeyAction::StartRecordMacro(c);
+                }
+            }
+            self.reset();
+            return KeyAction::Unknown;
+        }
+
+        // Handle pending play macro (@ waiting for register or @)
+        if self.pending_play_macro {
+            if let KeyCode::Char(c) = key.code {
+                if c.is_ascii_lowercase() {
+                    self.reset();
+                    return KeyAction::PlayMacro(c, count);
+                } else if c == '@' {
+                    // @@ - replay last macro
+                    self.reset();
+                    return KeyAction::ReplayLastMacro(count);
+                }
+            }
+            self.reset();
+            return KeyAction::Unknown;
+        }
+
         match (key.modifiers, key.code) {
             // Digits for count (but '0' is line start if no count started)
             (KeyModifiers::NONE, KeyCode::Char(c @ '1'..='9')) => {
@@ -610,6 +652,19 @@ impl InputState {
             }
             (KeyModifiers::NONE, KeyCode::Char('`')) | (KeyModifiers::SHIFT, KeyCode::Char('`')) => {
                 self.pending_goto_mark_exact = true;
+                KeyAction::Pending
+            }
+
+            // Macros
+            (KeyModifiers::NONE, KeyCode::Char('q')) => {
+                // 'q' starts recording (waiting for register name)
+                // Note: stopping recording (q while recording) is handled in terminal/mod.rs
+                self.pending_record_macro = true;
+                KeyAction::Pending
+            }
+            (KeyModifiers::SHIFT, KeyCode::Char('@')) | (KeyModifiers::NONE, KeyCode::Char('@')) => {
+                // '@' plays a macro (waiting for register name or another @)
+                self.pending_play_macro = true;
                 KeyAction::Pending
             }
 
