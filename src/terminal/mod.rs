@@ -3614,6 +3614,18 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.select_text_object(text_object);
         }
 
+        KeyAction::CaseMotion(case_op, motion, count) => {
+            editor.case_motion(case_op, motion, count);
+        }
+
+        KeyAction::CaseLine(case_op, count) => {
+            editor.case_line(case_op, count);
+        }
+
+        KeyAction::CaseTextObject(case_op, text_object) => {
+            editor.case_text_object(case_op, text_object);
+        }
+
         KeyAction::EnterInsert(pos) => {
             match pos {
                 InsertPosition::AtCursor => editor.enter_insert_mode(),
@@ -4655,6 +4667,20 @@ fn handle_visual_mode(editor: &mut Editor, key: KeyEvent) {
         (KeyModifiers::SHIFT, KeyCode::Char('<')) | (KeyModifiers::NONE, KeyCode::Char('<')) => {
             let (start_line, _, end_line, _) = editor.get_visual_range();
             editor.dedent_lines(start_line, end_line);
+            editor.enter_normal_mode();
+        }
+
+        // Case transformation on selection
+        (KeyModifiers::NONE, KeyCode::Char('u')) => {
+            editor.case_visual(crate::input::CaseOperator::Lowercase);
+            editor.enter_normal_mode();
+        }
+        (KeyModifiers::SHIFT, KeyCode::Char('U')) => {
+            editor.case_visual(crate::input::CaseOperator::Uppercase);
+            editor.enter_normal_mode();
+        }
+        (KeyModifiers::SHIFT, KeyCode::Char('~')) | (KeyModifiers::NONE, KeyCode::Char('~')) => {
+            editor.case_visual(crate::input::CaseOperator::ToggleCase);
             editor.enter_normal_mode();
         }
 
