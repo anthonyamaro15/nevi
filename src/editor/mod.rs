@@ -1,10 +1,12 @@
 mod buffer;
 mod cursor;
+mod marks;
 mod register;
 mod undo;
 
 pub use buffer::Buffer;
 pub use cursor::Cursor;
+pub use marks::{Mark, Marks};
 pub use register::{RegisterContent, Registers};
 pub use undo::{Change, UndoEntry, UndoStack};
 
@@ -139,6 +141,16 @@ pub struct VisualSelection {
     /// Anchor position (where selection started)
     pub anchor_line: usize,
     pub anchor_col: usize,
+}
+
+/// Stores the last visual selection for gv command
+#[derive(Debug, Clone)]
+pub struct LastVisualSelection {
+    pub mode: Mode,
+    pub anchor_line: usize,
+    pub anchor_col: usize,
+    pub cursor_line: usize,
+    pub cursor_col: usize,
 }
 
 impl VisualSelection {
@@ -651,6 +663,10 @@ pub struct Editor {
     pub theme_manager: ThemeManager,
     /// Theme picker state (Some if picker is open)
     pub theme_picker: Option<ThemePicker>,
+    /// Marks for navigation (m{a-z}, '{a-z}, `{a-z})
+    pub marks: Marks,
+    /// Last visual selection for gv command
+    pub last_visual_selection: Option<LastVisualSelection>,
 }
 
 /// Copilot ghost text state for rendering
@@ -902,6 +918,7 @@ impl Editor {
             git_repo: None,
             theme_manager,
             theme_picker: None,
+            marks: Marks::new(),
         }
     }
 
@@ -4421,6 +4438,138 @@ impl Editor {
     pub fn case_visual(&mut self, op: CaseOperator) {
         let (start_line, start_col, end_line, end_col) = self.get_visual_range();
         self.transform_case(start_line, start_col, end_line, end_col, op);
+    }
+
+    // ============================================
+    // Mark operations
+    // ============================================
+
+    /// Get a unique key for the current buffer (used for local marks)
+    fn buffer_key(&self) -> String {
+        if let Some(ref path) = self.buffers[self.current_buffer_idx].path {
+            path.to_string_lossy().to_string()
+        } else {
+            format!("__unnamed_{}", self.current_buffer_idx)
+        }
+    }
+
+    /// Set a mark at the current cursor position
+    pub fn set_mark(&mut self, name: char) {
+        if !Marks::is_valid_mark(name) {
+            self.set_status(format!("Invalid mark: {}", name));
+            return;
+        }
+
+        let buffer_key = self.buffer_key();
+        let path = self.buffers[self.current_buffer_idx].path.clone();
+
+        self.marks.set(&buffer_key, path, name, self.cursor.line, self.cursor.col);
+        self.set_status(format!("Mark '{}' set", name));
+    }
+
+    /// Jump to the line of a mark (first non-blank character)
+    pub fn goto_mark_line(&mut self, name: char) {
+        if !Marks::is_valid_mark(name) {
+            self.set_status(format!("Invalid mark: {}", name));
+            return;
+        }
+
+        let buffer_key = self.buffer_key();
+
+        // For global marks, we might need to open a different file
+        if name.is_uppercase() {
+            if let Some(mark) = self.marks.get_global(name) {
+                if let Some(ref path) = mark.path {
+                    // Check if we need to open a different file
+                    let current_path = self.buffers[self.current_buffer_idx].path.as_ref();
+                    if current_path != Some(path) {
+                        // Store the mark info before opening file
+                        let target_line = mark.line;
+                        let path_clone = path.clone();
+
+                        // Try to open the file (will be handled by main loop if needed)
+                        if let Err(e) = self.open_file(path_clone) {
+                            self.set_status(format!("Cannot open file for mark: {}", e));
+                            return;
+                        }
+
+                        // Jump to the line
+                        self.cursor.line = target_line.min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+                        self.cursor.col = self.find_first_non_blank(self.cursor.line);
+                        self.clamp_cursor();
+                        self.scroll_to_cursor();
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Local mark or global mark in current file
+        if let Some(mark) = self.marks.get(&buffer_key, name) {
+            // Record jump in jump list
+            let current_path = self.buffers[self.current_buffer_idx].path.clone();
+            self.jump_list.record(current_path, self.cursor.line, self.cursor.col);
+
+            self.cursor.line = mark.line.min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+            self.cursor.col = self.find_first_non_blank(self.cursor.line);
+            self.clamp_cursor();
+            self.scroll_to_cursor();
+        } else {
+            self.set_status(format!("Mark '{}' not set", name));
+        }
+    }
+
+    /// Jump to the exact position of a mark (line and column)
+    pub fn goto_mark_exact(&mut self, name: char) {
+        if !Marks::is_valid_mark(name) {
+            self.set_status(format!("Invalid mark: {}", name));
+            return;
+        }
+
+        let buffer_key = self.buffer_key();
+
+        // For global marks, we might need to open a different file
+        if name.is_uppercase() {
+            if let Some(mark) = self.marks.get_global(name) {
+                if let Some(ref path) = mark.path {
+                    // Check if we need to open a different file
+                    let current_path = self.buffers[self.current_buffer_idx].path.as_ref();
+                    if current_path != Some(path) {
+                        // Store the mark info before opening file
+                        let target_line = mark.line;
+                        let target_col = mark.col;
+                        let path_clone = path.clone();
+
+                        // Try to open the file
+                        if let Err(e) = self.open_file(path_clone) {
+                            self.set_status(format!("Cannot open file for mark: {}", e));
+                            return;
+                        }
+
+                        // Jump to the exact position
+                        self.cursor.line = target_line.min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+                        self.cursor.col = target_col;
+                        self.clamp_cursor();
+                        self.scroll_to_cursor();
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Local mark or global mark in current file
+        if let Some(mark) = self.marks.get(&buffer_key, name) {
+            // Record jump in jump list
+            let current_path = self.buffers[self.current_buffer_idx].path.clone();
+            self.jump_list.record(current_path, self.cursor.line, self.cursor.col);
+
+            self.cursor.line = mark.line.min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+            self.cursor.col = mark.col;
+            self.clamp_cursor();
+            self.scroll_to_cursor();
+        } else {
+            self.set_status(format!("Mark '{}' not set", name));
+        }
     }
 
     /// Get the open and close characters for a surround pair

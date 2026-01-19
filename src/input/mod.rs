@@ -50,6 +50,12 @@ pub struct InputState {
     pub pending_comment: bool,
     /// Pending case operator (gu, gU, g~ waiting for motion)
     pub pending_case_operator: Option<CaseOperator>,
+    /// Pending set mark (m waiting for mark name)
+    pub pending_set_mark: bool,
+    /// Pending goto mark line (' waiting for mark name)
+    pub pending_goto_mark_line: bool,
+    /// Pending goto mark exact (` waiting for mark name)
+    pub pending_goto_mark_exact: bool,
 }
 
 /// Operators that can be combined with motions
@@ -232,6 +238,12 @@ pub enum KeyAction {
     CopilotPrevCompletion,
     /// Copilot: dismiss ghost text (Esc, handled specially)
     CopilotDismiss,
+    /// Set a mark at cursor position (m{a-z} or m{A-Z})
+    SetMark(char),
+    /// Jump to mark line ('{a-z} or '{A-Z})
+    GotoMarkLine(char),
+    /// Jump to mark exact position (`{a-z} or `{A-Z})
+    GotoMarkExact(char),
     /// Unknown/unhandled key
     Unknown,
 }
@@ -269,6 +281,9 @@ impl InputState {
         self.surround_add_object = None;
         self.pending_comment = false;
         self.pending_case_operator = None;
+        self.pending_set_mark = false;
+        self.pending_goto_mark_line = false;
+        self.pending_goto_mark_exact = false;
         // Note: last_find_char is NOT reset - it persists for ; and , repeats
     }
 
@@ -448,6 +463,40 @@ impl InputState {
             return self.handle_case_motion(case_op, key, count);
         }
 
+        // Handle pending mark operations
+        if self.pending_set_mark {
+            if let KeyCode::Char(c) = key.code {
+                if c.is_ascii_alphabetic() {
+                    self.reset();
+                    return KeyAction::SetMark(c);
+                }
+            }
+            self.reset();
+            return KeyAction::Unknown;
+        }
+
+        if self.pending_goto_mark_line {
+            if let KeyCode::Char(c) = key.code {
+                if c.is_ascii_alphabetic() {
+                    self.reset();
+                    return KeyAction::GotoMarkLine(c);
+                }
+            }
+            self.reset();
+            return KeyAction::Unknown;
+        }
+
+        if self.pending_goto_mark_exact {
+            if let KeyCode::Char(c) = key.code {
+                if c.is_ascii_alphabetic() {
+                    self.reset();
+                    return KeyAction::GotoMarkExact(c);
+                }
+            }
+            self.reset();
+            return KeyAction::Unknown;
+        }
+
         match (key.modifiers, key.code) {
             // Digits for count (but '0' is line start if no count started)
             (KeyModifiers::NONE, KeyCode::Char(c @ '1'..='9')) => {
@@ -546,6 +595,20 @@ impl InputState {
                     self.pending_operator = Some(Operator::Dedent);
                     KeyAction::Pending
                 }
+            }
+
+            // Marks
+            (KeyModifiers::NONE, KeyCode::Char('m')) => {
+                self.pending_set_mark = true;
+                KeyAction::Pending
+            }
+            (KeyModifiers::NONE, KeyCode::Char('\'')) | (KeyModifiers::SHIFT, KeyCode::Char('\'')) => {
+                self.pending_goto_mark_line = true;
+                KeyAction::Pending
+            }
+            (KeyModifiers::NONE, KeyCode::Char('`')) | (KeyModifiers::SHIFT, KeyCode::Char('`')) => {
+                self.pending_goto_mark_exact = true;
+                KeyAction::Pending
             }
 
             // Motions
