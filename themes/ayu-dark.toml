@@ -1,0 +1,102 @@
+# Ayu Dark Theme for Nevi
+# Official palette from https://github.com/ayu-theme/ayu-colors
+
+[palette]
+bg = "#0b0e14"
+bg_surface = "#0d1017"
+bg_line = "#131721"
+fg = "#bfbdb6"
+fg_muted = "#6c7380"
+keyword = "#ff8f40"
+func = "#ffb454"
+string = "#aad94c"
+type = "#39bae6"
+variable = "#59c2ff"
+operator = "#f29668"
+error = "#f07178"
+green = "#7fd962"
+blue = "#73b8ff"
+purple = "#d2a6ff"
+comment = "#626a73"
+selection = "#273747"
+line_highlight = "#11151c"
+
+[syntax]
+keyword = { fg = "keyword" }
+function = { fg = "func" }
+type = { fg = "type" }
+string = { fg = "string" }
+number = { fg = "keyword" }
+comment = { fg = "comment", italic = true }
+operator = { fg = "operator" }
+punctuation = { fg = "fg_muted" }
+variable = { fg = "variable" }
+constant = { fg = "purple" }
+attribute = { fg = "func" }
+namespace = { fg = "type" }
+label = { fg = "type" }
+property = { fg = "variable" }
+tag = { fg = "type" }
+
+[ui]
+background = "bg"
+foreground = "fg"
+cursor_line = "line_highlight"
+selection = "selection"
+line_number = "fg_muted"
+line_number_active = "fg"
+visual_bg = "selection"
+
+[ui.statusline]
+background = "bg_surface"
+foreground = "fg"
+mode_normal = "type"
+mode_insert = "green"
+mode_visual = "purple"
+mode_command = "keyword"
+mode_replace = "error"
+
+[ui.popup]
+background = "bg_surface"
+border = "selection"
+selection = "#1d3b53"
+
+[ui.completion]
+background = "bg_surface"
+border = "selection"
+selected = "#1d3b53"
+match = "func"
+detail = "fg_muted"
+
+[ui.finder]
+background = "bg"
+border = "selection"
+selected = "#1d3b53"
+match = "func"
+prompt = "type"
+
+[ui.search]
+match_bg = "func"
+match_fg = "bg"
+
+[ui.explorer]
+background = "bg_surface"
+border = "selection"
+selected = "#1d3b53"
+directory = "type"
+
+[ui.harpoon]
+background = "bg_surface"
+border = "selection"
+selected = "#1d3b53"
+
+[diagnostic]
+error = "error"
+warning = "keyword"
+info = "type"
+hint = "green"
+
+[git]
+added = "green"
+modified = "keyword"
+deleted = "error"

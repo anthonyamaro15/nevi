@@ -1,0 +1,100 @@
+# Solarized Dark Theme for Nevi
+# Official palette from https://github.com/altercation/solarized
+
+[palette]
+base03 = "#002b36"
+base02 = "#073642"
+base01 = "#586e75"
+base00 = "#657b83"
+base0 = "#839496"
+base1 = "#93a1a1"
+base2 = "#eee8d5"
+base3 = "#fdf6e3"
+yellow = "#b58900"
+orange = "#cb4b16"
+red = "#dc322f"
+magenta = "#d33682"
+violet = "#6c71c4"
+blue = "#268bd2"
+cyan = "#2aa198"
+green = "#859900"
+
+[syntax]
+keyword = { fg = "green" }
+function = { fg = "blue" }
+type = { fg = "yellow" }
+string = { fg = "cyan" }
+number = { fg = "magenta" }
+comment = { fg = "base01", italic = true }
+operator = { fg = "green" }
+punctuation = { fg = "base0" }
+variable = { fg = "blue" }
+constant = { fg = "cyan" }
+attribute = { fg = "orange" }
+namespace = { fg = "yellow" }
+label = { fg = "green" }
+property = { fg = "blue" }
+tag = { fg = "blue" }
+
+[ui]
+background = "base03"
+foreground = "base0"
+cursor_line = "base02"
+selection = "#0a4555"
+line_number = "base01"
+line_number_active = "base1"
+visual_bg = "base02"
+
+[ui.statusline]
+background = "base02"
+foreground = "base1"
+mode_normal = "blue"
+mode_insert = "green"
+mode_visual = "magenta"
+mode_command = "yellow"
+mode_replace = "red"
+
+[ui.popup]
+background = "base02"
+border = "base01"
+selection = "#0a4555"
+
+[ui.completion]
+background = "base02"
+border = "base01"
+selected = "#0a4555"
+match = "yellow"
+detail = "base01"
+
+[ui.finder]
+background = "base03"
+border = "base01"
+selected = "#0a4555"
+match = "yellow"
+prompt = "blue"
+
+[ui.search]
+match_bg = "yellow"
+match_fg = "base03"
+
+[ui.explorer]
+background = "base02"
+border = "base01"
+selected = "#0a4555"
+directory = "blue"
+
+[ui.harpoon]
+background = "base02"
+border = "base01"
+selected = "#0a4555"
+
+[diagnostic]
+error = "red"
+warning = "yellow"
+info = "blue"
+hint = "cyan"
+
+[git]
+added = "green"
+modified = "yellow"
+deleted = "red"

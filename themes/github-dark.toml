@@ -1,0 +1,105 @@
+# GitHub Dark Theme for Nevi
+# Official palette from GitHub Primer design system
+
+[palette]
+canvas_default = "#0d1117"
+canvas_subtle = "#161b22"
+canvas_inset = "#010409"
+fg_default = "#e6edf3"
+fg_muted = "#8b949e"
+fg_subtle = "#6e7681"
+border_default = "#30363d"
+border_muted = "#21262d"
+accent_fg = "#2f81f7"
+accent_emphasis = "#1f6feb"
+success_fg = "#3fb950"
+attention_fg = "#d29922"
+danger_fg = "#f85149"
+done_fg = "#a371f7"
+# Syntax
+syntax_comment = "#8b949e"
+syntax_constant = "#79c0ff"
+syntax_entity = "#d2a8ff"
+syntax_keyword = "#ff7b72"
+syntax_string = "#a5d6ff"
+syntax_variable = "#ffa657"
+
+[syntax]
+keyword = { fg = "syntax_keyword" }
+function = { fg = "syntax_entity" }
+type = { fg = "syntax_constant" }
+string = { fg = "syntax_string" }
+number = { fg = "syntax_constant" }
+comment = { fg = "syntax_comment", italic = true }
+operator = { fg = "syntax_keyword" }
+punctuation = { fg = "fg_muted" }
+variable = { fg = "syntax_variable" }
+constant = { fg = "syntax_constant" }
+attribute = { fg = "syntax_constant" }
+namespace = { fg = "syntax_keyword" }
+label = { fg = "syntax_constant" }
+property = { fg = "syntax_constant" }
+tag = { fg = "success_fg" }
+
+[ui]
+background = "canvas_default"
+foreground = "fg_default"
+cursor_line = "canvas_subtle"
+selection = "#264f78"
+line_number = "fg_subtle"
+line_number_active = "fg_default"
+visual_bg = "#264f78"
+
+[ui.statusline]
+background = "canvas_subtle"
+foreground = "fg_default"
+mode_normal = "accent_fg"
+mode_insert = "success_fg"
+mode_visual = "done_fg"
+mode_command = "attention_fg"
+mode_replace = "danger_fg"
+
+[ui.popup]
+background = "canvas_subtle"
+border = "border_default"
+selection = "#264f78"
+
+[ui.completion]
+background = "canvas_subtle"
+border = "border_default"
+selected = "#264f78"
+match = "attention_fg"
+detail = "fg_subtle"
+
+[ui.finder]
+background = "canvas_default"
+border = "border_default"
+selected = "#264f78"
+match = "attention_fg"
+prompt = "accent_fg"
+
+[ui.search]
+match_bg = "attention_fg"
+match_fg = "canvas_default"
+
+[ui.explorer]
+background = "canvas_subtle"
+border = "border_default"
+selected = "#264f78"
+directory = "accent_fg"
+
+[ui.harpoon]
+background = "canvas_subtle"
+border = "border_default"
+selected = "#264f78"
+
+[diagnostic]
+error = "danger_fg"
+warning = "attention_fg"
+info = "accent_fg"
+hint = "done_fg"
+
+[git]
+added = "success_fg"
+modified = "attention_fg"
+deleted = "danger_fg"
