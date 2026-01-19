@@ -54,6 +54,14 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Initialize git repository for git signs
+    editor.init_git();
+
+    // Update git diff for initial file if opened
+    if initial_file.is_some() {
+        editor.update_git_diff();
+    }
+
     // Initialize terminal
     let mut terminal = Terminal::new()?;
 

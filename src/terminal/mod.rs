@@ -278,6 +278,7 @@ impl Terminal {
     /// Render a single pane's content
     fn render_pane(&mut self, editor: &Editor, pane: &Pane, is_active: bool) -> anyhow::Result<()> {
         let buffer = editor.buffer_at(pane.buffer_idx).unwrap();
+        let buffer_path = buffer.path.clone();
         let rect = &pane.rect;
 
         // Calculate line number width for this buffer
@@ -324,6 +325,7 @@ impl Terminal {
                 line_num_width, visual_range, show_line_numbers,
                 show_relative, highlight_cursor_line,
                 pane_height, pane_width, effective_wrap_width,
+                buffer_path.as_ref(),
             )?;
         } else {
             // Original non-wrapped rendering
@@ -332,6 +334,7 @@ impl Terminal {
                 line_num_width, visual_range, show_line_numbers,
                 show_relative, highlight_cursor_line,
                 pane_height, pane_width, text_area_width,
+                buffer_path.as_ref(),
             )?;
         }
 
@@ -355,6 +358,7 @@ impl Terminal {
         pane_height: usize,
         pane_width: usize,
         wrap_width: usize,
+        buffer_path: Option<&std::path::PathBuf>,
     ) -> anyhow::Result<()> {
         let mut current_row = 0;
         let mut file_line = pane.viewport_offset;
@@ -404,18 +408,58 @@ impl Terminal {
                     execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
                 }
 
-                // Sign column (diagnostic icons) - only on first segment
+                // Sign column (git signs + diagnostic icons) - only on first segment
+                // Layout: [Git Sign][Diagnostic] = 2 chars total
                 if segment.is_first {
+                    // Git sign (first char)
+                    // TODO: Make git sign colors configurable via settings
+                    // Currently using One Dark theme colors:
+                    //   Added:    #98c379 (green)
+                    //   Modified: #e5c07b (yellow)
+                    //   Deleted:  #e06c75 (red)
+                    let git_status = if is_active {
+                        buffer_path.and_then(|p| editor.git_status_for_line_in_file(p, file_line))
+                    } else {
+                        None
+                    };
+
+                    match git_status {
+                        Some(crate::git::GitLineStatus::Added) => {
+                            execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 152, g: 195, b: 121 }))?;
+                            print!("▎");
+                            execute!(self.stdout, ResetColor)?;
+                        }
+                        Some(crate::git::GitLineStatus::Modified) => {
+                            execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 229, g: 192, b: 123 }))?;
+                            print!("▎");
+                            execute!(self.stdout, ResetColor)?;
+                        }
+                        Some(crate::git::GitLineStatus::Deleted) => {
+                            execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 224, g: 108, b: 117 }))?;
+                            print!("▁");
+                            execute!(self.stdout, ResetColor)?;
+                        }
+                        None => {
+                            print!(" ");
+                        }
+                    }
+
+                    // Re-apply cursor line background after git sign
+                    if highlight_cursor_line && is_cursor_line {
+                        execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                    }
+
+                    // Diagnostic sign (second char)
                     if has_error {
                         execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 255, g: 100, b: 100 }))?;
-                        print!("● ");
+                        print!("●");
                         execute!(self.stdout, ResetColor)?;
                     } else if has_warning {
                         execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 255, g: 200, b: 100 }))?;
-                        print!("▲ ");
+                        print!("▲");
                         execute!(self.stdout, ResetColor)?;
                     } else {
-                        print!("  "); // Empty sign column
+                        print!(" ");
                     }
                 } else {
                     print!("  "); // Empty sign column for continuation lines
@@ -581,6 +625,7 @@ impl Terminal {
         pane_height: usize,
         pane_width: usize,
         effective_width: usize,
+        buffer_path: Option<&std::path::PathBuf>,
     ) -> anyhow::Result<()> {
         // Render each row in this pane
         for row in 0..pane_height {
@@ -610,17 +655,58 @@ impl Terminal {
                     matches!(d.severity, crate::lsp::types::DiagnosticSeverity::Warning)
                 });
 
-                // Sign column (diagnostic icons)
+                // Sign column (git signs + diagnostic icons)
+                // Layout: [Git Sign][Diagnostic] = 2 chars total
+
+                // Git sign (first char)
+                // TODO: Make git sign colors configurable via settings
+                // Currently using One Dark theme colors:
+                //   Added:    #98c379 (green)
+                //   Modified: #e5c07b (yellow)
+                //   Deleted:  #e06c75 (red)
+                let git_status = if is_active {
+                    buffer_path.and_then(|p| editor.git_status_for_line_in_file(p, file_line))
+                } else {
+                    None
+                };
+
+                match git_status {
+                    Some(crate::git::GitLineStatus::Added) => {
+                        execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 152, g: 195, b: 121 }))?;
+                        print!("▎");
+                        execute!(self.stdout, ResetColor)?;
+                    }
+                    Some(crate::git::GitLineStatus::Modified) => {
+                        execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 229, g: 192, b: 123 }))?;
+                        print!("▎");
+                        execute!(self.stdout, ResetColor)?;
+                    }
+                    Some(crate::git::GitLineStatus::Deleted) => {
+                        execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 224, g: 108, b: 117 }))?;
+                        print!("▁");
+                        execute!(self.stdout, ResetColor)?;
+                    }
+                    None => {
+                        print!(" ");
+                    }
+                }
+
+                // Re-apply cursor line background after git sign
+                if highlight_cursor_line && is_cursor_line {
+                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
+                }
+
+                // Diagnostic sign (second char)
                 if has_error {
                     execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 255, g: 100, b: 100 }))?;
-                    print!("● ");
+                    print!("●");
                     execute!(self.stdout, ResetColor)?;
                 } else if has_warning {
                     execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 255, g: 200, b: 100 }))?;
-                    print!("▲ ");
+                    print!("▲");
                     execute!(self.stdout, ResetColor)?;
                 } else {
-                    print!("  "); // Empty sign column
+                    print!(" ");
                 }
 
                 // Re-apply cursor line background after sign column

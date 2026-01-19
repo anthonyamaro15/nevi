@@ -642,6 +642,10 @@ pub struct Editor {
     pub pending_copilot_action: Option<CopilotAction>,
     /// Copilot ghost text state (updated from main loop)
     pub copilot_ghost: Option<CopilotGhostText>,
+    /// Git diff status per file (by file path string)
+    git_diffs: HashMap<String, crate::git::GitDiff>,
+    /// Cached git repository (if project is in git)
+    git_repo: Option<crate::git::GitRepo>,
 }
 
 /// Copilot ghost text state for rendering
@@ -796,6 +800,8 @@ impl Editor {
             floating_terminal: crate::floating_terminal::FloatingTerminal::new(),
             pending_copilot_action: None,
             copilot_ghost: None,
+            git_diffs: HashMap::new(),
+            git_repo: None,
         }
     }
 
@@ -1040,6 +1046,59 @@ impl Editor {
         } else {
             false
         }
+    }
+
+    // ============================================
+    // Git Integration
+    // ============================================
+
+    /// Initialize git repository from project root
+    pub fn init_git(&mut self) {
+        if let Some(root) = &self.project_root {
+            self.git_repo = crate::git::GitRepo::open(root);
+        }
+    }
+
+    /// Set git diff for a file path
+    pub fn set_git_diff(&mut self, path: String, diff: crate::git::GitDiff) {
+        self.git_diffs.insert(path, diff);
+    }
+
+    /// Get git status for a specific line in the current buffer
+    pub fn git_status_for_line(&self, line: usize) -> Option<crate::git::GitLineStatus> {
+        let path = self.buffer().path.as_ref()?.to_string_lossy().to_string();
+        let diff = self.git_diffs.get(&path)?;
+        diff.status_for_line(line)
+    }
+
+    /// Get git status for a specific line given a file path
+    pub fn git_status_for_line_in_file(&self, path: &std::path::Path, line: usize) -> Option<crate::git::GitLineStatus> {
+        let path_str = path.to_string_lossy().to_string();
+        let diff = self.git_diffs.get(&path_str)?;
+        diff.status_for_line(line)
+    }
+
+    /// Update git diff for the current buffer
+    pub fn update_git_diff(&mut self) {
+        let Some(repo) = &self.git_repo else { return };
+        let Some(path) = self.buffer().path.clone() else { return };
+
+        let Some(head_content) = repo.head_content(&path) else {
+            // File not tracked by git or new file - clear any existing diff
+            let path_str = path.to_string_lossy().to_string();
+            self.git_diffs.remove(&path_str);
+            return;
+        };
+
+        let current_content = self.buffer().content();
+        let diff = crate::git::compute_diff(&head_content, &current_content);
+
+        self.set_git_diff(path.to_string_lossy().to_string(), diff);
+    }
+
+    /// Get reference to the git repository (if available)
+    pub fn git_repo(&self) -> Option<&crate::git::GitRepo> {
+        self.git_repo.as_ref()
     }
 
     // ============================================
@@ -1330,6 +1389,8 @@ impl Editor {
             // Re-parse syntax for this buffer
             self.syntax.set_language_from_path(&path);
             self.parse_current_buffer();
+            // Update git diff for this buffer
+            self.update_git_diff();
             return Ok(());
         }
 
@@ -1365,6 +1426,9 @@ impl Editor {
 
         // Parse the buffer for syntax highlighting
         self.parse_current_buffer();
+
+        // Update git diff for the newly opened file
+        self.update_git_diff();
 
         Ok(())
     }
@@ -2226,6 +2290,8 @@ impl Editor {
     pub fn save(&mut self) -> anyhow::Result<()> {
         self.buffers[self.current_buffer_idx].save()?;
         self.status_message = Some(format!("\"{}\" written", self.buffers[self.current_buffer_idx].display_name()));
+        // Update git diff after save (file now matches HEAD if no other changes)
+        self.update_git_diff();
         Ok(())
     }
 
