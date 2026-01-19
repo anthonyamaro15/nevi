@@ -460,40 +460,44 @@ pub fn json_highlight_query() -> &'static str {
 /// Get the highlight query for Markdown
 pub fn markdown_highlight_query() -> &'static str {
     r##"
-; Headings
-(atx_heading) @keyword
-(setext_heading) @keyword
+; Heading markers (# ## ### etc.)
+(atx_h1_marker) @keyword
+(atx_h2_marker) @keyword
+(atx_h3_marker) @keyword
+(atx_h4_marker) @keyword
+(atx_h5_marker) @keyword
+(atx_h6_marker) @keyword
 
-; Code blocks
-(fenced_code_block) @string
+; Heading content - the text after #
+(atx_heading (inline) @type)
+
+; Setext headings (underlined with === or ---)
+(setext_heading) @type
+(setext_h1_underline) @keyword
+(setext_h2_underline) @keyword
+
+; Fenced code blocks (```code```)
+(fenced_code_block_delimiter) @punctuation
+(info_string (language) @label)
+(code_fence_content) @string
+
+; Indented code blocks
 (indented_code_block) @string
-(code_span) @string
-
-; Links
-(link_destination) @string
-(link_text) @property
-(link_label) @property
-
-; Images
-(image) @property
-
-; Emphasis
-(emphasis) @variable
-(strong_emphasis) @variable
 
 ; Block quotes
-(block_quote) @comment
+(block_quote_marker) @comment
+(block_quote (paragraph) @comment)
 
-; Lists
+; List markers
 (list_marker_minus) @operator
 (list_marker_plus) @operator
 (list_marker_star) @operator
 (list_marker_dot) @operator
 
-; Thematic breaks (horizontal rules)
+; Thematic breaks (horizontal rules ---, ***, ___)
 (thematic_break) @comment
 
-; HTML in markdown
+; HTML blocks in markdown
 (html_block) @tag
 "##
 }
