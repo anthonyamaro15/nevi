@@ -96,6 +96,10 @@ pub enum Command {
     CopilotStatus,
     /// :CopilotToggle - Toggle Copilot on/off
     CopilotToggle,
+    /// :Theme <name> - Switch to a theme
+    Theme(String),
+    /// :Themes - Open theme picker
+    Themes,
     /// Unknown command
     Unknown(String),
 }
@@ -266,6 +270,16 @@ pub fn parse_command(input: &str) -> Command {
         "CopilotSignOut" | "copilotsignout" => Command::CopilotSignOut,
         "CopilotStatus" | "copilotstatus" => Command::CopilotStatus,
         "CopilotToggle" | "copilottoggle" => Command::CopilotToggle,
+
+        // Theme commands
+        "Theme" | "theme" | "colorscheme" => {
+            if let Some(name) = args.filter(|s| !s.is_empty()) {
+                Command::Theme(name.to_string())
+            } else {
+                Command::Themes // No args opens the picker
+            }
+        }
+        "Themes" | "themes" => Command::Themes,
 
         // Unknown command
         _ => Command::Unknown(cmd.to_string()),

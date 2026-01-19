@@ -1,0 +1,100 @@
+# Palenight Theme for Nevi
+# Based on Material Palenight from https://github.com/drewtempelmeyer/palenight.vim
+
+[palette]
+bg = "#292d3e"
+bg_dark = "#1e222d"
+fg = "#bfc7d5"
+red = "#ff5370"
+light_red = "#ff869a"
+green = "#c3e88d"
+yellow = "#ffcb6b"
+orange = "#f78c6c"
+blue = "#82b1ff"
+purple = "#c792ea"
+cyan = "#89ddff"
+blue_purple = "#939ede"
+comment = "#697098"
+visual_grey = "#3e4452"
+cursor_grey = "#2c323c"
+selection = "#3c435c"
+
+[syntax]
+keyword = { fg = "purple" }
+function = { fg = "blue" }
+type = { fg = "yellow" }
+string = { fg = "green" }
+number = { fg = "orange" }
+comment = { fg = "comment", italic = true }
+operator = { fg = "cyan" }
+punctuation = { fg = "cyan" }
+variable = { fg = "red" }
+constant = { fg = "orange" }
+attribute = { fg = "yellow" }
+namespace = { fg = "yellow" }
+label = { fg = "red" }
+property = { fg = "fg" }
+tag = { fg = "red" }
+
+[ui]
+background = "bg"
+foreground = "fg"
+cursor_line = "cursor_grey"
+selection = "selection"
+line_number = "comment"
+line_number_active = "fg"
+visual_bg = "visual_grey"
+
+[ui.statusline]
+background = "bg_dark"
+foreground = "fg"
+mode_normal = "blue"
+mode_insert = "green"
+mode_visual = "purple"
+mode_command = "yellow"
+mode_replace = "red"
+
+[ui.popup]
+background = "bg_dark"
+border = "visual_grey"
+selection = "selection"
+
+[ui.completion]
+background = "bg_dark"
+border = "visual_grey"
+selected = "selection"
+match = "yellow"
+detail = "comment"
+
+[ui.finder]
+background = "bg_dark"
+border = "visual_grey"
+selected = "selection"
+match = "yellow"
+prompt = "blue"
+
+[ui.search]
+match_bg = "yellow"
+match_fg = "bg"
+
+[ui.explorer]
+background = "bg_dark"
+border = "visual_grey"
+selected = "selection"
+directory = "blue"
+
+[ui.harpoon]
+background = "bg_dark"
+border = "visual_grey"
+selected = "selection"
+
+[diagnostic]
+error = "red"
+warning = "yellow"
+info = "blue"
+hint = "cyan"
+
+[git]
+added = "green"
+modified = "yellow"
+deleted = "red"

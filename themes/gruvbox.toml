@@ -1,0 +1,99 @@
+# Gruvbox Dark Theme for Nevi
+# Based on the Gruvbox color scheme by morhetz
+
+[palette]
+bg = "#282828"
+bg_dark = "#1d2021"
+bg_lighter = "#32302f"
+bg1 = "#3c3836"
+bg2 = "#504945"
+fg = "#ebdbb2"
+fg1 = "#d5c4a1"
+gray = "#928374"
+red = "#fb4934"
+green = "#b8bb26"
+yellow = "#fabd2f"
+blue = "#83a598"
+purple = "#d3869b"
+aqua = "#8ec07c"
+orange = "#fe8019"
+
+[syntax]
+keyword = { fg = "red" }
+function = { fg = "green", bold = true }
+type = { fg = "yellow" }
+string = { fg = "green" }
+number = { fg = "purple" }
+comment = { fg = "gray", italic = true }
+operator = { fg = "fg" }
+punctuation = { fg = "fg1" }
+variable = { fg = "blue" }
+constant = { fg = "purple" }
+attribute = { fg = "aqua" }
+namespace = { fg = "aqua" }
+label = { fg = "aqua" }
+property = { fg = "blue" }
+tag = { fg = "red" }
+
+[ui]
+background = "bg"
+foreground = "fg"
+cursor_line = "#32302f"
+selection = "#504945"
+line_number = "gray"
+line_number_active = "yellow"
+visual_bg = "#504945"
+
+[ui.statusline]
+background = "bg_dark"
+foreground = "fg"
+mode_normal = "blue"
+mode_insert = "green"
+mode_visual = "orange"
+mode_command = "aqua"
+mode_replace = "red"
+
+[ui.popup]
+background = "bg_dark"
+border = "#504945"
+selection = "#504945"
+
+[ui.completion]
+background = "#1d2021"
+border = "#504945"
+selected = "#504945"
+match = "orange"
+detail = "gray"
+
+[ui.finder]
+background = "#1d2021"
+border = "#665c54"
+selected = "#504945"
+match = "orange"
+prompt = "aqua"
+
+[ui.search]
+match_bg = "yellow"
+match_fg = "#282828"
+
+[ui.explorer]
+background = "bg_dark"
+border = "#504945"
+selected = "#504945"
+directory = "blue"
+
+[ui.harpoon]
+background = "bg_dark"
+border = "#504945"
+selected = "#504945"
+
+[diagnostic]
+error = "red"
+warning = "yellow"
+info = "blue"
+hint = "aqua"
+
+[git]
+added = "green"
+modified = "yellow"
+deleted = "red"

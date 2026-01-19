@@ -350,6 +350,14 @@ impl SyntaxManager {
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
     }
+
+    /// Sync theme from the UI theme system
+    pub fn sync_theme(&mut self, ui_theme: &crate::theme::Theme) {
+        self.theme = Theme::from_ui_theme(ui_theme);
+        // Invalidate cache since colors changed
+        self.highlight_cache.borrow_mut().clear();
+        self.cache_version.set(0);
+    }
 }
 
 impl Default for SyntaxManager {

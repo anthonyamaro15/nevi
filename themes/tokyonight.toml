@@ -1,0 +1,101 @@
+# Tokyo Night Theme for Nevi
+# Based on the Tokyo Night color scheme by folke
+
+[palette]
+bg = "#1a1b26"
+bg_dark = "#16161e"
+bg_lighter = "#24283b"
+bg_highlight = "#292e42"
+fg = "#c0caf5"
+fg_dark = "#a9b1d6"
+fg_gutter = "#3b4261"
+comment = "#565f89"
+cyan = "#7dcfff"
+blue = "#7aa2f7"
+purple = "#bb9af7"
+magenta = "#ff007c"
+orange = "#ff9e64"
+yellow = "#e0af68"
+green = "#9ece6a"
+teal = "#1abc9c"
+red = "#f7768e"
+
+[syntax]
+keyword = { fg = "purple" }
+function = { fg = "blue" }
+type = { fg = "cyan" }
+string = { fg = "green" }
+number = { fg = "orange" }
+comment = { fg = "comment", italic = true }
+operator = { fg = "cyan" }
+punctuation = { fg = "fg_dark" }
+variable = { fg = "fg" }
+constant = { fg = "orange" }
+attribute = { fg = "yellow" }
+namespace = { fg = "cyan" }
+label = { fg = "blue" }
+property = { fg = "teal" }
+tag = { fg = "red" }
+
+[ui]
+background = "bg"
+foreground = "fg"
+cursor_line = "#292e42"
+selection = "#283457"
+line_number = "fg_gutter"
+line_number_active = "fg_dark"
+visual_bg = "#283457"
+
+[ui.statusline]
+background = "bg_dark"
+foreground = "fg"
+mode_normal = "blue"
+mode_insert = "green"
+mode_visual = "magenta"
+mode_command = "yellow"
+mode_replace = "red"
+
+[ui.popup]
+background = "bg_dark"
+border = "#3b4261"
+selection = "#283457"
+
+[ui.completion]
+background = "#16161e"
+border = "#3b4261"
+selected = "#283457"
+match = "yellow"
+detail = "comment"
+
+[ui.finder]
+background = "#16161e"
+border = "#3b4261"
+selected = "#283457"
+match = "yellow"
+prompt = "blue"
+
+[ui.search]
+match_bg = "yellow"
+match_fg = "#1a1b26"
+
+[ui.explorer]
+background = "bg_dark"
+border = "#3b4261"
+selected = "#283457"
+directory = "blue"
+
+[ui.harpoon]
+background = "bg_dark"
+border = "#3b4261"
+selected = "#283457"
+
+[diagnostic]
+error = "red"
+warning = "yellow"
+info = "cyan"
+hint = "teal"
+
+[git]
+added = "green"
+modified = "yellow"
+deleted = "red"

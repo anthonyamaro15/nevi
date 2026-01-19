@@ -1,0 +1,103 @@
+# Everforest Dark Theme for Nevi
+# Official palette from https://github.com/sainnhe/everforest
+
+[palette]
+bg_dim = "#232a2e"
+bg0 = "#2d353b"
+bg1 = "#343f44"
+bg2 = "#3d484d"
+bg3 = "#475258"
+bg4 = "#4f585e"
+bg5 = "#56635f"
+bg_visual = "#543a48"
+fg = "#d3c6aa"
+red = "#e67e80"
+orange = "#e69875"
+yellow = "#dbbc7f"
+green = "#a7c080"
+aqua = "#83c092"
+blue = "#7fbbb3"
+purple = "#d699b6"
+grey0 = "#7a8478"
+grey1 = "#859289"
+grey2 = "#9da9a0"
+
+[syntax]
+keyword = { fg = "red" }
+function = { fg = "green" }
+type = { fg = "yellow" }
+string = { fg = "aqua" }
+number = { fg = "purple" }
+comment = { fg = "grey1", italic = true }
+operator = { fg = "orange" }
+punctuation = { fg = "grey2" }
+variable = { fg = "fg" }
+constant = { fg = "purple" }
+attribute = { fg = "orange" }
+namespace = { fg = "yellow" }
+label = { fg = "aqua" }
+property = { fg = "blue" }
+tag = { fg = "red" }
+
+[ui]
+background = "bg0"
+foreground = "fg"
+cursor_line = "bg1"
+selection = "bg_visual"
+line_number = "grey0"
+line_number_active = "fg"
+visual_bg = "bg_visual"
+
+[ui.statusline]
+background = "bg_dim"
+foreground = "fg"
+mode_normal = "aqua"
+mode_insert = "green"
+mode_visual = "red"
+mode_command = "yellow"
+mode_replace = "orange"
+
+[ui.popup]
+background = "bg_dim"
+border = "bg3"
+selection = "bg2"
+
+[ui.completion]
+background = "bg_dim"
+border = "bg3"
+selected = "bg2"
+match = "yellow"
+detail = "grey0"
+
+[ui.finder]
+background = "bg_dim"
+border = "bg3"
+selected = "bg2"
+match = "yellow"
+prompt = "aqua"
+
+[ui.search]
+match_bg = "yellow"
+match_fg = "bg0"
+
+[ui.explorer]
+background = "bg_dim"
+border = "bg3"
+selected = "bg2"
+directory = "aqua"
+
+[ui.harpoon]
+background = "bg_dim"
+border = "bg3"
+selected = "bg2"
+
+[diagnostic]
+error = "red"
+warning = "yellow"
+info = "blue"
+hint = "aqua"
+
+[git]
+added = "green"
+modified = "yellow"
+deleted = "red"

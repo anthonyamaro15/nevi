@@ -12,11 +12,12 @@ pub mod input;
 pub mod lsp;
 pub mod syntax;
 pub mod terminal;
+pub mod theme;
 
 pub use config::{load_config, Settings, KeymapLookup, LeaderAction, AutosaveMode, CopilotSettings};
 pub use copilot::{CopilotManager, CopilotStatus, GhostTextState};
 pub use copilot::types::CopilotNotification;
-pub use editor::{Editor, Mode, Buffer, Cursor, LspAction, CopilotAction, CopilotGhostText};
+pub use editor::{Editor, Mode, Buffer, Cursor, LspAction, CopilotAction, CopilotGhostText, ThemePicker};
 pub use floating_terminal::FloatingTerminal;
 pub use harpoon::Harpoon;
 pub use explorer::FileExplorer;
@@ -24,3 +25,4 @@ pub use finder::{FuzzyFinder, FinderMode, FloatingWindow};
 pub use frecency::FrecencyDb;
 pub use lsp::{LspManager, LspNotification, LspStatus, MultiLspManager, LanguageId};
 pub use terminal::Terminal;
+pub use theme::{Theme, ThemeManager};

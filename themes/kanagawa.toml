@@ -1,0 +1,119 @@
+# Kanagawa Theme for Nevi (Wave variant)
+# Official palette from https://github.com/rebelot/kanagawa.nvim
+
+[palette]
+# Background shades
+sumiInk0 = "#16161D"
+sumiInk1 = "#181820"
+sumiInk2 = "#1a1a22"
+sumiInk3 = "#1F1F28"
+sumiInk4 = "#2A2A37"
+sumiInk5 = "#363646"
+sumiInk6 = "#54546D"
+# Popup and floats
+waveBlue1 = "#223249"
+waveBlue2 = "#2D4F67"
+# Foreground and text
+oldWhite = "#C8C093"
+fujiWhite = "#DCD7BA"
+fujiGray = "#727169"
+# Syntax colors
+oniViolet = "#957FB8"
+crystalBlue = "#7E9CD8"
+springViolet1 = "#938AA9"
+springViolet2 = "#9CABCA"
+springBlue = "#7FB4CA"
+springGreen = "#98BB6C"
+boatYellow2 = "#C0A36E"
+carpYellow = "#E6C384"
+sakuraPink = "#D27E99"
+waveRed = "#E46876"
+peachRed = "#FF5D62"
+surimiOrange = "#FFA066"
+waveAqua2 = "#7AA89F"
+# Diagnostics
+samuraiRed = "#E82424"
+roninYellow = "#FF9E3B"
+autumnGreen = "#76946A"
+autumnRed = "#C34043"
+autumnYellow = "#DCA561"
+
+[syntax]
+keyword = { fg = "oniViolet" }
+function = { fg = "crystalBlue" }
+type = { fg = "carpYellow" }
+string = { fg = "springGreen" }
+number = { fg = "sakuraPink" }
+comment = { fg = "fujiGray", italic = true }
+operator = { fg = "boatYellow2" }
+punctuation = { fg = "springViolet2" }
+variable = { fg = "fujiWhite" }
+constant = { fg = "surimiOrange" }
+attribute = { fg = "waveAqua2" }
+namespace = { fg = "springBlue" }
+label = { fg = "sakuraPink" }
+property = { fg = "carpYellow" }
+tag = { fg = "waveRed" }
+
+[ui]
+background = "sumiInk3"
+foreground = "fujiWhite"
+cursor_line = "sumiInk4"
+selection = "waveBlue1"
+line_number = "sumiInk6"
+line_number_active = "oldWhite"
+visual_bg = "waveBlue1"
+
+[ui.statusline]
+background = "sumiInk0"
+foreground = "oldWhite"
+mode_normal = "crystalBlue"
+mode_insert = "springGreen"
+mode_visual = "oniViolet"
+mode_command = "carpYellow"
+mode_replace = "waveRed"
+
+[ui.popup]
+background = "sumiInk0"
+border = "sumiInk6"
+selection = "waveBlue2"
+
+[ui.completion]
+background = "sumiInk0"
+border = "sumiInk6"
+selected = "waveBlue2"
+match = "carpYellow"
+detail = "fujiGray"
+
+[ui.finder]
+background = "sumiInk1"
+border = "sumiInk6"
+selected = "waveBlue2"
+match = "carpYellow"
+prompt = "crystalBlue"
+
+[ui.search]
+match_bg = "carpYellow"
+match_fg = "sumiInk0"
+
+[ui.explorer]
+background = "sumiInk0"
+border = "sumiInk6"
+selected = "waveBlue2"
+directory = "crystalBlue"
+
+[ui.harpoon]
+background = "sumiInk0"
+border = "sumiInk6"
+selected = "waveBlue2"
+
+[diagnostic]
+error = "samuraiRed"
+warning = "roninYellow"
+info = "springBlue"
+hint = "waveAqua2"
+
+[git]
+added = "autumnGreen"
+modified = "autumnYellow"
+deleted = "autumnRed"

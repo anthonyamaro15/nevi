@@ -1,0 +1,106 @@
+# Nightfox Theme for Nevi
+# Official palette from https://github.com/EdenEast/nightfox.nvim
+
+[palette]
+black = "#393b44"
+red = "#c94f6d"
+green = "#81b29a"
+yellow = "#dbc074"
+blue = "#719cd6"
+magenta = "#9d79d6"
+cyan = "#63cdcf"
+white = "#dfdfe0"
+orange = "#f4a261"
+pink = "#d67ad2"
+comment = "#738091"
+bg0 = "#131a24"
+bg1 = "#192330"
+bg2 = "#212e3f"
+bg3 = "#29394f"
+bg4 = "#39506d"
+fg0 = "#d6d6d7"
+fg1 = "#cdcecf"
+fg2 = "#aeafb0"
+fg3 = "#71839b"
+sel0 = "#2b3b51"
+sel1 = "#3c5372"
+
+[syntax]
+keyword = { fg = "magenta" }
+function = { fg = "blue" }
+type = { fg = "yellow" }
+string = { fg = "green" }
+number = { fg = "orange" }
+comment = { fg = "comment", italic = true }
+operator = { fg = "cyan" }
+punctuation = { fg = "fg2" }
+variable = { fg = "white" }
+constant = { fg = "orange" }
+attribute = { fg = "yellow" }
+namespace = { fg = "cyan" }
+label = { fg = "pink" }
+property = { fg = "cyan" }
+tag = { fg = "red" }
+
+[ui]
+background = "bg1"
+foreground = "fg1"
+cursor_line = "bg2"
+selection = "sel0"
+line_number = "fg3"
+line_number_active = "fg0"
+visual_bg = "sel0"
+
+[ui.statusline]
+background = "bg0"
+foreground = "fg1"
+mode_normal = "blue"
+mode_insert = "green"
+mode_visual = "magenta"
+mode_command = "yellow"
+mode_replace = "red"
+
+[ui.popup]
+background = "bg0"
+border = "bg4"
+selection = "sel1"
+
+[ui.completion]
+background = "bg0"
+border = "bg4"
+selected = "sel1"
+match = "yellow"
+detail = "fg3"
+
+[ui.finder]
+background = "bg0"
+border = "bg4"
+selected = "sel1"
+match = "yellow"
+prompt = "blue"
+
+[ui.search]
+match_bg = "yellow"
+match_fg = "bg0"
+
+[ui.explorer]
+background = "bg0"
+border = "bg4"
+selected = "sel1"
+directory = "blue"
+
+[ui.harpoon]
+background = "bg0"
+border = "bg4"
+selected = "sel1"
+
+[diagnostic]
+error = "red"
+warning = "yellow"
+info = "blue"
+hint = "cyan"
+
+[git]
+added = "green"
+modified = "yellow"
+deleted = "red"

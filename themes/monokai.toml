@@ -1,0 +1,96 @@
+# Monokai Theme for Nevi
+# Classic Monokai palette from Sublime Text
+
+[palette]
+bg = "#272822"
+bg_dark = "#1e1f1c"
+fg = "#f8f8f2"
+yellow = "#e6db74"
+green = "#a6e22e"
+orange = "#fd971f"
+purple = "#ae81ff"
+pink = "#f92672"
+blue = "#66d9ef"
+comment = "#75715e"
+selection = "#49483e"
+line_highlight = "#3e3d32"
+
+[syntax]
+keyword = { fg = "pink" }
+function = { fg = "green" }
+type = { fg = "blue", italic = true }
+string = { fg = "yellow" }
+number = { fg = "purple" }
+comment = { fg = "comment", italic = true }
+operator = { fg = "pink" }
+punctuation = { fg = "fg" }
+variable = { fg = "fg" }
+constant = { fg = "purple" }
+attribute = { fg = "green" }
+namespace = { fg = "blue", italic = true }
+label = { fg = "yellow" }
+property = { fg = "fg" }
+tag = { fg = "pink" }
+
+[ui]
+background = "bg"
+foreground = "fg"
+cursor_line = "line_highlight"
+selection = "selection"
+line_number = "comment"
+line_number_active = "fg"
+visual_bg = "selection"
+
+[ui.statusline]
+background = "bg_dark"
+foreground = "fg"
+mode_normal = "blue"
+mode_insert = "green"
+mode_visual = "purple"
+mode_command = "orange"
+mode_replace = "pink"
+
+[ui.popup]
+background = "bg_dark"
+border = "selection"
+selection = "#3e3d32"
+
+[ui.completion]
+background = "bg_dark"
+border = "selection"
+selected = "#3e3d32"
+match = "yellow"
+detail = "comment"
+
+[ui.finder]
+background = "bg"
+border = "selection"
+selected = "#3e3d32"
+match = "yellow"
+prompt = "green"
+
+[ui.search]
+match_bg = "yellow"
+match_fg = "bg"
+
+[ui.explorer]
+background = "bg_dark"
+border = "selection"
+selected = "#3e3d32"
+directory = "blue"
+
+[ui.harpoon]
+background = "bg_dark"
+border = "selection"
+selected = "#3e3d32"
+
+[diagnostic]
+error = "pink"
+warning = "orange"
+info = "blue"
+hint = "green"
+
+[git]
+added = "green"
+modified = "orange"
+deleted = "pink"

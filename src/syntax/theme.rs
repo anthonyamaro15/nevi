@@ -100,3 +100,31 @@ impl Default for Theme {
         Self::default_theme()
     }
 }
+
+impl Theme {
+    /// Create a syntax theme from the UI theme system
+    pub fn from_ui_theme(ui_theme: &crate::theme::Theme) -> Self {
+        let mut colors = HashMap::new();
+
+        colors.insert(HighlightGroup::Keyword, ui_theme.syntax.keyword.fg);
+        colors.insert(HighlightGroup::Function, ui_theme.syntax.function.fg);
+        colors.insert(HighlightGroup::Type, ui_theme.syntax.type_.fg);
+        colors.insert(HighlightGroup::String, ui_theme.syntax.string.fg);
+        colors.insert(HighlightGroup::Number, ui_theme.syntax.number.fg);
+        colors.insert(HighlightGroup::Comment, ui_theme.syntax.comment.fg);
+        colors.insert(HighlightGroup::Operator, ui_theme.syntax.operator.fg);
+        colors.insert(HighlightGroup::Punctuation, ui_theme.syntax.punctuation.fg);
+        colors.insert(HighlightGroup::Variable, ui_theme.syntax.variable.fg);
+        colors.insert(HighlightGroup::Constant, ui_theme.syntax.constant.fg);
+        colors.insert(HighlightGroup::Attribute, ui_theme.syntax.attribute.fg);
+        colors.insert(HighlightGroup::Namespace, ui_theme.syntax.namespace.fg);
+        colors.insert(HighlightGroup::Label, ui_theme.syntax.label.fg);
+        colors.insert(HighlightGroup::Property, ui_theme.syntax.property.fg);
+        colors.insert(HighlightGroup::Tag, ui_theme.syntax.tag.fg);
+
+        Self {
+            name: ui_theme.name.clone(),
+            colors,
+        }
+    }
+}

@@ -40,6 +40,19 @@ struct WrapSegment {
     is_first: bool,
 }
 
+/// Dim a color by reducing its brightness (for hidden files, etc.)
+fn dim_color(color: Color) -> Color {
+    match color {
+        Color::Rgb { r, g, b } => Color::Rgb {
+            r: (r as f32 * 0.6) as u8,
+            g: (g as f32 * 0.6) as u8,
+            b: (b as f32 * 0.6) as u8,
+        },
+        // For non-RGB colors, return a generic dim gray
+        _ => Color::DarkGrey,
+    }
+}
+
 /// Calculate wrapped segments for a line
 /// Returns a vector of segments, each representing one visual row
 fn calculate_wrap_segments(line: &str, max_width: usize, preserve_indent: bool) -> Vec<WrapSegment> {
@@ -263,6 +276,11 @@ impl Terminal {
             self.render_harpoon_menu(editor)?;
         }
 
+        // Render theme picker if active
+        if editor.theme_picker.is_some() {
+            self.render_theme_picker(editor)?;
+        }
+
         // Render floating terminal if visible
         if editor.floating_terminal.is_visible() {
             self.render_floating_terminal(editor)?;
@@ -360,6 +378,15 @@ impl Terminal {
         wrap_width: usize,
         buffer_path: Option<&std::path::PathBuf>,
     ) -> anyhow::Result<()> {
+        // Get theme colors once at the start
+        let theme = editor.theme();
+        let cursor_line_bg = theme.ui.cursor_line;
+        let editor_bg = theme.ui.background;
+        let editor_fg = theme.ui.foreground;
+        let selection_bg = theme.ui.selection;
+        let search_bg = theme.ui.search_match_bg;
+        let search_fg = theme.ui.search_match_fg;
+
         let mut current_row = 0;
         let mut file_line = pane.viewport_offset;
 
@@ -403,20 +430,20 @@ impl Terminal {
                 let screen_y = rect.y + current_row as u16;
                 execute!(self.stdout, cursor::MoveTo(rect.x, screen_y))?;
 
-                // Apply cursor line background if enabled (for all segments of cursor line)
-                if highlight_cursor_line && is_cursor_line {
-                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-                }
+                // Calculate row background (cursor line or normal editor background)
+                let row_bg = if highlight_cursor_line && is_cursor_line {
+                    cursor_line_bg
+                } else {
+                    editor_bg
+                };
+
+                // Set background and foreground for this row
+                execute!(self.stdout, SetBackgroundColor(row_bg), SetForegroundColor(editor_fg))?;
 
                 // Sign column (git signs + diagnostic icons) - only on first segment
                 // Layout: [Git Sign][Diagnostic] = 2 chars total
                 if segment.is_first {
                     // Git sign (first char)
-                    // TODO: Make git sign colors configurable via settings
-                    // Currently using One Dark theme colors:
-                    //   Added:    #98c379 (green)
-                    //   Modified: #e5c07b (yellow)
-                    //   Deleted:  #e06c75 (red)
                     let git_status = if is_active {
                         buffer_path.and_then(|p| editor.git_status_for_line_in_file(p, file_line))
                     } else {
@@ -425,49 +452,39 @@ impl Terminal {
 
                     match git_status {
                         Some(crate::git::GitLineStatus::Added) => {
-                            execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 152, g: 195, b: 121 }))?;
+                            execute!(self.stdout, SetForegroundColor(theme.git.added))?;
                             print!("▎");
-                            execute!(self.stdout, ResetColor)?;
+                            execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
                         }
                         Some(crate::git::GitLineStatus::Modified) => {
-                            execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 229, g: 192, b: 123 }))?;
+                            execute!(self.stdout, SetForegroundColor(theme.git.modified))?;
                             print!("▎");
-                            execute!(self.stdout, ResetColor)?;
+                            execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
                         }
                         Some(crate::git::GitLineStatus::Deleted) => {
-                            execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 224, g: 108, b: 117 }))?;
+                            execute!(self.stdout, SetForegroundColor(theme.git.deleted))?;
                             print!("▁");
-                            execute!(self.stdout, ResetColor)?;
+                            execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
                         }
                         None => {
                             print!(" ");
                         }
                     }
 
-                    // Re-apply cursor line background after git sign
-                    if highlight_cursor_line && is_cursor_line {
-                        execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-                    }
-
                     // Diagnostic sign (second char)
                     if has_error {
-                        execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 255, g: 100, b: 100 }))?;
+                        execute!(self.stdout, SetForegroundColor(theme.diagnostic.error))?;
                         print!("●");
-                        execute!(self.stdout, ResetColor)?;
+                        execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
                     } else if has_warning {
-                        execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 255, g: 200, b: 100 }))?;
+                        execute!(self.stdout, SetForegroundColor(theme.diagnostic.warning))?;
                         print!("▲");
-                        execute!(self.stdout, ResetColor)?;
+                        execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
                     } else {
                         print!(" ");
                     }
                 } else {
                     print!("  "); // Empty sign column for continuation lines
-                }
-
-                // Re-apply cursor line background after sign column
-                if highlight_cursor_line && is_cursor_line {
-                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
                 }
 
                 // Line number (only on first segment)
@@ -484,24 +501,20 @@ impl Terminal {
                             format!("{:>width$} ", file_line + 1, width = line_num_width)
                         };
 
-                        // Use brighter colors for better visibility
+                        // Use theme colors for line numbers
                         let line_num_color = if has_error {
-                            Color::Rgb { r: 255, g: 100, b: 100 } // Bright red
+                            theme.diagnostic.error
                         } else if has_warning {
-                            Color::Rgb { r: 255, g: 200, b: 100 } // Bright yellow/orange
+                            theme.diagnostic.warning
                         } else if is_cursor_line {
-                            Color::Yellow
+                            theme.ui.line_number_active
                         } else {
-                            Color::DarkGrey
+                            theme.ui.line_number
                         };
 
                         execute!(self.stdout, SetForegroundColor(line_num_color))?;
                         print!("{}", line_num);
-                        execute!(self.stdout, ResetColor)?;
-
-                        if highlight_cursor_line && is_cursor_line {
-                            execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-                        }
+                        execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
                     } else {
                         // Continuation line - empty line number gutter
                         print!("{:>width$} ", "", width = line_num_width);
@@ -519,6 +532,12 @@ impl Terminal {
                     &editor.mode,
                     highlight_cursor_line && is_cursor_line,
                     &editor.search_matches,
+                    editor_bg,
+                    editor_fg,
+                    cursor_line_bg,
+                    selection_bg,
+                    search_bg,
+                    search_fg,
                 )?;
 
                 // Fill remaining space (sign column = 2)
@@ -545,34 +564,22 @@ impl Terminal {
                                 .take(remaining)
                                 .collect();
 
-                            if highlight_cursor_line && is_cursor_line {
-                                execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-                            }
-
+                            // Row background already set at start of row
                             execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
                             print!(" ");
                             execute!(self.stdout, SetForegroundColor(color))?;
                             print!("{}", icon);
                             execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
                             print!(" {}", msg);
-                            execute!(self.stdout, ResetColor)?;
+                            execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
 
                             chars_printed += 3 + msg.chars().count();
-
-                            if highlight_cursor_line && is_cursor_line {
-                                execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-                            }
                         }
                     }
                 }
 
                 for _ in chars_printed..pane_width {
                     print!(" ");
-                }
-
-                // Reset background
-                if highlight_cursor_line && is_cursor_line {
-                    execute!(self.stdout, ResetColor)?;
                 }
 
                 current_row += 1;
@@ -586,6 +593,9 @@ impl Terminal {
             let screen_y = rect.y + current_row as u16;
             execute!(self.stdout, cursor::MoveTo(rect.x, screen_y))?;
 
+            // Set editor background for empty rows
+            execute!(self.stdout, SetBackgroundColor(editor_bg), SetForegroundColor(editor_fg))?;
+
             print!("  "); // Empty sign column
 
             execute!(self.stdout, SetForegroundColor(Color::Blue))?;
@@ -594,7 +604,7 @@ impl Terminal {
             } else {
                 print!("~");
             }
-            execute!(self.stdout, ResetColor)?;
+            execute!(self.stdout, SetForegroundColor(editor_fg))?;
 
             // Fill remaining space (sign column = 2)
             let chars_printed = 2 + if show_line_numbers { line_num_width + 2 } else { 1 };
@@ -627,6 +637,12 @@ impl Terminal {
         effective_width: usize,
         buffer_path: Option<&std::path::PathBuf>,
     ) -> anyhow::Result<()> {
+        // Get theme colors once
+        let theme = editor.theme();
+        let cursor_line_bg = theme.ui.cursor_line;
+        let editor_bg = theme.ui.background;
+        let editor_fg = theme.ui.foreground;
+
         // Render each row in this pane
         for row in 0..pane_height {
             let screen_y = rect.y + row as u16;
@@ -636,10 +652,13 @@ impl Terminal {
             // Move to start of this row in the pane
             execute!(self.stdout, cursor::MoveTo(rect.x, screen_y))?;
 
-            // Apply cursor line background if enabled
-            if highlight_cursor_line && is_cursor_line && file_line < buffer.len_lines() {
-                execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-            }
+            // Set background color for this row (cursor line or normal)
+            let row_bg = if highlight_cursor_line && is_cursor_line && file_line < buffer.len_lines() {
+                cursor_line_bg
+            } else {
+                editor_bg
+            };
+            execute!(self.stdout, SetBackgroundColor(row_bg), SetForegroundColor(editor_fg))?;
 
             if file_line < buffer.len_lines() {
                 // Check for diagnostics on this line (only for active pane)
@@ -659,11 +678,6 @@ impl Terminal {
                 // Layout: [Git Sign][Diagnostic] = 2 chars total
 
                 // Git sign (first char)
-                // TODO: Make git sign colors configurable via settings
-                // Currently using One Dark theme colors:
-                //   Added:    #98c379 (green)
-                //   Modified: #e5c07b (yellow)
-                //   Deleted:  #e06c75 (red)
                 let git_status = if is_active {
                     buffer_path.and_then(|p| editor.git_status_for_line_in_file(p, file_line))
                 } else {
@@ -672,46 +686,36 @@ impl Terminal {
 
                 match git_status {
                     Some(crate::git::GitLineStatus::Added) => {
-                        execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 152, g: 195, b: 121 }))?;
+                        execute!(self.stdout, SetForegroundColor(theme.git.added))?;
                         print!("▎");
-                        execute!(self.stdout, ResetColor)?;
+                        execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
                     }
                     Some(crate::git::GitLineStatus::Modified) => {
-                        execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 229, g: 192, b: 123 }))?;
+                        execute!(self.stdout, SetForegroundColor(theme.git.modified))?;
                         print!("▎");
-                        execute!(self.stdout, ResetColor)?;
+                        execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
                     }
                     Some(crate::git::GitLineStatus::Deleted) => {
-                        execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 224, g: 108, b: 117 }))?;
+                        execute!(self.stdout, SetForegroundColor(theme.git.deleted))?;
                         print!("▁");
-                        execute!(self.stdout, ResetColor)?;
+                        execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
                     }
                     None => {
                         print!(" ");
                     }
                 }
 
-                // Re-apply cursor line background after git sign
-                if highlight_cursor_line && is_cursor_line {
-                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-                }
-
                 // Diagnostic sign (second char)
                 if has_error {
-                    execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 255, g: 100, b: 100 }))?;
+                    execute!(self.stdout, SetForegroundColor(theme.diagnostic.error))?;
                     print!("●");
-                    execute!(self.stdout, ResetColor)?;
+                    execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
                 } else if has_warning {
-                    execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 255, g: 200, b: 100 }))?;
+                    execute!(self.stdout, SetForegroundColor(theme.diagnostic.warning))?;
                     print!("▲");
-                    execute!(self.stdout, ResetColor)?;
+                    execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
                 } else {
                     print!(" ");
-                }
-
-                // Re-apply cursor line background after sign column
-                if highlight_cursor_line && is_cursor_line {
-                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
                 }
 
                 // Line number (if enabled)
@@ -728,25 +732,20 @@ impl Terminal {
                         format!("{:>width$} ", file_line + 1, width = line_num_width)
                     };
 
-                    // Use brighter colors for better visibility
+                    // Use theme colors for line numbers
                     let line_num_color = if has_error {
-                        Color::Rgb { r: 255, g: 100, b: 100 } // Bright red
+                        theme.diagnostic.error
                     } else if has_warning {
-                        Color::Rgb { r: 255, g: 200, b: 100 } // Bright yellow/orange
+                        theme.diagnostic.warning
                     } else if is_cursor_line {
-                        Color::Yellow
+                        theme.ui.line_number_active
                     } else {
-                        Color::DarkGrey
+                        theme.ui.line_number
                     };
 
                     execute!(self.stdout, SetForegroundColor(line_num_color))?;
                     print!("{}", line_num);
-                    execute!(self.stdout, ResetColor)?;
-
-                    // Re-apply cursor line background after reset
-                    if highlight_cursor_line && is_cursor_line {
-                        execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-                    }
+                    execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
                 }
 
                 // Line content with syntax highlighting and visual selection
@@ -761,6 +760,11 @@ impl Terminal {
                         Vec::new()
                     };
 
+                    // Get search/selection colors from theme
+                    let selection_bg = theme.ui.selection;
+                    let search_bg = theme.ui.search_match_bg;
+                    let search_fg = theme.ui.search_match_fg;
+
                     self.render_line_with_highlights(
                         line_str,
                         file_line,
@@ -769,6 +773,12 @@ impl Terminal {
                         &editor.mode,
                         highlight_cursor_line && is_cursor_line,
                         &editor.search_matches,
+                        editor_bg,
+                        editor_fg,
+                        cursor_line_bg,
+                        selection_bg,
+                        search_bg,
+                        search_fg,
                     )?;
 
                     // Track characters printed for fill calculation (sign column = 2)
@@ -785,17 +795,9 @@ impl Terminal {
                                 let ghost_chars: String = ghost.chars().take(remaining).collect();
 
                                 // Render ghost text in dim gray
-                                execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
-                                if highlight_cursor_line {
-                                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-                                }
+                                execute!(self.stdout, SetForegroundColor(Color::DarkGrey), SetBackgroundColor(row_bg))?;
                                 print!("{}", ghost_chars);
-                                execute!(self.stdout, ResetColor)?;
-
-                                // Re-apply cursor line background for remaining fill
-                                if highlight_cursor_line {
-                                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-                                }
+                                execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
 
                                 chars_printed += ghost_chars.chars().count();
                             }
@@ -816,10 +818,7 @@ impl Terminal {
                                 let ghost_len = ghost_chars.chars().count();
 
                                 // Render Copilot ghost text in a slightly different gray
-                                execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 100, g: 100, b: 110 }))?;
-                                if highlight_cursor_line {
-                                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-                                }
+                                execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 100, g: 100, b: 110 }), SetBackgroundColor(row_bg))?;
                                 print!("{}", ghost_chars);
 
                                 // Show count if multiple completions
@@ -832,12 +831,7 @@ impl Terminal {
                                     }
                                 }
 
-                                execute!(self.stdout, ResetColor)?;
-
-                                // Re-apply cursor line background for remaining fill
-                                if highlight_cursor_line {
-                                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-                                }
+                                execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
 
                                 chars_printed += ghost_len;
                             }
@@ -867,31 +861,22 @@ impl Terminal {
                                     .take(remaining)
                                     .collect();
 
-                                // Apply cursor line background if needed
-                                if highlight_cursor_line && is_cursor_line {
-                                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-                                }
-
                                 // Render: space, icon, space, message
-                                execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
+                                execute!(self.stdout, SetForegroundColor(Color::DarkGrey), SetBackgroundColor(row_bg))?;
                                 print!(" ");
                                 execute!(self.stdout, SetForegroundColor(color))?;
                                 print!("{}", icon);
                                 execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
                                 print!(" {}", msg);
-                                execute!(self.stdout, ResetColor)?;
+                                execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
 
                                 chars_printed += 3 + msg.chars().count();
-
-                                // Re-apply cursor line background for fill
-                                if highlight_cursor_line && is_cursor_line {
-                                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-                                }
                             }
                         }
                     }
 
-                    // Fill remaining space in pane
+                    // Fill remaining space in pane with theme background
+                    execute!(self.stdout, SetBackgroundColor(row_bg), SetForegroundColor(editor_fg))?;
                     for _ in chars_printed..pane_width {
                         print!(" ");
                     }
@@ -906,7 +891,7 @@ impl Terminal {
                 } else {
                     print!("~");
                 }
-                execute!(self.stdout, ResetColor)?;
+                execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
 
                 // Fill remaining space (sign column = 2)
                 let chars_printed = 2 + if show_line_numbers { line_num_width + 2 } else { 1 };
@@ -914,11 +899,7 @@ impl Terminal {
                     print!(" ");
                 }
             }
-
-            // Reset background for cursor line
-            if highlight_cursor_line && is_cursor_line {
-                execute!(self.stdout, ResetColor)?;
-            }
+            // Keep background color set (don't reset to terminal default)
         }
 
         Ok(())
@@ -935,13 +916,19 @@ impl Terminal {
         highlights: &[HighlightSpan],
         visual_range: Option<(usize, usize, usize, usize)>,
         mode: &Mode,
-        cursor_line_bg: bool,
+        is_cursor_line: bool,
         search_matches: &[(usize, usize, usize)],
+        editor_bg: Color,
+        editor_fg: Color,
+        cursor_line_bg: Color,
+        selection_bg: Color,
+        search_match_bg: Color,
+        search_match_fg: Color,
     ) -> anyhow::Result<()> {
         let chars: Vec<char> = text.chars().collect();
 
-        let search_match_bg = Color::Rgb { r: 180, g: 140, b: 40 }; // Yellow/amber for search matches
-        let search_match_fg = Color::Black; // Black text on yellow background
+        // Determine the base background for this line
+        let base_bg = if is_cursor_line { cursor_line_bg } else { editor_bg };
 
         // Check if a column is within a search match for this line
         let in_search_match = |col: usize| -> bool {
@@ -949,6 +936,9 @@ impl Terminal {
                 *l == line_num && col >= *start && col < *end
             })
         };
+
+        let mut current_fg: Option<Color> = None;
+        let mut current_bg: Option<Color> = None;
 
         for (i, ch) in chars.iter().enumerate() {
             // Calculate the actual column in the original line
@@ -991,34 +981,30 @@ impl Terminal {
                 .find(|h| actual_col >= h.start_col && actual_col < h.end_col)
                 .map(|h| h.fg);
 
-            // Apply colors - Priority: visual selection > search match > cursor line > none
-            if in_visual {
-                execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 68, g: 71, b: 90 }))?;
-                if let Some(color) = syntax_color {
-                    execute!(self.stdout, SetForegroundColor(color))?;
-                }
+            // Priority: visual selection > search match > base (cursor line or editor bg)
+            let (desired_bg, desired_fg) = if in_visual {
+                (selection_bg, syntax_color.unwrap_or(editor_fg))
             } else if is_search {
-                execute!(self.stdout, SetBackgroundColor(search_match_bg))?;
-                execute!(self.stdout, SetForegroundColor(search_match_fg))?;
-            } else if cursor_line_bg {
-                execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-                if let Some(color) = syntax_color {
-                    execute!(self.stdout, SetForegroundColor(color))?;
-                }
-            } else if let Some(color) = syntax_color {
-                execute!(self.stdout, SetForegroundColor(color))?;
+                (search_match_bg, search_match_fg)
+            } else {
+                (base_bg, syntax_color.unwrap_or(editor_fg))
+            };
+
+            // Only change colors when necessary
+            if Some(desired_bg) != current_bg {
+                execute!(self.stdout, SetBackgroundColor(desired_bg))?;
+                current_bg = Some(desired_bg);
+            }
+            if Some(desired_fg) != current_fg {
+                execute!(self.stdout, SetForegroundColor(desired_fg))?;
+                current_fg = Some(desired_fg);
             }
 
             print!("{}", ch);
-
-            // Reset colors after each character
-            if in_visual || is_search || syntax_color.is_some() {
-                execute!(self.stdout, ResetColor)?;
-                if cursor_line_bg && !in_visual && !is_search {
-                    execute!(self.stdout, SetBackgroundColor(Color::Rgb { r: 40, g: 44, b: 52 }))?;
-                }
-            }
         }
+
+        // Restore to base background/foreground
+        execute!(self.stdout, SetBackgroundColor(base_bg), SetForegroundColor(editor_fg))?;
 
         Ok(())
     }
@@ -1028,30 +1014,28 @@ impl Terminal {
     fn render_explorer(&mut self, editor: &Editor) -> anyhow::Result<()> {
         let width = editor.explorer.width as usize;
         let height = editor.text_rows();
-        let is_focused = editor.mode == Mode::Explorer;
 
-        // Colors - use terminal default background to match editor
-        let selected_bg = if is_focused {
-            Color::Rgb { r: 68, g: 71, b: 90 }  // Lighter selection when focused
-        } else {
-            Color::Rgb { r: 55, g: 59, b: 68 }  // Subtle selection when unfocused
-        };
-        let dir_color = Color::Rgb { r: 100, g: 180, b: 255 };
-        let file_color = Color::Rgb { r: 200, g: 200, b: 200 };
-        // Dimmer colors for hidden (dot) files
-        let hidden_dir_color = Color::Rgb { r: 70, g: 120, b: 170 };
-        let hidden_file_color = Color::Rgb { r: 130, g: 130, b: 130 };
-        let separator_color = Color::DarkGrey;
-        let line_num_color = Color::Rgb { r: 100, g: 100, b: 100 };
-        let current_line_num_color = Color::Rgb { r: 200, g: 200, b: 100 };
-        let tree_line_color = Color::Rgb { r: 80, g: 80, b: 80 };
-        let match_color = Color::Rgb { r: 255, g: 200, b: 100 }; // Yellow/gold for search matches
+        // Use theme colors for explorer
+        let theme = editor.theme();
+        let explorer_bg = theme.ui.explorer_bg;
+        let explorer_fg = theme.ui.foreground;
+        let selected_bg = theme.ui.explorer_selected;
+        let dir_color = theme.ui.explorer_directory;
+        let file_color = theme.ui.foreground;
+        // Dimmer colors for hidden (dot) files - derive from theme colors
+        let hidden_dir_color = dim_color(dir_color);
+        let hidden_file_color = dim_color(file_color);
+        let separator_color = theme.ui.explorer_border;
+        let line_num_color = theme.ui.line_number;
+        let current_line_num_color = theme.ui.line_number_active;
+        let tree_line_color = dim_color(theme.ui.line_number);
+        let match_color = theme.ui.finder_match; // Use finder match color for search matches
 
         // Line number column width (3 chars + 1 space)
         let line_num_width = 4;
 
         // Render header with project name
-        execute!(self.stdout, cursor::MoveTo(0, 0))?;
+        execute!(self.stdout, cursor::MoveTo(0, 0), SetBackgroundColor(explorer_bg))?;
 
         let project_name = editor.project_root
             .as_ref()
@@ -1066,10 +1050,10 @@ impl Terminal {
             header
         };
 
-        execute!(self.stdout, SetForegroundColor(Color::White))?;
+        execute!(self.stdout, SetForegroundColor(explorer_fg))?;
         execute!(self.stdout, SetAttribute(Attribute::Bold))?;
         print!("{:width$}", header, width = width);
-        execute!(self.stdout, SetAttribute(Attribute::Reset))?;
+        execute!(self.stdout, SetAttribute(Attribute::Reset), SetBackgroundColor(explorer_bg))?;
 
         // Calculate scrolling
         let flat_view = &editor.explorer.flat_view;
@@ -1091,18 +1075,16 @@ impl Terminal {
         // Render file tree
         for row in 0..list_height {
             let y = (row + 1) as u16; // +1 for header
-            execute!(self.stdout, cursor::MoveTo(0, y))?;
+            execute!(self.stdout, cursor::MoveTo(0, y), SetBackgroundColor(explorer_bg))?;
 
             let idx = scroll_offset + row;
             if idx < flat_view.len() {
                 let node = &flat_view[idx];
                 let is_selected = idx == selected;
 
-                // Set background only for selected item (use terminal default otherwise)
+                // Set background for selected item or normal explorer background
                 if is_selected {
                     execute!(self.stdout, SetBackgroundColor(selected_bg))?;
-                } else {
-                    execute!(self.stdout, ResetColor)?;
                 }
 
                 // Render relative line number
@@ -1164,15 +1146,15 @@ impl Terminal {
 
                 print!("{:width$}", line, width = remaining_width);
             } else {
-                // Empty line - use terminal default background
-                execute!(self.stdout, ResetColor)?;
+                // Empty line - use explorer background
+                execute!(self.stdout, SetForegroundColor(explorer_fg), SetBackgroundColor(explorer_bg))?;
                 print!("{:width$}", "", width = width);
             }
         }
 
         // Render input prompt if there's a pending action
         if editor.explorer.has_pending_action() {
-            let prompt_bg = Color::Rgb { r: 50, g: 50, b: 60 };
+            let prompt_bg = explorer_bg;
             let prompt_y = height.saturating_sub(1) as u16;
 
             execute!(self.stdout, cursor::MoveTo(0, prompt_y))?;
@@ -1180,11 +1162,11 @@ impl Terminal {
 
             // Prompt text
             let prompt = editor.explorer.action_prompt();
-            execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 150, g: 150, b: 200 }))?;
+            execute!(self.stdout, SetForegroundColor(theme.ui.finder_prompt))?;
             print!("{}", prompt);
 
             // Input buffer
-            execute!(self.stdout, SetForegroundColor(Color::White))?;
+            execute!(self.stdout, SetForegroundColor(explorer_fg))?;
             let input = &editor.explorer.input_buffer;
 
             let available = width.saturating_sub(prompt.len());
@@ -1203,7 +1185,7 @@ impl Terminal {
                 let help_y = height.saturating_sub(2) as u16;
                 execute!(self.stdout, cursor::MoveTo(0, help_y))?;
                 execute!(self.stdout, SetBackgroundColor(prompt_bg))?;
-                execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 100, g: 100, b: 120 }))?;
+                execute!(self.stdout, SetForegroundColor(line_num_color))?;
                 let help_display = if help.len() > width {
                     format!("{}…", &help[..width.saturating_sub(1)])
                 } else {
@@ -1215,18 +1197,18 @@ impl Terminal {
 
         // Render search input if in search mode
         if editor.explorer.is_searching {
-            let prompt_bg = Color::Rgb { r: 50, g: 50, b: 60 };
+            let prompt_bg = explorer_bg;
             let prompt_y = height.saturating_sub(1) as u16;
 
             execute!(self.stdout, cursor::MoveTo(0, prompt_y))?;
             execute!(self.stdout, SetBackgroundColor(prompt_bg))?;
 
             // Search icon
-            execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 100, g: 200, b: 100 }))?;
+            execute!(self.stdout, SetForegroundColor(theme.ui.statusline_mode_insert))?;
             print!("/");
 
             // Search buffer
-            execute!(self.stdout, SetForegroundColor(Color::White))?;
+            execute!(self.stdout, SetForegroundColor(explorer_fg))?;
             let search = &editor.explorer.search_buffer;
 
             let available = width.saturating_sub(1);
@@ -1235,7 +1217,7 @@ impl Terminal {
                 let match_info = editor.explorer.search_match_info();
                 let padding = available.saturating_sub(search.len()).saturating_sub(match_info.len());
                 print!("{:padding$}", "", padding = padding);
-                execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 150, g: 150, b: 150 }))?;
+                execute!(self.stdout, SetForegroundColor(line_num_color))?;
                 print!("{}", match_info);
             } else {
                 let visible = &search[..available.saturating_sub(1)];
@@ -1244,13 +1226,13 @@ impl Terminal {
         }
 
         // Draw vertical separator
-        execute!(self.stdout, SetBackgroundColor(Color::Reset))?;
+        execute!(self.stdout, SetBackgroundColor(explorer_bg))?;
         execute!(self.stdout, SetForegroundColor(separator_color))?;
         for y in 0..height {
             execute!(self.stdout, cursor::MoveTo(width as u16, y as u16))?;
             print!("\u{2502}"); // │
         }
-        execute!(self.stdout, ResetColor)?;
+        execute!(self.stdout, SetForegroundColor(explorer_fg), SetBackgroundColor(explorer_bg))?;
 
         Ok(())
     }
@@ -1493,12 +1475,22 @@ impl Terminal {
         execute!(self.stdout, cursor::MoveTo(0, status_row))?;
 
         let width = editor.term_width as usize;
+        let theme = editor.theme();
 
         // Left side: mode and filename
         let mode_str = if editor.mode == Mode::Command {
             "NORMAL" // Show NORMAL in status while in command mode (like vim)
         } else {
             editor.mode.as_str()
+        };
+
+        // Get mode color from theme
+        let mode_color = match editor.mode {
+            Mode::Normal | Mode::Command => theme.ui.statusline_mode_normal,
+            Mode::Insert => theme.ui.statusline_mode_insert,
+            Mode::Visual | Mode::VisualLine | Mode::VisualBlock => theme.ui.statusline_mode_visual,
+            Mode::Replace => theme.ui.statusline_mode_replace,
+            _ => theme.ui.statusline_mode_normal,
         };
 
         // Show pending operator if any
@@ -1535,7 +1527,8 @@ impl Terminal {
             .map(|s| format!("[{}] ", s))
             .unwrap_or_default();
 
-        let left = format!(" {}{} | {}{}{} ", mode_str, pending, project_name, filename, modified);
+        let mode_display = format!(" {} ", mode_str);
+        let rest_left = format!("{} | {}{}{} ", pending, project_name, filename, modified);
 
         // Right side: LSP status, language and position
         let lsp_status = editor.lsp_status.as_deref().unwrap_or("");
@@ -1547,15 +1540,17 @@ impl Terminal {
         };
 
         // Calculate padding
-        let padding = width.saturating_sub(left.len() + right.len());
+        let left_len = mode_display.len() + rest_left.len();
+        let padding = width.saturating_sub(left_len + right.len());
 
-        // Render status line with background
-        execute!(
-            self.stdout,
-            SetBackgroundColor(Color::DarkGrey),
-            SetForegroundColor(Color::White)
-        )?;
-        print!("{}{:padding$}{}", left, "", right, padding = padding);
+        // Render status line: mode badge (colored) + rest (status bar colors)
+        // Mode badge with mode-specific color
+        execute!(self.stdout, SetBackgroundColor(mode_color), SetForegroundColor(theme.ui.statusline_bg))?;
+        print!("{}", mode_display);
+
+        // Rest of status line with standard colors
+        execute!(self.stdout, SetBackgroundColor(theme.ui.statusline_bg), SetForegroundColor(theme.ui.statusline_fg))?;
+        print!("{}{:padding$}{}", rest_left, "", right, padding = padding);
         execute!(self.stdout, ResetColor)?;
 
         Ok(())
@@ -2741,6 +2736,193 @@ impl Terminal {
         Ok(())
     }
 
+    /// Render the theme picker floating window
+    fn render_theme_picker(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        let picker = match &editor.theme_picker {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        let theme = editor.theme();
+
+        // Calculate popup dimensions
+        let popup_width = 50u16.min(editor.term_width.saturating_sub(4));
+        let filtered_count = picker.filtered.len();
+        let max_visible = 10usize; // Max visible items
+        let visible_count = filtered_count.min(max_visible);
+        // +5 for: top border, search input, separator, help, bottom border
+        let popup_height = (visible_count as u16 + 5).max(7);
+
+        // Center the popup
+        let popup_x = (editor.term_width.saturating_sub(popup_width)) / 2;
+        let popup_y = (editor.term_height.saturating_sub(popup_height)) / 2;
+
+        // Colors from theme
+        let border_color = theme.ui.finder_border;
+        let bg_color = theme.ui.finder_bg;
+        let selected_bg = theme.ui.finder_selected;
+        let text_color = theme.ui.foreground;
+        let user_color = theme.ui.line_number; // dimmer color for user themes indicator
+        let prompt_color = theme.ui.finder_prompt;
+        let match_color = theme.ui.finder_match;
+
+        // Inner width = popup_width - 2 (for left and right borders)
+        let inner_width = (popup_width - 2) as usize;
+
+        // Draw top border with title
+        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        let title = " Themes ";
+        let title_start = (popup_width as usize - title.len()) / 2;
+        print!("╭");
+        for i in 1..(popup_width - 1) {
+            if i as usize == title_start {
+                print!("{}", title);
+            } else if i as usize > title_start && i as usize <= title_start + title.len() {
+                // Skip - title already printed
+            } else {
+                print!("─");
+            }
+        }
+        print!("╮");
+
+        // Draw search input line
+        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 1))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        print!("│");
+        execute!(self.stdout, SetForegroundColor(prompt_color))?;
+        print!(" > ");
+        execute!(self.stdout, SetForegroundColor(text_color))?;
+        let query_max = inner_width.saturating_sub(3); // " > " prefix
+        let query_display: String = picker.query.chars().take(query_max).collect();
+        print!("{}", query_display);
+        // Padding to fill rest of line
+        let query_padding = inner_width.saturating_sub(3 + query_display.len());
+        print!("{:width$}", "", width = query_padding);
+        execute!(self.stdout, SetForegroundColor(border_color))?;
+        print!("│");
+
+        // Draw theme items
+        let scroll_offset = if picker.selected >= visible_count {
+            picker.selected - visible_count + 1
+        } else {
+            0
+        };
+
+        for row in 0..visible_count {
+            let list_idx = scroll_offset + row;
+            execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 2 + row as u16))?;
+
+            // Left border
+            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            print!("│");
+
+            if list_idx < filtered_count {
+                let item_idx = picker.filtered[list_idx];
+                let (name, is_bundled) = &picker.all_items[item_idx];
+                let is_selected = list_idx == picker.selected;
+                let current_bg = if is_selected { selected_bg } else { bg_color };
+
+                execute!(self.stdout, SetBackgroundColor(current_bg))?;
+
+                // Build the line content: " > name     " or "   name     "
+                let prefix = if is_selected { " > " } else { "   " };
+                let suffix = if !*is_bundled { " (user)" } else { "" };
+
+                // Available space for name
+                let name_max = inner_width.saturating_sub(prefix.len() + suffix.len() + 1); // +1 for trailing space
+                let display_name: String = if name.len() > name_max {
+                    name.chars().take(name_max.saturating_sub(1)).collect::<String>() + "…"
+                } else {
+                    name.clone()
+                };
+
+                // Selection indicator
+                if is_selected {
+                    execute!(self.stdout, SetForegroundColor(match_color))?;
+                } else {
+                    execute!(self.stdout, SetForegroundColor(text_color))?;
+                }
+                print!("{}", prefix);
+
+                // Theme name - highlight matching characters if there's a query
+                if !picker.query.is_empty() {
+                    let query_lower = picker.query.to_lowercase();
+                    let name_lower = display_name.to_lowercase();
+                    if let Some(match_start) = name_lower.find(&query_lower) {
+                        // Before match
+                        execute!(self.stdout, SetForegroundColor(text_color))?;
+                        print!("{}", &display_name[..match_start]);
+                        // Match
+                        execute!(self.stdout, SetForegroundColor(match_color))?;
+                        print!("{}", &display_name[match_start..match_start + picker.query.len()]);
+                        // After match
+                        execute!(self.stdout, SetForegroundColor(text_color))?;
+                        print!("{}", &display_name[match_start + picker.query.len()..]);
+                    } else {
+                        execute!(self.stdout, SetForegroundColor(text_color))?;
+                        print!("{}", display_name);
+                    }
+                } else {
+                    execute!(self.stdout, SetForegroundColor(text_color))?;
+                    print!("{}", display_name);
+                }
+
+                // User indicator or padding
+                if !*is_bundled {
+                    execute!(self.stdout, SetForegroundColor(user_color))?;
+                    let padding = inner_width.saturating_sub(prefix.len() + display_name.len() + suffix.len());
+                    print!("{:width$}{}", "", suffix, width = padding);
+                } else {
+                    let padding = inner_width.saturating_sub(prefix.len() + display_name.len());
+                    print!("{:width$}", "", width = padding);
+                }
+            } else {
+                // Empty row
+                execute!(self.stdout, SetBackgroundColor(bg_color))?;
+                print!("{:width$}", "", width = inner_width);
+            }
+
+            // Right border
+            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            print!("│");
+        }
+
+        // Draw separator line (immediately after items)
+        let separator_y = popup_y + 2 + visible_count as u16;
+        execute!(self.stdout, cursor::MoveTo(popup_x, separator_y))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        print!("├");
+        for _ in 1..(popup_width - 1) {
+            print!("─");
+        }
+        print!("┤");
+
+        // Draw help line with count
+        execute!(self.stdout, cursor::MoveTo(popup_x, separator_y + 1))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        print!("│");
+        execute!(self.stdout, SetForegroundColor(user_color), SetBackgroundColor(bg_color))?;
+        let count_str = format!("{}/{}", filtered_count, picker.all_items.len());
+        let help = "Type to filter • j/k nav • Enter";
+        let combined = format!("{} {}", help, count_str);
+        print!("{:^width$}", combined, width = inner_width);
+        execute!(self.stdout, SetForegroundColor(border_color))?;
+        print!("│");
+
+        // Draw bottom border
+        execute!(self.stdout, cursor::MoveTo(popup_x, separator_y + 2))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        print!("╰");
+        for _ in 1..(popup_width - 1) {
+            print!("─");
+        }
+        print!("╯");
+
+        execute!(self.stdout, SetForegroundColor(text_color), SetBackgroundColor(bg_color))?;
+        Ok(())
+    }
+
     /// Render the floating terminal
     fn render_floating_terminal(&mut self, editor: &Editor) -> anyhow::Result<()> {
         // Calculate terminal dimensions (60% of screen, centered)
@@ -2857,15 +3039,19 @@ impl Terminal {
 
         let win = crate::finder::FloatingWindow::centered(editor.term_width, editor.term_height);
 
-        // Border colors
-        let border_color = Color::Rgb { r: 100, g: 100, b: 100 };
-        let title_color = Color::Cyan;
-        let selected_bg = Color::Rgb { r: 60, g: 60, b: 100 };
-        let input_bg = Color::Rgb { r: 30, g: 30, b: 40 };
+        // Use theme colors for finder
+        let theme = editor.theme();
+        let border_color = theme.ui.finder_border;
+        let title_color = theme.ui.finder_prompt;
+        let selected_bg = theme.ui.finder_selected;
+        let input_bg = theme.ui.finder_bg;
+        let finder_bg = theme.ui.finder_bg;
+        let finder_fg = theme.ui.foreground;
+        let match_color = theme.ui.finder_match;
         let mode_color = if editor.finder.is_normal_mode() {
-            Color::Rgb { r: 100, g: 180, b: 100 } // Green for normal
+            theme.ui.statusline_mode_normal // Use normal mode color
         } else {
-            Color::Rgb { r: 180, g: 140, b: 80 } // Orange for insert
+            theme.ui.statusline_mode_insert // Use insert mode color
         };
 
         // Draw top border with title
@@ -2908,7 +3094,7 @@ impl Terminal {
 
         for row in 0..list_height {
             let y = win.y + 1 + row as u16;
-            execute!(self.stdout, cursor::MoveTo(win.x, y), SetForegroundColor(border_color))?;
+            execute!(self.stdout, cursor::MoveTo(win.x, y), SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
             print!("\u{2502}"); // │
 
             // Reverse display: row 0 = least relevant, bottom row = best match
@@ -2959,16 +3145,12 @@ impl Terminal {
                 };
                 let max_len = base_width.saturating_sub(icon_width);
                 let display_chars: Vec<char> = item.display.chars().take(max_len).collect();
-                let match_color = Color::Yellow;
 
                 // Reset foreground color for text
                 if is_selected {
-                    execute!(self.stdout, SetForegroundColor(Color::White))?;
+                    execute!(self.stdout, SetForegroundColor(finder_fg))?;
                 } else {
-                    execute!(self.stdout, ResetColor)?;
-                    if is_selected {
-                        execute!(self.stdout, SetBackgroundColor(selected_bg))?;
-                    }
+                    execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
                 }
 
                 // For diagnostics mode, color the severity indicator
@@ -2993,9 +3175,9 @@ impl Terminal {
 
                         // Reset to normal text color
                         if is_selected {
-                            execute!(self.stdout, SetForegroundColor(Color::White), SetBackgroundColor(selected_bg))?;
+                            execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(selected_bg))?;
                         } else {
-                            execute!(self.stdout, ResetColor)?;
+                            execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
                         }
                     }
                 }
@@ -3010,9 +3192,9 @@ impl Terminal {
                         execute!(self.stdout, SetForegroundColor(match_color))?;
                         print!("{}", ch);
                         if is_selected {
-                            execute!(self.stdout, SetForegroundColor(Color::White), SetBackgroundColor(selected_bg))?;
+                            execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(selected_bg))?;
                         } else {
-                            execute!(self.stdout, ResetColor)?;
+                            execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
                         }
                     } else {
                         print!("{}", ch);
@@ -3024,11 +3206,13 @@ impl Terminal {
                     print!(" ");
                 }
 
+                // Reset after selected item
                 if is_selected {
-                    execute!(self.stdout, ResetColor)?;
+                    execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
                 }
             } else {
-                // Empty row
+                // Empty row - set finder background
+                execute!(self.stdout, SetBackgroundColor(finder_bg))?;
                 let pad_len = if show_scroll_indicator {
                     (win.width as usize).saturating_sub(4)
                 } else {
@@ -3051,7 +3235,7 @@ impl Terminal {
                     && editor.finder.selected < scroll_bar_pos + (total_items / list_height).max(1);
 
                 if selected_in_range || (row == 0 && scroll_offset == 0) || (row == list_height - 1 && scroll_offset + list_height >= total_items) {
-                    execute!(self.stdout, SetForegroundColor(Color::Cyan))?;
+                    execute!(self.stdout, SetForegroundColor(title_color))?;
                     print!("\u{2588}"); // █ (full block for thumb)
                 } else if scroll_offset > 0 || scroll_offset + list_height < total_items {
                     execute!(self.stdout, SetForegroundColor(scroll_indicator_color))?;
@@ -3061,7 +3245,7 @@ impl Terminal {
                 }
             }
 
-            execute!(self.stdout, SetForegroundColor(border_color))?;
+            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
             print!("\u{2502}"); // │
         }
 
@@ -3076,7 +3260,7 @@ impl Terminal {
 
         // Draw input line (above bottom border)
         let input_y = sep_y + 1;
-        execute!(self.stdout, cursor::MoveTo(win.x, input_y), SetForegroundColor(border_color))?;
+        execute!(self.stdout, cursor::MoveTo(win.x, input_y), SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
         print!("\u{2502}"); // │
         execute!(self.stdout, SetBackgroundColor(input_bg))?;
 
@@ -3084,7 +3268,7 @@ impl Terminal {
         let mode_str = if editor.finder.is_normal_mode() { "N" } else { "I" };
         execute!(self.stdout, SetForegroundColor(mode_color))?;
         print!("[{}]", mode_str);
-        execute!(self.stdout, SetForegroundColor(Color::White))?;
+        execute!(self.stdout, SetForegroundColor(finder_fg))?;
         print!(" > ");
 
         // Query text
@@ -3097,7 +3281,7 @@ impl Terminal {
         for _ in used..(win.width - 2) as usize {
             print!(" ");
         }
-        execute!(self.stdout, ResetColor, SetForegroundColor(border_color))?;
+        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
         print!("\u{2502}"); // │
 
         // Draw bottom border with count indicator
@@ -3107,7 +3291,7 @@ impl Terminal {
         let status_start = (win.width as usize - status.len()) / 2;
         for i in 1..(win.width - 1) {
             if i as usize == status_start {
-                execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
+                execute!(self.stdout, SetForegroundColor(theme.ui.line_number))?;
                 print!("{}", status);
                 execute!(self.stdout, SetForegroundColor(border_color))?;
             } else if i as usize >= status_start && (i as usize) < status_start + status.len() {
@@ -3118,11 +3302,12 @@ impl Terminal {
         }
         print!("\u{2518}"); // ┘
 
-        execute!(self.stdout, ResetColor)?;
+        execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
         Ok(())
     }
 
     /// Render a line with syntax highlighting and optional visual selection
+    /// Now accepts theme colors to maintain proper background
     fn render_line_with_highlights(
         &mut self,
         line: &str,
@@ -3132,6 +3317,12 @@ impl Terminal {
         mode: &Mode,
         is_cursor_line: bool,
         search_matches: &[(usize, usize, usize)],
+        editor_bg: Color,
+        editor_fg: Color,
+        cursor_line_bg: Color,
+        selection_bg: Color,
+        search_match_bg: Color,
+        search_match_fg: Color,
     ) -> anyhow::Result<()> {
         let chars: Vec<char> = line.chars().collect();
         let line_len = chars.len();
@@ -3164,11 +3355,8 @@ impl Terminal {
             (false, 0, 0)
         };
 
-        // Cursor line background color
-        let cursor_line_bg = Color::Rgb { r: 40, g: 44, b: 52 };
-        let selection_bg = Color::DarkBlue;
-        let search_match_bg = Color::Rgb { r: 180, g: 140, b: 40 }; // Yellow/amber for search matches
-        let search_match_fg = Color::Black; // Black text on yellow background
+        // Determine the base background for this line (cursor line or editor background)
+        let base_bg = if is_cursor_line { cursor_line_bg } else { editor_bg };
 
         // Check if a column is within a search match for this line
         let in_search_match = |col: usize| -> bool {
@@ -3191,29 +3379,23 @@ impl Terminal {
             // Check if in search match
             let is_search_match = in_search_match(col);
 
-            // Priority: visual selection > search match > cursor line > none
+            // Priority: visual selection > search match > base (cursor line or editor bg)
             let (desired_bg, desired_fg) = if is_selected {
-                (Some(selection_bg), syntax_color)
+                (selection_bg, syntax_color.unwrap_or(editor_fg))
             } else if is_search_match {
-                (Some(search_match_bg), Some(search_match_fg))
-            } else if is_cursor_line {
-                (Some(cursor_line_bg), syntax_color)
+                (search_match_bg, search_match_fg)
             } else {
-                (None, syntax_color)
+                (base_bg, syntax_color.unwrap_or(editor_fg))
             };
 
-            if desired_bg != current_bg || desired_fg != current_fg {
-                execute!(self.stdout, ResetColor)?;
-                current_bg = None;
-                current_fg = None;
-                if let Some(bg) = desired_bg {
-                    execute!(self.stdout, SetBackgroundColor(bg))?;
-                    current_bg = Some(bg);
-                }
-                if let Some(fg) = desired_fg {
-                    execute!(self.stdout, SetForegroundColor(fg))?;
-                    current_fg = Some(fg);
-                }
+            // Only change colors when necessary
+            if Some(desired_bg) != current_bg {
+                execute!(self.stdout, SetBackgroundColor(desired_bg))?;
+                current_bg = Some(desired_bg);
+            }
+            if Some(desired_fg) != current_fg {
+                execute!(self.stdout, SetForegroundColor(desired_fg))?;
+                current_fg = Some(desired_fg);
             }
 
             print!("{}", ch);
@@ -3223,9 +3405,10 @@ impl Terminal {
         if in_selection && sel_end > line_len {
             execute!(self.stdout, SetBackgroundColor(selection_bg))?;
             print!(" ");
-            execute!(self.stdout, ResetColor)?;
         }
-        execute!(self.stdout, ResetColor)?;
+
+        // Restore to base background/foreground (don't reset to terminal default)
+        execute!(self.stdout, SetBackgroundColor(base_bg), SetForegroundColor(editor_fg))?;
 
         Ok(())
     }
@@ -3432,6 +3615,92 @@ fn handle_harpoon_menu_key(editor: &mut Editor, key: KeyEvent) {
     }
 }
 
+/// Handle key input for the theme picker
+fn handle_theme_picker_key(editor: &mut Editor, key: KeyEvent) {
+    match (key.modifiers, key.code) {
+        // Close picker (cancel)
+        (KeyModifiers::NONE, KeyCode::Esc) |
+        (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
+            editor.close_theme_picker(false); // Cancel
+        }
+
+        // Navigate up (Ctrl-k or Ctrl-p, since j/k are now for typing)
+        (KeyModifiers::NONE, KeyCode::Up) |
+        (KeyModifiers::CONTROL, KeyCode::Char('k')) |
+        (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
+            if let Some(picker) = &mut editor.theme_picker {
+                picker.move_up();
+                // Preview the theme
+                if let Some(name) = picker.selected_name() {
+                    let name = name.to_string();
+                    editor.preview_theme(&name);
+                }
+            }
+        }
+
+        // Navigate down (Ctrl-j or Ctrl-n, since j/k are now for typing)
+        (KeyModifiers::NONE, KeyCode::Down) |
+        (KeyModifiers::CONTROL, KeyCode::Char('j')) |
+        (KeyModifiers::CONTROL, KeyCode::Char('n')) => {
+            if let Some(picker) = &mut editor.theme_picker {
+                picker.move_down();
+                // Preview the theme
+                if let Some(name) = picker.selected_name() {
+                    let name = name.to_string();
+                    editor.preview_theme(&name);
+                }
+            }
+        }
+
+        // Select theme (Enter)
+        (KeyModifiers::NONE, KeyCode::Enter) => {
+            if let Some(picker) = &editor.theme_picker {
+                if picker.filtered.is_empty() {
+                    // No matches, don't close
+                    return;
+                }
+                if let Some(name) = picker.selected_name() {
+                    let name = name.to_string();
+                    editor.set_theme(&name);
+                    // Save theme to config
+                    match crate::config::save_theme(&name) {
+                        Ok(()) => editor.set_status(format!("Theme set to '{}' (saved)", name)),
+                        Err(e) => editor.set_status(format!("Theme set to '{}' (save failed: {})", name, e)),
+                    }
+                }
+            }
+            editor.close_theme_picker(true); // Confirm
+        }
+
+        // Backspace - delete character from query
+        (KeyModifiers::NONE, KeyCode::Backspace) => {
+            if let Some(picker) = &mut editor.theme_picker {
+                picker.delete_char();
+                // Preview first matching theme
+                if let Some(name) = picker.selected_name() {
+                    let name = name.to_string();
+                    editor.preview_theme(&name);
+                }
+            }
+        }
+
+        // Type character - add to query
+        (KeyModifiers::NONE, KeyCode::Char(c)) |
+        (KeyModifiers::SHIFT, KeyCode::Char(c)) => {
+            if let Some(picker) = &mut editor.theme_picker {
+                picker.add_char(c);
+                // Preview first matching theme
+                if let Some(name) = picker.selected_name() {
+                    let name = name.to_string();
+                    editor.preview_theme(&name);
+                }
+            }
+        }
+
+        _ => {}
+    }
+}
+
 /// Handle a key event and update editor state
 pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
     // Check for floating terminal toggle (Ctrl-\) - works in any mode
@@ -3475,6 +3744,12 @@ pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
     // Handle harpoon menu if active
     if editor.harpoon.menu_open {
         handle_harpoon_menu_key(editor, key);
+        return;
+    }
+
+    // Handle theme picker if active
+    if editor.theme_picker.is_some() {
+        handle_theme_picker_key(editor, key);
         return;
     }
 
@@ -5674,6 +5949,19 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
         }
         Command::CopilotToggle => {
             editor.pending_copilot_action = Some(crate::editor::CopilotAction::Toggle);
+            CommandResult::Ok
+        }
+
+        // Theme commands
+        Command::Theme(name) => {
+            if editor.set_theme(&name) {
+                CommandResult::Message(format!("Theme set to '{}'", name))
+            } else {
+                CommandResult::Error(format!("Theme '{}' not found", name))
+            }
+        }
+        Command::Themes => {
+            editor.open_theme_picker();
             CommandResult::Ok
         }
 

@@ -1,0 +1,99 @@
+# Rose Pine Theme for Nevi
+# Official palette from https://github.com/rose-pine/rose-pine-theme
+
+[palette]
+base = "#191724"
+surface = "#1f1d2e"
+overlay = "#26233a"
+muted = "#6e6a86"
+subtle = "#908caa"
+text = "#e0def4"
+love = "#eb6f92"
+gold = "#f6c177"
+rose = "#ebbcba"
+pine = "#31748f"
+foam = "#9ccfd8"
+iris = "#c4a7e7"
+highlight_low = "#21202e"
+highlight_med = "#403d52"
+highlight_high = "#524f67"
+
+[syntax]
+keyword = { fg = "pine" }
+function = { fg = "rose" }
+type = { fg = "foam" }
+string = { fg = "gold" }
+number = { fg = "gold" }
+comment = { fg = "muted", italic = true }
+operator = { fg = "subtle" }
+punctuation = { fg = "subtle" }
+variable = { fg = "text" }
+constant = { fg = "gold" }
+attribute = { fg = "iris" }
+namespace = { fg = "foam" }
+label = { fg = "foam" }
+property = { fg = "iris" }
+tag = { fg = "love" }
+
+[ui]
+background = "base"
+foreground = "text"
+cursor_line = "highlight_low"
+selection = "highlight_med"
+line_number = "muted"
+line_number_active = "text"
+visual_bg = "highlight_med"
+
+[ui.statusline]
+background = "surface"
+foreground = "text"
+mode_normal = "rose"
+mode_insert = "foam"
+mode_visual = "iris"
+mode_command = "gold"
+mode_replace = "love"
+
+[ui.popup]
+background = "surface"
+border = "highlight_med"
+selection = "overlay"
+
+[ui.completion]
+background = "surface"
+border = "highlight_med"
+selected = "overlay"
+match = "gold"
+detail = "muted"
+
+[ui.finder]
+background = "base"
+border = "highlight_med"
+selected = "overlay"
+match = "gold"
+prompt = "rose"
+
+[ui.search]
+match_bg = "gold"
+match_fg = "base"
+
+[ui.explorer]
+background = "surface"
+border = "highlight_med"
+selected = "overlay"
+directory = "foam"
+
+[ui.harpoon]
+background = "surface"
+border = "highlight_med"
+selected = "overlay"
+
+[diagnostic]
+error = "love"
+warning = "gold"
+info = "foam"
+hint = "iris"
+
+[git]
+added = "foam"
+modified = "gold"
+deleted = "love"

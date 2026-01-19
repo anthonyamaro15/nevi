@@ -256,6 +256,12 @@ impl Default for KeymapSettings {
                     action: ":Harpoon4".to_string(),
                     desc: Some("Harpoon file 4".to_string()),
                 },
+                // Theme
+                LeaderMapping {
+                    key: "ft".to_string(),
+                    action: ":Themes".to_string(),
+                    desc: Some("Open theme picker".to_string()),
+                },
                 // Terminal - disabled due to rendering flicker issues
                 // See NEOVIM_PARITY.md "On Hold" section for details
                 // LeaderMapping {
@@ -625,4 +631,37 @@ fn merge_leader_mappings(user_mappings: &[LeaderMapping]) -> Vec<LeaderMapping> 
     merged.extend(user_mappings.iter().cloned());
 
     merged
+}
+
+/// Save the theme setting to config.toml
+/// Uses toml_edit to preserve formatting and comments
+pub fn save_theme(theme_name: &str) -> Result<(), String> {
+    let Some(path) = config_path() else {
+        return Err("Could not determine config path".to_string());
+    };
+
+    // Ensure config exists
+    ensure_config_exists();
+
+    // Read existing config
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read config: {}", e))?;
+
+    // Parse as editable TOML document
+    let mut doc = content.parse::<toml_edit::DocumentMut>()
+        .map_err(|e| format!("Failed to parse config: {}", e))?;
+
+    // Ensure [theme] table exists
+    if doc.get("theme").is_none() {
+        doc["theme"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+
+    // Set colorscheme
+    doc["theme"]["colorscheme"] = toml_edit::value(theme_name);
+
+    // Write back
+    std::fs::write(&path, doc.to_string())
+        .map_err(|e| format!("Failed to write config: {}", e))?;
+
+    Ok(())
 }

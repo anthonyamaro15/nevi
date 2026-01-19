@@ -1,0 +1,104 @@
+# Nord Theme for Nevi
+# Based on the Nord color palette (https://nordtheme.com)
+
+[palette]
+# Polar Night
+nord0 = "#2e3440"
+nord1 = "#3b4252"
+nord2 = "#434c5e"
+nord3 = "#4c566a"
+# Snow Storm
+nord4 = "#d8dee9"
+nord5 = "#e5e9f0"
+nord6 = "#eceff4"
+# Frost
+nord7 = "#8fbcbb"
+nord8 = "#88c0d0"
+nord9 = "#81a1c1"
+nord10 = "#5e81ac"
+# Aurora
+nord11 = "#bf616a"
+nord12 = "#d08770"
+nord13 = "#ebcb8b"
+nord14 = "#a3be8c"
+nord15 = "#b48ead"
+
+[syntax]
+keyword = { fg = "nord9" }
+function = { fg = "nord8" }
+type = { fg = "nord7" }
+string = { fg = "nord14" }
+number = { fg = "nord15" }
+comment = { fg = "nord3", italic = true }
+operator = { fg = "nord9" }
+punctuation = { fg = "nord4" }
+variable = { fg = "nord4" }
+constant = { fg = "nord15" }
+attribute = { fg = "nord12" }
+namespace = { fg = "nord7" }
+label = { fg = "nord13" }
+property = { fg = "nord4" }
+tag = { fg = "nord9" }
+
+[ui]
+background = "nord0"
+foreground = "nord4"
+cursor_line = "#3b4252"
+selection = "#434c5e"
+line_number = "nord3"
+line_number_active = "nord4"
+visual_bg = "#434c5e"
+
+[ui.statusline]
+background = "nord1"
+foreground = "nord4"
+mode_normal = "nord8"
+mode_insert = "nord14"
+mode_visual = "nord15"
+mode_command = "nord13"
+mode_replace = "nord11"
+
+[ui.popup]
+background = "nord1"
+border = "nord3"
+selection = "nord2"
+
+[ui.completion]
+background = "nord1"
+border = "nord3"
+selected = "nord2"
+match = "nord13"
+detail = "nord3"
+
+[ui.finder]
+background = "nord1"
+border = "nord3"
+selected = "nord2"
+match = "nord13"
+prompt = "nord8"
+
+[ui.search]
+match_bg = "nord13"
+match_fg = "nord0"
+
+[ui.explorer]
+background = "nord1"
+border = "nord3"
+selected = "nord2"
+directory = "nord9"
+
+[ui.harpoon]
+background = "nord1"
+border = "nord3"
+selected = "nord2"
+
+[diagnostic]
+error = "nord11"
+warning = "nord13"
+info = "nord8"
+hint = "nord10"
+
+[git]
+added = "nord14"
+modified = "nord13"
+deleted = "nord11"
