@@ -1520,6 +1520,13 @@ impl Terminal {
         let filename = editor.buffer().display_name();
         let modified = if editor.buffer().dirty { " [+]" } else { "" };
 
+        // Show macro recording indicator
+        let recording = if let Some(register) = editor.macros.recording_register() {
+            format!(" [recording @{}]", register)
+        } else {
+            String::new()
+        };
+
         // Get project name (last component of project_root)
         let project_name = editor.project_root.as_ref()
             .and_then(|p| p.file_name())
@@ -1528,7 +1535,7 @@ impl Terminal {
             .unwrap_or_default();
 
         let mode_display = format!(" {} ", mode_str);
-        let rest_left = format!("{} | {}{}{} ", pending, project_name, filename, modified);
+        let rest_left = format!("{}{} | {}{}{} ", pending, recording, project_name, filename, modified);
 
         // Right side: LSP status, language and position
         let lsp_status = editor.lsp_status.as_deref().unwrap_or("");
@@ -3701,6 +3708,37 @@ fn handle_theme_picker_key(editor: &mut Editor, key: KeyEvent) {
     }
 }
 
+/// Play a macro from a register
+fn play_macro(editor: &mut Editor, register: char, count: usize) {
+    // Get the macro keys (clone to avoid borrow issues)
+    let Some(keys) = editor.macros.get_macro(register).cloned() else {
+        editor.set_status(&format!("Macro @{} not recorded", register));
+        return;
+    };
+
+    if keys.is_empty() {
+        editor.set_status(&format!("Macro @{} is empty", register));
+        return;
+    }
+
+    // Set this as the last executed macro for @@
+    editor.macros.set_last_executed(register);
+
+    // Wrap the entire playback in an undo group
+    editor.undo_stack.begin_undo_group(editor.cursor.line, editor.cursor.col);
+
+    // Play the macro `count` times
+    for _ in 0..count {
+        for key in &keys {
+            // Process each key - note: we DON'T record during playback
+            // because is_recording() will be false
+            handle_key(editor, *key);
+        }
+    }
+
+    editor.undo_stack.end_undo_group(editor.cursor.line, editor.cursor.col);
+}
+
 /// Handle a key event and update editor state
 pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
     // Check for floating terminal toggle (Ctrl-\) - works in any mode
@@ -3761,6 +3799,21 @@ pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
         && editor.input_state.count.is_none()
     {
         editor.clear_status();
+    }
+
+    // Handle macro recording
+    if editor.macros.is_recording() {
+        // Check if 'q' is pressed in Normal mode to stop recording
+        if editor.mode == Mode::Normal
+            && key.code == KeyCode::Char('q')
+            && key.modifiers == KeyModifiers::NONE
+        {
+            editor.macros.stop_recording();
+            editor.set_status("Recording stopped");
+            return;
+        }
+        // Record the key (we record before processing so all keys including motions are captured)
+        editor.macros.record_key(key);
     }
 
     match editor.mode {
@@ -3915,6 +3968,29 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
 
         KeyAction::ReselectVisual => {
             editor.reselect_visual();
+        }
+
+        KeyAction::StartRecordMacro(register) => {
+            editor.macros.start_recording(register);
+            editor.set_status(&format!("Recording @{}", register));
+        }
+
+        KeyAction::StopRecordMacro => {
+            // This is normally handled at the top of handle_key, but just in case
+            editor.macros.stop_recording();
+            editor.set_status("Recording stopped");
+        }
+
+        KeyAction::PlayMacro(register, count) => {
+            play_macro(editor, register, count);
+        }
+
+        KeyAction::ReplayLastMacro(count) => {
+            if let Some(register) = editor.macros.last_executed() {
+                play_macro(editor, register, count);
+            } else {
+                editor.set_status("No macro recorded");
+            }
         }
 
         KeyAction::EnterInsert(pos) => {

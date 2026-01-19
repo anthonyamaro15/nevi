@@ -1,11 +1,13 @@
 mod buffer;
 mod cursor;
+mod macros;
 mod marks;
 mod register;
 mod undo;
 
 pub use buffer::Buffer;
 pub use cursor::Cursor;
+pub use macros::MacroState;
 pub use marks::{Mark, Marks};
 pub use register::{RegisterContent, Registers};
 pub use undo::{Change, UndoEntry, UndoStack};
@@ -667,6 +669,8 @@ pub struct Editor {
     pub marks: Marks,
     /// Last visual selection for gv command
     pub last_visual_selection: Option<LastVisualSelection>,
+    /// Macro recording and playback state
+    pub macros: MacroState,
 }
 
 /// Copilot ghost text state for rendering
@@ -920,6 +924,7 @@ impl Editor {
             theme_picker: None,
             marks: Marks::new(),
             last_visual_selection: None,
+            macros: MacroState::new(),
         }
     }
 
