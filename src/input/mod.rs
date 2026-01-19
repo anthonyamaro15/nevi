@@ -503,6 +503,29 @@ impl InputState {
                 }
             }
 
+            // Indent operator
+            (KeyModifiers::SHIFT, KeyCode::Char('>')) | (KeyModifiers::NONE, KeyCode::Char('>')) => {
+                if self.pending_operator == Some(Operator::Indent) {
+                    // >> - indent line
+                    self.reset();
+                    KeyAction::OperatorLine(Operator::Indent, count)
+                } else {
+                    self.pending_operator = Some(Operator::Indent);
+                    KeyAction::Pending
+                }
+            }
+            // Dedent operator
+            (KeyModifiers::SHIFT, KeyCode::Char('<')) | (KeyModifiers::NONE, KeyCode::Char('<')) => {
+                if self.pending_operator == Some(Operator::Dedent) {
+                    // << - dedent line
+                    self.reset();
+                    KeyAction::OperatorLine(Operator::Dedent, count)
+                } else {
+                    self.pending_operator = Some(Operator::Dedent);
+                    KeyAction::Pending
+                }
+            }
+
             // Motions
             (KeyModifiers::NONE, KeyCode::Char('h')) | (_, KeyCode::Left) => {
                 self.motion_or_operator(Motion::Left, count)
