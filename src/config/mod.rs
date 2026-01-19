@@ -326,6 +326,10 @@ pub struct LspServers {
     pub javascript: LspServerConfig,
     pub css: LspServerConfig,
     pub json: LspServerConfig,
+    pub toml: LspServerConfig,
+    pub markdown: LspServerConfig,
+    pub html: LspServerConfig,
+    pub python: LspServerConfig,
 }
 
 impl Default for LspServers {
@@ -365,6 +369,40 @@ impl Default for LspServers {
                 args: vec!["--stdio".to_string()],
                 root_patterns: vec!["package.json".to_string()],
                 file_extensions: vec!["json".to_string(), "jsonc".to_string()],
+            },
+            toml: LspServerConfig {
+                enabled: true,
+                command: "taplo".to_string(),
+                args: vec!["lsp".to_string(), "stdio".to_string()],
+                root_patterns: vec!["Cargo.toml".to_string(), "pyproject.toml".to_string()],
+                file_extensions: vec!["toml".to_string()],
+            },
+            markdown: LspServerConfig {
+                enabled: false, // Disabled by default - marksman has limited LSP support
+                command: "marksman".to_string(),
+                args: vec!["server".to_string()],
+                root_patterns: vec![".marksman.toml".to_string()],
+                file_extensions: vec!["md".to_string(), "markdown".to_string()],
+            },
+            html: LspServerConfig {
+                enabled: true,
+                command: "vscode-html-language-server".to_string(),
+                args: vec!["--stdio".to_string()],
+                root_patterns: vec!["package.json".to_string()],
+                file_extensions: vec!["html".to_string(), "htm".to_string()],
+            },
+            python: LspServerConfig {
+                enabled: true,
+                command: "pyright-langserver".to_string(),
+                args: vec!["--stdio".to_string()],
+                root_patterns: vec![
+                    "pyproject.toml".to_string(),
+                    "setup.py".to_string(),
+                    "setup.cfg".to_string(),
+                    "requirements.txt".to_string(),
+                    "pyrightconfig.json".to_string(),
+                ],
+                file_extensions: vec!["py".to_string(), "pyi".to_string()],
             },
         }
     }

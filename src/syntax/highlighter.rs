@@ -460,40 +460,192 @@ pub fn json_highlight_query() -> &'static str {
 /// Get the highlight query for Markdown
 pub fn markdown_highlight_query() -> &'static str {
     r##"
-; Headings
-(atx_heading) @keyword
-(setext_heading) @keyword
+; Heading markers (# ## ### etc.)
+(atx_h1_marker) @keyword
+(atx_h2_marker) @keyword
+(atx_h3_marker) @keyword
+(atx_h4_marker) @keyword
+(atx_h5_marker) @keyword
+(atx_h6_marker) @keyword
 
-; Code blocks
-(fenced_code_block) @string
+; Heading content - the text after #
+(atx_heading (inline) @type)
+
+; Setext headings (underlined with === or ---)
+(setext_heading) @type
+(setext_h1_underline) @keyword
+(setext_h2_underline) @keyword
+
+; Fenced code blocks (```code```)
+(fenced_code_block_delimiter) @punctuation
+(info_string (language) @label)
+(code_fence_content) @string
+
+; Indented code blocks
 (indented_code_block) @string
-(code_span) @string
-
-; Links
-(link_destination) @string
-(link_text) @property
-(link_label) @property
-
-; Images
-(image) @property
-
-; Emphasis
-(emphasis) @variable
-(strong_emphasis) @variable
 
 ; Block quotes
-(block_quote) @comment
+(block_quote_marker) @comment
+(block_quote (paragraph) @comment)
 
-; Lists
+; List markers
 (list_marker_minus) @operator
 (list_marker_plus) @operator
 (list_marker_star) @operator
 (list_marker_dot) @operator
 
-; Thematic breaks (horizontal rules)
+; Thematic breaks (horizontal rules ---, ***, ___)
 (thematic_break) @comment
 
-; HTML in markdown
+; HTML blocks in markdown
 (html_block) @tag
+"##
+}
+
+/// Get the highlight query for TOML
+pub fn toml_highlight_query() -> &'static str {
+    r##"
+; Comments
+(comment) @comment
+
+; Table headers - capture the key inside tables
+(table (bare_key) @type)
+(table (quoted_key) @type)
+(table (dotted_key (bare_key) @type))
+(table_array_element (bare_key) @type)
+(table_array_element (quoted_key) @type)
+(table_array_element (dotted_key (bare_key) @type))
+
+; Keys in key-value pairs
+(pair (bare_key) @property)
+(pair (quoted_key) @property)
+(pair (dotted_key (bare_key) @property))
+
+; Strings (all string types use the same node)
+(string) @string
+
+; Numbers
+(integer) @number
+(float) @number
+
+; Booleans
+(boolean) @constant
+
+; Dates and times
+(offset_date_time) @string
+(local_date_time) @string
+(local_date) @string
+(local_time) @string
+"##
+}
+
+/// Get the highlight query for HTML
+pub fn html_highlight_query() -> &'static str {
+    r##"
+; Comments
+(comment) @comment
+
+; DOCTYPE declaration
+(doctype) @keyword
+
+; Tag names in start tags
+(start_tag (tag_name) @tag)
+
+; Tag names in end tags
+(end_tag (tag_name) @tag)
+
+; Tag names in self-closing tags
+(self_closing_tag (tag_name) @tag)
+
+; Attribute names (use @attribute for yellow/orange like Neovim)
+(attribute (attribute_name) @attribute)
+
+; Attribute values (green)
+(attribute (quoted_attribute_value) @string)
+(attribute (attribute_value) @string)
+
+; Script and style content (raw text inside these elements)
+(script_element (raw_text) @string)
+(style_element (raw_text) @string)
+
+; Text content - don't highlight by default (matches Neovim behavior)
+; (text) @variable
+"##
+}
+
+/// Get the highlight query for Python
+pub fn python_highlight_query() -> &'static str {
+    r##"
+; Comments
+(comment) @comment
+
+; Strings (including docstrings)
+(string) @string
+
+; Numbers
+(integer) @number
+(float) @number
+
+; Boolean and None literals
+(true) @constant
+(false) @constant
+(none) @constant
+
+; Keywords - these are named nodes in tree-sitter-python
+[
+  "import"
+  "from"
+  "as"
+  "def"
+  "class"
+  "return"
+  "yield"
+  "pass"
+  "break"
+  "continue"
+  "if"
+  "elif"
+  "else"
+  "for"
+  "in"
+  "while"
+  "try"
+  "except"
+  "finally"
+  "raise"
+  "with"
+  "assert"
+  "del"
+  "global"
+  "nonlocal"
+  "lambda"
+  "and"
+  "or"
+  "not"
+  "is"
+  "async"
+  "await"
+  "match"
+  "case"
+] @keyword
+
+; Function definitions
+(function_definition name: (identifier) @function)
+
+; Function calls
+(call function: (identifier) @function)
+(call function: (attribute attribute: (identifier) @function))
+
+; Class definitions
+(class_definition name: (identifier) @type)
+
+; Decorators
+(decorator (identifier) @attribute)
+
+; Type annotations
+(type (identifier) @type)
+
+; Attribute access
+(attribute attribute: (identifier) @property)
 "##
 }

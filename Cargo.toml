@@ -29,6 +29,9 @@ tree-sitter-typescript = "0.23"
 tree-sitter-css = "0.23"
 tree-sitter-json = "0.24"
 tree-sitter-md = "0.3"
+tree-sitter-toml-ng = "0.7"
+tree-sitter-html = "0.23"
+tree-sitter-python = "0.23"
 streaming-iterator = "0.1"
 
 # System clipboard

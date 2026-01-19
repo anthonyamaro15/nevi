@@ -17,6 +17,10 @@ pub enum LanguageId {
     JavaScript,
     Css,
     Json,
+    Toml,
+    Markdown,
+    Html,
+    Python,
 }
 
 impl LanguageId {
@@ -28,6 +32,10 @@ impl LanguageId {
             "js" | "jsx" | "mjs" | "cjs" => Some(Self::JavaScript),
             "css" | "scss" | "sass" | "less" => Some(Self::Css),
             "json" | "jsonc" => Some(Self::Json),
+            "toml" => Some(Self::Toml),
+            "md" | "markdown" => Some(Self::Markdown),
+            "html" | "htm" => Some(Self::Html),
+            "py" | "pyi" | "pyw" => Some(Self::Python),
             _ => None,
         }
     }
@@ -47,6 +55,10 @@ impl LanguageId {
             Self::JavaScript => "javascript",
             Self::Css => "css",
             Self::Json => "json",
+            Self::Toml => "toml",
+            Self::Markdown => "markdown",
+            Self::Html => "html",
+            Self::Python => "python",
         }
     }
 }
@@ -78,6 +90,10 @@ impl MultiLspManager {
         javascript_config: LspServerConfig,
         css_config: LspServerConfig,
         json_config: LspServerConfig,
+        toml_config: LspServerConfig,
+        markdown_config: LspServerConfig,
+        html_config: LspServerConfig,
+        python_config: LspServerConfig,
     ) -> Self {
         let mut configs = HashMap::new();
         configs.insert(LanguageId::Rust, rust_config);
@@ -85,6 +101,10 @@ impl MultiLspManager {
         configs.insert(LanguageId::JavaScript, javascript_config);
         configs.insert(LanguageId::Css, css_config);
         configs.insert(LanguageId::Json, json_config);
+        configs.insert(LanguageId::Toml, toml_config);
+        configs.insert(LanguageId::Markdown, markdown_config);
+        configs.insert(LanguageId::Html, html_config);
+        configs.insert(LanguageId::Python, python_config);
 
         Self {
             instances: HashMap::new(),

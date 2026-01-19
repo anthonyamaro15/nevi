@@ -65,6 +65,9 @@ impl SyntaxManager {
             Some("scss") | Some("sass") => self.set_css_language(), // SCSS uses CSS parser
             Some("json") => self.set_json_language(),
             Some("md") | Some("markdown") => self.set_markdown_language(),
+            Some("toml") => self.set_toml_language(),
+            Some("html") | Some("htm") => self.set_html_language(),
+            Some("py") | Some("pyi") | Some("pyw") => self.set_python_language(),
             _ => {
                 self.language = None;
                 self.query = None;
@@ -260,6 +263,78 @@ impl SyntaxManager {
             }
             Err(e) => {
                 self.language = Some(format!("markdown (lang error: {:?})", e));
+            }
+        }
+    }
+
+    /// Set up TOML language parser
+    fn set_toml_language(&mut self) {
+        let language = tree_sitter_toml_ng::LANGUAGE;
+        match self.parser.set_language(&language.into()) {
+            Ok(()) => {
+                self.language = Some("toml".to_string());
+
+                let query_source = highlighter::toml_highlight_query();
+                match Query::new(&language.into(), query_source) {
+                    Ok(query) => {
+                        self.query = Some(query);
+                    }
+                    Err(e) => {
+                        self.language = Some(format!("toml (query error: {:?})", e));
+                        self.query = None;
+                    }
+                }
+            }
+            Err(e) => {
+                self.language = Some(format!("toml (lang error: {:?})", e));
+            }
+        }
+    }
+
+    /// Set up HTML language parser
+    fn set_html_language(&mut self) {
+        let language = tree_sitter_html::LANGUAGE;
+        match self.parser.set_language(&language.into()) {
+            Ok(()) => {
+                self.language = Some("html".to_string());
+
+                let query_source = highlighter::html_highlight_query();
+                match Query::new(&language.into(), query_source) {
+                    Ok(query) => {
+                        self.query = Some(query);
+                    }
+                    Err(e) => {
+                        self.language = Some(format!("html (query error: {:?})", e));
+                        self.query = None;
+                    }
+                }
+            }
+            Err(e) => {
+                self.language = Some(format!("html (lang error: {:?})", e));
+            }
+        }
+    }
+
+    /// Set up Python language parser
+    fn set_python_language(&mut self) {
+        let language = tree_sitter_python::LANGUAGE;
+        match self.parser.set_language(&language.into()) {
+            Ok(()) => {
+                self.language = Some("python".to_string());
+
+                let query_source = highlighter::python_highlight_query();
+                match Query::new(&language.into(), query_source) {
+                    Ok(query) => {
+                        self.query = Some(query);
+                    }
+                    Err(e) => {
+                        self.language = Some(format!("python (query error: {:?})", e));
+                        self.query = None;
+                    }
+                }
+            }
+            Err(e) => {
+                self.language = Some(format!("python (lang error: {:?})", e));
             }
         }
     }
