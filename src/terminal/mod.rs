@@ -3583,9 +3583,8 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
                 Operator::Delete => editor.delete_motion(motion, count, register),
                 Operator::Change => editor.change_motion(motion, count, register),
                 Operator::Yank => editor.yank_motion(motion, count, register),
-                Operator::Indent | Operator::Dedent => {
-                    editor.set_status("Indent/dedent not implemented yet");
-                }
+                Operator::Indent => editor.indent_motion(motion, count),
+                Operator::Dedent => editor.dedent_motion(motion, count),
             }
         }
 
@@ -3595,9 +3594,8 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
                 Operator::Delete => editor.delete_line(count, register),
                 Operator::Change => editor.change_line(count, register),
                 Operator::Yank => editor.yank_line(count, register),
-                Operator::Indent | Operator::Dedent => {
-                    editor.set_status("Indent/dedent not implemented yet");
-                }
+                Operator::Indent => editor.indent_line(count),
+                Operator::Dedent => editor.dedent_line(count),
             }
         }
 
@@ -3607,9 +3605,8 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
                 Operator::Delete => editor.delete_text_object(text_object, register),
                 Operator::Change => editor.change_text_object(text_object, register),
                 Operator::Yank => editor.yank_text_object(text_object, register),
-                Operator::Indent | Operator::Dedent => {
-                    editor.set_status("Indent/dedent not implemented yet");
-                }
+                Operator::Indent => editor.indent_text_object(text_object),
+                Operator::Dedent => editor.dedent_text_object(text_object),
             }
         }
 
@@ -4647,6 +4644,18 @@ fn handle_visual_mode(editor: &mut Editor, key: KeyEvent) {
         }
         (KeyModifiers::NONE, KeyCode::Char('a')) => {
             editor.input_state.pending_text_object = Some(TextObjectModifier::Around);
+        }
+
+        // Indent/dedent selection
+        (KeyModifiers::SHIFT, KeyCode::Char('>')) | (KeyModifiers::NONE, KeyCode::Char('>')) => {
+            let (start_line, _, end_line, _) = editor.get_visual_range();
+            editor.indent_lines(start_line, end_line);
+            editor.enter_normal_mode();
+        }
+        (KeyModifiers::SHIFT, KeyCode::Char('<')) | (KeyModifiers::NONE, KeyCode::Char('<')) => {
+            let (start_line, _, end_line, _) = editor.get_visual_range();
+            editor.dedent_lines(start_line, end_line);
+            editor.enter_normal_mode();
         }
 
         _ => {}

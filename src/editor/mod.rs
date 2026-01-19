@@ -3991,6 +3991,151 @@ impl Editor {
         }
     }
 
+    // ============================================
+    // Indent/Dedent operations
+    // ============================================
+
+    /// Indent a range of lines by one level
+    pub fn indent_lines(&mut self, start_line: usize, end_line: usize) {
+        let indent_str = " ".repeat(self.settings.editor.tab_width);
+        let buffer = &self.buffers[self.current_buffer_idx];
+        let max_line = buffer.len_lines().saturating_sub(1);
+        let end_line = end_line.min(max_line);
+
+        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+
+        for line_num in start_line..=end_line {
+            // Get current line content
+            if let Some(line) = self.buffers[self.current_buffer_idx].line(line_num) {
+                let line_str: String = line.chars().collect();
+                let line_str = line_str.trim_end_matches('\n');
+
+                // Skip empty lines
+                if line_str.is_empty() {
+                    continue;
+                }
+
+                // Record insertion for undo
+                self.undo_stack.record_change(Change::insert(
+                    line_num,
+                    0,
+                    indent_str.clone(),
+                ));
+
+                // Insert the indentation at the beginning
+                self.buffers[self.current_buffer_idx].insert_str(line_num, 0, &indent_str);
+            }
+        }
+
+        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.buffers[self.current_buffer_idx].mark_modified();
+
+        // Move cursor to first non-blank of first line
+        self.cursor.line = start_line;
+        self.cursor.col = self.find_first_non_blank(start_line);
+        self.clamp_cursor();
+    }
+
+    /// Dedent a range of lines by one level
+    pub fn dedent_lines(&mut self, start_line: usize, end_line: usize) {
+        let tab_width = self.settings.editor.tab_width;
+        let buffer = &self.buffers[self.current_buffer_idx];
+        let max_line = buffer.len_lines().saturating_sub(1);
+        let end_line = end_line.min(max_line);
+
+        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+
+        for line_num in start_line..=end_line {
+            // Get current line content
+            if let Some(line) = self.buffers[self.current_buffer_idx].line(line_num) {
+                let line_str: String = line.chars().collect();
+
+                // Count leading whitespace
+                let mut spaces_to_remove = 0;
+                for ch in line_str.chars() {
+                    if ch == ' ' && spaces_to_remove < tab_width {
+                        spaces_to_remove += 1;
+                    } else if ch == '\t' && spaces_to_remove < tab_width {
+                        // Treat tab as filling to tab_width
+                        spaces_to_remove = tab_width;
+                        break;
+                    } else {
+                        break;
+                    }
+                }
+
+                if spaces_to_remove == 0 {
+                    continue;
+                }
+
+                // Record deletion for undo
+                let deleted_text: String = line_str.chars().take(spaces_to_remove).collect();
+                self.undo_stack.record_change(Change::delete(
+                    line_num,
+                    0,
+                    deleted_text,
+                ));
+
+                // Delete the leading whitespace
+                for _ in 0..spaces_to_remove {
+                    self.buffers[self.current_buffer_idx].delete_char(line_num, 0);
+                }
+            }
+        }
+
+        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.buffers[self.current_buffer_idx].mark_modified();
+
+        // Move cursor to first non-blank of first line
+        self.cursor.line = start_line;
+        self.cursor.col = self.find_first_non_blank(start_line);
+        self.clamp_cursor();
+    }
+
+    /// Indent with motion (>{motion})
+    pub fn indent_motion(&mut self, motion: Motion, count: usize) {
+        // Get the line range affected by the motion
+        if let Some((start_line, _, end_line, _)) = self.motion_range(motion, count) {
+            self.indent_lines(start_line, end_line);
+        }
+    }
+
+    /// Dedent with motion (<{motion})
+    pub fn dedent_motion(&mut self, motion: Motion, count: usize) {
+        // Get the line range affected by the motion
+        if let Some((start_line, _, end_line, _)) = self.motion_range(motion, count) {
+            self.dedent_lines(start_line, end_line);
+        }
+    }
+
+    /// Indent current line and count-1 lines below (>> operation)
+    pub fn indent_line(&mut self, count: usize) {
+        let start_line = self.cursor.line;
+        let end_line = start_line + count.saturating_sub(1);
+        self.indent_lines(start_line, end_line);
+    }
+
+    /// Dedent current line and count-1 lines below (<< operation)
+    pub fn dedent_line(&mut self, count: usize) {
+        let start_line = self.cursor.line;
+        let end_line = start_line + count.saturating_sub(1);
+        self.dedent_lines(start_line, end_line);
+    }
+
+    /// Indent text object
+    pub fn indent_text_object(&mut self, text_object: TextObject) {
+        if let Some((start_line, _, end_line, _)) = self.find_text_object_range(text_object) {
+            self.indent_lines(start_line, end_line);
+        }
+    }
+
+    /// Dedent text object
+    pub fn dedent_text_object(&mut self, text_object: TextObject) {
+        if let Some((start_line, _, end_line, _)) = self.find_text_object_range(text_object) {
+            self.dedent_lines(start_line, end_line);
+        }
+    }
+
     /// Get the open and close characters for a surround pair
     fn get_surround_pair(c: char) -> (char, char) {
         match c {
