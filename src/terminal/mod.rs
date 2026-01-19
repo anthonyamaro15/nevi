@@ -3901,6 +3901,18 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.case_text_object(case_op, text_object);
         }
 
+        KeyAction::SetMark(name) => {
+            editor.set_mark(name);
+        }
+
+        KeyAction::GotoMarkLine(name) => {
+            editor.goto_mark_line(name);
+        }
+
+        KeyAction::GotoMarkExact(name) => {
+            editor.goto_mark_exact(name);
+        }
+
         KeyAction::EnterInsert(pos) => {
             match pos {
                 InsertPosition::AtCursor => editor.enter_insert_mode(),
