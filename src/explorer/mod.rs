@@ -2,6 +2,33 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::fs;
 
+/// Pending action in the file explorer
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExplorerAction {
+    /// Adding a new file or folder
+    Add,
+    /// Renaming an item
+    Rename,
+    /// Deleting an item (waiting for confirmation)
+    Delete,
+}
+
+/// Clipboard operation type
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClipboardOp {
+    Copy,
+    Cut,
+}
+
+/// Clipboard content for copy/cut/paste operations
+#[derive(Debug, Clone)]
+pub struct Clipboard {
+    /// Path that was copied/cut
+    pub path: PathBuf,
+    /// Whether this is a copy or cut operation
+    pub op: ClipboardOp,
+}
+
 /// A node in the file tree
 #[derive(Debug, Clone)]
 pub struct TreeNode {
@@ -49,21 +76,6 @@ impl TreeNode {
 
             for entry in entries.flatten() {
                 let path = entry.path();
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-
-                // Skip hidden files (starting with .)
-                if name.starts_with('.') {
-                    continue;
-                }
-
-                // Skip common ignored directories
-                if path.is_dir() && matches!(name.as_str(), "target" | "node_modules" | ".git" | "__pycache__") {
-                    continue;
-                }
-
                 let node = TreeNode::new(path, self.depth + 1);
                 if node.is_dir {
                     dirs.push(node);
@@ -114,6 +126,24 @@ pub struct FileExplorer {
     pub visible: bool,
     /// Width of the sidebar
     pub width: u16,
+    /// Pending action (add, rename, delete)
+    pub pending_action: Option<ExplorerAction>,
+    /// Input buffer for pending action
+    pub input_buffer: String,
+    /// Cursor position in input buffer
+    pub input_cursor: usize,
+    /// Clipboard for copy/cut operations
+    pub clipboard: Option<Clipboard>,
+    /// Whether search mode is active
+    pub is_searching: bool,
+    /// Search query buffer
+    pub search_buffer: String,
+    /// Cursor position in search buffer
+    pub search_cursor: usize,
+    /// Filtered indices (indices into flat_view that match search)
+    pub search_matches: Vec<usize>,
+    /// Current match index in search_matches
+    pub current_match: usize,
 }
 
 impl Default for FileExplorer {
@@ -126,6 +156,15 @@ impl Default for FileExplorer {
             flat_view: Vec::new(),
             visible: false,
             width: 35,
+            pending_action: None,
+            input_buffer: String::new(),
+            input_cursor: 0,
+            clipboard: None,
+            is_searching: false,
+            search_buffer: String::new(),
+            search_cursor: 0,
+            search_matches: Vec::new(),
+            current_match: 0,
         }
     }
 }
@@ -382,6 +421,305 @@ impl FileExplorer {
                 "lock" => "",
                 _ => "",          // Default file icon
             }
+        }
+    }
+
+    // === File operation methods ===
+
+    /// Start adding a new file/folder
+    pub fn start_add(&mut self) {
+        self.pending_action = Some(ExplorerAction::Add);
+        self.input_buffer.clear();
+        self.input_cursor = 0;
+    }
+
+    /// Start renaming the selected item
+    pub fn start_rename(&mut self) {
+        // Get the name first to avoid borrow conflict
+        let name = self.selected_node().map(|n| n.name.clone());
+        if let Some(name) = name {
+            self.pending_action = Some(ExplorerAction::Rename);
+            self.input_buffer = name;
+            self.input_cursor = self.input_buffer.len();
+        }
+    }
+
+    /// Start delete confirmation for the selected item
+    pub fn start_delete(&mut self) {
+        self.pending_action = Some(ExplorerAction::Delete);
+        self.input_buffer.clear();
+        self.input_cursor = 0;
+    }
+
+    /// Cancel any pending action
+    pub fn cancel_action(&mut self) {
+        self.pending_action = None;
+        self.input_buffer.clear();
+        self.input_cursor = 0;
+    }
+
+    /// Check if there's a pending action requiring input
+    pub fn has_pending_action(&self) -> bool {
+        self.pending_action.is_some()
+    }
+
+    /// Get the current selected node
+    pub fn selected_node(&self) -> Option<&FlatNode> {
+        self.flat_view.get(self.selected)
+    }
+
+    /// Get the directory path where new items should be created
+    /// If a directory is selected, use it; otherwise use parent of selected file
+    pub fn target_directory(&self) -> Option<PathBuf> {
+        self.selected_node().map(|node| {
+            if node.is_dir {
+                node.path.clone()
+            } else {
+                node.path.parent().map(|p| p.to_path_buf()).unwrap_or_default()
+            }
+        })
+    }
+
+    /// Insert a character at the cursor position
+    pub fn input_insert(&mut self, c: char) {
+        self.input_buffer.insert(self.input_cursor, c);
+        self.input_cursor += 1;
+    }
+
+    /// Delete character before cursor (backspace)
+    pub fn input_backspace(&mut self) {
+        if self.input_cursor > 0 {
+            self.input_cursor -= 1;
+            self.input_buffer.remove(self.input_cursor);
+        }
+    }
+
+    /// Delete character at cursor (delete)
+    pub fn input_delete(&mut self) {
+        if self.input_cursor < self.input_buffer.len() {
+            self.input_buffer.remove(self.input_cursor);
+        }
+    }
+
+    /// Move cursor left
+    pub fn input_cursor_left(&mut self) {
+        if self.input_cursor > 0 {
+            self.input_cursor -= 1;
+        }
+    }
+
+    /// Move cursor right
+    pub fn input_cursor_right(&mut self) {
+        if self.input_cursor < self.input_buffer.len() {
+            self.input_cursor += 1;
+        }
+    }
+
+    /// Move cursor to start
+    pub fn input_cursor_home(&mut self) {
+        self.input_cursor = 0;
+    }
+
+    /// Move cursor to end
+    pub fn input_cursor_end(&mut self) {
+        self.input_cursor = self.input_buffer.len();
+    }
+
+    /// Get the prompt text for the current action
+    pub fn action_prompt(&self) -> &'static str {
+        match self.pending_action {
+            Some(ExplorerAction::Add) => "Name: ",
+            Some(ExplorerAction::Rename) => "Rename: ",
+            Some(ExplorerAction::Delete) => "Delete? (y/n): ",
+            None => "",
+        }
+    }
+
+    /// Get the help text for the current action (shown above prompt)
+    pub fn action_help(&self) -> &'static str {
+        match self.pending_action {
+            Some(ExplorerAction::Add) => "(/ for dir)",
+            Some(ExplorerAction::Rename) => "",
+            Some(ExplorerAction::Delete) => "",
+            None => "",
+        }
+    }
+
+    // === Copy/Cut/Paste methods ===
+
+    /// Copy the selected item to clipboard
+    pub fn copy_selected(&mut self) {
+        if let Some(node) = self.selected_node() {
+            self.clipboard = Some(Clipboard {
+                path: node.path.clone(),
+                op: ClipboardOp::Copy,
+            });
+        }
+    }
+
+    /// Cut (mark for move) the selected item
+    pub fn cut_selected(&mut self) {
+        if let Some(node) = self.selected_node() {
+            self.clipboard = Some(Clipboard {
+                path: node.path.clone(),
+                op: ClipboardOp::Cut,
+            });
+        }
+    }
+
+    /// Check if there's something in the clipboard
+    pub fn has_clipboard(&self) -> bool {
+        self.clipboard.is_some()
+    }
+
+    /// Clear the clipboard
+    pub fn clear_clipboard(&mut self) {
+        self.clipboard = None;
+    }
+
+    /// Get clipboard info for status display
+    pub fn clipboard_info(&self) -> Option<String> {
+        self.clipboard.as_ref().map(|cb| {
+            let op = match cb.op {
+                ClipboardOp::Copy => "Copy",
+                ClipboardOp::Cut => "Cut",
+            };
+            let name = cb.path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| cb.path.to_string_lossy().to_string());
+            format!("{}: {}", op, name)
+        })
+    }
+
+    // === Search methods ===
+
+    /// Start search mode
+    pub fn start_search(&mut self) {
+        self.is_searching = true;
+        self.search_buffer.clear();
+        self.search_cursor = 0;
+        self.search_matches.clear();
+        self.current_match = 0;
+    }
+
+    /// Cancel search mode
+    pub fn cancel_search(&mut self) {
+        self.is_searching = false;
+        self.search_buffer.clear();
+        self.search_cursor = 0;
+        self.search_matches.clear();
+        self.current_match = 0;
+    }
+
+    /// Insert character into search buffer
+    pub fn search_insert(&mut self, c: char) {
+        self.search_buffer.insert(self.search_cursor, c);
+        self.search_cursor += 1;
+        self.update_search_matches();
+    }
+
+    /// Backspace in search buffer
+    pub fn search_backspace(&mut self) {
+        if self.search_cursor > 0 {
+            self.search_cursor -= 1;
+            self.search_buffer.remove(self.search_cursor);
+            self.update_search_matches();
+        }
+    }
+
+    /// Move search cursor left
+    pub fn search_cursor_left(&mut self) {
+        if self.search_cursor > 0 {
+            self.search_cursor -= 1;
+        }
+    }
+
+    /// Move search cursor right
+    pub fn search_cursor_right(&mut self) {
+        if self.search_cursor < self.search_buffer.len() {
+            self.search_cursor += 1;
+        }
+    }
+
+    /// Update search matches based on current query
+    fn update_search_matches(&mut self) {
+        self.search_matches.clear();
+        self.current_match = 0;
+
+        if self.search_buffer.is_empty() {
+            return;
+        }
+
+        let query = self.search_buffer.to_lowercase();
+        for (idx, node) in self.flat_view.iter().enumerate() {
+            if node.name.to_lowercase().contains(&query) {
+                self.search_matches.push(idx);
+            }
+        }
+
+        // Jump to first match
+        if !self.search_matches.is_empty() {
+            self.selected = self.search_matches[0];
+        }
+    }
+
+    /// Go to next search match
+    pub fn next_match(&mut self) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        self.current_match = (self.current_match + 1) % self.search_matches.len();
+        self.selected = self.search_matches[self.current_match];
+    }
+
+    /// Go to previous search match
+    pub fn prev_match(&mut self) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        if self.current_match == 0 {
+            self.current_match = self.search_matches.len() - 1;
+        } else {
+            self.current_match -= 1;
+        }
+        self.selected = self.search_matches[self.current_match];
+    }
+
+    /// Confirm search and stay on current selection
+    /// Keeps matches so n/N can continue navigating
+    pub fn confirm_search(&mut self) {
+        self.is_searching = false;
+        self.search_buffer.clear();
+        self.search_cursor = 0;
+        // Keep search_matches and current_match for n/N navigation
+    }
+
+    /// Clear search matches (called when selection changes manually)
+    pub fn clear_search_matches(&mut self) {
+        self.search_matches.clear();
+        self.current_match = 0;
+    }
+
+    /// Check if there are active search matches for n/N navigation
+    pub fn has_search_matches(&self) -> bool {
+        !self.search_matches.is_empty()
+    }
+
+    /// Check if a node matches the current search
+    pub fn is_search_match(&self, idx: usize) -> bool {
+        self.search_matches.contains(&idx)
+    }
+
+    /// Get search match info for status display
+    pub fn search_match_info(&self) -> String {
+        if self.search_matches.is_empty() {
+            if self.search_buffer.is_empty() {
+                String::new()
+            } else {
+                "No matches".to_string()
+            }
+        } else {
+            format!("{}/{}", self.current_match + 1, self.search_matches.len())
         }
     }
 }

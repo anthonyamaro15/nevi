@@ -1030,20 +1030,28 @@ impl Terminal {
         let height = editor.text_rows();
         let is_focused = editor.mode == Mode::Explorer;
 
-        // Colors
-        let bg_color = Color::Rgb { r: 30, g: 30, b: 30 };
+        // Colors - use terminal default background to match editor
         let selected_bg = if is_focused {
-            Color::Rgb { r: 60, g: 60, b: 80 }
+            Color::Rgb { r: 68, g: 71, b: 90 }  // Lighter selection when focused
         } else {
-            Color::Rgb { r: 50, g: 50, b: 50 }
+            Color::Rgb { r: 55, g: 59, b: 68 }  // Subtle selection when unfocused
         };
         let dir_color = Color::Rgb { r: 100, g: 180, b: 255 };
         let file_color = Color::Rgb { r: 200, g: 200, b: 200 };
+        // Dimmer colors for hidden (dot) files
+        let hidden_dir_color = Color::Rgb { r: 70, g: 120, b: 170 };
+        let hidden_file_color = Color::Rgb { r: 130, g: 130, b: 130 };
         let separator_color = Color::DarkGrey;
+        let line_num_color = Color::Rgb { r: 100, g: 100, b: 100 };
+        let current_line_num_color = Color::Rgb { r: 200, g: 200, b: 100 };
+        let tree_line_color = Color::Rgb { r: 80, g: 80, b: 80 };
+        let match_color = Color::Rgb { r: 255, g: 200, b: 100 }; // Yellow/gold for search matches
+
+        // Line number column width (3 chars + 1 space)
+        let line_num_width = 4;
 
         // Render header with project name
         execute!(self.stdout, cursor::MoveTo(0, 0))?;
-        execute!(self.stdout, SetBackgroundColor(bg_color))?;
 
         let project_name = editor.project_root
             .as_ref()
@@ -1077,6 +1085,9 @@ impl Terminal {
             selected.saturating_sub(list_height / 2)
         };
 
+        // Available width for file entries (subtract line number column)
+        let content_width = width.saturating_sub(line_num_width);
+
         // Render file tree
         for row in 0..list_height {
             let y = (row + 1) as u16; // +1 for header
@@ -1087,43 +1098,148 @@ impl Terminal {
                 let node = &flat_view[idx];
                 let is_selected = idx == selected;
 
-                // Set background
+                // Set background only for selected item (use terminal default otherwise)
                 if is_selected {
                     execute!(self.stdout, SetBackgroundColor(selected_bg))?;
                 } else {
-                    execute!(self.stdout, SetBackgroundColor(bg_color))?;
+                    execute!(self.stdout, ResetColor)?;
                 }
 
-                // Calculate indent (2 spaces per level, but skip root)
-                let indent = if node.depth > 0 {
-                    "  ".repeat(node.depth.saturating_sub(1))
+                // Render relative line number
+                let rel_line = if is_selected {
+                    0
+                } else if idx > selected {
+                    idx - selected
                 } else {
-                    String::new()
+                    selected - idx
                 };
+
+                if is_selected {
+                    execute!(self.stdout, SetForegroundColor(current_line_num_color))?;
+                } else {
+                    execute!(self.stdout, SetForegroundColor(line_num_color))?;
+                }
+                print!("{:>3} ", rel_line);
 
                 // Get icon
                 let icon = editor.explorer.get_icon(node);
 
-                // Set colors
-                if node.is_dir {
-                    execute!(self.stdout, SetForegroundColor(dir_color))?;
+                // Draw tree connector lines for each depth level
+                if node.depth > 1 {
+                    execute!(self.stdout, SetForegroundColor(tree_line_color))?;
+                    for _ in 0..(node.depth - 1) {
+                        print!("│ ");
+                    }
+                }
+
+                // Set colors based on file type and hidden status
+                let is_hidden = node.name.starts_with('.');
+                let is_match = editor.explorer.is_search_match(idx);
+
+                if is_match {
+                    execute!(self.stdout, SetForegroundColor(match_color))?;
+                } else if node.is_dir {
+                    if is_hidden {
+                        execute!(self.stdout, SetForegroundColor(hidden_dir_color))?;
+                    } else {
+                        execute!(self.stdout, SetForegroundColor(dir_color))?;
+                    }
+                } else if is_hidden {
+                    execute!(self.stdout, SetForegroundColor(hidden_file_color))?;
                 } else {
                     execute!(self.stdout, SetForegroundColor(file_color))?;
                 }
 
-                // Build the line
-                let line = format!("{}{} {}", indent, icon, node.name);
-                let line = if line.len() > width {
-                    format!("{}…", &line[..width.saturating_sub(1)])
+                // Calculate remaining width for the content
+                let tree_indent_width = if node.depth > 1 { (node.depth - 1) * 2 } else { 0 };
+                let remaining_width = content_width.saturating_sub(tree_indent_width);
+
+                // Build the line (icon + name)
+                let line = format!("{} {}", icon, node.name);
+                let line = if line.len() > remaining_width {
+                    format!("{}…", &line[..remaining_width.saturating_sub(1)])
                 } else {
                     line
                 };
 
-                print!("{:width$}", line, width = width);
+                print!("{:width$}", line, width = remaining_width);
             } else {
-                // Empty line
-                execute!(self.stdout, SetBackgroundColor(bg_color))?;
+                // Empty line - use terminal default background
+                execute!(self.stdout, ResetColor)?;
                 print!("{:width$}", "", width = width);
+            }
+        }
+
+        // Render input prompt if there's a pending action
+        if editor.explorer.has_pending_action() {
+            let prompt_bg = Color::Rgb { r: 50, g: 50, b: 60 };
+            let prompt_y = height.saturating_sub(1) as u16;
+
+            execute!(self.stdout, cursor::MoveTo(0, prompt_y))?;
+            execute!(self.stdout, SetBackgroundColor(prompt_bg))?;
+
+            // Prompt text
+            let prompt = editor.explorer.action_prompt();
+            execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 150, g: 150, b: 200 }))?;
+            print!("{}", prompt);
+
+            // Input buffer
+            execute!(self.stdout, SetForegroundColor(Color::White))?;
+            let input = &editor.explorer.input_buffer;
+
+            let available = width.saturating_sub(prompt.len());
+            if input.len() <= available {
+                print!("{}", input);
+                let remaining = available.saturating_sub(input.len());
+                print!("{:remaining$}", "", remaining = remaining);
+            } else {
+                let visible = &input[..available.saturating_sub(1)];
+                print!("{}…", visible);
+            }
+
+            // Show help text if available
+            let help = editor.explorer.action_help();
+            if !help.is_empty() && height > 2 {
+                let help_y = height.saturating_sub(2) as u16;
+                execute!(self.stdout, cursor::MoveTo(0, help_y))?;
+                execute!(self.stdout, SetBackgroundColor(prompt_bg))?;
+                execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 100, g: 100, b: 120 }))?;
+                let help_display = if help.len() > width {
+                    format!("{}…", &help[..width.saturating_sub(1)])
+                } else {
+                    format!("{:width$}", help, width = width)
+                };
+                print!("{}", help_display);
+            }
+        }
+
+        // Render search input if in search mode
+        if editor.explorer.is_searching {
+            let prompt_bg = Color::Rgb { r: 50, g: 50, b: 60 };
+            let prompt_y = height.saturating_sub(1) as u16;
+
+            execute!(self.stdout, cursor::MoveTo(0, prompt_y))?;
+            execute!(self.stdout, SetBackgroundColor(prompt_bg))?;
+
+            // Search icon
+            execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 100, g: 200, b: 100 }))?;
+            print!("/");
+
+            // Search buffer
+            execute!(self.stdout, SetForegroundColor(Color::White))?;
+            let search = &editor.explorer.search_buffer;
+
+            let available = width.saturating_sub(1);
+            if search.len() <= available {
+                print!("{}", search);
+                let match_info = editor.explorer.search_match_info();
+                let padding = available.saturating_sub(search.len()).saturating_sub(match_info.len());
+                print!("{:padding$}", "", padding = padding);
+                execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 150, g: 150, b: 150 }))?;
+                print!("{}", match_info);
+            } else {
+                let visible = &search[..available.saturating_sub(1)];
+                print!("{}…", visible);
             }
         }
 
@@ -1235,8 +1351,29 @@ impl Terminal {
                 }
             }
             Mode::Explorer => {
-                // Hide cursor in explorer mode - selection is shown visually
-                execute!(self.stdout, cursor::Hide)?;
+                // Show cursor in input/search modes, hide otherwise
+                if editor.explorer.has_pending_action() {
+                    let prompt = editor.explorer.action_prompt();
+                    let cursor_x = prompt.len() + editor.explorer.input_cursor;
+                    let cursor_y = editor.text_rows().saturating_sub(1) as u16;
+                    execute!(
+                        self.stdout,
+                        cursor::MoveTo(cursor_x as u16, cursor_y),
+                        cursor::Show,
+                        cursor::SetCursorStyle::BlinkingBar
+                    )?;
+                } else if editor.explorer.is_searching {
+                    let cursor_x = 1 + editor.explorer.search_cursor; // +1 for '/'
+                    let cursor_y = editor.text_rows().saturating_sub(1) as u16;
+                    execute!(
+                        self.stdout,
+                        cursor::MoveTo(cursor_x as u16, cursor_y),
+                        cursor::Show,
+                        cursor::SetCursorStyle::BlinkingBar
+                    )?;
+                } else {
+                    execute!(self.stdout, cursor::Hide)?;
+                }
             }
             _ => {
                 // Cursor in active pane's buffer
@@ -4627,6 +4764,93 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
 }
 
 fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
+    // Handle search input mode
+    if editor.explorer.is_searching {
+        match (key.modifiers, key.code) {
+            // Cancel search
+            (KeyModifiers::NONE, KeyCode::Esc) |
+            (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
+                editor.explorer.cancel_search();
+            }
+            // Confirm search
+            (KeyModifiers::NONE, KeyCode::Enter) => {
+                editor.explorer.confirm_search();
+            }
+            // Next match (Ctrl+n or Tab)
+            (KeyModifiers::CONTROL, KeyCode::Char('n')) |
+            (KeyModifiers::NONE, KeyCode::Tab) => {
+                editor.explorer.next_match();
+            }
+            // Previous match (Ctrl+p or Shift+Tab)
+            (KeyModifiers::CONTROL, KeyCode::Char('p')) |
+            (KeyModifiers::SHIFT, KeyCode::BackTab) => {
+                editor.explorer.prev_match();
+            }
+            // Backspace
+            (KeyModifiers::NONE, KeyCode::Backspace) => {
+                editor.explorer.search_backspace();
+            }
+            // Move cursor left
+            (KeyModifiers::NONE, KeyCode::Left) => {
+                editor.explorer.search_cursor_left();
+            }
+            // Move cursor right
+            (KeyModifiers::NONE, KeyCode::Right) => {
+                editor.explorer.search_cursor_right();
+            }
+            // Type character
+            (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
+                editor.explorer.search_insert(c);
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // Handle input mode for add/rename/delete
+    if editor.explorer.has_pending_action() {
+        match (key.modifiers, key.code) {
+            // Cancel action
+            (KeyModifiers::NONE, KeyCode::Esc) |
+            (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
+                editor.explorer.cancel_action();
+            }
+            // Confirm action
+            (KeyModifiers::NONE, KeyCode::Enter) => {
+                execute_explorer_action(editor);
+            }
+            // Backspace
+            (KeyModifiers::NONE, KeyCode::Backspace) => {
+                editor.explorer.input_backspace();
+            }
+            // Delete
+            (KeyModifiers::NONE, KeyCode::Delete) => {
+                editor.explorer.input_delete();
+            }
+            // Move cursor
+            (KeyModifiers::NONE, KeyCode::Left) => {
+                editor.explorer.input_cursor_left();
+            }
+            (KeyModifiers::NONE, KeyCode::Right) => {
+                editor.explorer.input_cursor_right();
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('a')) |
+            (KeyModifiers::NONE, KeyCode::Home) => {
+                editor.explorer.input_cursor_home();
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('e')) |
+            (KeyModifiers::NONE, KeyCode::End) => {
+                editor.explorer.input_cursor_end();
+            }
+            // Type character
+            (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
+                editor.explorer.input_insert(c);
+            }
+            _ => {}
+        }
+        return;
+    }
+
     // Handle leader key sequences (same as normal mode)
     if let Some(ref mut sequence) = editor.leader_sequence {
         if key.code == KeyCode::Esc {
@@ -4689,16 +4913,31 @@ fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
             editor.explorer.move_up();
         }
 
-        // Expand directory or open file
-        (KeyModifiers::NONE, KeyCode::Enter) |
+        // Enter - toggle directory or open file
+        (KeyModifiers::NONE, KeyCode::Enter) => {
+            if let Some(path) = editor.explorer_selected_path() {
+                if path.is_dir() {
+                    // Toggle directory expand/collapse
+                    editor.explorer.toggle_expand();
+                } else {
+                    // Open file and switch to normal mode
+                    let path_clone = path.clone();
+                    if let Err(e) = editor.open_file(path_clone) {
+                        editor.set_status(format!("Error opening file: {}", e));
+                    } else {
+                        editor.mode = Mode::Normal;
+                    }
+                }
+            }
+        }
+
+        // l/Right - expand directory or open file
         (KeyModifiers::NONE, KeyCode::Char('l')) |
         (KeyModifiers::NONE, KeyCode::Right) => {
             if let Some(path) = editor.explorer_selected_path() {
                 if path.is_dir() {
-                    // Expand directory
                     editor.explorer.expand();
                 } else {
-                    // Open file and switch to normal mode
                     let path_clone = path.clone();
                     if let Err(e) = editor.open_file(path_clone) {
                         editor.set_status(format!("Error opening file: {}", e));
@@ -4727,8 +4966,7 @@ fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
         }
 
         // Refresh
-        (KeyModifiers::SHIFT, KeyCode::Char('R')) |
-        (KeyModifiers::NONE, KeyCode::Char('R')) => {
+        (KeyModifiers::SHIFT, KeyCode::Char('R')) => {
             editor.explorer.refresh();
         }
 
@@ -4742,8 +4980,249 @@ fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
             editor.unfocus_explorer();
         }
 
+        // Add file/folder
+        (KeyModifiers::NONE, KeyCode::Char('a')) => {
+            editor.explorer.start_add();
+        }
+
+        // Rename
+        (KeyModifiers::NONE, KeyCode::Char('r')) => {
+            editor.explorer.start_rename();
+        }
+
+        // Delete
+        (KeyModifiers::NONE, KeyCode::Char('d')) => {
+            editor.explorer.start_delete();
+        }
+
+        // Search
+        (KeyModifiers::NONE, KeyCode::Char('/')) => {
+            editor.explorer.start_search();
+        }
+
+        // Next search match
+        (KeyModifiers::NONE, KeyCode::Char('n')) => {
+            editor.explorer.next_match();
+        }
+
+        // Previous search match
+        (KeyModifiers::SHIFT, KeyCode::Char('N')) => {
+            editor.explorer.prev_match();
+        }
+
+        // Copy
+        (KeyModifiers::NONE, KeyCode::Char('c')) => {
+            editor.explorer.copy_selected();
+        }
+
+        // Cut
+        (KeyModifiers::NONE, KeyCode::Char('x')) => {
+            editor.explorer.cut_selected();
+        }
+
+        // Paste
+        (KeyModifiers::NONE, KeyCode::Char('p')) => {
+            execute_explorer_paste(editor);
+        }
+
         _ => {}
     }
+}
+
+fn execute_explorer_action(editor: &mut Editor) {
+    use crate::explorer::ExplorerAction;
+
+    let action = editor.explorer.pending_action.clone();
+    let input = editor.explorer.input_buffer.clone();
+
+    match action {
+        Some(ExplorerAction::Add) => {
+            if input.is_empty() {
+                editor.explorer.cancel_action();
+                return;
+            }
+
+            // Get parent directory
+            let parent = if let Some(path) = editor.explorer_selected_path() {
+                if path.is_dir() {
+                    path.clone()
+                } else {
+                    path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| path.clone())
+                }
+            } else if let Some(root) = &editor.project_root {
+                root.clone()
+            } else {
+                editor.set_status("No directory selected");
+                editor.explorer.cancel_action();
+                return;
+            };
+
+            let new_path = parent.join(&input);
+
+            // Check if it's a directory (ends with /)
+            if input.ends_with('/') {
+                match std::fs::create_dir_all(&new_path) {
+                    Ok(_) => {
+                        editor.set_status(format!("Created: {}", new_path.display()));
+                        editor.explorer.refresh();
+                    }
+                    Err(e) => {
+                        editor.set_status(format!("Error: {}", e));
+                    }
+                }
+            } else {
+                // Create parent dirs if needed
+                if let Some(parent) = new_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match std::fs::File::create(&new_path) {
+                    Ok(_) => {
+                        editor.set_status(format!("Created: {}", new_path.display()));
+                        editor.explorer.refresh();
+                        // Auto-open the newly created file
+                        if let Err(e) = editor.open_file(new_path.clone()) {
+                            editor.set_status(format!("Created but failed to open: {}", e));
+                        } else {
+                            editor.mode = Mode::Normal;
+                        }
+                    }
+                    Err(e) => {
+                        editor.set_status(format!("Error: {}", e));
+                    }
+                }
+            }
+            editor.explorer.cancel_action();
+        }
+        Some(ExplorerAction::Rename) => {
+            if input.is_empty() {
+                editor.explorer.cancel_action();
+                return;
+            }
+
+            if let Some(old_path) = editor.explorer_selected_path() {
+                let new_path = if let Some(parent) = old_path.parent() {
+                    parent.join(&input)
+                } else {
+                    std::path::PathBuf::from(&input)
+                };
+
+                match std::fs::rename(&old_path, &new_path) {
+                    Ok(_) => {
+                        editor.set_status(format!("Renamed to: {}", new_path.display()));
+                        editor.explorer.refresh();
+                    }
+                    Err(e) => {
+                        editor.set_status(format!("Error: {}", e));
+                    }
+                }
+            }
+            editor.explorer.cancel_action();
+        }
+        Some(ExplorerAction::Delete) => {
+            if input.to_lowercase() == "y" || input.to_lowercase() == "yes" {
+                if let Some(path) = editor.explorer_selected_path() {
+                    let result = if path.is_dir() {
+                        std::fs::remove_dir_all(&path)
+                    } else {
+                        std::fs::remove_file(&path)
+                    };
+
+                    match result {
+                        Ok(_) => {
+                            editor.set_status(format!("Deleted: {}", path.display()));
+                            editor.explorer.refresh();
+                        }
+                        Err(e) => {
+                            editor.set_status(format!("Error: {}", e));
+                        }
+                    }
+                }
+            }
+            editor.explorer.cancel_action();
+        }
+        None => {}
+    }
+}
+
+fn execute_explorer_paste(editor: &mut Editor) {
+    use crate::explorer::ClipboardOp;
+
+    let clipboard = editor.explorer.clipboard.clone();
+    if clipboard.is_none() {
+        editor.set_status("Nothing to paste");
+        return;
+    }
+    let clipboard = clipboard.unwrap();
+
+    // Get destination directory
+    let dest_dir = if let Some(path) = editor.explorer_selected_path() {
+        if path.is_dir() {
+            path.clone()
+        } else {
+            path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| path.clone())
+        }
+    } else if let Some(root) = &editor.project_root {
+        root.clone()
+    } else {
+        editor.set_status("No destination directory");
+        return;
+    };
+
+    let file_name = clipboard.path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    let dest_path = dest_dir.join(&file_name);
+
+    // Check if destination exists
+    if dest_path.exists() {
+        editor.set_status(format!("Already exists: {}", dest_path.display()));
+        return;
+    }
+
+    let result = match clipboard.op {
+        ClipboardOp::Copy => {
+            if clipboard.path.is_dir() {
+                copy_dir_recursive(&clipboard.path, &dest_path)
+            } else {
+                std::fs::copy(&clipboard.path, &dest_path).map(|_| ())
+            }
+        }
+        ClipboardOp::Cut => {
+            std::fs::rename(&clipboard.path, &dest_path)
+        }
+    };
+
+    match result {
+        Ok(_) => {
+            let action = match clipboard.op {
+                ClipboardOp::Copy => "Copied",
+                ClipboardOp::Cut => "Moved",
+            };
+            editor.set_status(format!("{} to: {}", action, dest_path.display()));
+            if matches!(clipboard.op, ClipboardOp::Cut) {
+                editor.explorer.clear_clipboard();
+            }
+            editor.explorer.refresh();
+        }
+        Err(e) => {
+            editor.set_status(format!("Error: {}", e));
+        }
+    }
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dest_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &dest_path)?;
+        } else {
+            std::fs::copy(entry.path(), dest_path)?;
+        }
+    }
+    Ok(())
 }
 
 /// Execute a parsed command

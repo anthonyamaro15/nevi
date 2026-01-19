@@ -1312,7 +1312,11 @@ impl Editor {
 
     /// Move to a pane in the specified direction
     pub fn move_to_pane_direction(&mut self, direction: PaneDirection) {
+        // Special case: if moving left with only one pane and explorer is visible, focus explorer
         if self.panes.len() <= 1 {
+            if direction == PaneDirection::Left && self.explorer.visible {
+                self.focus_explorer();
+            }
             return;
         }
 
@@ -1366,6 +1370,9 @@ impl Editor {
             self.active_pane = new_pane;
             self.load_pane_state();
             self.set_status(format!("Pane {}/{}", self.active_pane + 1, self.panes.len()));
+        } else if direction == PaneDirection::Left && self.explorer.visible {
+            // If moving left and no pane found, focus the explorer
+            self.focus_explorer();
         }
     }
 
