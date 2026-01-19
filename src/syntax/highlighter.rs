@@ -497,3 +497,40 @@ pub fn markdown_highlight_query() -> &'static str {
 (html_block) @tag
 "##
 }
+
+/// Get the highlight query for TOML
+pub fn toml_highlight_query() -> &'static str {
+    r##"
+; Comments
+(comment) @comment
+
+; Table headers - capture the key inside tables
+(table (bare_key) @type)
+(table (quoted_key) @type)
+(table (dotted_key (bare_key) @type))
+(table_array_element (bare_key) @type)
+(table_array_element (quoted_key) @type)
+(table_array_element (dotted_key (bare_key) @type))
+
+; Keys in key-value pairs
+(pair (bare_key) @property)
+(pair (quoted_key) @property)
+(pair (dotted_key (bare_key) @property))
+
+; Strings (all string types use the same node)
+(string) @string
+
+; Numbers
+(integer) @number
+(float) @number
+
+; Booleans
+(boolean) @constant
+
+; Dates and times
+(offset_date_time) @string
+(local_date_time) @string
+(local_date) @string
+(local_time) @string
+"##
+}

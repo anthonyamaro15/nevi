@@ -97,6 +97,7 @@ fn main() -> anyhow::Result<()> {
             lsp_servers.javascript,
             lsp_servers.css,
             lsp_servers.json,
+            lsp_servers.toml,
         );
         multi_lsp = Some(mgr);
         editor.set_lsp_status("LSP: (no server)");

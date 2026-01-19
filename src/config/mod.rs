@@ -326,6 +326,7 @@ pub struct LspServers {
     pub javascript: LspServerConfig,
     pub css: LspServerConfig,
     pub json: LspServerConfig,
+    pub toml: LspServerConfig,
 }
 
 impl Default for LspServers {
@@ -365,6 +366,13 @@ impl Default for LspServers {
                 args: vec!["--stdio".to_string()],
                 root_patterns: vec!["package.json".to_string()],
                 file_extensions: vec!["json".to_string(), "jsonc".to_string()],
+            },
+            toml: LspServerConfig {
+                enabled: true,
+                command: "taplo".to_string(),
+                args: vec!["lsp".to_string(), "stdio".to_string()],
+                root_patterns: vec!["Cargo.toml".to_string(), "pyproject.toml".to_string()],
+                file_extensions: vec!["toml".to_string()],
             },
         }
     }

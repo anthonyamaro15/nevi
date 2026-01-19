@@ -65,6 +65,7 @@ impl SyntaxManager {
             Some("scss") | Some("sass") => self.set_css_language(), // SCSS uses CSS parser
             Some("json") => self.set_json_language(),
             Some("md") | Some("markdown") => self.set_markdown_language(),
+            Some("toml") => self.set_toml_language(),
             _ => {
                 self.language = None;
                 self.query = None;
@@ -260,6 +261,30 @@ impl SyntaxManager {
             }
             Err(e) => {
                 self.language = Some(format!("markdown (lang error: {:?})", e));
+            }
+        }
+    }
+
+    /// Set up TOML language parser
+    fn set_toml_language(&mut self) {
+        let language = tree_sitter_toml_ng::LANGUAGE;
+        match self.parser.set_language(&language.into()) {
+            Ok(()) => {
+                self.language = Some("toml".to_string());
+
+                let query_source = highlighter::toml_highlight_query();
+                match Query::new(&language.into(), query_source) {
+                    Ok(query) => {
+                        self.query = Some(query);
+                    }
+                    Err(e) => {
+                        self.language = Some(format!("toml (query error: {:?})", e));
+                        self.query = None;
+                    }
+                }
+            }
+            Err(e) => {
+                self.language = Some(format!("toml (lang error: {:?})", e));
             }
         }
     }

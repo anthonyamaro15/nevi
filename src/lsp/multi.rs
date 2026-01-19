@@ -17,6 +17,7 @@ pub enum LanguageId {
     JavaScript,
     Css,
     Json,
+    Toml,
 }
 
 impl LanguageId {
@@ -28,6 +29,7 @@ impl LanguageId {
             "js" | "jsx" | "mjs" | "cjs" => Some(Self::JavaScript),
             "css" | "scss" | "sass" | "less" => Some(Self::Css),
             "json" | "jsonc" => Some(Self::Json),
+            "toml" => Some(Self::Toml),
             _ => None,
         }
     }
@@ -47,6 +49,7 @@ impl LanguageId {
             Self::JavaScript => "javascript",
             Self::Css => "css",
             Self::Json => "json",
+            Self::Toml => "toml",
         }
     }
 }
@@ -78,6 +81,7 @@ impl MultiLspManager {
         javascript_config: LspServerConfig,
         css_config: LspServerConfig,
         json_config: LspServerConfig,
+        toml_config: LspServerConfig,
     ) -> Self {
         let mut configs = HashMap::new();
         configs.insert(LanguageId::Rust, rust_config);
@@ -85,6 +89,7 @@ impl MultiLspManager {
         configs.insert(LanguageId::JavaScript, javascript_config);
         configs.insert(LanguageId::Css, css_config);
         configs.insert(LanguageId::Json, json_config);
+        configs.insert(LanguageId::Toml, toml_config);
 
         Self {
             instances: HashMap::new(),
