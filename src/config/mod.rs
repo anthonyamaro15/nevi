@@ -328,6 +328,7 @@ pub struct LspServers {
     pub json: LspServerConfig,
     pub toml: LspServerConfig,
     pub markdown: LspServerConfig,
+    pub html: LspServerConfig,
 }
 
 impl Default for LspServers {
@@ -381,6 +382,13 @@ impl Default for LspServers {
                 args: vec!["server".to_string()],
                 root_patterns: vec![".marksman.toml".to_string()],
                 file_extensions: vec!["md".to_string(), "markdown".to_string()],
+            },
+            html: LspServerConfig {
+                enabled: true,
+                command: "vscode-html-language-server".to_string(),
+                args: vec!["--stdio".to_string()],
+                root_patterns: vec!["package.json".to_string()],
+                file_extensions: vec!["html".to_string(), "htm".to_string()],
             },
         }
     }

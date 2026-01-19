@@ -66,6 +66,7 @@ impl SyntaxManager {
             Some("json") => self.set_json_language(),
             Some("md") | Some("markdown") => self.set_markdown_language(),
             Some("toml") => self.set_toml_language(),
+            Some("html") | Some("htm") => self.set_html_language(),
             _ => {
                 self.language = None;
                 self.query = None;
@@ -285,6 +286,30 @@ impl SyntaxManager {
             }
             Err(e) => {
                 self.language = Some(format!("toml (lang error: {:?})", e));
+            }
+        }
+    }
+
+    /// Set up HTML language parser
+    fn set_html_language(&mut self) {
+        let language = tree_sitter_html::LANGUAGE;
+        match self.parser.set_language(&language.into()) {
+            Ok(()) => {
+                self.language = Some("html".to_string());
+
+                let query_source = highlighter::html_highlight_query();
+                match Query::new(&language.into(), query_source) {
+                    Ok(query) => {
+                        self.query = Some(query);
+                    }
+                    Err(e) => {
+                        self.language = Some(format!("html (query error: {:?})", e));
+                        self.query = None;
+                    }
+                }
+            }
+            Err(e) => {
+                self.language = Some(format!("html (lang error: {:?})", e));
             }
         }
     }

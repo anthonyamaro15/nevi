@@ -538,3 +538,37 @@ pub fn toml_highlight_query() -> &'static str {
 (local_time) @string
 "##
 }
+
+/// Get the highlight query for HTML
+pub fn html_highlight_query() -> &'static str {
+    r##"
+; Comments
+(comment) @comment
+
+; DOCTYPE declaration
+(doctype) @keyword
+
+; Tag names in start tags
+(start_tag (tag_name) @tag)
+
+; Tag names in end tags
+(end_tag (tag_name) @tag)
+
+; Tag names in self-closing tags
+(self_closing_tag (tag_name) @tag)
+
+; Attribute names (use @attribute for yellow/orange like Neovim)
+(attribute (attribute_name) @attribute)
+
+; Attribute values (green)
+(attribute (quoted_attribute_value) @string)
+(attribute (attribute_value) @string)
+
+; Script and style content (raw text inside these elements)
+(script_element (raw_text) @string)
+(style_element (raw_text) @string)
+
+; Text content - don't highlight by default (matches Neovim behavior)
+; (text) @variable
+"##
+}
