@@ -466,18 +466,11 @@ impl Default for CopilotSettings {
 }
 
 /// Get the path to the config file
-/// Checks ~/.config/nevi/config.toml first (XDG-style), then falls back to platform default
+/// Always uses ~/.config/nevi/config.toml (XDG-style) for consistency across platforms
 pub fn config_path() -> Option<PathBuf> {
-    // First, try XDG-style path (~/.config/nevi/config.toml)
-    if let Some(home) = dirs::home_dir() {
-        let xdg_path = home.join(".config/nevi/config.toml");
-        if xdg_path.exists() {
-            return Some(xdg_path);
-        }
-    }
-
-    // Fall back to platform-specific config dir
-    dirs::config_dir().map(|p| p.join("nevi/config.toml"))
+    // Always prefer XDG-style path (~/.config/nevi/config.toml)
+    // This is more discoverable and consistent with other CLI tools
+    dirs::home_dir().map(|home| home.join(".config/nevi/config.toml"))
 }
 
 /// Template config file with comments explaining all options
@@ -538,31 +531,219 @@ fn default_config_template() -> &'static str {
 #   "*test*"    - contains test
 
 # ============================================================================
-# KEYMAP
+# KEYMAP CUSTOMIZATION
 # ============================================================================
-# All standard vim keybindings work by default (hjkl, w, b, e, d, c, y, etc.)
+# All standard vim keybindings work by default.
+# Below is a comprehensive reference of implemented keybinds.
+# To override any keybind, uncomment and modify the examples at the end.
+#
 # Leader key is Space by default.
-#
-# Default leader mappings (built-in):
-#   <leader>w   - Save file
-#   <leader>q   - Quit
-#   <leader>ff  - Find files
-#   <leader>fg  - Live grep
-#   <leader>fb  - Find buffers
-#   <leader>e   - Toggle file explorer
-#   <leader>ca  - Code actions
-#   <leader>rn  - Rename symbol
-#   <leader>gg  - Open lazygit
-#
-# To add or override leader mappings:
 # [keymap]
-# leader = " "  # Space (default)
+# leader = " "
 #
-# [[keymap.leader_mappings]]
-# key = "w"
-# action = ":w"
-# desc = "Save file"
+# ----------------------------------------------------------------------------
+# NORMAL MODE - Movement
+# ----------------------------------------------------------------------------
+# h/j/k/l          - Move cursor left/down/up/right
+# w/W              - Move to start of next word/WORD
+# b/B              - Move to start of previous word/WORD
+# e/E              - Move to end of word/WORD
+# 0                - Move to start of line
+# ^                - Move to first non-blank character
+# $                - Move to end of line
+# gg               - Move to start of file
+# G                - Move to end of file (or line N with count)
+# {/}              - Move to previous/next paragraph
+# %                - Jump to matching bracket
+# H/M/L            - Move to top/middle/bottom of screen
+# f{char}/F{char}  - Find character forward/backward
+# t{char}/T{char}  - Move till character forward/backward
+# ;/,              - Repeat last f/F/t/T / in reverse
 #
+# ----------------------------------------------------------------------------
+# NORMAL MODE - Scrolling
+# ----------------------------------------------------------------------------
+# Ctrl+f/Ctrl+b    - Page down/up
+# Ctrl+d/Ctrl+u    - Half page down/up
+# zz/zt/zb         - Center cursor / cursor to top / cursor to bottom
+#
+# ----------------------------------------------------------------------------
+# NORMAL MODE - Jump List
+# ----------------------------------------------------------------------------
+# Ctrl+o           - Jump to older position
+# Ctrl+i           - Jump to newer position
+#
+# ----------------------------------------------------------------------------
+# NORMAL MODE - Editing
+# ----------------------------------------------------------------------------
+# d{motion}/dd/D   - Delete with motion / line / to end
+# c{motion}/cc/C   - Change with motion / line / to end
+# y{motion}/yy/Y   - Yank with motion / line / line
+# p/P              - Paste after/before cursor
+# x/X              - Delete char under/before cursor
+# r{char}          - Replace character
+# J                - Join lines with space
+# .                - Repeat last change
+# u/Ctrl+r         - Undo/redo
+#
+# ----------------------------------------------------------------------------
+# NORMAL MODE - Indent
+# ----------------------------------------------------------------------------
+# >>               - Indent current line
+# <<               - Dedent current line
+# >{motion}        - Indent with motion
+# <{motion}        - Dedent with motion
+#
+# ----------------------------------------------------------------------------
+# NORMAL MODE - Case
+# ----------------------------------------------------------------------------
+# ~                - Swap case of character
+# gu{motion}/guu   - Lowercase with motion / line
+# gU{motion}/gUU   - Uppercase with motion / line
+# g~{motion}/g~~   - Toggle case with motion / line
+#
+# ----------------------------------------------------------------------------
+# NORMAL MODE - Marks
+# ----------------------------------------------------------------------------
+# m{a-zA-Z}        - Set mark (a-z local, A-Z global)
+# '{a-zA-Z}        - Jump to line of mark
+# `{a-zA-Z}        - Jump to exact position of mark
+#
+# ----------------------------------------------------------------------------
+# NORMAL MODE - Macros
+# ----------------------------------------------------------------------------
+# q{a-z}           - Start recording macro into register
+# q                - Stop recording (when recording)
+# @{a-z}           - Play macro from register
+# @@               - Replay last executed macro
+#
+# ----------------------------------------------------------------------------
+# NORMAL MODE - Search
+# ----------------------------------------------------------------------------
+# /                - Search forward
+# ?                - Search backward
+# n/N              - Next/previous search match
+# *                - Search word under cursor forward
+# #                - Search word under cursor backward
+#
+# ----------------------------------------------------------------------------
+# NORMAL MODE - LSP
+# ----------------------------------------------------------------------------
+# gd               - Go to definition
+# gr               - Find references
+# K                - Show hover documentation
+# gl               - Show diagnostic in float
+# ]d/[d            - Next/previous diagnostic
+#
+# ----------------------------------------------------------------------------
+# NORMAL MODE - Surround (vim-surround style)
+# ----------------------------------------------------------------------------
+# ds{char}         - Delete surrounding pair
+# cs{old}{new}     - Change surrounding pair
+# ys{motion}{char} - Add surrounding pair
+#
+# ----------------------------------------------------------------------------
+# NORMAL MODE - Comment
+# ----------------------------------------------------------------------------
+# gcc              - Toggle comment on line
+# gc{motion}       - Toggle comment with motion
+#
+# ----------------------------------------------------------------------------
+# NORMAL MODE - gv (Visual Reselect)
+# ----------------------------------------------------------------------------
+# gv               - Reselect last visual selection
+#
+# ----------------------------------------------------------------------------
+# NORMAL MODE - Mode Switching
+# ----------------------------------------------------------------------------
+# i/a              - Insert before/after cursor
+# I/A              - Insert at line start/end
+# o/O              - Open line below/above
+# v/V/Ctrl+v       - Visual / Visual line / Visual block
+# R                - Replace mode
+# :                - Command mode
+#
+# ----------------------------------------------------------------------------
+# NORMAL MODE - Window Management
+# ----------------------------------------------------------------------------
+# Ctrl+w v         - Split vertical
+# Ctrl+w s         - Split horizontal
+# Ctrl+w c         - Close window
+# Ctrl+w o         - Close other windows
+# Ctrl+w w/p       - Next/previous window
+# Ctrl+w h/j/k/l   - Move to window left/down/up/right
+#
+# ----------------------------------------------------------------------------
+# NORMAL MODE - Harpoon
+# ----------------------------------------------------------------------------
+# ]h/[h            - Next/previous harpoon file
+#
+# ----------------------------------------------------------------------------
+# INSERT MODE
+# ----------------------------------------------------------------------------
+# Esc/Ctrl+[       - Exit insert mode
+# Backspace        - Delete character before
+# Enter            - Insert new line
+# Tab              - Insert tab/spaces
+# Ctrl+l           - Accept Copilot suggestion
+# Alt+]/Alt+[      - Next/previous Copilot suggestion
+#
+# ----------------------------------------------------------------------------
+# VISUAL MODE
+# ----------------------------------------------------------------------------
+# Esc              - Exit visual mode
+# d/c/y            - Delete/change/yank selection
+# p                - Paste over selection
+# o                - Swap selection end
+# >/<              - Indent/dedent selection
+# gc               - Toggle comment
+# S{char}          - Surround selection
+#
+# ----------------------------------------------------------------------------
+# TEXT OBJECTS (use with d, c, y, etc.)
+# ----------------------------------------------------------------------------
+# iw/aw            - Inner/around word
+# iW/aW            - Inner/around WORD
+# i"/a"            - Inner/around double quotes
+# i'/a'            - Inner/around single quotes
+# i`/a`            - Inner/around backticks
+# i(/a( or ib/ab   - Inner/around parentheses
+# i{/a{ or iB/aB   - Inner/around braces
+# i[/a[            - Inner/around brackets
+# i</a<            - Inner/around angle brackets
+#
+# ----------------------------------------------------------------------------
+# REGISTERS (prefix with ")
+# ----------------------------------------------------------------------------
+# "{a-z}           - Use named register
+# "{A-Z}           - Append to named register
+# "+               - System clipboard
+# "*               - Selection clipboard
+# "_               - Black hole (discard)
+# "0               - Last yank
+#
+# ----------------------------------------------------------------------------
+# LEADER MAPPINGS (default: Space)
+# ----------------------------------------------------------------------------
+# <leader>w        - Save file
+# <leader>q        - Quit
+# <leader>e        - Toggle file explorer
+# <leader>ff       - Find files
+# <leader>fg       - Live grep
+# <leader>fb       - Find buffers
+# <leader>ft       - Theme picker
+# <leader>ca       - Code actions
+# <leader>rn       - Rename symbol
+# <leader>d        - Search diagnostics
+# <leader>D        - Show line diagnostic
+# <leader>gg       - Open lazygit
+# <leader>m        - Add to harpoon
+# <leader>h        - Harpoon menu
+# <leader>1-4      - Jump to harpoon slot 1-4
+#
+# ============================================================================
+# CUSTOM KEYBIND EXAMPLES
+# ============================================================================
 # To remap keys in normal mode:
 # [[keymap.normal]]
 # from = "H"
@@ -571,6 +752,12 @@ fn default_config_template() -> &'static str {
 # [[keymap.normal]]
 # from = "L"
 # to = "$"
+#
+# To add/override leader mappings:
+# [[keymap.leader_mappings]]
+# key = "w"
+# action = ":w"
+# desc = "Save file"
 
 # ============================================================================
 # LSP (Language Server Protocol)
@@ -592,6 +779,16 @@ fn default_config_template() -> &'static str {
 # enabled = true
 # command = "typescript-language-server"
 # args = ["--stdio"]
+
+# ============================================================================
+# COPILOT
+# ============================================================================
+# [copilot]
+# enabled = true             # Enable GitHub Copilot
+# debounce_ms = 150          # Delay before requesting completions
+# auto_trigger = true        # Auto-trigger in insert mode
+# hide_during_completion = true  # Hide when LSP popup visible
+# disabled_languages = []    # Languages where Copilot is disabled
 "#
 }
 

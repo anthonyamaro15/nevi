@@ -171,9 +171,9 @@ impl LspManager {
     }
 
     /// Request document formatting
-    pub fn formatting(&self, path: &PathBuf) -> anyhow::Result<()> {
+    pub fn formatting(&self, path: &PathBuf, tab_size: u32) -> anyhow::Result<()> {
         let uri = path_to_uri(path);
-        self.send(LspRequest::Formatting { uri })
+        self.send(LspRequest::Formatting { uri, tab_size })
     }
 
     /// Request find references
@@ -364,8 +364,8 @@ fn run_lsp_thread(
                             });
                         }
                     }
-                    LspRequest::Formatting { uri } => {
-                        if let Err(e) = client.formatting(&uri) {
+                    LspRequest::Formatting { uri, tab_size } => {
+                        if let Err(e) = client.formatting(&uri, tab_size) {
                             let _ = notification_tx.send(LspNotification::Error {
                                 message: format!("Failed to request formatting: {}", e),
                             });

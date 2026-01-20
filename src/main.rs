@@ -3,11 +3,16 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use nevi::editor::{LspAction, CopilotAction, CopilotGhostText};
+use nevi::copilot::{
+    utf16_to_utf8_col, AuthStatus, CopilotCompletion, CopilotManager, CopilotNotification,
+    CopilotStatus,
+};
+use nevi::editor::{CopilotAction, CopilotGhostText, LspAction};
 use nevi::lsp;
 use nevi::terminal::handle_key;
-use nevi::{load_config, AutosaveMode, Editor, LanguageId, LspNotification, Mode, MultiLspManager, Terminal};
-use nevi::copilot::{utf16_to_utf8_col, AuthStatus, CopilotCompletion, CopilotManager, CopilotNotification, CopilotStatus};
+use nevi::{
+    load_config, AutosaveMode, Editor, LanguageId, LspNotification, Mode, MultiLspManager, Terminal,
+};
 
 fn main() -> anyhow::Result<()> {
     // Load configuration
@@ -154,7 +159,9 @@ fn main() -> anyhow::Result<()> {
                     LspNotification::Initialized => {
                         // Update status - server is now ready
                         let current_path = editor.buffer().path.clone();
-                        editor.set_lsp_status(mlsp.status(current_path.as_ref().map(|p| p.as_path())));
+                        editor.set_lsp_status(
+                            mlsp.status(current_path.as_ref().map(|p| p.as_path())),
+                        );
 
                         // Now that this server is ready, send did_open for current file if it matches
                         if let Some(path) = current_path {
@@ -170,7 +177,11 @@ fn main() -> anyhow::Result<()> {
                     }
                     LspNotification::Error { message } => {
                         // Update status with error
-                        editor.set_lsp_status(format!("LSP {}: error - {}", lang.as_lsp_id(), message));
+                        editor.set_lsp_status(format!(
+                            "LSP {}: error - {}",
+                            lang.as_lsp_id(),
+                            message
+                        ));
                         needs_redraw = true;
                     }
                     LspNotification::Diagnostics { uri, diagnostics } => {
@@ -203,8 +214,8 @@ fn main() -> anyhow::Result<()> {
                         request_character: _,
                     } => {
                         // Validate response is for current file before applying
-                        let current_uri = editor.buffer().path.as_ref()
-                            .map(|p| lsp::path_to_uri(p));
+                        let current_uri =
+                            editor.buffer().path.as_ref().map(|p| lsp::path_to_uri(p));
                         if current_uri.as_ref() == Some(&request_uri) {
                             // Show completion popup if we have items (with frecency sorting)
                             if !items.is_empty() {
@@ -219,7 +230,8 @@ fn main() -> anyhow::Result<()> {
                                 if col > trigger_col {
                                     if let Some(line_content) = editor.buffer().line(line) {
                                         let line_str: String = line_content.chars().collect();
-                                        let prefix: String = line_str.chars()
+                                        let prefix: String = line_str
+                                            .chars()
                                             .skip(trigger_col)
                                             .take(col - trigger_col)
                                             .collect();
@@ -238,10 +250,13 @@ fn main() -> anyhow::Result<()> {
                         // Ignore stale responses for different files
                         needs_redraw = true;
                     }
-                    LspNotification::Definition { locations, request_uri } => {
+                    LspNotification::Definition {
+                        locations,
+                        request_uri,
+                    } => {
                         // Validate response is for current file
-                        let current_uri = editor.buffer().path.as_ref()
-                            .map(|p| lsp::path_to_uri(p));
+                        let current_uri =
+                            editor.buffer().path.as_ref().map(|p| lsp::path_to_uri(p));
                         if current_uri.as_ref() != Some(&request_uri) {
                             // Stale response - ignore
                             needs_redraw = true;
@@ -287,8 +302,8 @@ fn main() -> anyhow::Result<()> {
                         request_character,
                     } => {
                         // Validate response is for current file
-                        let current_uri = editor.buffer().path.as_ref()
-                            .map(|p| lsp::path_to_uri(p));
+                        let current_uri =
+                            editor.buffer().path.as_ref().map(|p| lsp::path_to_uri(p));
                         if current_uri.as_ref() != Some(&request_uri) {
                             // Stale response - wrong file
                             needs_redraw = true;
@@ -327,8 +342,8 @@ fn main() -> anyhow::Result<()> {
                         request_character: _,
                     } => {
                         // Validate response is for current file
-                        let current_uri = editor.buffer().path.as_ref()
-                            .map(|p| lsp::path_to_uri(p));
+                        let current_uri =
+                            editor.buffer().path.as_ref().map(|p| lsp::path_to_uri(p));
                         if current_uri.as_ref() != Some(&request_uri) {
                             // Stale response - wrong file
                             needs_redraw = true;
@@ -354,8 +369,8 @@ fn main() -> anyhow::Result<()> {
                     }
                     LspNotification::Formatting { edits, request_uri } => {
                         // Validate response is for current file
-                        let current_uri = editor.buffer().path.as_ref()
-                            .map(|p| lsp::path_to_uri(p));
+                        let current_uri =
+                            editor.buffer().path.as_ref().map(|p| lsp::path_to_uri(p));
                         if current_uri.as_ref() != Some(&request_uri) {
                             // Stale response - ignore
                             editor.pending_format = false;
@@ -396,10 +411,13 @@ fn main() -> anyhow::Result<()> {
                         }
                         needs_redraw = true;
                     }
-                    LspNotification::References { locations, request_uri } => {
+                    LspNotification::References {
+                        locations,
+                        request_uri,
+                    } => {
                         // Validate response is for current file
-                        let current_uri = editor.buffer().path.as_ref()
-                            .map(|p| lsp::path_to_uri(p));
+                        let current_uri =
+                            editor.buffer().path.as_ref().map(|p| lsp::path_to_uri(p));
                         if current_uri.as_ref() != Some(&request_uri) {
                             needs_redraw = true;
                             continue;
@@ -427,10 +445,13 @@ fn main() -> anyhow::Result<()> {
                         }
                         needs_redraw = true;
                     }
-                    LspNotification::CodeActions { actions, request_uri } => {
+                    LspNotification::CodeActions {
+                        actions,
+                        request_uri,
+                    } => {
                         // Validate response is for current file
-                        let current_uri = editor.buffer().path.as_ref()
-                            .map(|p| lsp::path_to_uri(p));
+                        let current_uri =
+                            editor.buffer().path.as_ref().map(|p| lsp::path_to_uri(p));
                         if current_uri.as_ref() != Some(&request_uri) {
                             needs_redraw = true;
                             continue;
@@ -446,8 +467,8 @@ fn main() -> anyhow::Result<()> {
                     }
                     LspNotification::RenameResult { edits, request_uri } => {
                         // Validate response is for current file
-                        let current_uri = editor.buffer().path.as_ref()
-                            .map(|p| lsp::path_to_uri(p));
+                        let current_uri =
+                            editor.buffer().path.as_ref().map(|p| lsp::path_to_uri(p));
                         if current_uri.as_ref() != Some(&request_uri) {
                             needs_redraw = true;
                             continue;
@@ -493,8 +514,7 @@ fn main() -> anyhow::Result<()> {
                             } else if total_edits > 0 {
                                 editor.set_status(format!(
                                     "Renamed: {} edits in {} file(s)",
-                                    total_edits,
-                                    files_changed
+                                    total_edits, files_changed
                                 ));
                                 // Send didChange to LSP for current file
                                 if let Some(path) = editor.buffer().path.clone() {
@@ -505,13 +525,20 @@ fn main() -> anyhow::Result<()> {
                         }
                         needs_redraw = true;
                     }
-                    LspNotification::CompletionResolved { label, documentation, detail } => {
+                    LspNotification::CompletionResolved {
+                        label,
+                        documentation,
+                        detail,
+                    } => {
                         // Update the completion item with resolved documentation
                         let has_doc = documentation.is_some();
                         let has_detail = detail.is_some();
                         editor.update_completion_item_documentation(&label, documentation, detail);
                         // Always show debug info in status to trace the flow
-                        editor.set_status(format!("Resolved '{}': doc={}, detail={}", label, has_doc, has_detail));
+                        editor.set_status(format!(
+                            "Resolved '{}': doc={}, detail={}",
+                            label, has_doc, has_detail
+                        ));
                         needs_redraw = true;
                     }
                 }
@@ -694,7 +721,7 @@ fn main() -> anyhow::Result<()> {
                                     }
                                     LspAction::Formatting => {
                                         editor.pending_format = true;
-                                        let _ = mlsp.formatting(&path);
+                                        let _ = mlsp.formatting(&path, editor.settings.editor.tab_width as u32);
                                     }
                                     LspAction::FindReferences => {
                                         let _ = mlsp.references(&path, line, col);
@@ -794,7 +821,10 @@ fn main() -> anyhow::Result<()> {
                             // Ensure server is started for this file type
                             match mlsp.ensure_server_for_file(new_path) {
                                 Ok(Some(lang)) => {
-                                    editor.set_lsp_status(format!("LSP: {} starting...", lang.as_lsp_id()));
+                                    editor.set_lsp_status(format!(
+                                        "LSP: {} starting...",
+                                        lang.as_lsp_id()
+                                    ));
                                 }
                                 Ok(None) => {
                                     // No LSP for this file type
@@ -880,7 +910,6 @@ fn main() -> anyhow::Result<()> {
                     if let Some(ref mut mlsp) = multi_lsp {
                         if let Some(path) = editor.buffer().path.clone() {
                             if mlsp.is_ready_for_file(&path) {
-
                                 // Check for auto-completion triggers (. or :: or word chars)
                                 // Use debouncing to avoid flooding LSP with requests
                                 // Don't re-trigger if completion popup is already active (preserves resolved docs)
@@ -898,7 +927,8 @@ fn main() -> anyhow::Result<()> {
                                 }
 
                                 // Check for signature help triggers (( or ,)
-                                if editor.mode == Mode::Insert && should_trigger_signature_help(&editor)
+                                if editor.mode == Mode::Insert
+                                    && should_trigger_signature_help(&editor)
                                 {
                                     let _ = mlsp.signature_help(
                                         &path,
@@ -916,7 +946,8 @@ fn main() -> anyhow::Result<()> {
                             // Clear stale ghost text if cursor moved to different line
                             // or moved BEFORE the trigger column (typing backwards/deleting)
                             let is_stale = cop.ghost_text.as_ref().map_or(false, |g| {
-                                g.trigger_line != editor.cursor.line || editor.cursor.col < g.trigger_col
+                                g.trigger_line != editor.cursor.line
+                                    || editor.cursor.col < g.trigger_col
                             });
                             if is_stale {
                                 cop.reject_completions();
@@ -930,11 +961,16 @@ fn main() -> anyhow::Result<()> {
                                 if !ghost.visible {
                                     return false;
                                 }
-                                if ghost.trigger_line != editor.cursor.line || editor.cursor.col < ghost.trigger_col {
+                                if ghost.trigger_line != editor.cursor.line
+                                    || editor.cursor.col < ghost.trigger_col
+                                {
                                     return false;
                                 }
-                                ghost.current()
-                                    .and_then(|completion| copilot_inline_completion(&editor, completion))
+                                ghost
+                                    .current()
+                                    .and_then(|completion| {
+                                        copilot_inline_completion(&editor, completion)
+                                    })
                                     .map(|(inline, _)| !inline.is_empty())
                                     .unwrap_or(false)
                             });
@@ -950,7 +986,9 @@ fn main() -> anyhow::Result<()> {
                                 if can_request {
                                     if let Some(path) = editor.buffer().path.clone() {
                                         // Get current line content for UTF-16 conversion
-                                        let line_content = editor.buffer().line(editor.cursor.line)
+                                        let line_content = editor
+                                            .buffer()
+                                            .line(editor.cursor.line)
                                             .map(|l| l.to_string())
                                             .unwrap_or_default();
 
@@ -963,7 +1001,9 @@ fn main() -> anyhow::Result<()> {
                                             .unwrap_or_else(|| "plaintext".to_string());
 
                                         // Get relative path
-                                        let relative_path = editor.project_root.as_ref()
+                                        let relative_path = editor
+                                            .project_root
+                                            .as_ref()
                                             .and_then(|root| path.strip_prefix(root).ok())
                                             .map(|p| p.to_string_lossy().to_string())
                                             .unwrap_or_else(|| path.to_string_lossy().to_string());
@@ -980,7 +1020,7 @@ fn main() -> anyhow::Result<()> {
                                             &source,
                                             &lang_id,
                                             &relative_path,
-                                            4, // tab_size
+                                            4,    // tab_size
                                             true, // insert_spaces
                                         );
                                         copilot_last_request = Some(now);
@@ -1033,7 +1073,8 @@ fn main() -> anyhow::Result<()> {
                     if let Some(ref mut mlsp) = multi_lsp {
                         if mlsp.is_ready_for_file(path) {
                             // Verify cursor position matches (user might have moved)
-                            if editor.cursor.line as u32 == line && editor.cursor.col as u32 == col {
+                            if editor.cursor.line as u32 == line && editor.cursor.col as u32 == col
+                            {
                                 let _ = mlsp.completion(path, line, col);
                             }
                         }
@@ -1179,7 +1220,10 @@ fn calculate_word_start(editor: &Editor, line_idx: usize, col: usize) -> usize {
 
 /// Apply LSP text edits to a file on disk
 /// Reads the file, applies edits in reverse order, and writes back
-fn apply_edits_to_file(path: &std::path::Path, edits: &[lsp::types::TextEdit]) -> anyhow::Result<usize> {
+fn apply_edits_to_file(
+    path: &std::path::Path,
+    edits: &[lsp::types::TextEdit],
+) -> anyhow::Result<usize> {
     use std::fs;
 
     // Read the file content
@@ -1193,11 +1237,9 @@ fn apply_edits_to_file(path: &std::path::Path, edits: &[lsp::types::TextEdit]) -
 
     // Sort edits by position (reverse order) so we can apply from end to start
     let mut sorted_edits: Vec<&lsp::types::TextEdit> = edits.iter().collect();
-    sorted_edits.sort_by(|a, b| {
-        match b.end_line.cmp(&a.end_line) {
-            std::cmp::Ordering::Equal => b.end_col.cmp(&a.end_col),
-            other => other,
-        }
+    sorted_edits.sort_by(|a, b| match b.end_line.cmp(&a.end_line) {
+        std::cmp::Ordering::Equal => b.end_col.cmp(&a.end_col),
+        other => other,
     });
 
     // Apply each edit
@@ -1213,12 +1255,18 @@ fn apply_edits_to_file(path: &std::path::Path, edits: &[lsp::types::TextEdit]) -
             } else {
                 // Multi-line edit
                 let start_line_content = if edit.start_line < lines.len() {
-                    lines[edit.start_line].chars().take(edit.start_col).collect::<String>()
+                    lines[edit.start_line]
+                        .chars()
+                        .take(edit.start_col)
+                        .collect::<String>()
                 } else {
                     String::new()
                 };
                 let end_line_content = if edit.end_line < lines.len() {
-                    lines[edit.end_line].chars().skip(edit.end_col).collect::<String>()
+                    lines[edit.end_line]
+                        .chars()
+                        .skip(edit.end_col)
+                        .collect::<String>()
                 } else {
                     String::new()
                 };
@@ -1229,7 +1277,10 @@ fn apply_edits_to_file(path: &std::path::Path, edits: &[lsp::types::TextEdit]) -
                 lines.drain(remove_start..remove_end);
 
                 // Insert the new content
-                let new_content = format!("{}{}{}", start_line_content, edit.new_text, end_line_content);
+                let new_content = format!(
+                    "{}{}{}",
+                    start_line_content, edit.new_text, end_line_content
+                );
                 let new_lines: Vec<String> = new_content.lines().map(|s| s.to_string()).collect();
                 for (i, line) in new_lines.into_iter().enumerate() {
                     lines.insert(edit.start_line + i, line);
@@ -1332,7 +1383,9 @@ fn copilot_inline_completion(
         return None;
     }
 
-    let line_text = editor.buffer().line(start_line)
+    let line_text = editor
+        .buffer()
+        .line(start_line)
         .map(|l| l.to_string())
         .unwrap_or_default();
     let line_text = line_text.trim_end_matches('\n');
@@ -1349,14 +1402,20 @@ fn copilot_inline_completion(
 
     let completion_text = completion.text.as_str();
     let suffix = if completion_text.starts_with(&prefix) {
-        completion_text.chars().skip(prefix.chars().count()).collect()
+        completion_text
+            .chars()
+            .skip(prefix.chars().count())
+            .collect()
     } else {
         let prefix_trimmed = prefix.trim_start_matches(|c| c == ' ' || c == '\t');
         let completion_trimmed = completion_text.trim_start_matches(|c| c == ' ' || c == '\t');
         if !completion_trimmed.starts_with(prefix_trimmed) {
             return None;
         }
-        completion_trimmed.chars().skip(prefix_trimmed.chars().count()).collect()
+        completion_trimmed
+            .chars()
+            .skip(prefix_trimmed.chars().count())
+            .collect()
     };
 
     let suffix: String = suffix;
@@ -1383,13 +1442,17 @@ fn apply_copilot_completion(editor: &mut Editor, completion: &CopilotCompletion)
         return;
     }
 
-    let start_line_text = editor.buffer().line(start_line)
+    let start_line_text = editor
+        .buffer()
+        .line(start_line)
         .map(|l| l.to_string())
         .unwrap_or_default();
     let start_line_text = start_line_text.trim_end_matches('\n');
     let start_col = utf16_to_utf8_col(start_line_text, completion.range.start.character);
 
-    let end_line_text = editor.buffer().line(end_line)
+    let end_line_text = editor
+        .buffer()
+        .line(end_line)
         .map(|l| l.to_string())
         .unwrap_or_default();
     let end_line_text = end_line_text.trim_end_matches('\n');
@@ -1399,39 +1462,46 @@ fn apply_copilot_completion(editor: &mut Editor, completion: &CopilotCompletion)
     }
 
     // Force a new undo group so acceptance is a separate step from typing.
-    editor.undo_stack.end_undo_group(editor.cursor.line, editor.cursor.col);
-    editor.undo_stack.begin_undo_group(editor.cursor.line, editor.cursor.col);
+    editor
+        .undo_stack
+        .end_undo_group(editor.cursor.line, editor.cursor.col);
+    editor
+        .undo_stack
+        .begin_undo_group(editor.cursor.line, editor.cursor.col);
 
     if end_line > start_line || end_col > start_col {
         let deleted_text = if end_col > 0 || end_line > start_line {
-            editor.get_range_text(
-                start_line,
-                start_col,
-                end_line,
-                end_col.saturating_sub(1),
-            )
+            editor.get_range_text(start_line, start_col, end_line, end_col.saturating_sub(1))
         } else {
             String::new()
         };
 
         if !deleted_text.is_empty() {
-            editor.undo_stack.record_change(nevi::editor::Change::delete(
-                start_line,
-                start_col,
-                deleted_text,
-            ));
+            editor
+                .undo_stack
+                .record_change(nevi::editor::Change::delete(
+                    start_line,
+                    start_col,
+                    deleted_text,
+                ));
         }
 
-        editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+        editor
+            .buffer_mut()
+            .delete_range(start_line, start_col, end_line, end_col);
     }
 
     if !completion.text.is_empty() {
-        editor.undo_stack.record_change(nevi::editor::Change::insert(
-            start_line,
-            start_col,
-            completion.text.clone(),
-        ));
-        editor.buffer_mut().insert_str(start_line, start_col, &completion.text);
+        editor
+            .undo_stack
+            .record_change(nevi::editor::Change::insert(
+                start_line,
+                start_col,
+                completion.text.clone(),
+            ));
+        editor
+            .buffer_mut()
+            .insert_str(start_line, start_col, &completion.text);
     }
 
     let mut new_line = start_line;
@@ -1449,7 +1519,9 @@ fn apply_copilot_completion(editor: &mut Editor, completion: &CopilotCompletion)
     editor.cursor.col = new_col;
     editor.clamp_cursor();
     editor.scroll_to_cursor();
-    editor.undo_stack.end_undo_group(editor.cursor.line, editor.cursor.col);
+    editor
+        .undo_stack
+        .end_undo_group(editor.cursor.line, editor.cursor.col);
 }
 
 /// Find the workspace root by looking for Cargo.toml

@@ -315,13 +315,13 @@ impl MultiLspManager {
     }
 
     /// Request document formatting
-    pub fn formatting(&mut self, path: &PathBuf) -> anyhow::Result<()> {
+    pub fn formatting(&mut self, path: &PathBuf, tab_size: u32) -> anyhow::Result<()> {
         let lang = LanguageId::from_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
         if let Some(instance) = self.get_instance_mut(lang) {
             if instance.ready {
-                instance.manager.formatting(path)?;
+                instance.manager.formatting(path, tab_size)?;
             }
         }
         Ok(())

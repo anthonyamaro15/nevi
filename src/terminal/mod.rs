@@ -5106,28 +5106,33 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
         }
 
         // Navigate up - works in both modes
+        // Note: List is rendered Telescope-style (best match at bottom)
+        // Visual UP means going toward higher indices (at visual top)
         (KeyModifiers::NONE, KeyCode::Up) |
         (KeyModifiers::CONTROL, KeyCode::Char('k')) |
         (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
-            editor.finder.select_prev();
+            editor.finder.select_next();  // Visually goes UP
             adjust_scroll(editor);
         }
 
         // Navigate down - works in both modes
+        // Visual DOWN means going toward lower indices (at visual bottom)
         (KeyModifiers::NONE, KeyCode::Down) |
         (KeyModifiers::CONTROL, KeyCode::Char('j')) |
         (KeyModifiers::CONTROL, KeyCode::Char('n')) => {
-            editor.finder.select_next();
+            editor.finder.select_prev();  // Visually goes DOWN
             adjust_scroll(editor);
         }
 
         // Normal mode specific: j/k for navigation
+        // Note: List is rendered Telescope-style (best match at bottom, index 0)
+        // So j (down visually) = decrement index, k (up visually) = increment index
         (KeyModifiers::NONE, KeyCode::Char('j')) if is_normal_mode => {
-            editor.finder.select_next();
+            editor.finder.select_prev();  // Visually goes DOWN (toward index 0 at bottom)
             adjust_scroll(editor);
         }
         (KeyModifiers::NONE, KeyCode::Char('k')) if is_normal_mode => {
-            editor.finder.select_prev();
+            editor.finder.select_next();  // Visually goes UP (toward higher indices at top)
             adjust_scroll(editor);
         }
 

@@ -355,13 +355,13 @@ impl LspClient {
     }
 
     /// Request document formatting
-    pub fn formatting(&mut self, uri: &str) -> Result<u64> {
+    pub fn formatting(&mut self, uri: &str, tab_size: u32) -> Result<u64> {
         let params = lsp_types::DocumentFormattingParams {
             text_document: TextDocumentIdentifier {
                 uri: lsp_types::Url::parse(uri)?,
             },
             options: lsp_types::FormattingOptions {
-                tab_size: 4,
+                tab_size,
                 insert_spaces: true,
                 ..Default::default()
             },
