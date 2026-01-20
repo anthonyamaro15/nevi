@@ -3970,6 +3970,18 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.reselect_visual();
         }
 
+        KeyAction::GotoLastInsert => {
+            if let Some((line, col)) = editor.last_insert_position {
+                editor.cursor.line = line;
+                editor.cursor.col = col;
+                editor.clamp_cursor();
+                editor.scroll_to_cursor();
+                editor.enter_insert_mode();
+            } else {
+                editor.set_status("No previous insert position");
+            }
+        }
+
         KeyAction::StartRecordMacro(register) => {
             editor.macros.start_recording(register);
             editor.set_status(&format!("Recording @{}", register));

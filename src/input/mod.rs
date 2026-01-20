@@ -250,6 +250,8 @@ pub enum KeyAction {
     GotoMarkExact(char),
     /// Reselect last visual selection (gv)
     ReselectVisual,
+    /// Go to last insert position and enter insert mode (gi)
+    GotoLastInsert,
     /// Start recording a macro to register (q{a-z})
     StartRecordMacro(char),
     /// Stop recording a macro (q while recording)
@@ -1091,6 +1093,11 @@ impl InputState {
             ('g', KeyModifiers::NONE, KeyCode::Char('v')) => {
                 self.reset();
                 KeyAction::ReselectVisual
+            }
+            // gi - go to last insert position and enter insert mode
+            ('g', KeyModifiers::NONE, KeyCode::Char('i')) => {
+                self.reset();
+                KeyAction::GotoLastInsert
             }
             // zz - scroll cursor to center of screen
             ('z', KeyModifiers::NONE, KeyCode::Char('z')) => {

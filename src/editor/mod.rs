@@ -671,6 +671,8 @@ pub struct Editor {
     pub last_visual_selection: Option<LastVisualSelection>,
     /// Macro recording and playback state
     pub macros: MacroState,
+    /// Last insert position for `gi` command (line, col)
+    pub last_insert_position: Option<(usize, usize)>,
 }
 
 /// Copilot ghost text state for rendering
@@ -925,6 +927,7 @@ impl Editor {
             marks: Marks::new(),
             last_visual_selection: None,
             macros: MacroState::new(),
+            last_insert_position: None,
         }
     }
 
@@ -2076,42 +2079,48 @@ impl Editor {
 
     /// Enter insert mode
     pub fn enter_insert_mode(&mut self) {
+        self.last_insert_position = Some((self.cursor.line, self.cursor.col));
         self.mode = Mode::Insert;
         self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
     }
 
     /// Enter insert mode after cursor
     pub fn enter_insert_mode_append(&mut self) {
-        self.mode = Mode::Insert;
         let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
         if line_len > 0 {
             self.cursor.col = (self.cursor.col + 1).min(line_len);
         }
+        self.last_insert_position = Some((self.cursor.line, self.cursor.col));
+        self.mode = Mode::Insert;
         self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
     }
 
     /// Enter insert mode at end of line
     pub fn enter_insert_mode_end(&mut self) {
-        self.mode = Mode::Insert;
         self.cursor.col = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
+        self.last_insert_position = Some((self.cursor.line, self.cursor.col));
+        self.mode = Mode::Insert;
         self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
     }
 
     /// Enter insert mode at start of line (first non-blank)
     pub fn enter_insert_mode_start(&mut self) {
-        self.mode = Mode::Insert;
         // Find first non-blank character
         let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
         for col in 0..line_len {
             if let Some(ch) = self.buffers[self.current_buffer_idx].char_at(self.cursor.line, col) {
                 if !ch.is_whitespace() {
                     self.cursor.col = col;
+                    self.last_insert_position = Some((self.cursor.line, self.cursor.col));
+                    self.mode = Mode::Insert;
                     self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
                     return;
                 }
             }
         }
         self.cursor.col = 0;
+        self.last_insert_position = Some((self.cursor.line, self.cursor.col));
+        self.mode = Mode::Insert;
         self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
     }
 
@@ -2429,6 +2438,7 @@ impl Editor {
         self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, line_len, &insert_text);
         self.cursor.line += 1;
         self.cursor.col = indent.len();
+        self.last_insert_position = Some((self.cursor.line, self.cursor.col));
         self.mode = Mode::Insert;
         self.scroll_to_cursor();
     }
@@ -2455,6 +2465,7 @@ impl Editor {
         self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, 0, &insert_text);
         // Cursor stays on same line number (which is now the new line with indent)
         self.cursor.col = indent.len();
+        self.last_insert_position = Some((self.cursor.line, self.cursor.col));
         self.mode = Mode::Insert;
         self.scroll_to_cursor();
     }
