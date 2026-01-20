@@ -230,9 +230,11 @@ impl SearchState {
         self.direction = direction;
     }
 
-    /// Insert a character at cursor
+    /// Insert a character at cursor (cursor is character index, not byte index)
     pub fn insert_char(&mut self, ch: char) {
-        self.input.insert(self.cursor, ch);
+        // Convert character index to byte index for String::insert
+        let byte_idx = self.char_to_byte_index(self.cursor);
+        self.input.insert(byte_idx, ch);
         self.cursor += 1;
     }
 
@@ -240,7 +242,9 @@ impl SearchState {
     pub fn delete_char_before(&mut self) {
         if self.cursor > 0 {
             self.cursor -= 1;
-            self.input.remove(self.cursor);
+            // Convert character index to byte index for String::remove
+            let byte_idx = self.char_to_byte_index(self.cursor);
+            self.input.remove(byte_idx);
         }
     }
 
@@ -253,9 +257,18 @@ impl SearchState {
 
     /// Move cursor right
     pub fn move_right(&mut self) {
-        if self.cursor < self.input.len() {
+        if self.cursor < self.input.chars().count() {
             self.cursor += 1;
         }
+    }
+
+    /// Convert character index to byte index
+    fn char_to_byte_index(&self, char_idx: usize) -> usize {
+        self.input
+            .char_indices()
+            .nth(char_idx)
+            .map(|(byte_idx, _)| byte_idx)
+            .unwrap_or(self.input.len())
     }
 
     /// Execute search and save pattern
