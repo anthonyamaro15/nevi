@@ -130,8 +130,10 @@ impl MultiLspManager {
             return Ok(false);
         }
 
-        // Try to start the server
-        match LspManager::start(&config.command, &config.args, self.workspace_root.clone()) {
+        // Try to start the server (using effective command/args which resolve presets)
+        let command = config.effective_command();
+        let args = config.effective_args();
+        match LspManager::start(command, &args, self.workspace_root.clone()) {
             Ok(manager) => {
                 self.instances.insert(lang, LspInstance {
                     manager,
@@ -381,10 +383,15 @@ impl MultiLspManager {
         if let Some(p) = path {
             if let Some(lang) = LanguageId::from_path(p) {
                 if let Some(instance) = self.instances.get(&lang) {
+                    // Get the server name from config
+                    let server_name = self.configs.get(&lang)
+                        .map(|c| c.effective_command())
+                        .unwrap_or("unknown");
+
                     if instance.ready {
-                        return format!("LSP: {} ready", lang.as_lsp_id());
+                        return format!("LSP: {} ({})", server_name, lang.as_lsp_id());
                     } else {
-                        return format!("LSP: {} starting...", lang.as_lsp_id());
+                        return format!("LSP: {} starting...", server_name);
                     }
                 } else {
                     // Check if config exists and is enabled
