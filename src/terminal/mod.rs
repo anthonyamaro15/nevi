@@ -3970,6 +3970,18 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.reselect_visual();
         }
 
+        KeyAction::GotoLastInsert => {
+            if let Some((line, col)) = editor.last_insert_position {
+                editor.cursor.line = line;
+                editor.cursor.col = col;
+                editor.clamp_cursor();
+                editor.scroll_to_cursor();
+                editor.enter_insert_mode();
+            } else {
+                editor.set_status("No previous insert position");
+            }
+        }
+
         KeyAction::StartRecordMacro(register) => {
             editor.macros.start_recording(register);
             editor.set_status(&format!("Recording @{}", register));
@@ -5781,6 +5793,55 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
                     }
                 } else {
                     CommandResult::Error("No filename".to_string())
+                }
+            } else {
+                CommandResult::Quit
+            }
+        }
+
+        Command::WriteAll => {
+            match editor.save_all() {
+                Ok(count) => {
+                    if count == 0 {
+                        CommandResult::Message("No modified buffers to save".to_string())
+                    } else if count == 1 {
+                        CommandResult::Message("Saved 1 buffer".to_string())
+                    } else {
+                        CommandResult::Message(format!("Saved {} buffers", count))
+                    }
+                }
+                Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
+            }
+        }
+
+        Command::QuitAll => {
+            if editor.has_any_unsaved_changes() {
+                let names = editor.unsaved_buffer_names();
+                CommandResult::Error(format!(
+                    "No write since last change in: {} (add ! to override)",
+                    names.join(", ")
+                ))
+            } else {
+                CommandResult::Quit
+            }
+        }
+
+        Command::ForceQuitAll => {
+            CommandResult::Quit
+        }
+
+        Command::WriteQuitAll => {
+            match editor.save_all() {
+                Ok(_) => CommandResult::Quit,
+                Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
+            }
+        }
+
+        Command::WriteQuitAllIfModified => {
+            if editor.has_any_unsaved_changes() {
+                match editor.save_all() {
+                    Ok(_) => CommandResult::Quit,
+                    Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
                 }
             } else {
                 CommandResult::Quit

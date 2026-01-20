@@ -671,6 +671,8 @@ pub struct Editor {
     pub last_visual_selection: Option<LastVisualSelection>,
     /// Macro recording and playback state
     pub macros: MacroState,
+    /// Last insert position for `gi` command (line, col)
+    pub last_insert_position: Option<(usize, usize)>,
     /// Language-specific configuration (formatters, tab_width overrides)
     pub languages_config: crate::config::LanguagesConfig,
 }
@@ -927,6 +929,7 @@ impl Editor {
             marks: Marks::new(),
             last_visual_selection: None,
             macros: MacroState::new(),
+            last_insert_position: None,
             languages_config: crate::config::load_languages_config(),
         }
     }
@@ -2149,42 +2152,48 @@ impl Editor {
 
     /// Enter insert mode
     pub fn enter_insert_mode(&mut self) {
+        self.last_insert_position = Some((self.cursor.line, self.cursor.col));
         self.mode = Mode::Insert;
         self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
     }
 
     /// Enter insert mode after cursor
     pub fn enter_insert_mode_append(&mut self) {
-        self.mode = Mode::Insert;
         let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
         if line_len > 0 {
             self.cursor.col = (self.cursor.col + 1).min(line_len);
         }
+        self.last_insert_position = Some((self.cursor.line, self.cursor.col));
+        self.mode = Mode::Insert;
         self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
     }
 
     /// Enter insert mode at end of line
     pub fn enter_insert_mode_end(&mut self) {
-        self.mode = Mode::Insert;
         self.cursor.col = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
+        self.last_insert_position = Some((self.cursor.line, self.cursor.col));
+        self.mode = Mode::Insert;
         self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
     }
 
     /// Enter insert mode at start of line (first non-blank)
     pub fn enter_insert_mode_start(&mut self) {
-        self.mode = Mode::Insert;
         // Find first non-blank character
         let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
         for col in 0..line_len {
             if let Some(ch) = self.buffers[self.current_buffer_idx].char_at(self.cursor.line, col) {
                 if !ch.is_whitespace() {
                     self.cursor.col = col;
+                    self.last_insert_position = Some((self.cursor.line, self.cursor.col));
+                    self.mode = Mode::Insert;
                     self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
                     return;
                 }
             }
         }
         self.cursor.col = 0;
+        self.last_insert_position = Some((self.cursor.line, self.cursor.col));
+        self.mode = Mode::Insert;
         self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
     }
 
@@ -2502,6 +2511,7 @@ impl Editor {
         self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, line_len, &insert_text);
         self.cursor.line += 1;
         self.cursor.col = indent.len();
+        self.last_insert_position = Some((self.cursor.line, self.cursor.col));
         self.mode = Mode::Insert;
         self.scroll_to_cursor();
     }
@@ -2528,6 +2538,7 @@ impl Editor {
         self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, 0, &insert_text);
         // Cursor stays on same line number (which is now the new line with indent)
         self.cursor.col = indent.len();
+        self.last_insert_position = Some((self.cursor.line, self.cursor.col));
         self.mode = Mode::Insert;
         self.scroll_to_cursor();
     }
@@ -2648,6 +2659,34 @@ impl Editor {
     /// Check if buffer has unsaved changes
     pub fn has_unsaved_changes(&self) -> bool {
         self.buffers[self.current_buffer_idx].dirty
+    }
+
+    /// Check if any buffer has unsaved changes
+    pub fn has_any_unsaved_changes(&self) -> bool {
+        self.buffers.iter().any(|b| b.dirty)
+    }
+
+    /// Save all modified buffers
+    /// Returns the count of buffers saved, or error if any buffer fails
+    pub fn save_all(&mut self) -> anyhow::Result<usize> {
+        let mut saved_count = 0;
+        for i in 0..self.buffers.len() {
+            if self.buffers[i].dirty && self.buffers[i].path.is_some() {
+                self.buffers[i].save()?;
+                saved_count += 1;
+            }
+        }
+        self.update_git_diff();
+        Ok(saved_count)
+    }
+
+    /// Get list of buffers with unsaved changes (for error messages)
+    pub fn unsaved_buffer_names(&self) -> Vec<String> {
+        self.buffers
+            .iter()
+            .filter(|b| b.dirty)
+            .map(|b| b.display_name())
+            .collect()
     }
 
     /// Undo the last change

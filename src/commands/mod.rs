@@ -5,14 +5,24 @@ use std::path::PathBuf;
 pub enum Command {
     /// :w [filename] - Write buffer to file
     Write(Option<PathBuf>),
+    /// :wa - Write all modified buffers
+    WriteAll,
     /// :q - Quit (fails if unsaved changes)
     Quit,
     /// :q! - Force quit (discard changes)
     ForceQuit,
+    /// :qa - Quit all (fails if any unsaved changes)
+    QuitAll,
+    /// :qa! - Force quit all (discard all changes)
+    ForceQuitAll,
     /// :wq - Write and quit
     WriteQuit,
+    /// :wqa - Write all and quit all
+    WriteQuitAll,
     /// :x - Write if modified and quit
     WriteQuitIfModified,
+    /// :xa - Write all if modified and quit all
+    WriteQuitAllIfModified,
     /// :e [filename] - Edit a file
     Edit(Option<PathBuf>),
     /// :e! - Reload current file (discard changes)
@@ -156,14 +166,19 @@ pub fn parse_command(input: &str) -> Command {
         "w" | "write" => {
             Command::Write(args.filter(|s| !s.is_empty()).map(PathBuf::from))
         }
+        "wa" | "wall" => Command::WriteAll,
 
         // Quit commands
         "q" | "quit" => Command::Quit,
         "q!" | "quit!" => Command::ForceQuit,
+        "qa" | "qall" => Command::QuitAll,
+        "qa!" | "qall!" => Command::ForceQuitAll,
 
         // Write and quit
         "wq" => Command::WriteQuit,
+        "wqa" | "wqall" | "xall" => Command::WriteQuitAll,
         "x" | "exit" => Command::WriteQuitIfModified,
+        "xa" => Command::WriteQuitAllIfModified,
 
         // Edit commands
         "e" | "edit" => {
