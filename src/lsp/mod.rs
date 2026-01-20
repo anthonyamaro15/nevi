@@ -259,7 +259,7 @@ fn run_lsp_thread(
     // The pending map is populated by client methods BEFORE sending requests,
     // so responses are guaranteed to find their request kinds
     let notification_tx_clone = notification_tx.clone();
-    thread::spawn(move || {
+    let reader_handle = thread::spawn(move || {
         client::read_messages(stdout, notification_tx_clone, pending, stdin);
     });
 
@@ -423,6 +423,9 @@ fn run_lsp_thread(
             }
         }
     }
+
+    // Wait for reader thread to finish (it will exit when stdout closes)
+    let _ = reader_handle.join();
 }
 
 /// Convert a file path to a file:// URI
