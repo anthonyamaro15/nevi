@@ -22,7 +22,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver};
-use std::thread;
+use std::thread::{self, JoinHandle};
 
 use anyhow::{anyhow, Result};
 
@@ -55,6 +55,8 @@ pub struct CopilotManager {
     client: Option<CopilotClient>,
     /// Channel for receiving notifications from the reader thread
     rx: Option<Receiver<CopilotNotification>>,
+    /// Handle to the reader thread for cleanup
+    reader_handle: Option<JoinHandle<()>>,
     /// Current ghost text state
     pub ghost_text: Option<GhostTextState>,
     /// Pending completion context (for stale response detection)
@@ -152,6 +154,7 @@ impl CopilotManager {
             auth_status: AuthStatus::NotSignedIn,
             client: None,
             rx: None,
+            reader_handle: None,
             ghost_text: None,
             pending_context: None,
             pending_request_id: None,
@@ -186,10 +189,11 @@ impl CopilotManager {
         let (tx, rx) = channel();
         self.rx = Some(rx);
 
-        // Start reader thread
-        thread::spawn(move || {
+        // Start reader thread and store handle for cleanup
+        let reader_handle = thread::spawn(move || {
             client::read_messages(stdout, tx, pending, stdin);
         });
+        self.reader_handle = Some(reader_handle);
 
         // Send initialize request
         client.initialize()?;
@@ -202,6 +206,10 @@ impl CopilotManager {
     pub fn stop(&mut self) {
         if let Some(mut client) = self.client.take() {
             let _ = client.shutdown();
+        }
+        // Wait for reader thread to finish (it will exit when stdout closes)
+        if let Some(handle) = self.reader_handle.take() {
+            let _ = handle.join();
         }
         self.rx = None;
         self.status = CopilotStatus::Stopped;
