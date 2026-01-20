@@ -100,6 +100,14 @@ impl Buffer {
         self.text.to_string()
     }
 
+    /// Replace the entire buffer content with new text
+    /// Used by external formatters to apply formatting
+    pub fn set_content(&mut self, content: &str) {
+        self.text = Rope::from_str(content);
+        self.dirty = true;
+        self.version = self.version.wrapping_add(1);
+    }
+
     /// Get the char index for a given line and column
     pub fn line_col_to_char(&self, line: usize, col: usize) -> usize {
         let line_start = self.text.line_to_char(line);

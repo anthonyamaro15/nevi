@@ -5,6 +5,7 @@ pub mod editor;
 pub mod explorer;
 pub mod finder;
 pub mod floating_terminal;
+pub mod formatter;
 pub mod frecency;
 pub mod git;
 pub mod harpoon;
@@ -15,6 +16,7 @@ pub mod terminal;
 pub mod theme;
 
 pub use config::{load_config, Settings, KeymapLookup, LeaderAction, AutosaveMode, CopilotSettings};
+pub use config::{load_languages_config, LanguagesConfig, FormatterConfig};
 pub use copilot::{CopilotManager, CopilotStatus, GhostTextState};
 pub use copilot::types::CopilotNotification;
 pub use editor::{Editor, Mode, Buffer, Cursor, LspAction, CopilotAction, CopilotGhostText, ThemePicker};
