@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// OAuth token information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OAuthToken {
     /// The OAuth token string
     pub oauth_token: String,
@@ -21,6 +21,17 @@ pub struct OAuthToken {
     /// User associated with the token
     #[serde(default)]
     pub user: Option<String>,
+}
+
+// Custom Debug implementation that redacts the token to prevent accidental exposure in logs
+impl std::fmt::Debug for OAuthToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthToken")
+            .field("oauth_token", &"[REDACTED]")
+            .field("expires_at", &self.expires_at)
+            .field("user", &self.user)
+            .finish()
+    }
 }
 
 /// Apps.json file structure (compatible with copilot.vim)
@@ -88,9 +99,17 @@ pub fn save_token(token: &OAuthToken) -> Result<()> {
     // Update the github.com token
     apps.apps.insert("github.com".to_string(), token.clone());
 
-    // Write back
+    // Write back with secure permissions (0600 on Unix)
     let content = serde_json::to_string_pretty(&apps)?;
-    std::fs::write(&path, content)?;
+    std::fs::write(&path, &content)?;
+
+    // Set file permissions to owner-only read/write (0600) on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&path, permissions)?;
+    }
 
     Ok(())
 }
@@ -144,5 +163,32 @@ mod tests {
         assert!(apps.apps.contains_key("github.com"));
         let token = apps.apps.get("github.com").unwrap();
         assert_eq!(token.user, Some("testuser".to_string()));
+    }
+
+    #[test]
+    fn test_oauth_token_debug_redacts_secret() {
+        let token = OAuthToken {
+            oauth_token: "gho_secret_token_12345".to_string(),
+            expires_at: Some(1234567890),
+            user: Some("testuser".to_string()),
+        };
+
+        let debug_output = format!("{:?}", token);
+
+        // The actual token should NOT appear in debug output
+        assert!(
+            !debug_output.contains("gho_secret_token_12345"),
+            "Debug output should not contain the actual token"
+        );
+        // But [REDACTED] should appear
+        assert!(
+            debug_output.contains("[REDACTED]"),
+            "Debug output should show [REDACTED]"
+        );
+        // Other fields should still be visible
+        assert!(
+            debug_output.contains("testuser"),
+            "Debug output should still show user"
+        );
     }
 }
