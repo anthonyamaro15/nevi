@@ -367,7 +367,8 @@ impl SyntaxManager {
                 self.line_start_bytes.push(idx + 1);
             }
         }
-        self.tree = self.parser.parse(&self.source_cache, None);
+        // Pass old tree for incremental parsing (tree-sitter reuses unchanged parts)
+        self.tree = self.parser.parse(&self.source_cache, self.tree.as_ref());
         self.parse_version = buffer.version();
         self.cache_version.set(self.parse_version);
         self.highlight_cache.replace(vec![None; self.line_start_bytes.len()]);
