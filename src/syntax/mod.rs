@@ -367,8 +367,10 @@ impl SyntaxManager {
                 self.line_start_bytes.push(idx + 1);
             }
         }
-        // Pass old tree for incremental parsing (tree-sitter reuses unchanged parts)
-        self.tree = self.parser.parse(&self.source_cache, self.tree.as_ref());
+        // Note: Incremental parsing requires calling tree.edit() before parse()
+        // to inform tree-sitter of document changes. Without proper edit tracking,
+        // passing the old tree causes highlighting corruption. Full reparse for now.
+        self.tree = self.parser.parse(&self.source_cache, None);
         self.parse_version = buffer.version();
         self.cache_version.set(self.parse_version);
         self.highlight_cache.replace(vec![None; self.line_start_bytes.len()]);

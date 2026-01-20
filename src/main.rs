@@ -844,7 +844,7 @@ fn main() -> anyhow::Result<()> {
                             }
                         }
                     }
-                    lsp_current_file = current_file.clone();
+                    lsp_current_file = current_file;
                 }
 
                 // Track file changes for Copilot and send did_open/did_close
@@ -884,12 +884,15 @@ fn main() -> anyhow::Result<()> {
                         autosave_pending = Some(Instant::now() + autosave_delay);
                     }
 
+                    // Clone path once for reuse in LSP and Copilot notifications
+                    let current_buffer_path = editor.buffer().path.clone();
+
                     // Send document change to LSP (only if ready for this file type)
                     if let Some(ref mut mlsp) = multi_lsp {
-                        if let Some(path) = editor.buffer().path.clone() {
-                            if mlsp.is_ready_for_file(&path) {
+                        if let Some(ref path) = current_buffer_path {
+                            if mlsp.is_ready_for_file(path) {
                                 let text = editor.buffer().content();
-                                let _ = mlsp.did_change(&path, &text);
+                                let _ = mlsp.did_change(path, &text);
                             }
                         }
                     }
@@ -897,8 +900,8 @@ fn main() -> anyhow::Result<()> {
                     // Send document change to Copilot
                     if let Some(ref mut cop) = copilot {
                         if cop.status == CopilotStatus::Ready {
-                            if let Some(path) = editor.buffer().path.clone() {
-                                let uri = lsp::path_to_uri(&path);
+                            if let Some(ref path) = current_buffer_path {
+                                let uri = lsp::path_to_uri(path);
                                 let text = editor.buffer().content();
                                 let version = editor.buffer().version() as i32;
                                 let _ = cop.did_change(&uri, version, &text);
@@ -908,8 +911,8 @@ fn main() -> anyhow::Result<()> {
 
                     // Continue LSP triggers
                     if let Some(ref mut mlsp) = multi_lsp {
-                        if let Some(path) = editor.buffer().path.clone() {
-                            if mlsp.is_ready_for_file(&path) {
+                        if let Some(ref path) = current_buffer_path {
+                            if mlsp.is_ready_for_file(path) {
                                 // Check for auto-completion triggers (. or :: or word chars)
                                 // Use debouncing to avoid flooding LSP with requests
                                 // Don't re-trigger if completion popup is already active (preserves resolved docs)
