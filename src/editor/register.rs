@@ -156,6 +156,7 @@ impl Registers {
     }
 
     /// Set content from a yank operation (also updates unnamed register)
+    /// Note: Always syncs with system clipboard for modern UX (like clipboard=unnamedplus)
     pub fn yank(&mut self, name: Option<char>, content: RegisterContent) {
         // Black hole register discards content
         if is_black_hole_register(name) {
@@ -172,6 +173,9 @@ impl Registers {
         // Always update unnamed register
         self.unnamed = Some(content.clone());
 
+        // Always sync with system clipboard (modern behavior like clipboard=unnamedplus)
+        self.set_clipboard(&content);
+
         // Also update named register if specified
         if let Some(c) = name {
             if c != '"' {
@@ -181,6 +185,7 @@ impl Registers {
     }
 
     /// Set content from a delete operation (updates numbered registers)
+    /// Note: Always syncs with system clipboard for modern UX (like clipboard=unnamedplus)
     pub fn delete(&mut self, name: Option<char>, content: RegisterContent, is_small: bool) {
         // Black hole register discards content and doesn't update any registers
         if is_black_hole_register(name) {
@@ -196,6 +201,9 @@ impl Registers {
 
         // Always update unnamed register
         self.unnamed = Some(content.clone());
+
+        // Always sync with system clipboard (modern behavior like clipboard=unnamedplus)
+        self.set_clipboard(&content);
 
         if let Some(c) = name {
             // If a register was specified, use it
@@ -214,9 +222,14 @@ impl Registers {
 
     /// Get content for a register, including clipboard support
     /// This is the main method to use for getting register content
+    /// Note: For unnamed register, checks system clipboard first for modern UX
     pub fn get_content(&self, name: Option<char>) -> Option<RegisterContent> {
         if is_clipboard_register(name) {
             self.get_clipboard()
+        } else if name.is_none() || name == Some('"') {
+            // For unnamed register, try system clipboard first (modern behavior)
+            // This allows pasting content copied from external apps
+            self.get_clipboard().or_else(|| self.get(name).cloned())
         } else {
             self.get(name).cloned()
         }

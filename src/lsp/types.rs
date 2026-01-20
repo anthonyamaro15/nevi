@@ -136,6 +136,7 @@ pub enum LspRequest {
     /// Request document formatting
     Formatting {
         uri: String,
+        tab_size: u32,
     },
 
     /// Request find references

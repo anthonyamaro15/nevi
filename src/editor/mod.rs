@@ -2745,6 +2745,8 @@ impl Editor {
     /// Search for next occurrence (n)
     pub fn search_next(&mut self) {
         if let Some(pattern) = self.search.last_pattern.clone() {
+            // Record jump before searching (search is a jump motion)
+            self.record_jump();
             let direction = self.search.last_direction;
             // Update search highlights
             self.update_search_matches_from_pattern(&pattern);
@@ -2759,6 +2761,8 @@ impl Editor {
     /// Search for previous occurrence (N)
     pub fn search_prev(&mut self) {
         if let Some(pattern) = self.search.last_pattern.clone() {
+            // Record jump before searching (search is a jump motion)
+            self.record_jump();
             // Reverse the direction
             let direction = match self.search.last_direction {
                 SearchDirection::Forward => SearchDirection::Backward,
@@ -4773,6 +4777,19 @@ impl Editor {
     /// Apply motion with screen-relative awareness
     /// This overrides basic motion for H, M, L which need viewport info
     pub fn apply_motion(&mut self, motion: Motion, count: usize) {
+        // Record jump for "jump motions" (motions that move cursor significantly)
+        // These are motions that should be tracked in the jump list for Ctrl+o/Ctrl+i
+        let is_jump_motion = matches!(
+            motion,
+            Motion::FileStart | Motion::FileEnd | Motion::GotoLine(_) |
+            Motion::ScreenTop | Motion::ScreenMiddle | Motion::ScreenBottom |
+            Motion::ParagraphForward | Motion::ParagraphBackward |
+            Motion::MatchingBracket
+        );
+        if is_jump_motion {
+            self.record_jump();
+        }
+
         // Handle screen-relative motions specially
         match motion {
             Motion::ScreenTop => {
