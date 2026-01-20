@@ -1,13 +1,16 @@
 //! Configuration system for nevi
 //!
 //! Loads settings from ~/.config/nevi/config.toml
+//! Language-specific settings from ~/.config/nevi/languages.toml
 
 pub mod keymap;
+pub mod languages;
 
 use serde::Deserialize;
 use std::path::PathBuf;
 
 pub use keymap::{KeymapLookup, LeaderAction};
+pub use languages::{load_languages_config, FormatterConfig, LanguageConfig, LanguagesConfig};
 
 /// Main settings structure
 #[derive(Debug, Clone, Deserialize)]
@@ -337,6 +340,7 @@ impl Default for LspServers {
         Self {
             rust: LspServerConfig {
                 enabled: true,
+                preset: None,
                 command: "rust-analyzer".to_string(),
                 args: Vec::new(),
                 root_patterns: vec!["Cargo.toml".to_string(), "rust-project.json".to_string()],
@@ -344,6 +348,7 @@ impl Default for LspServers {
             },
             typescript: LspServerConfig {
                 enabled: true,
+                preset: None,
                 command: "typescript-language-server".to_string(),
                 args: vec!["--stdio".to_string()],
                 root_patterns: vec!["tsconfig.json".to_string(), "package.json".to_string()],
@@ -351,6 +356,7 @@ impl Default for LspServers {
             },
             javascript: LspServerConfig {
                 enabled: true,
+                preset: None,
                 command: "typescript-language-server".to_string(),
                 args: vec!["--stdio".to_string()],
                 root_patterns: vec!["jsconfig.json".to_string(), "package.json".to_string()],
@@ -358,6 +364,7 @@ impl Default for LspServers {
             },
             css: LspServerConfig {
                 enabled: true,
+                preset: None,
                 command: "vscode-css-language-server".to_string(),
                 args: vec!["--stdio".to_string()],
                 root_patterns: vec!["package.json".to_string()],
@@ -365,6 +372,7 @@ impl Default for LspServers {
             },
             json: LspServerConfig {
                 enabled: true,
+                preset: None,
                 command: "vscode-json-language-server".to_string(),
                 args: vec!["--stdio".to_string()],
                 root_patterns: vec!["package.json".to_string()],
@@ -372,6 +380,7 @@ impl Default for LspServers {
             },
             toml: LspServerConfig {
                 enabled: true,
+                preset: None,
                 command: "taplo".to_string(),
                 args: vec!["lsp".to_string(), "stdio".to_string()],
                 root_patterns: vec!["Cargo.toml".to_string(), "pyproject.toml".to_string()],
@@ -379,6 +388,7 @@ impl Default for LspServers {
             },
             markdown: LspServerConfig {
                 enabled: false, // Disabled by default - marksman has limited LSP support
+                preset: None,
                 command: "marksman".to_string(),
                 args: vec!["server".to_string()],
                 root_patterns: vec![".marksman.toml".to_string()],
@@ -386,6 +396,7 @@ impl Default for LspServers {
             },
             html: LspServerConfig {
                 enabled: true,
+                preset: None,
                 command: "vscode-html-language-server".to_string(),
                 args: vec!["--stdio".to_string()],
                 root_patterns: vec!["package.json".to_string()],
@@ -393,6 +404,7 @@ impl Default for LspServers {
             },
             python: LspServerConfig {
                 enabled: true,
+                preset: None,
                 command: "pyright-langserver".to_string(),
                 args: vec!["--stdio".to_string()],
                 root_patterns: vec![
@@ -408,15 +420,81 @@ impl Default for LspServers {
     }
 }
 
+/// Built-in LSP server presets
+/// These provide convenient shortcuts for common language servers
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum LspPreset {
+    /// typescript-language-server --stdio (default for TS/JS)
+    Typescript,
+    /// biome lsp-proxy (fast Rust-native alternative)
+    Biome,
+    /// deno lsp (for Deno projects)
+    Deno,
+    /// vscode-eslint-language-server --stdio
+    Eslint,
+    /// rust-analyzer (default for Rust)
+    RustAnalyzer,
+    /// pyright-langserver --stdio (default for Python)
+    Pyright,
+    /// pylsp (alternative Python LSP)
+    Pylsp,
+    /// Custom - use explicit command/args
+    Custom,
+}
+
+impl LspPreset {
+    /// Get the command and args for this preset
+    pub fn resolve(&self) -> Option<(String, Vec<String>)> {
+        match self {
+            LspPreset::Typescript => Some((
+                "typescript-language-server".to_string(),
+                vec!["--stdio".to_string()],
+            )),
+            LspPreset::Biome => Some((
+                "biome".to_string(),
+                vec!["lsp-proxy".to_string()],
+            )),
+            LspPreset::Deno => Some((
+                "deno".to_string(),
+                vec!["lsp".to_string()],
+            )),
+            LspPreset::Eslint => Some((
+                "vscode-eslint-language-server".to_string(),
+                vec!["--stdio".to_string()],
+            )),
+            LspPreset::RustAnalyzer => Some((
+                "rust-analyzer".to_string(),
+                Vec::new(),
+            )),
+            LspPreset::Pyright => Some((
+                "pyright-langserver".to_string(),
+                vec!["--stdio".to_string()],
+            )),
+            LspPreset::Pylsp => Some((
+                "pylsp".to_string(),
+                Vec::new(),
+            )),
+            LspPreset::Custom => None, // Use explicit command/args
+        }
+    }
+}
+
 /// Configuration for a single language server
 #[derive(Debug, Clone, Deserialize)]
 pub struct LspServerConfig {
     /// Enable this language server (default: true)
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Command to run the server
+    /// Preset to use (optional - provides command and args automatically)
+    /// If set to a known preset, command/args are auto-configured
+    /// Use "custom" with explicit command/args for custom servers
+    #[serde(default)]
+    pub preset: Option<LspPreset>,
+    /// Command to run the server (overrides preset if set)
+    #[serde(default)]
     pub command: String,
-    /// Arguments to pass to the server
+    /// Arguments to pass to the server (overrides preset if set)
     #[serde(default)]
     pub args: Vec<String>,
     /// Files that indicate the project root
@@ -425,6 +503,47 @@ pub struct LspServerConfig {
     /// File extensions this server handles
     #[serde(default)]
     pub file_extensions: Vec<String>,
+}
+
+impl LspServerConfig {
+    /// Get the effective command for this server
+    /// Resolves presets if set, otherwise uses explicit command
+    pub fn effective_command(&self) -> &str {
+        // Explicit command takes priority
+        if !self.command.is_empty() {
+            return &self.command;
+        }
+        // Fall back to preset default (return static strings for known presets)
+        if let Some(preset) = &self.preset {
+            return match preset {
+                LspPreset::Typescript => "typescript-language-server",
+                LspPreset::Biome => "biome",
+                LspPreset::Deno => "deno",
+                LspPreset::Eslint => "vscode-eslint-language-server",
+                LspPreset::RustAnalyzer => "rust-analyzer",
+                LspPreset::Pyright => "pyright-langserver",
+                LspPreset::Pylsp => "pylsp",
+                LspPreset::Custom => &self.command,
+            };
+        }
+        &self.command
+    }
+
+    /// Get the effective args for this server
+    /// Resolves presets if set, otherwise uses explicit args
+    pub fn effective_args(&self) -> Vec<String> {
+        // Explicit args take priority (if command is also set)
+        if !self.command.is_empty() {
+            return self.args.clone();
+        }
+        // Fall back to preset defaults
+        if let Some(preset) = &self.preset {
+            if let Some((_, args)) = preset.resolve() {
+                return args;
+            }
+        }
+        self.args.clone()
+    }
 }
 
 fn default_true() -> bool {
@@ -769,7 +888,24 @@ fn default_config_template() -> &'static str {
 # [lsp]
 # enabled = false
 #
-# To configure a specific server:
+# ----------------------------------------------------------------------------
+# LSP Presets
+# ----------------------------------------------------------------------------
+# Use presets for quick configuration of alternative LSP servers.
+# Available presets: typescript, biome, deno, eslint, rust_analyzer, pyright, pylsp
+#
+# Example: Use Biome LSP instead of typescript-language-server for faster linting
+# [lsp.servers.typescript]
+# preset = "biome"
+#
+# Example: Use Deno LSP for Deno projects
+# [lsp.servers.typescript]
+# preset = "deno"
+#
+# ----------------------------------------------------------------------------
+# Custom LSP Configuration
+# ----------------------------------------------------------------------------
+# For full control, specify command and args directly (overrides preset):
 # [lsp.servers.rust]
 # enabled = true
 # command = "rust-analyzer"
@@ -779,6 +915,11 @@ fn default_config_template() -> &'static str {
 # enabled = true
 # command = "typescript-language-server"
 # args = ["--stdio"]
+#
+# You can also combine preset with custom root_patterns:
+# [lsp.servers.typescript]
+# preset = "biome"
+# root_patterns = ["biome.json", "package.json"]
 
 # ============================================================================
 # COPILOT

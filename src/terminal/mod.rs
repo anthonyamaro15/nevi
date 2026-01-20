@@ -5693,11 +5693,50 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             } else if editor.buffer().path.is_some() {
                 // Check if format_on_save is enabled
                 if editor.settings.editor.format_on_save {
-                    // Set flag to save after formatting completes
-                    editor.save_after_format = true;
-                    // Trigger formatting (which will save when done)
-                    editor.pending_lsp_action = Some(LspAction::Formatting);
-                    CommandResult::Message("Formatting...".to_string())
+                    // Check for external formatter first
+                    if let Some(formatter_config) = editor.get_current_formatter().cloned() {
+                        // Use external formatter (blocking)
+                        let formatter_name = &formatter_config.command;
+                        let content = editor.buffer().content();
+                        let file_path = editor.buffer().path.as_ref()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default();
+
+                        match crate::formatter::format_with_external(&content, &file_path, &formatter_config) {
+                            Ok(formatted) => {
+                                if formatted != content {
+                                    // Replace buffer content with formatted version
+                                    editor.replace_buffer_content(&formatted);
+                                }
+                                // Save the file
+                                match editor.save() {
+                                    Ok(()) => {
+                                        if formatted != content {
+                                            CommandResult::Message(format!("Formatted with {} and saved", formatter_name))
+                                        } else {
+                                            CommandResult::Message(format!("Saved (formatted with {})", formatter_name))
+                                        }
+                                    }
+                                    Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
+                                }
+                            }
+                            Err(e) => {
+                                // Formatter failed - show error but still save
+                                editor.set_status(format!("{} error: {}", formatter_name, e));
+                                match editor.save() {
+                                    Ok(()) => CommandResult::Message(format!("Saved ({} failed: {})", formatter_name, e)),
+                                    Err(save_err) => CommandResult::Error(format!("Error saving: {}", save_err)),
+                                }
+                            }
+                        }
+                    } else {
+                        // No external formatter - use LSP formatting
+                        // Set flag to save after formatting completes
+                        editor.save_after_format = true;
+                        // Trigger formatting (which will save when done)
+                        editor.pending_lsp_action = Some(LspAction::Formatting);
+                        CommandResult::Message("Formatting with LSP...".to_string())
+                    }
                 } else {
                     // Format on save disabled - save directly
                     match editor.save() {

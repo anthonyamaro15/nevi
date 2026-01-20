@@ -673,6 +673,8 @@ pub struct Editor {
     pub macros: MacroState,
     /// Last insert position for `gi` command (line, col)
     pub last_insert_position: Option<(usize, usize)>,
+    /// Language-specific configuration (formatters, tab_width overrides)
+    pub languages_config: crate::config::LanguagesConfig,
 }
 
 /// Copilot ghost text state for rendering
@@ -928,6 +930,7 @@ impl Editor {
             last_visual_selection: None,
             macros: MacroState::new(),
             last_insert_position: None,
+            languages_config: crate::config::load_languages_config(),
         }
     }
 
@@ -937,6 +940,57 @@ impl Editor {
         self.explorer.set_root(path.clone());
         self.harpoon.set_project_root(path.clone());
         self.floating_terminal.set_working_dir(path);
+    }
+
+    /// Get the language name from a file extension
+    /// Used for looking up language-specific config
+    pub fn extension_to_language(ext: &str) -> String {
+        let ext_lower = ext.to_lowercase();
+        match ext_lower.as_str() {
+            "rs" => "rust".to_string(),
+            "ts" => "typescript".to_string(),
+            "tsx" => "tsx".to_string(),
+            "mts" | "cts" => "typescript".to_string(),
+            "js" => "javascript".to_string(),
+            "jsx" => "jsx".to_string(),
+            "mjs" | "cjs" => "javascript".to_string(),
+            "css" => "css".to_string(),
+            "scss" => "scss".to_string(),
+            "sass" => "sass".to_string(),
+            "less" => "less".to_string(),
+            "json" | "jsonc" => "json".to_string(),
+            "toml" => "toml".to_string(),
+            "md" | "markdown" => "markdown".to_string(),
+            "html" | "htm" => "html".to_string(),
+            "py" | "pyi" | "pyw" => "python".to_string(),
+            "go" => "go".to_string(),
+            "yaml" | "yml" => "yaml".to_string(),
+            "sh" | "bash" | "zsh" => "shell".to_string(),
+            _ => ext_lower,
+        }
+    }
+
+    /// Get the formatter config for the current buffer (if any)
+    pub fn get_current_formatter(&self) -> Option<&crate::config::FormatterConfig> {
+        let buffer = self.buffer();
+        let path = buffer.path.as_ref()?;
+        let ext = path.extension()?.to_str()?;
+        let language = Self::extension_to_language(ext);
+        self.languages_config.get_formatter(&language)
+    }
+
+    /// Get the effective tab width for the current buffer
+    /// Returns language-specific override or falls back to editor default
+    pub fn get_effective_tab_width(&self) -> usize {
+        if let Some(path) = self.buffer().path.as_ref() {
+            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                let language = Self::extension_to_language(ext);
+                if let Some(tab_width) = self.languages_config.get_tab_width(&language) {
+                    return tab_width;
+                }
+            }
+        }
+        self.settings.editor.tab_width
     }
 
     /// Get the current theme
@@ -1282,6 +1336,25 @@ impl Editor {
     /// Get a mutable reference to the current buffer
     pub fn buffer_mut(&mut self) -> &mut Buffer {
         &mut self.buffers[self.current_buffer_idx]
+    }
+
+    /// Replace the entire buffer content (used by external formatters)
+    pub fn replace_buffer_content(&mut self, content: &str) {
+        // Save cursor position
+        let cursor_line = self.cursor.line;
+        let cursor_col = self.cursor.col;
+
+        // Replace content
+        self.buffer_mut().set_content(content);
+
+        // Try to restore cursor position (clamp to valid range)
+        let max_line = self.buffer().len_lines().saturating_sub(1);
+        self.cursor.line = cursor_line.min(max_line);
+        let max_col = self.buffer().line_len(self.cursor.line);
+        self.cursor.col = cursor_col.min(max_col);
+
+        // Increment syntax version to trigger re-parse
+        self.last_syntax_version = 0;
     }
 
     /// Get the number of open buffers
