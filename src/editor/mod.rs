@@ -2577,6 +2577,34 @@ impl Editor {
         self.buffers[self.current_buffer_idx].dirty
     }
 
+    /// Check if any buffer has unsaved changes
+    pub fn has_any_unsaved_changes(&self) -> bool {
+        self.buffers.iter().any(|b| b.dirty)
+    }
+
+    /// Save all modified buffers
+    /// Returns the count of buffers saved, or error if any buffer fails
+    pub fn save_all(&mut self) -> anyhow::Result<usize> {
+        let mut saved_count = 0;
+        for i in 0..self.buffers.len() {
+            if self.buffers[i].dirty && self.buffers[i].path.is_some() {
+                self.buffers[i].save()?;
+                saved_count += 1;
+            }
+        }
+        self.update_git_diff();
+        Ok(saved_count)
+    }
+
+    /// Get list of buffers with unsaved changes (for error messages)
+    pub fn unsaved_buffer_names(&self) -> Vec<String> {
+        self.buffers
+            .iter()
+            .filter(|b| b.dirty)
+            .map(|b| b.display_name())
+            .collect()
+    }
+
     /// Undo the last change
     pub fn undo(&mut self) {
         if let Some(entry) = self.undo_stack.pop_undo() {

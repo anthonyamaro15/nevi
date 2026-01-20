@@ -5748,6 +5748,55 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             }
         }
 
+        Command::WriteAll => {
+            match editor.save_all() {
+                Ok(count) => {
+                    if count == 0 {
+                        CommandResult::Message("No modified buffers to save".to_string())
+                    } else if count == 1 {
+                        CommandResult::Message("Saved 1 buffer".to_string())
+                    } else {
+                        CommandResult::Message(format!("Saved {} buffers", count))
+                    }
+                }
+                Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
+            }
+        }
+
+        Command::QuitAll => {
+            if editor.has_any_unsaved_changes() {
+                let names = editor.unsaved_buffer_names();
+                CommandResult::Error(format!(
+                    "No write since last change in: {} (add ! to override)",
+                    names.join(", ")
+                ))
+            } else {
+                CommandResult::Quit
+            }
+        }
+
+        Command::ForceQuitAll => {
+            CommandResult::Quit
+        }
+
+        Command::WriteQuitAll => {
+            match editor.save_all() {
+                Ok(_) => CommandResult::Quit,
+                Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
+            }
+        }
+
+        Command::WriteQuitAllIfModified => {
+            if editor.has_any_unsaved_changes() {
+                match editor.save_all() {
+                    Ok(_) => CommandResult::Quit,
+                    Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
+                }
+            } else {
+                CommandResult::Quit
+            }
+        }
+
         Command::Edit(path) => {
             if let Some(p) = path {
                 match editor.open_file(p) {
