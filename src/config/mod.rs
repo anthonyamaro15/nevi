@@ -1,13 +1,16 @@
 //! Configuration system for nevi
 //!
 //! Loads settings from ~/.config/nevi/config.toml
+//! Language-specific settings from ~/.config/nevi/languages.toml
 
 pub mod keymap;
+pub mod languages;
 
 use serde::Deserialize;
 use std::path::PathBuf;
 
 pub use keymap::{KeymapLookup, LeaderAction};
+pub use languages::{load_languages_config, FormatterConfig, LanguageConfig, LanguagesConfig};
 
 /// Main settings structure
 #[derive(Debug, Clone, Deserialize)]
