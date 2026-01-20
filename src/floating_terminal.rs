@@ -27,8 +27,10 @@ pub struct FloatingTerminal {
     /// Terminal dimensions
     rows: u16,
     cols: u16,
-    /// PTY master (for writing input)
+    /// PTY master (for resizing)
     pty_master: Option<Box<dyn MasterPty + Send>>,
+    /// PTY writer (for sending input) - taken once from master and reused
+    pty_writer: Option<Box<dyn Write + Send>>,
     /// Child process
     child: Option<Box<dyn Child + Send + Sync>>,
     /// Reader thread output buffer
@@ -51,6 +53,7 @@ impl FloatingTerminal {
             rows: 24,
             cols: 80,
             pty_master: None,
+            pty_writer: None,
             child: None,
             output_buffer: Arc::new(Mutex::new(Vec::new())),
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
@@ -119,6 +122,8 @@ impl FloatingTerminal {
             }
         });
 
+        // Take the writer once for reuse (take_writer should only be called once)
+        self.pty_writer = pair.master.take_writer().ok();
         self.pty_master = Some(pair.master);
         self.child = Some(child);
         self.process_exited = false;
@@ -149,12 +154,9 @@ impl FloatingTerminal {
 
     /// Send input to the terminal
     pub fn send_input(&mut self, data: &[u8]) {
-        if let Some(ref mut master) = self.pty_master {
-            let mut writer = master.take_writer().ok();
-            if let Some(ref mut w) = writer {
-                let _ = w.write_all(data);
-                let _ = w.flush();
-            }
+        if let Some(ref mut writer) = self.pty_writer {
+            let _ = writer.write_all(data);
+            let _ = writer.flush();
         }
     }
 
@@ -205,9 +207,9 @@ impl FloatingTerminal {
             }
         }
 
-        // Get output from buffer
+        // Get output from buffer (recover from poisoned mutex if needed)
         let data = {
-            let mut output = self.output_buffer.lock().unwrap();
+            let mut output = self.output_buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if output.is_empty() {
                 return false;
             }

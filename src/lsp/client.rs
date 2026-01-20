@@ -558,8 +558,20 @@ impl LspClient {
 
 impl Drop for LspClient {
     fn drop(&mut self) {
-        // Try to gracefully shutdown
-        let _ = self.exit();
+        // Try to gracefully shutdown, but don't block if stdin is locked
+        // This prevents deadlock if another thread holds the lock
+        if let Ok(mut stdin) = self.stdin.try_lock() {
+            let notification = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "exit",
+                "params": null
+            });
+            if let Ok(content) = serde_json::to_string(&notification) {
+                let message = format!("Content-Length: {}\r\n\r\n{}", content.len(), content);
+                let _ = stdin.write_all(message.as_bytes());
+                let _ = stdin.flush();
+            }
+        }
         let _ = self.process.kill();
     }
 }
