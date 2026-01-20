@@ -101,7 +101,7 @@ enabled = true
 enabled = true
 ```
 
-See the generated config file for all available options with documentation.
+See the generated config file at `~/.config/nevi/config.toml` for all available options with documentation.
 
 ## Keybindings
 
@@ -163,20 +163,13 @@ Visual mode (`v/V/Ctrl+v`), macros (`q{a-z}/@{a-z}`), marks (`m{a-z}/'`), regist
 |----------|--------|--------|
 | Rust | rust-analyzer | Supported |
 | TypeScript/JavaScript | typescript-language-server | Supported |
-| Python | pyright | Supported |
+| Python | pyright | In Progress |
 | CSS/SCSS | vscode-css-language-server | Supported |
 | JSON | vscode-json-language-server | Supported |
 | TOML | taplo | Supported |
 | HTML | vscode-html-language-server | Supported |
 
-LSP servers are auto-detected when installed. Configure in `~/.config/nevi/config.toml`:
-
-```toml
-[lsp.servers.typescript]
-preset = "biome"  # Use Biome instead of typescript-language-server
-```
-
-Available presets: `typescript`, `biome`, `deno`, `eslint`, `rust_analyzer`, `pyright`, `pylsp`
+LSP servers are auto-detected when installed. See [`~/.config/nevi/config.toml`](#configuration) for LSP configuration options.
 
 > **Missing a language?** Open a [GitHub issue](https://github.com/anthonyamaro15/nevi/issues) and we'll work on adding support!
 
