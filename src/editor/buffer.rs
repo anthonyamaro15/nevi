@@ -1,5 +1,6 @@
 use ropey::Rope;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 /// A text buffer backed by a rope data structure.
 /// Ropes provide O(log n) insertions and deletions, making them
@@ -13,6 +14,8 @@ pub struct Buffer {
     pub dirty: bool,
     /// Monotonic version for change tracking
     version: u64,
+    /// Last known modification time of the file on disk (for autoread)
+    last_mtime: Option<SystemTime>,
 }
 
 impl Buffer {
@@ -23,16 +26,19 @@ impl Buffer {
             path: None,
             dirty: false,
             version: 0,
+            last_mtime: None,
         }
     }
 
     /// Create a buffer from a file
     pub fn from_file(path: PathBuf) -> anyhow::Result<Self> {
-        let text = if path.exists() {
-            Rope::from_reader(std::fs::File::open(&path)?)?
+        let (text, last_mtime) = if path.exists() {
+            let mtime = std::fs::metadata(&path)?.modified().ok();
+            let rope = Rope::from_reader(std::fs::File::open(&path)?)?;
+            (rope, mtime)
         } else {
             // New file that doesn't exist yet
-            Rope::new()
+            (Rope::new(), None)
         };
 
         Ok(Self {
@@ -40,6 +46,7 @@ impl Buffer {
             path: Some(path),
             dirty: false,
             version: 0,
+            last_mtime,
         })
     }
 
@@ -53,6 +60,44 @@ impl Buffer {
         let file = std::fs::File::create(path)?;
         self.text.write_to(std::io::BufWriter::new(file))?;
         self.dirty = false;
+
+        // Update mtime after save
+        if let Some(ref p) = self.path {
+            self.last_mtime = std::fs::metadata(p).ok().and_then(|m| m.modified().ok());
+        }
+        Ok(())
+    }
+
+    /// Check if the file has been modified externally since we last loaded/saved it
+    pub fn has_external_changes(&self) -> bool {
+        let Some(ref path) = self.path else {
+            return false;
+        };
+        let Some(last_mtime) = self.last_mtime else {
+            return false;
+        };
+
+        if let Ok(metadata) = std::fs::metadata(path) {
+            if let Ok(current_mtime) = metadata.modified() {
+                return current_mtime > last_mtime;
+            }
+        }
+        false
+    }
+
+    /// Reload buffer content from disk
+    pub fn reload(&mut self) -> anyhow::Result<()> {
+        let path = self
+            .path
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No file path set"))?;
+
+        if path.exists() {
+            self.text = Rope::from_reader(std::fs::File::open(path)?)?;
+            self.last_mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
+            self.dirty = false;
+            self.version = self.version.wrapping_add(1);
+        }
         Ok(())
     }
 

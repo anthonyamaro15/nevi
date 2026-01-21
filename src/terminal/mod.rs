@@ -15,6 +15,14 @@ use crate::config::LeaderAction;
 use crate::syntax::HighlightSpan;
 use crate::lsp::types::{CompletionKind, Diagnostic, DiagnosticSeverity};
 
+/// Events from the terminal that the editor cares about
+pub enum EditorEvent {
+    /// A key press
+    Key(KeyEvent),
+    /// Terminal gained focus (for autoread)
+    FocusGained,
+}
+
 /// Section types for hover content parsing
 enum HoverSection {
     #[allow(dead_code)]
@@ -145,7 +153,8 @@ impl Terminal {
         execute!(
             stdout,
             terminal::EnterAlternateScreen,
-            cursor::Hide
+            cursor::Hide,
+            event::EnableFocusChange
         )?;
 
         Ok(Self { stdout })
@@ -3547,7 +3556,18 @@ impl Terminal {
         None
     }
 
+    /// Read an event (blocking for the next event)
+    /// Returns EditorEvent for key presses and focus changes
+    pub fn read_event(&self) -> anyhow::Result<Option<EditorEvent>> {
+        match event::read()? {
+            Event::Key(key_event) => Ok(Some(EditorEvent::Key(key_event))),
+            Event::FocusGained => Ok(Some(EditorEvent::FocusGained)),
+            _ => Ok(None),
+        }
+    }
+
     /// Read a key event (blocking for the next event)
+    /// Deprecated: prefer read_event() for autoread support
     pub fn read_key(&self) -> anyhow::Result<Option<KeyEvent>> {
         if let Event::Key(key_event) = event::read()? {
             Ok(Some(key_event))
@@ -3568,6 +3588,7 @@ impl Drop for Terminal {
         // Restore terminal state
         let _ = execute!(
             self.stdout,
+            event::DisableFocusChange,
             cursor::SetCursorStyle::DefaultUserShape,
             cursor::Show,
             terminal::LeaveAlternateScreen

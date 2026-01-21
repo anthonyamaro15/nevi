@@ -9,7 +9,7 @@ use nevi::copilot::{
 };
 use nevi::editor::{CopilotAction, CopilotGhostText, LspAction};
 use nevi::lsp;
-use nevi::terminal::{handle_key, execute_leader_action};
+use nevi::terminal::{execute_leader_action, handle_key, EditorEvent};
 use nevi::{
     load_config, AutosaveMode, Editor, LanguageId, LspNotification, Mode, MultiLspManager, Terminal,
 };
@@ -648,7 +648,21 @@ fn main() -> anyhow::Result<()> {
 
         if terminal.poll_key(poll_timeout)? {
             let prev_version = editor.buffer().version();
-            if let Some(key) = terminal.read_key()? {
+            if let Some(event) = terminal.read_event()? {
+                // Handle focus gained for autoread
+                let key = match event {
+                    EditorEvent::FocusGained => {
+                        // Check all open buffers for external changes
+                        let reload_result = editor.check_and_reload_external_changes();
+                        if let Some(msg) = reload_result {
+                            editor.set_status(msg);
+                            needs_redraw = true;
+                        }
+                        continue; // No key to handle
+                    }
+                    EditorEvent::Key(k) => k,
+                };
+
                 // Dismiss hover popup on any key press
                 editor.hover_content = None;
                 // Dismiss diagnostic float on any key press (it can be reopened with gl)
@@ -729,7 +743,10 @@ fn main() -> anyhow::Result<()> {
                                     }
                                     LspAction::Formatting => {
                                         editor.pending_format = true;
-                                        let _ = mlsp.formatting(&path, editor.settings.editor.tab_width as u32);
+                                        let _ = mlsp.formatting(
+                                            &path,
+                                            editor.settings.editor.tab_width as u32,
+                                        );
                                     }
                                     LspAction::FindReferences => {
                                         let _ = mlsp.references(&path, line, col);
