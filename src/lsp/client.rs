@@ -958,6 +958,7 @@ fn handle_notification(method: &str, params: Option<Value>) -> Option<LspNotific
 
                     Some(Diagnostic {
                         line: start.get("line")?.as_u64()? as usize,
+                        end_line: end.get("line")?.as_u64()? as usize,
                         col_start: start.get("character")?.as_u64()? as usize,
                         col_end: end.get("character")?.as_u64()? as usize,
                         severity,

@@ -1,6 +1,30 @@
 use crossterm::style::Color;
 use std::collections::HashMap;
 
+/// Syntax highlighting style (color + attributes)
+#[derive(Debug, Clone, Copy)]
+pub struct SyntaxStyle {
+    pub fg: Color,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+impl SyntaxStyle {
+    pub fn new(fg: Color) -> Self {
+        Self { fg, bold: false, italic: false }
+    }
+
+    pub fn with_italic(mut self) -> Self {
+        self.italic = true;
+        self
+    }
+
+    pub fn with_bold(mut self) -> Self {
+        self.bold = true;
+        self
+    }
+}
+
 /// Highlight group names used by tree-sitter queries
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HighlightGroup {
@@ -52,43 +76,54 @@ impl HighlightGroup {
 #[derive(Debug, Clone)]
 pub struct Theme {
     pub name: String,
-    colors: HashMap<HighlightGroup, Color>,
+    styles: HashMap<HighlightGroup, SyntaxStyle>,
 }
 
 impl Theme {
     /// Create the default "One Dark" inspired theme
     pub fn default_theme() -> Self {
-        let mut colors = HashMap::new();
+        let mut styles = HashMap::new();
 
         // One Dark inspired colors
-        colors.insert(HighlightGroup::Keyword, Color::Rgb { r: 198, g: 120, b: 221 });    // Purple
-        colors.insert(HighlightGroup::Function, Color::Rgb { r: 97, g: 175, b: 239 });    // Blue
-        colors.insert(HighlightGroup::Type, Color::Rgb { r: 229, g: 192, b: 123 });       // Yellow
-        colors.insert(HighlightGroup::String, Color::Rgb { r: 152, g: 195, b: 121 });     // Green
-        colors.insert(HighlightGroup::Number, Color::Rgb { r: 209, g: 154, b: 102 });     // Orange
-        colors.insert(HighlightGroup::Comment, Color::Rgb { r: 92, g: 99, b: 112 });      // Gray
-        colors.insert(HighlightGroup::Operator, Color::Rgb { r: 86, g: 182, b: 194 });    // Cyan
-        colors.insert(HighlightGroup::Punctuation, Color::Rgb { r: 171, g: 178, b: 191 }); // Light gray
-        colors.insert(HighlightGroup::Variable, Color::Rgb { r: 224, g: 108, b: 117 });   // Red
-        colors.insert(HighlightGroup::Constant, Color::Rgb { r: 209, g: 154, b: 102 });   // Orange
-        colors.insert(HighlightGroup::Attribute, Color::Rgb { r: 229, g: 192, b: 123 });  // Yellow
-        colors.insert(HighlightGroup::Namespace, Color::Rgb { r: 97, g: 175, b: 239 });   // Blue
-        colors.insert(HighlightGroup::Label, Color::Rgb { r: 224, g: 108, b: 117 });      // Red
-        colors.insert(HighlightGroup::Property, Color::Rgb { r: 224, g: 108, b: 117 });   // Red
-        colors.insert(HighlightGroup::Tag, Color::Rgb { r: 224, g: 108, b: 117 });        // Red (JSX/HTML tags)
+        styles.insert(HighlightGroup::Keyword, SyntaxStyle::new(Color::Rgb { r: 198, g: 120, b: 221 }));    // Purple
+        styles.insert(HighlightGroup::Function, SyntaxStyle::new(Color::Rgb { r: 97, g: 175, b: 239 }));    // Blue
+        styles.insert(HighlightGroup::Type, SyntaxStyle::new(Color::Rgb { r: 229, g: 192, b: 123 }));       // Yellow
+        styles.insert(HighlightGroup::String, SyntaxStyle::new(Color::Rgb { r: 152, g: 195, b: 121 }));     // Green
+        styles.insert(HighlightGroup::Number, SyntaxStyle::new(Color::Rgb { r: 209, g: 154, b: 102 }));     // Orange
+        styles.insert(HighlightGroup::Comment, SyntaxStyle::new(Color::Rgb { r: 92, g: 99, b: 112 }).with_italic());  // Gray, italic
+        styles.insert(HighlightGroup::Operator, SyntaxStyle::new(Color::Rgb { r: 86, g: 182, b: 194 }));    // Cyan
+        styles.insert(HighlightGroup::Punctuation, SyntaxStyle::new(Color::Rgb { r: 171, g: 178, b: 191 })); // Light gray
+        styles.insert(HighlightGroup::Variable, SyntaxStyle::new(Color::Rgb { r: 224, g: 108, b: 117 }));   // Red
+        styles.insert(HighlightGroup::Constant, SyntaxStyle::new(Color::Rgb { r: 209, g: 154, b: 102 }));   // Orange
+        styles.insert(HighlightGroup::Attribute, SyntaxStyle::new(Color::Rgb { r: 229, g: 192, b: 123 }));  // Yellow
+        styles.insert(HighlightGroup::Namespace, SyntaxStyle::new(Color::Rgb { r: 97, g: 175, b: 239 }));   // Blue
+        styles.insert(HighlightGroup::Label, SyntaxStyle::new(Color::Rgb { r: 224, g: 108, b: 117 }));      // Red
+        styles.insert(HighlightGroup::Property, SyntaxStyle::new(Color::Rgb { r: 224, g: 108, b: 117 }));   // Red
+        styles.insert(HighlightGroup::Tag, SyntaxStyle::new(Color::Rgb { r: 224, g: 108, b: 117 }));        // Red (JSX/HTML tags)
 
         Self {
             name: "default".to_string(),
-            colors,
+            styles,
         }
     }
 
-    /// Get the color for a highlight group
-    pub fn get_color(&self, group: HighlightGroup) -> Option<Color> {
-        self.colors.get(&group).copied()
+    /// Get the style for a highlight group
+    pub fn get_style(&self, group: HighlightGroup) -> Option<SyntaxStyle> {
+        self.styles.get(&group).copied()
     }
 
-    /// Get the color for a capture name (convenience method)
+    /// Get the color for a highlight group (for backwards compatibility)
+    pub fn get_color(&self, group: HighlightGroup) -> Option<Color> {
+        self.styles.get(&group).map(|s| s.fg)
+    }
+
+    /// Get the style for a capture name
+    pub fn get_style_for_capture(&self, capture_name: &str) -> Option<SyntaxStyle> {
+        HighlightGroup::from_capture_name(capture_name)
+            .and_then(|group| self.get_style(group))
+    }
+
+    /// Get the color for a capture name (for backwards compatibility)
     pub fn get_color_for_capture(&self, capture_name: &str) -> Option<Color> {
         HighlightGroup::from_capture_name(capture_name)
             .and_then(|group| self.get_color(group))
@@ -104,27 +139,34 @@ impl Default for Theme {
 impl Theme {
     /// Create a syntax theme from the UI theme system
     pub fn from_ui_theme(ui_theme: &crate::theme::Theme) -> Self {
-        let mut colors = HashMap::new();
+        let mut styles = HashMap::new();
 
-        colors.insert(HighlightGroup::Keyword, ui_theme.syntax.keyword.fg);
-        colors.insert(HighlightGroup::Function, ui_theme.syntax.function.fg);
-        colors.insert(HighlightGroup::Type, ui_theme.syntax.type_.fg);
-        colors.insert(HighlightGroup::String, ui_theme.syntax.string.fg);
-        colors.insert(HighlightGroup::Number, ui_theme.syntax.number.fg);
-        colors.insert(HighlightGroup::Comment, ui_theme.syntax.comment.fg);
-        colors.insert(HighlightGroup::Operator, ui_theme.syntax.operator.fg);
-        colors.insert(HighlightGroup::Punctuation, ui_theme.syntax.punctuation.fg);
-        colors.insert(HighlightGroup::Variable, ui_theme.syntax.variable.fg);
-        colors.insert(HighlightGroup::Constant, ui_theme.syntax.constant.fg);
-        colors.insert(HighlightGroup::Attribute, ui_theme.syntax.attribute.fg);
-        colors.insert(HighlightGroup::Namespace, ui_theme.syntax.namespace.fg);
-        colors.insert(HighlightGroup::Label, ui_theme.syntax.label.fg);
-        colors.insert(HighlightGroup::Property, ui_theme.syntax.property.fg);
-        colors.insert(HighlightGroup::Tag, ui_theme.syntax.tag.fg);
+        // Helper to convert StyleDef to SyntaxStyle
+        let convert = |def: &crate::theme::StyleDef| SyntaxStyle {
+            fg: def.fg,
+            bold: def.bold,
+            italic: def.italic,
+        };
+
+        styles.insert(HighlightGroup::Keyword, convert(&ui_theme.syntax.keyword));
+        styles.insert(HighlightGroup::Function, convert(&ui_theme.syntax.function));
+        styles.insert(HighlightGroup::Type, convert(&ui_theme.syntax.type_));
+        styles.insert(HighlightGroup::String, convert(&ui_theme.syntax.string));
+        styles.insert(HighlightGroup::Number, convert(&ui_theme.syntax.number));
+        styles.insert(HighlightGroup::Comment, convert(&ui_theme.syntax.comment));
+        styles.insert(HighlightGroup::Operator, convert(&ui_theme.syntax.operator));
+        styles.insert(HighlightGroup::Punctuation, convert(&ui_theme.syntax.punctuation));
+        styles.insert(HighlightGroup::Variable, convert(&ui_theme.syntax.variable));
+        styles.insert(HighlightGroup::Constant, convert(&ui_theme.syntax.constant));
+        styles.insert(HighlightGroup::Attribute, convert(&ui_theme.syntax.attribute));
+        styles.insert(HighlightGroup::Namespace, convert(&ui_theme.syntax.namespace));
+        styles.insert(HighlightGroup::Label, convert(&ui_theme.syntax.label));
+        styles.insert(HighlightGroup::Property, convert(&ui_theme.syntax.property));
+        styles.insert(HighlightGroup::Tag, convert(&ui_theme.syntax.tag));
 
         Self {
             name: ui_theme.name.clone(),
-            colors,
+            styles,
         }
     }
 }
