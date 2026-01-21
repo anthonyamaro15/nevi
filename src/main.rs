@@ -29,6 +29,14 @@ fn main() -> anyhow::Result<()> {
     // Initialize editor with settings
     let mut editor = Editor::new(settings);
 
+    // Display any startup errors (config parse errors, etc.)
+    let startup_errors = editor.take_startup_errors();
+    if !startup_errors.is_empty() {
+        // Join multiple errors with semicolons for display
+        let error_msg = startup_errors.join("; ");
+        editor.set_status(format!("Config errors: {}", error_msg));
+    }
+
     // Check command line argument - could be file or directory
     let arg_path = env::args().nth(1).map(PathBuf::from);
     let mut initial_file: Option<PathBuf> = None;

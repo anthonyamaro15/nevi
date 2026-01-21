@@ -209,9 +209,21 @@ fn parse_style(style_toml: &Option<StyleToml>, palette: &HashMap<String, String>
     }
 }
 
-/// Load a theme from TOML content
+/// Load a theme from TOML content (returns Result for error reporting)
+pub fn try_load_theme_from_toml(name: &str, content: &str) -> Result<Theme, String> {
+    let toml: ThemeToml = toml::from_str(content)
+        .map_err(|e| format!("Theme '{}': {}", name, e))?;
+    Ok(load_theme_from_toml_inner(name, &toml))
+}
+
+/// Load a theme from TOML content (returns Option, for bundled themes)
 pub fn load_theme_from_toml(name: &str, content: &str) -> Option<Theme> {
     let toml: ThemeToml = toml::from_str(content).ok()?;
+    Some(load_theme_from_toml_inner(name, &toml))
+}
+
+/// Internal helper to build theme from parsed TOML
+fn load_theme_from_toml_inner(name: &str, toml: &ThemeToml) -> Theme {
     let palette = &toml.palette;
 
     // Get base theme for defaults
@@ -385,13 +397,13 @@ pub fn load_theme_from_toml(name: &str, content: &str) -> Option<Theme> {
             .unwrap_or(base.git.deleted),
     };
 
-    Some(Theme {
+    Theme {
         name: name.to_string(),
         syntax,
         ui,
         diagnostic,
         git,
-    })
+    }
 }
 
 /// Get the user themes directory path
@@ -400,23 +412,33 @@ pub fn user_themes_dir() -> Option<PathBuf> {
 }
 
 /// Load all user themes from ~/.config/nevi/themes/
-pub fn load_user_themes() -> Option<Vec<Theme>> {
-    let themes_dir = user_themes_dir()?;
+/// Returns (themes, errors) tuple
+pub fn load_user_themes() -> (Vec<Theme>, Vec<String>) {
+    let Some(themes_dir) = user_themes_dir() else {
+        return (Vec::new(), Vec::new());
+    };
 
     if !themes_dir.exists() {
-        return Some(Vec::new());
+        return (Vec::new(), Vec::new());
     }
 
     let mut themes = Vec::new();
+    let mut errors = Vec::new();
 
     if let Ok(entries) = std::fs::read_dir(&themes_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().map(|e| e == "toml").unwrap_or(false) {
                 if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        if let Some(theme) = load_theme_from_toml(name, &content) {
-                            themes.push(theme);
+                    match std::fs::read_to_string(&path) {
+                        Ok(content) => {
+                            match try_load_theme_from_toml(name, &content) {
+                                Ok(theme) => themes.push(theme),
+                                Err(e) => errors.push(e),
+                            }
+                        }
+                        Err(e) => {
+                            errors.push(format!("Theme '{}': failed to read file: {}", name, e));
                         }
                     }
                 }
@@ -424,5 +446,5 @@ pub fn load_user_themes() -> Option<Vec<Theme>> {
         }
     }
 
-    Some(themes)
+    (themes, errors)
 }
