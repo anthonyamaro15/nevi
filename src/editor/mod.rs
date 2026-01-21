@@ -2697,6 +2697,57 @@ impl Editor {
         }
     }
 
+    /// Check for external changes to open buffers and reload if safe
+    /// Returns a status message if any action was taken
+    pub fn check_and_reload_external_changes(&mut self) -> Option<String> {
+        let mut reloaded = Vec::new();
+        let mut warnings = Vec::new();
+
+        for buffer in self.buffers.iter_mut() {
+            if buffer.has_external_changes() {
+                if let Some(path) = &buffer.path {
+                    let name = path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("file")
+                        .to_string();
+
+                    if !buffer.dirty {
+                        // Buffer is clean, safe to auto-reload
+                        if buffer.reload().is_ok() {
+                            reloaded.push(name);
+                        }
+                    } else {
+                        // Buffer has unsaved changes, warn user
+                        warnings.push(name);
+                    }
+                }
+            }
+        }
+
+        // Re-parse current buffer if it was reloaded
+        if !reloaded.is_empty() {
+            self.parse_current_buffer();
+        }
+
+        // Build status message
+        if !reloaded.is_empty() && !warnings.is_empty() {
+            Some(format!(
+                "Reloaded: {}. Warning: {} changed externally (unsaved)",
+                reloaded.join(", "),
+                warnings.join(", ")
+            ))
+        } else if !reloaded.is_empty() {
+            Some(format!("Reloaded: {}", reloaded.join(", ")))
+        } else if !warnings.is_empty() {
+            Some(format!(
+                "Warning: {} changed externally (unsaved changes)",
+                warnings.join(", ")
+            ))
+        } else {
+            None
+        }
+    }
+
     /// Check if buffer has unsaved changes
     pub fn has_unsaved_changes(&self) -> bool {
         self.buffers[self.current_buffer_idx].dirty
