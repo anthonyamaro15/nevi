@@ -44,6 +44,8 @@ pub struct Registers {
     small_delete: Option<RegisterContent>,
     /// Numbered registers 1-9 (for delete history)
     numbered: [Option<RegisterContent>; 9],
+    /// Last clipboard error (for display to user)
+    clipboard_error: Option<String>,
 }
 
 impl Registers {
@@ -83,27 +85,52 @@ impl Registers {
     }
 
     /// Get content from the system clipboard
-    pub fn get_clipboard(&self) -> Option<RegisterContent> {
-        if let Ok(mut clipboard) = Clipboard::new() {
-            if let Ok(text) = clipboard.get_text() {
-                if !text.is_empty() {
-                    // Determine if it's line-wise (ends with newline)
-                    if text.ends_with('\n') {
-                        return Some(RegisterContent::Lines(text));
-                    } else {
-                        return Some(RegisterContent::Chars(text));
+    pub fn get_clipboard(&mut self) -> Option<RegisterContent> {
+        match Clipboard::new() {
+            Ok(mut clipboard) => {
+                match clipboard.get_text() {
+                    Ok(text) if !text.is_empty() => {
+                        self.clipboard_error = None;
+                        // Determine if it's line-wise (ends with newline)
+                        if text.ends_with('\n') {
+                            Some(RegisterContent::Lines(text))
+                        } else {
+                            Some(RegisterContent::Chars(text))
+                        }
+                    }
+                    Ok(_) => None, // Empty clipboard
+                    Err(e) => {
+                        self.clipboard_error = Some(format!("Clipboard read failed: {}", e));
+                        None
                     }
                 }
             }
+            Err(e) => {
+                self.clipboard_error = Some(format!("Clipboard unavailable: {}", e));
+                None
+            }
         }
-        None
     }
 
     /// Set content to the system clipboard
     pub fn set_clipboard(&mut self, content: &RegisterContent) {
-        if let Ok(mut clipboard) = Clipboard::new() {
-            let _ = clipboard.set_text(content.as_str().to_string());
+        match Clipboard::new() {
+            Ok(mut clipboard) => {
+                if let Err(e) = clipboard.set_text(content.as_str().to_string()) {
+                    self.clipboard_error = Some(format!("Clipboard write failed: {}", e));
+                } else {
+                    self.clipboard_error = None;
+                }
+            }
+            Err(e) => {
+                self.clipboard_error = Some(format!("Clipboard unavailable: {}", e));
+            }
         }
+    }
+
+    /// Take any clipboard error (clears it after returning)
+    pub fn take_clipboard_error(&mut self) -> Option<String> {
+        self.clipboard_error.take()
     }
 
     /// Set the content of a register
@@ -223,7 +250,7 @@ impl Registers {
     /// Get content for a register, including clipboard support
     /// This is the main method to use for getting register content
     /// Note: For unnamed register, checks system clipboard first for modern UX
-    pub fn get_content(&self, name: Option<char>) -> Option<RegisterContent> {
+    pub fn get_content(&mut self, name: Option<char>) -> Option<RegisterContent> {
         if is_clipboard_register(name) {
             self.get_clipboard()
         } else if name.is_none() || name == Some('"') {

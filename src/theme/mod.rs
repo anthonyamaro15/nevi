@@ -327,12 +327,13 @@ impl ThemeManager {
     }
 
     /// Load user themes from ~/.config/nevi/themes/
-    pub fn load_user_themes(&mut self) {
-        if let Some(themes) = loader::load_user_themes() {
-            for theme in themes {
-                self.available.insert(theme.name.clone(), theme);
-            }
+    /// Returns any errors that occurred during theme loading
+    pub fn load_user_themes(&mut self) -> Vec<String> {
+        let (themes, errors) = loader::load_user_themes();
+        for theme in themes {
+            self.available.insert(theme.name.clone(), theme);
         }
+        errors
     }
 
     /// Get list of available theme names

@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 /// Default interval for grouping edits (300ms)
@@ -90,10 +91,10 @@ impl UndoEntry {
 /// Manages the undo/redo history
 #[derive(Debug, Clone)]
 pub struct UndoStack {
-    /// Stack of undoable entries
-    undo_stack: Vec<UndoEntry>,
+    /// Stack of undoable entries (VecDeque for O(1) front removal during trimming)
+    undo_stack: VecDeque<UndoEntry>,
     /// Stack of redoable entries
-    redo_stack: Vec<UndoEntry>,
+    redo_stack: VecDeque<UndoEntry>,
     /// Current entry being built (during editing)
     current_entry: Option<UndoEntry>,
     /// Maximum number of undo entries to keep
@@ -107,8 +108,8 @@ pub struct UndoStack {
 impl Default for UndoStack {
     fn default() -> Self {
         Self {
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
             current_entry: None,
             max_entries: 1000,
             last_edit_time: None,
@@ -148,12 +149,12 @@ impl UndoStack {
         if let Some(mut entry) = self.current_entry.take() {
             if !entry.is_empty() {
                 entry.set_cursor_after(cursor_line, cursor_col);
-                self.undo_stack.push(entry);
+                self.undo_stack.push_back(entry);
                 // Clear redo stack when new changes are made
                 self.redo_stack.clear();
-                // Trim if too many entries
+                // Trim if too many entries - O(1) with VecDeque
                 while self.undo_stack.len() > self.max_entries {
-                    self.undo_stack.remove(0);
+                    self.undo_stack.pop_front();
                 }
             }
         }
@@ -172,7 +173,7 @@ impl UndoStack {
             // No group started, create a single-change entry
             let mut entry = UndoEntry::new(0, 0);
             entry.push(change);
-            self.undo_stack.push(entry);
+            self.undo_stack.push_back(entry);
             self.redo_stack.clear();
         }
     }
@@ -185,13 +186,13 @@ impl UndoStack {
         // First finalize any current entry
         if let Some(entry) = self.current_entry.take() {
             if !entry.is_empty() {
-                self.undo_stack.push(entry);
+                self.undo_stack.push_back(entry);
             }
         }
 
-        if let Some(entry) = self.undo_stack.pop() {
+        if let Some(entry) = self.undo_stack.pop_back() {
             // Move to redo stack
-            self.redo_stack.push(entry.clone());
+            self.redo_stack.push_back(entry.clone());
             Some(entry)
         } else {
             None
@@ -203,9 +204,9 @@ impl UndoStack {
         // Reset timing - redo operation breaks the edit sequence
         self.last_edit_time = None;
 
-        if let Some(entry) = self.redo_stack.pop() {
+        if let Some(entry) = self.redo_stack.pop_back() {
             // Move back to undo stack
-            self.undo_stack.push(entry.clone());
+            self.undo_stack.push_back(entry.clone());
             Some(entry)
         } else {
             None

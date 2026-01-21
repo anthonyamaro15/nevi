@@ -263,6 +263,24 @@ fn run_lsp_thread(
         client::read_messages(stdout, notification_tx_clone, pending, stdin);
     });
 
+    // Spawn stderr reader thread to capture LSP server errors
+    if let Some(stderr) = client.take_stderr() {
+        let notification_tx_stderr = notification_tx.clone();
+        thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    if !line.trim().is_empty() {
+                        let _ = notification_tx_stderr.send(LspNotification::Error {
+                            message: format!("LSP stderr: {}", line),
+                        });
+                    }
+                }
+            }
+        });
+    }
+
     // Send initialize request (automatically tracked in pending map)
     if let Err(e) = client.initialize(&root_path) {
         let _ = notification_tx.send(LspNotification::Error {

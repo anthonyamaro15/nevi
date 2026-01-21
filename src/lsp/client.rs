@@ -104,7 +104,7 @@ impl LspClient {
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| anyhow!("Failed to spawn LSP server '{}': {}", command, e))?;
 
@@ -131,6 +131,11 @@ impl LspClient {
     /// Get stdout for reading responses
     pub fn take_stdout(&mut self) -> Option<ChildStdout> {
         self.process.stdout.take()
+    }
+
+    /// Get stderr for reading error output
+    pub fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
+        self.process.stderr.take()
     }
 
     /// Send initialize request

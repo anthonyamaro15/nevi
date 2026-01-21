@@ -39,30 +39,56 @@ impl Default for KeymapLookup {
 }
 
 impl KeymapLookup {
-    /// Build lookup tables from settings
-    pub fn from_settings(settings: &KeymapSettings) -> Self {
+    /// Build lookup tables from settings, returning any parse errors
+    pub fn from_settings(settings: &KeymapSettings) -> (Self, Vec<String>) {
         let mut normal = HashMap::new();
         let mut insert = HashMap::new();
+        let mut errors = Vec::new();
 
         for entry in &settings.normal {
             if let Some(from) = parse_key_notation(&entry.from) {
                 // Parse the 'to' field as an action (command or keys)
                 let action = parse_action(&entry.to);
                 normal.insert(from, action);
+            } else {
+                errors.push(format!(
+                    "Keymap: invalid normal mode key '{}'",
+                    entry.from
+                ));
             }
         }
 
         for entry in &settings.insert {
-            if let (Some(from), Some(to)) = (
+            match (
                 parse_key_notation(&entry.from),
                 parse_key_notation(&entry.to),
             ) {
-                insert.insert(from, to);
+                (Some(from), Some(to)) => {
+                    insert.insert(from, to);
+                }
+                (None, _) => {
+                    errors.push(format!(
+                        "Keymap: invalid insert mode 'from' key '{}'",
+                        entry.from
+                    ));
+                }
+                (_, None) => {
+                    errors.push(format!(
+                        "Keymap: invalid insert mode 'to' key '{}'",
+                        entry.to
+                    ));
+                }
             }
         }
 
         // Parse leader key
         let leader_key = parse_key_notation(&settings.leader);
+        if leader_key.is_none() && !settings.leader.is_empty() {
+            errors.push(format!(
+                "Keymap: invalid leader key '{}'",
+                settings.leader
+            ));
+        }
 
         // Parse leader mappings
         let mut leader_mappings = HashMap::new();
@@ -71,12 +97,15 @@ impl KeymapLookup {
             leader_mappings.insert(mapping.key.clone(), action);
         }
 
-        Self {
-            normal,
-            insert,
-            leader_key,
-            leader_mappings,
-        }
+        (
+            Self {
+                normal,
+                insert,
+                leader_key,
+                leader_mappings,
+            },
+            errors,
+        )
     }
 
     /// Get the normal mode mapping for a key, if one exists
@@ -340,7 +369,8 @@ mod tests {
             ],
         };
 
-        let lookup = KeymapLookup::from_settings(&settings);
+        let (lookup, errors) = KeymapLookup::from_settings(&settings);
+        assert!(errors.is_empty(), "Should have no errors");
         let space_key = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
 
         assert!(lookup.has_leader_mappings(), "Should have leader mappings");
@@ -368,7 +398,8 @@ mod tests {
             ],
         };
 
-        let lookup = KeymapLookup::from_settings(&settings);
+        let (lookup, errors) = KeymapLookup::from_settings(&settings);
+        assert!(errors.is_empty(), "Should have no errors");
 
         // Simulate a space key press from crossterm
         let space_key = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);

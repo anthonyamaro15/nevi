@@ -688,6 +688,8 @@ pub struct Editor {
     pub last_insert_position: Option<(usize, usize)>,
     /// Language-specific configuration (formatters, tab_width overrides)
     pub languages_config: crate::config::LanguagesConfig,
+    /// Startup errors/warnings to display to user (config parse errors, etc.)
+    startup_errors: Vec<String>,
 }
 
 /// Copilot ghost text state for rendering
@@ -872,14 +874,18 @@ impl ThemePicker {
 
 impl Editor {
     pub fn new(settings: Settings) -> Self {
-        let keymap = KeymapLookup::from_settings(&settings.keymap);
+        let (keymap, keymap_errors) = KeymapLookup::from_settings(&settings.keymap);
         let finder = FuzzyFinder::from_settings(&settings.finder);
 
         // Initialize theme manager with bundled + user themes
         let mut theme_manager = ThemeManager::new();
-        theme_manager.load_user_themes();
+        let theme_errors = theme_manager.load_user_themes();
         // Set initial theme from config
         theme_manager.set_theme(&settings.theme.colorscheme);
+
+        // Collect startup errors from config parsing
+        let mut startup_errors = keymap_errors;
+        startup_errors.extend(theme_errors);
 
         // Create syntax manager and sync it with the UI theme
         let mut syntax = SyntaxManager::new();
@@ -944,6 +950,19 @@ impl Editor {
             macros: MacroState::new(),
             last_insert_position: None,
             languages_config: crate::config::load_languages_config(),
+            startup_errors,
+        }
+    }
+
+    /// Take any startup errors (clears them after returning)
+    pub fn take_startup_errors(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.startup_errors)
+    }
+
+    /// Check for and display any clipboard errors via status message
+    pub fn check_clipboard_error(&mut self) {
+        if let Some(err) = self.registers.take_clipboard_error() {
+            self.set_status(err);
         }
     }
 
@@ -2114,6 +2133,7 @@ impl Editor {
 
             self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
         }
+        self.check_clipboard_error();
     }
 
     /// Paste before cursor from a register
@@ -2161,6 +2181,7 @@ impl Editor {
 
             self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
         }
+        self.check_clipboard_error();
     }
 
     /// Enter insert mode
