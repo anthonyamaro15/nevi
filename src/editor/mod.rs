@@ -1216,10 +1216,11 @@ impl Editor {
     }
 
     /// Get diagnostics for a specific line in the current buffer
+    /// Handles multi-line diagnostics by checking if line falls within range
     pub fn diagnostics_for_line(&self, line: usize) -> Vec<&Diagnostic> {
         self.current_diagnostics()
             .iter()
-            .filter(|d| d.line == line)
+            .filter(|d| line >= d.line && line <= d.end_line)
             .collect()
     }
 

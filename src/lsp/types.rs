@@ -311,6 +311,7 @@ pub struct ParameterInfo {
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub line: usize,
+    pub end_line: usize,
     pub col_start: usize,
     pub col_end: usize,
     pub severity: DiagnosticSeverity,
