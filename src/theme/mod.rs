@@ -329,6 +329,9 @@ impl ThemeManager {
     /// Load user themes from ~/.config/nevi/themes/
     /// Returns any errors that occurred during theme loading
     pub fn load_user_themes(&mut self) -> Vec<String> {
+        // Ensure themes directory and template exist
+        loader::ensure_themes_dir_exists();
+
         let (themes, errors) = loader::load_user_themes();
         for theme in themes {
             self.available.insert(theme.name.clone(), theme);
