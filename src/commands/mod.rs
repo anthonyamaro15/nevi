@@ -401,9 +401,24 @@ impl CommandLine {
         self.saved_input = None;
     }
 
-    /// Insert a character at the cursor position
+    /// Convert char index to byte index
+    fn char_to_byte_index(&self, char_idx: usize) -> usize {
+        self.input
+            .char_indices()
+            .nth(char_idx)
+            .map(|(byte_idx, _)| byte_idx)
+            .unwrap_or(self.input.len())
+    }
+
+    /// Get the number of characters in the input
+    fn char_count(&self) -> usize {
+        self.input.chars().count()
+    }
+
+    /// Insert a character at the cursor position (cursor is char index)
     pub fn insert_char(&mut self, ch: char) {
-        self.input.insert(self.cursor, ch);
+        let byte_idx = self.char_to_byte_index(self.cursor);
+        self.input.insert(byte_idx, ch);
         self.cursor += 1;
     }
 
@@ -411,14 +426,16 @@ impl CommandLine {
     pub fn delete_char_before(&mut self) {
         if self.cursor > 0 {
             self.cursor -= 1;
-            self.input.remove(self.cursor);
+            let byte_idx = self.char_to_byte_index(self.cursor);
+            self.input.remove(byte_idx);
         }
     }
 
     /// Delete character at cursor (delete key)
     pub fn delete_char_at(&mut self) {
-        if self.cursor < self.input.len() {
-            self.input.remove(self.cursor);
+        if self.cursor < self.char_count() {
+            let byte_idx = self.char_to_byte_index(self.cursor);
+            self.input.remove(byte_idx);
         }
     }
 
@@ -431,7 +448,7 @@ impl CommandLine {
 
     /// Move cursor right
     pub fn move_right(&mut self) {
-        if self.cursor < self.input.len() {
+        if self.cursor < self.char_count() {
             self.cursor += 1;
         }
     }
@@ -443,7 +460,7 @@ impl CommandLine {
 
     /// Move cursor to end
     pub fn move_to_end(&mut self) {
-        self.cursor = self.input.len();
+        self.cursor = self.char_count();
     }
 
     /// Navigate to previous history entry
@@ -465,7 +482,7 @@ impl CommandLine {
             }
             _ => {}
         }
-        self.cursor = self.input.len();
+        self.cursor = self.char_count();
     }
 
     /// Navigate to next history entry
@@ -482,7 +499,7 @@ impl CommandLine {
                         self.input = saved;
                     }
                 }
-                self.cursor = self.input.len();
+                self.cursor = self.char_count();
             }
             None => {}
         }

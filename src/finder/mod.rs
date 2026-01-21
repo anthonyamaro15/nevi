@@ -244,6 +244,20 @@ impl FuzzyFinder {
         self.input_mode == FinderInputMode::Normal
     }
 
+    /// Convert char index to byte index for string operations
+    fn char_to_byte_index(&self, char_idx: usize) -> usize {
+        self.query
+            .char_indices()
+            .nth(char_idx)
+            .map(|(byte_idx, _)| byte_idx)
+            .unwrap_or(self.query.len())
+    }
+
+    /// Get the number of characters in the query
+    fn char_count(&self) -> usize {
+        self.query.chars().count()
+    }
+
     /// Get icon for a file based on extension
     /// Uses 2-character type indicators for consistent terminal width
     pub fn get_file_icon(path: &std::path::Path) -> &'static str {
@@ -330,7 +344,8 @@ impl FuzzyFinder {
     pub fn insert_char(&mut self, ch: char) {
         // Typing always switches to insert mode
         self.input_mode = FinderInputMode::Insert;
-        self.query.insert(self.cursor, ch);
+        let byte_idx = self.char_to_byte_index(self.cursor);
+        self.query.insert(byte_idx, ch);
         self.cursor += 1;
         self.update_filter();
     }
@@ -339,7 +354,8 @@ impl FuzzyFinder {
     pub fn delete_char_before(&mut self) {
         if self.cursor > 0 {
             self.cursor -= 1;
-            self.query.remove(self.cursor);
+            let byte_idx = self.char_to_byte_index(self.cursor);
+            self.query.remove(byte_idx);
             self.update_filter();
         }
     }
@@ -353,7 +369,7 @@ impl FuzzyFinder {
 
     /// Move cursor right
     pub fn move_right(&mut self) {
-        if self.cursor < self.query.len() {
+        if self.cursor < self.char_count() {
             self.cursor += 1;
         }
     }

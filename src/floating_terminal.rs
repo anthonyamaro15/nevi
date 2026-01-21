@@ -6,7 +6,7 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize, MasterPty, Child}
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::thread::{self, JoinHandle};
 
 /// Terminal buffer size (scrollback)
 const BUFFER_ROWS: usize = 1000;
@@ -35,6 +35,8 @@ pub struct FloatingTerminal {
     child: Option<Box<dyn Child + Send + Sync>>,
     /// Reader thread output buffer
     output_buffer: Arc<Mutex<Vec<u8>>>,
+    /// Reader thread handle (for joining on close)
+    reader_thread: Option<JoinHandle<()>>,
     /// Working directory
     working_dir: PathBuf,
     /// Whether terminal process has exited
@@ -56,6 +58,7 @@ impl FloatingTerminal {
             pty_writer: None,
             child: None,
             output_buffer: Arc::new(Mutex::new(Vec::new())),
+            reader_thread: None,
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             process_exited: false,
         }
@@ -107,7 +110,7 @@ impl FloatingTerminal {
         let mut reader = pair.master.try_clone_reader()?;
         let output_buffer = self.output_buffer.clone();
 
-        thread::spawn(move || {
+        let reader_handle = thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
                 match reader.read(&mut buf) {
@@ -126,6 +129,7 @@ impl FloatingTerminal {
         self.pty_writer = pair.master.take_writer().ok();
         self.pty_master = Some(pair.master);
         self.child = Some(child);
+        self.reader_thread = Some(reader_handle);
         self.process_exited = false;
 
         // Clear buffer for fresh start
@@ -536,11 +540,22 @@ impl FloatingTerminal {
     /// Close the terminal (kill process)
     pub fn close(&mut self) {
         self.visible = false;
+
+        // Kill the child process first
         if let Some(ref mut child) = self.child {
             let _ = child.kill();
         }
         self.child = None;
+
+        // Drop pty_master to signal EOF to the reader thread
         self.pty_master = None;
+        self.pty_writer = None;
+
+        // Join the reader thread to prevent leaks
+        if let Some(handle) = self.reader_thread.take() {
+            let _ = handle.join();
+        }
+
         self.process_exited = true;
     }
 }

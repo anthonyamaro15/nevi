@@ -101,14 +101,26 @@ pub fn save_token(token: &OAuthToken) -> Result<()> {
 
     // Write back with secure permissions (0600 on Unix)
     let content = serde_json::to_string_pretty(&apps)?;
-    std::fs::write(&path, &content)?;
 
-    // Set file permissions to owner-only read/write (0600) on Unix
+    // Use atomic file creation with secure permissions on Unix to avoid TOCTOU race
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let permissions = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(&path, permissions)?;
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(content.as_bytes())?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&path, &content)?;
     }
 
     Ok(())
