@@ -103,6 +103,58 @@ enabled = true
 
 See the generated config file at `~/.config/nevi/config.toml` for all available options with documentation.
 
+## Custom Themes
+
+Nevi comes with 15+ built-in themes. You can also create your own custom themes.
+
+### Built-in Themes
+
+Select a theme with `:theme <name>` or `<Space>ft` to open the theme picker.
+
+Available themes: `onedark`, `dracula`, `gruvbox`, `nord`, `tokyonight`, `catppuccin-mocha`, `rose-pine`, `solarized-dark`, `kanagawa`, `monokai`, `everforest`, `github-dark`, `ayu-dark`, `palenight`, `nightfox`
+
+### Creating Custom Themes
+
+1. **Location:** Place `.toml` files in `~/.config/nevi/themes/`
+2. **Template:** A commented template is auto-generated at `~/.config/nevi/themes/_template.toml`
+3. **Naming:** The filename becomes the theme name (e.g., `mytheme.toml` → `:theme mytheme`)
+
+Copy the template to get started:
+
+```bash
+cp ~/.config/nevi/themes/_template.toml ~/.config/nevi/themes/mytheme.toml
+```
+
+### Theme Structure
+
+```toml
+# Define reusable colors
+[palette]
+red = "#e06c75"
+blue = "#61afef"
+bg = "#282c34"
+
+# Syntax highlighting (can reference palette or use hex)
+[syntax]
+keyword = { fg = "purple" }
+string = { fg = "green" }
+comment = { fg = "gray", italic = true }
+
+# UI elements
+[ui]
+background = "bg"
+foreground = "#abb2bf"
+cursor_line = "#2c313c"
+
+[ui.statusline]
+mode_normal = "blue"
+mode_insert = "green"
+
+# And more: [ui.completion], [ui.finder], [diagnostic], [git]
+```
+
+See `~/.config/nevi/themes/_template.toml` for the complete reference with all available options.
+
 ## Keybindings
 
 Nevi aims for full vim/neovim keybind compatibility. Most common keybindings are already implemented:
