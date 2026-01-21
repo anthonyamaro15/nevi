@@ -6,6 +6,7 @@ use crossterm::{
     style::{SetForegroundColor, SetBackgroundColor, ResetColor, Color, SetAttribute, Attribute, SetUnderlineColor},
 };
 use std::io::{self, Write, Stdout};
+use std::time::Instant;
 
 use crate::editor::{Editor, Mode, PaneDirection, Pane, SplitLayout, LspAction};
 use crate::input::{KeyAction, InsertPosition, Operator, TextObject, TextObjectModifier, TextObjectType};
@@ -3943,6 +3944,8 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         // Escape cancels leader mode
         if key.code == KeyCode::Esc {
             editor.leader_sequence = None;
+            editor.leader_sequence_start = None;
+            editor.leader_pending_action = None;
             editor.clear_status();
             return;
         }
@@ -3952,30 +3955,49 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             sequence.push(c);
             let seq = sequence.clone();
 
+            // New key typed - reset timeout tracking (sequence changed)
+            editor.leader_sequence_start = Some(Instant::now());
+            editor.leader_pending_action = None;
+
             // Check for exact match
-            if let Some(action) = editor.keymap.get_leader_action(&seq) {
-                let action = action.clone();
-                editor.leader_sequence = None;
-                editor.clear_status();
-                execute_leader_action(editor, &action);
-                return;
-            }
+            let exact_match = editor.keymap.get_leader_action(&seq).cloned();
+            let is_prefix = editor.keymap.is_leader_prefix(&seq);
 
-            // Check if this could be a prefix of a longer mapping
-            if editor.keymap.is_leader_prefix(&seq) {
-                // Stay in leader mode, update status to show sequence
-                editor.set_status(format!("<leader>{}", seq));
-                return;
+            match (exact_match, is_prefix) {
+                (Some(action), true) => {
+                    // Exact match AND prefix of longer mapping
+                    // Store pending action and wait for timeout or more input
+                    editor.leader_pending_action = Some(action);
+                    editor.set_status(format!("<leader>{} (waiting...)", seq));
+                }
+                (Some(action), false) => {
+                    // Exact match only, no longer mappings - execute immediately
+                    editor.leader_sequence = None;
+                    editor.leader_sequence_start = None;
+                    editor.leader_pending_action = None;
+                    editor.clear_status();
+                    execute_leader_action(editor, &action);
+                    return;
+                }
+                (None, true) => {
+                    // No exact match but could be prefix - wait for more input
+                    editor.set_status(format!("<leader>{}", seq));
+                }
+                (None, false) => {
+                    // No match and not a prefix - cancel leader mode
+                    editor.leader_sequence = None;
+                    editor.leader_sequence_start = None;
+                    editor.leader_pending_action = None;
+                    editor.clear_status();
+                }
             }
-
-            // No match and not a prefix - cancel leader mode
-            editor.leader_sequence = None;
-            editor.clear_status();
             return;
         }
 
         // Non-character key in leader mode - cancel
         editor.leader_sequence = None;
+        editor.leader_sequence_start = None;
+        editor.leader_pending_action = None;
         editor.clear_status();
         return;
     }
@@ -3984,6 +4006,8 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
     if editor.keymap.has_leader_mappings() {
         if editor.keymap.is_leader_key(key) {
             editor.leader_sequence = Some(String::new());
+            editor.leader_sequence_start = Some(Instant::now());
+            editor.leader_pending_action = None;
             editor.set_status("<leader>");
             return;
         }
@@ -6300,7 +6324,7 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
 }
 
 /// Execute a leader key action
-fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
+pub fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
     match action {
         LeaderAction::Command(cmd_str) => {
             // Parse and execute the command

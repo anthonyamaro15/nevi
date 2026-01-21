@@ -9,7 +9,7 @@ use nevi::copilot::{
 };
 use nevi::editor::{CopilotAction, CopilotGhostText, LspAction};
 use nevi::lsp;
-use nevi::terminal::handle_key;
+use nevi::terminal::{handle_key, execute_leader_action};
 use nevi::{
     load_config, AutosaveMode, Editor, LanguageId, LspNotification, Mode, MultiLspManager, Terminal,
 };
@@ -1074,6 +1074,24 @@ fn main() -> anyhow::Result<()> {
             }
         } else if editor.maybe_update_syntax_debounced(debounce) {
             needs_redraw = true;
+        }
+
+        // Check for leader key timeout
+        // If we're in leader mode with a pending action (exact match that's also a prefix),
+        // execute it after timeoutlen milliseconds
+        if editor.leader_sequence.is_some() {
+            if let Some(start) = editor.leader_sequence_start {
+                let timeoutlen = Duration::from_millis(editor.settings.keymap.timeoutlen);
+                if start.elapsed() >= timeoutlen {
+                    if let Some(action) = editor.leader_pending_action.take() {
+                        editor.leader_sequence = None;
+                        editor.leader_sequence_start = None;
+                        editor.clear_status();
+                        execute_leader_action(&mut editor, &action);
+                        needs_redraw = true;
+                    }
+                }
+            }
         }
 
         // Check for pending completion requests (debounced)

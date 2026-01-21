@@ -153,6 +153,10 @@ impl Default for FinderSettings {
 pub struct KeymapSettings {
     /// Leader key (default: "\")
     pub leader: String,
+    /// Timeout in milliseconds for leader key sequences (default: 1000)
+    /// When a sequence matches both an exact mapping AND is a prefix of longer mappings,
+    /// wait this long before executing the shorter match.
+    pub timeoutlen: u64,
     /// Normal mode key remappings
     pub normal: Vec<KeymapEntry>,
     /// Insert mode key remappings
@@ -165,6 +169,7 @@ impl Default for KeymapSettings {
     fn default() -> Self {
         Self {
             leader: " ".to_string(), // Space as leader (common in Neovim)
+            timeoutlen: 1000, // 1 second (matches Vim default)
             normal: Vec::new(),
             insert: Vec::new(),
             leader_mappings: vec![
@@ -659,6 +664,11 @@ fn default_config_template() -> &'static str {
 # Leader key is Space by default.
 # [keymap]
 # leader = " "
+# timeoutlen = 1000          # Timeout in ms for leader key sequences (default: 1000)
+#                            # When a sequence matches both an exact mapping AND is a prefix
+#                            # of longer mappings (e.g., <leader>e and <leader>ee), wait this
+#                            # long before executing the shorter match. Set to 0 for immediate
+#                            # execution (disables overlapping mapping support).
 #
 # ----------------------------------------------------------------------------
 # NORMAL MODE - Movement

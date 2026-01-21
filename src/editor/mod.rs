@@ -15,7 +15,7 @@ pub use undo::{Change, UndoEntry, UndoStack};
 use crate::input::{InputState, Motion, apply_motion, TextObject, TextObjectModifier, TextObjectType, CaseOperator};
 use crate::commands::CommandLine;
 use crate::syntax::SyntaxManager;
-use crate::config::{Settings, KeymapLookup};
+use crate::config::{Settings, KeymapLookup, LeaderAction};
 use crate::explorer::FileExplorer;
 use crate::finder::FuzzyFinder;
 use crate::frecency::FrecencyDb;
@@ -620,6 +620,10 @@ pub struct Editor {
     pub keymap: KeymapLookup,
     /// Leader key sequence being built (None if not in leader mode)
     pub leader_sequence: Option<String>,
+    /// When leader mode started (for timeout tracking)
+    pub leader_sequence_start: Option<Instant>,
+    /// Action to execute when leader timeout expires
+    pub leader_pending_action: Option<LeaderAction>,
     /// Pending external command to run (handled by main loop)
     pub pending_external_command: Option<String>,
     /// Fuzzy finder state
@@ -916,6 +920,8 @@ impl Editor {
             settings,
             keymap,
             leader_sequence: None,
+            leader_sequence_start: None,
+            leader_pending_action: None,
             pending_external_command: None,
             finder,
             lsp_status: None,

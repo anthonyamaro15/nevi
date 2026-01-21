@@ -358,6 +358,7 @@ mod tests {
 
         let settings = KeymapSettings {
             leader: " ".to_string(),  // Literal space, as used in default config
+            timeoutlen: 1000,
             normal: vec![],
             insert: vec![],
             leader_mappings: vec![
@@ -387,6 +388,7 @@ mod tests {
 
         let settings = KeymapSettings {
             leader: "<Space>".to_string(),
+            timeoutlen: 1000,
             normal: vec![],
             insert: vec![],
             leader_mappings: vec![
