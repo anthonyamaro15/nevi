@@ -18,6 +18,9 @@ pub enum FindCharType {
 pub struct InputState {
     /// Accumulated count (e.g., "23" in "23j")
     pub count: Option<usize>,
+    /// Count saved when operator was set (for multiplication with motion count)
+    /// e.g., in "2d3w", operator_count = 2, count = 3, final = 6
+    operator_count: Option<usize>,
     /// Pending operator (e.g., 'd' waiting for motion in "dw")
     pub pending_operator: Option<Operator>,
     /// Partial key sequence (e.g., 'g' waiting for second key in "gg")
@@ -283,6 +286,7 @@ impl InputState {
     /// Reset input state (preserves last_find_char for ; and , repeats)
     pub fn reset(&mut self) {
         self.count = None;
+        self.operator_count = None;
         self.pending_operator = None;
         self.partial_key = None;
         self.pending_text_object = None;
@@ -313,6 +317,21 @@ impl InputState {
     /// Get the effective count (1 if not specified)
     pub fn effective_count(&self) -> usize {
         self.count.unwrap_or(1)
+    }
+
+    /// Get the combined count (operator_count * motion_count)
+    /// For "2d3w", returns 2 * 3 = 6
+    fn combined_count(&self) -> usize {
+        let op_count = self.operator_count.unwrap_or(1);
+        let motion_count = self.count.unwrap_or(1);
+        op_count * motion_count
+    }
+
+    /// Set a pending operator, saving current count for later multiplication
+    fn set_operator(&mut self, op: Operator) {
+        self.operator_count = self.count;
+        self.count = None;
+        self.pending_operator = Some(op);
     }
 
     /// Process a digit for count accumulation
@@ -563,31 +582,34 @@ impl InputState {
             // Operators
             (KeyModifiers::NONE, KeyCode::Char('d')) => {
                 if self.pending_operator == Some(Operator::Delete) {
-                    // dd - delete line
+                    // dd - delete line (use combined count for 2d2d = 4 lines)
+                    let final_count = self.combined_count();
                     self.reset();
-                    KeyAction::OperatorLine(Operator::Delete, count)
+                    KeyAction::OperatorLine(Operator::Delete, final_count)
                 } else {
-                    self.pending_operator = Some(Operator::Delete);
+                    self.set_operator(Operator::Delete);
                     KeyAction::Pending
                 }
             }
             (KeyModifiers::NONE, KeyCode::Char('c')) => {
                 if self.pending_operator == Some(Operator::Change) {
                     // cc - change line
+                    let final_count = self.combined_count();
                     self.reset();
-                    KeyAction::OperatorLine(Operator::Change, count)
+                    KeyAction::OperatorLine(Operator::Change, final_count)
                 } else {
-                    self.pending_operator = Some(Operator::Change);
+                    self.set_operator(Operator::Change);
                     KeyAction::Pending
                 }
             }
             (KeyModifiers::NONE, KeyCode::Char('y')) => {
                 if self.pending_operator == Some(Operator::Yank) {
                     // yy - yank line
+                    let final_count = self.combined_count();
                     self.reset();
-                    KeyAction::OperatorLine(Operator::Yank, count)
+                    KeyAction::OperatorLine(Operator::Yank, final_count)
                 } else {
-                    self.pending_operator = Some(Operator::Yank);
+                    self.set_operator(Operator::Yank);
                     KeyAction::Pending
                 }
             }
@@ -624,10 +646,11 @@ impl InputState {
             (KeyModifiers::SHIFT, KeyCode::Char('>')) | (KeyModifiers::NONE, KeyCode::Char('>')) => {
                 if self.pending_operator == Some(Operator::Indent) {
                     // >> - indent line
+                    let final_count = self.combined_count();
                     self.reset();
-                    KeyAction::OperatorLine(Operator::Indent, count)
+                    KeyAction::OperatorLine(Operator::Indent, final_count)
                 } else {
-                    self.pending_operator = Some(Operator::Indent);
+                    self.set_operator(Operator::Indent);
                     KeyAction::Pending
                 }
             }
@@ -635,10 +658,11 @@ impl InputState {
             (KeyModifiers::SHIFT, KeyCode::Char('<')) | (KeyModifiers::NONE, KeyCode::Char('<')) => {
                 if self.pending_operator == Some(Operator::Dedent) {
                     // << - dedent line
+                    let final_count = self.combined_count();
                     self.reset();
-                    KeyAction::OperatorLine(Operator::Dedent, count)
+                    KeyAction::OperatorLine(Operator::Dedent, final_count)
                 } else {
-                    self.pending_operator = Some(Operator::Dedent);
+                    self.set_operator(Operator::Dedent);
                     KeyAction::Pending
                 }
             }
@@ -910,12 +934,12 @@ impl InputState {
             // D = d$ (delete to end of line)
             (KeyModifiers::SHIFT, KeyCode::Char('D')) => {
                 self.reset();
-                KeyAction::OperatorMotion(Operator::Delete, Motion::LineEnd, 1)
+                KeyAction::OperatorMotion(Operator::Delete, Motion::LineEnd, count)
             }
             // C = c$ (change to end of line)
             (KeyModifiers::SHIFT, KeyCode::Char('C')) => {
                 self.reset();
-                KeyAction::OperatorMotion(Operator::Change, Motion::LineEnd, 1)
+                KeyAction::OperatorMotion(Operator::Change, Motion::LineEnd, count)
             }
             // Y = yy (yank line) - vim behavior
             (KeyModifiers::SHIFT, KeyCode::Char('Y')) => {
@@ -1145,8 +1169,10 @@ impl InputState {
     /// Return a motion action, or operator+motion if operator is pending
     fn motion_or_operator(&mut self, motion: Motion, count: usize) -> KeyAction {
         if let Some(op) = self.pending_operator.take() {
+            // Use combined count for operator+motion (e.g., 2d3w = 6 words)
+            let final_count = self.combined_count();
             self.reset();
-            KeyAction::OperatorMotion(op, motion, count)
+            KeyAction::OperatorMotion(op, motion, final_count)
         } else {
             self.reset();
             KeyAction::Motion(motion, count)
