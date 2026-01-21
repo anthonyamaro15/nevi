@@ -3,7 +3,7 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{self, ClearType},
-    style::{SetForegroundColor, SetBackgroundColor, ResetColor, Color, SetAttribute, Attribute},
+    style::{SetForegroundColor, SetBackgroundColor, ResetColor, Color, SetAttribute, Attribute, SetUnderlineColor},
 };
 use std::io::{self, Write, Stdout};
 
@@ -12,7 +12,7 @@ use crate::input::{KeyAction, InsertPosition, Operator, TextObject, TextObjectMo
 use crate::commands::{Command, CommandResult, parse_command};
 use crate::config::LeaderAction;
 use crate::syntax::HighlightSpan;
-use crate::lsp::types::CompletionKind;
+use crate::lsp::types::{CompletionKind, Diagnostic, DiagnosticSeverity};
 
 /// Section types for hover content parsing
 enum HoverSection {
@@ -415,10 +415,10 @@ impl Terminal {
                 Vec::new()
             };
             let has_error = line_diagnostics.iter().any(|d| {
-                matches!(d.severity, crate::lsp::types::DiagnosticSeverity::Error)
+                matches!(d.severity, DiagnosticSeverity::Error)
             });
             let has_warning = line_diagnostics.iter().any(|d| {
-                matches!(d.severity, crate::lsp::types::DiagnosticSeverity::Warning)
+                matches!(d.severity, DiagnosticSeverity::Warning)
             });
 
             // Render each segment
@@ -523,6 +523,7 @@ impl Terminal {
 
                 // Render segment content with syntax highlighting
                 let segment_text = segment.text.trim_end_matches('\n');
+
                 self.render_line_segment_with_highlights(
                     segment_text,
                     file_line,
@@ -532,12 +533,17 @@ impl Terminal {
                     &editor.mode,
                     highlight_cursor_line && is_cursor_line,
                     &editor.search_matches,
+                    &line_diagnostics,
                     editor_bg,
                     editor_fg,
                     cursor_line_bg,
                     selection_bg,
                     search_bg,
                     search_fg,
+                    theme.diagnostic.error,
+                    theme.diagnostic.warning,
+                    theme.diagnostic.info,
+                    theme.diagnostic.hint,
                 )?;
 
                 // Fill remaining space (sign column = 2)
@@ -550,10 +556,10 @@ impl Terminal {
                         let remaining = pane_width.saturating_sub(chars_printed + 3);
                         if remaining > 5 {
                             let (color, icon) = match diag.severity {
-                                crate::lsp::types::DiagnosticSeverity::Error => (Color::Red, "●"),
-                                crate::lsp::types::DiagnosticSeverity::Warning => (Color::Yellow, "●"),
-                                crate::lsp::types::DiagnosticSeverity::Information => (Color::Blue, "●"),
-                                crate::lsp::types::DiagnosticSeverity::Hint => (Color::Cyan, "○"),
+                                DiagnosticSeverity::Error => (Color::Red, "●"),
+                                DiagnosticSeverity::Warning => (Color::Yellow, "●"),
+                                DiagnosticSeverity::Information => (Color::Blue, "●"),
+                                DiagnosticSeverity::Hint => (Color::Cyan, "○"),
                             };
 
                             let msg: String = diag.message
@@ -668,10 +674,10 @@ impl Terminal {
                     Vec::new()
                 };
                 let has_error = line_diagnostics.iter().any(|d| {
-                    matches!(d.severity, crate::lsp::types::DiagnosticSeverity::Error)
+                    matches!(d.severity, DiagnosticSeverity::Error)
                 });
                 let has_warning = line_diagnostics.iter().any(|d| {
-                    matches!(d.severity, crate::lsp::types::DiagnosticSeverity::Warning)
+                    matches!(d.severity, DiagnosticSeverity::Warning)
                 });
 
                 // Sign column (git signs + diagnostic icons)
@@ -773,12 +779,17 @@ impl Terminal {
                         &editor.mode,
                         highlight_cursor_line && is_cursor_line,
                         &editor.search_matches,
+                        &line_diagnostics,
                         editor_bg,
                         editor_fg,
                         cursor_line_bg,
                         selection_bg,
                         search_bg,
                         search_fg,
+                        theme.diagnostic.error,
+                        theme.diagnostic.warning,
+                        theme.diagnostic.info,
+                        theme.diagnostic.hint,
                     )?;
 
                     // Track characters printed for fill calculation (sign column = 2)
@@ -846,10 +857,10 @@ impl Terminal {
                             if remaining > 5 {
                                 // Determine color based on severity
                                 let (color, icon) = match diag.severity {
-                                    crate::lsp::types::DiagnosticSeverity::Error => (Color::Red, "●"),
-                                    crate::lsp::types::DiagnosticSeverity::Warning => (Color::Yellow, "●"),
-                                    crate::lsp::types::DiagnosticSeverity::Information => (Color::Blue, "●"),
-                                    crate::lsp::types::DiagnosticSeverity::Hint => (Color::Cyan, "○"),
+                                    DiagnosticSeverity::Error => (Color::Red, "●"),
+                                    DiagnosticSeverity::Warning => (Color::Yellow, "●"),
+                                    DiagnosticSeverity::Information => (Color::Blue, "●"),
+                                    DiagnosticSeverity::Hint => (Color::Cyan, "○"),
                                 };
 
                                 // Truncate message to fit
@@ -918,12 +929,17 @@ impl Terminal {
         mode: &Mode,
         is_cursor_line: bool,
         search_matches: &[(usize, usize, usize)],
+        diagnostics: &[&Diagnostic],
         editor_bg: Color,
         editor_fg: Color,
         cursor_line_bg: Color,
         selection_bg: Color,
         search_match_bg: Color,
         search_match_fg: Color,
+        diagnostic_error_color: Color,
+        diagnostic_warning_color: Color,
+        diagnostic_info_color: Color,
+        diagnostic_hint_color: Color,
     ) -> anyhow::Result<()> {
         let chars: Vec<char> = text.chars().collect();
 
@@ -937,8 +953,22 @@ impl Terminal {
             })
         };
 
+        // Find diagnostic at this column (prioritize by severity: Error > Warning > Info > Hint)
+        let get_diagnostic_at = |col: usize| -> Option<&Diagnostic> {
+            diagnostics.iter()
+                .filter(|d| col >= d.col_start && col < d.col_end)
+                .min_by_key(|d| match d.severity {
+                    DiagnosticSeverity::Error => 0,
+                    DiagnosticSeverity::Warning => 1,
+                    DiagnosticSeverity::Information => 2,
+                    DiagnosticSeverity::Hint => 3,
+                })
+                .copied()
+        };
+
         let mut current_fg: Option<Color> = None;
         let mut current_bg: Option<Color> = None;
+        let mut current_underline: Option<Color> = None;
 
         for (i, ch) in chars.iter().enumerate() {
             // Calculate the actual column in the original line
@@ -976,6 +1006,15 @@ impl Terminal {
             // Check if in search match
             let is_search = in_search_match(actual_col);
 
+            // Check for diagnostic underline
+            let diag_at_col = get_diagnostic_at(actual_col);
+            let diag_underline_color = diag_at_col.map(|d| match d.severity {
+                DiagnosticSeverity::Error => diagnostic_error_color,
+                DiagnosticSeverity::Warning => diagnostic_warning_color,
+                DiagnosticSeverity::Information => diagnostic_info_color,
+                DiagnosticSeverity::Hint => diagnostic_hint_color,
+            });
+
             // Find syntax highlight for this position
             let syntax_color = highlights.iter()
                 .find(|h| actual_col >= h.start_col && actual_col < h.end_col)
@@ -1000,11 +1039,31 @@ impl Terminal {
                 current_fg = Some(desired_fg);
             }
 
+            // Handle underline attribute changes for diagnostics
+            if diag_underline_color != current_underline {
+                if let Some(color) = diag_underline_color {
+                    // Use colored underline (keeps syntax highlighting intact)
+                    execute!(
+                        self.stdout,
+                        SetUnderlineColor(color),
+                        SetAttribute(Attribute::Underlined)
+                    )?;
+                } else {
+                    execute!(self.stdout, SetAttribute(Attribute::NoUnderline))?;
+                }
+                current_underline = diag_underline_color;
+            }
+
             print!("{}", ch);
         }
 
-        // Restore to base background/foreground
-        execute!(self.stdout, SetBackgroundColor(base_bg), SetForegroundColor(editor_fg))?;
+        // Restore to base background/foreground and reset underline
+        execute!(
+            self.stdout,
+            SetAttribute(Attribute::NoUnderline),
+            SetBackgroundColor(base_bg),
+            SetForegroundColor(editor_fg)
+        )?;
 
         Ok(())
     }
@@ -1591,10 +1650,10 @@ impl Terminal {
         } else if let Some(diag) = editor.diagnostic_at_cursor() {
             // Show diagnostic message when cursor is on a line with diagnostics
             let (color, prefix) = match diag.severity {
-                crate::lsp::types::DiagnosticSeverity::Error => (Color::Red, "Error"),
-                crate::lsp::types::DiagnosticSeverity::Warning => (Color::Yellow, "Warning"),
-                crate::lsp::types::DiagnosticSeverity::Information => (Color::Blue, "Info"),
-                crate::lsp::types::DiagnosticSeverity::Hint => (Color::Cyan, "Hint"),
+                DiagnosticSeverity::Error => (Color::Red, "Error"),
+                DiagnosticSeverity::Warning => (Color::Yellow, "Warning"),
+                DiagnosticSeverity::Information => (Color::Blue, "Info"),
+                DiagnosticSeverity::Hint => (Color::Cyan, "Hint"),
             };
             execute!(self.stdout, SetForegroundColor(color))?;
             // Take only the first line of the message (LSP messages can be multi-line)
@@ -2298,10 +2357,10 @@ impl Terminal {
 
         for (idx, diag) in diagnostics.iter().enumerate() {
             let (color, prefix) = match diag.severity {
-                crate::lsp::types::DiagnosticSeverity::Error => (Color::Red, ""),
-                crate::lsp::types::DiagnosticSeverity::Warning => (Color::Yellow, ""),
-                crate::lsp::types::DiagnosticSeverity::Information => (Color::Blue, ""),
-                crate::lsp::types::DiagnosticSeverity::Hint => (Color::Cyan, ""),
+                DiagnosticSeverity::Error => (Color::Red, ""),
+                DiagnosticSeverity::Warning => (Color::Yellow, ""),
+                DiagnosticSeverity::Information => (Color::Blue, ""),
+                DiagnosticSeverity::Hint => (Color::Cyan, ""),
             };
 
             // Split message into lines and indent continuation lines
@@ -3324,12 +3383,17 @@ impl Terminal {
         mode: &Mode,
         is_cursor_line: bool,
         search_matches: &[(usize, usize, usize)],
+        diagnostics: &[&Diagnostic],
         editor_bg: Color,
         editor_fg: Color,
         cursor_line_bg: Color,
         selection_bg: Color,
         search_match_bg: Color,
         search_match_fg: Color,
+        diagnostic_error_color: Color,
+        diagnostic_warning_color: Color,
+        diagnostic_info_color: Color,
+        diagnostic_hint_color: Color,
     ) -> anyhow::Result<()> {
         let chars: Vec<char> = line.chars().collect();
         let line_len = chars.len();
@@ -3372,10 +3436,24 @@ impl Terminal {
             })
         };
 
+        // Find diagnostic at this column (prioritize by severity: Error > Warning > Info > Hint)
+        let get_diagnostic_at = |col: usize| -> Option<&Diagnostic> {
+            diagnostics.iter()
+                .filter(|d| col >= d.col_start && col < d.col_end)
+                .min_by_key(|d| match d.severity {
+                    DiagnosticSeverity::Error => 0,
+                    DiagnosticSeverity::Warning => 1,
+                    DiagnosticSeverity::Information => 2,
+                    DiagnosticSeverity::Hint => 3,
+                })
+                .copied()
+        };
+
         // Render character by character
         let mut highlight_idx = 0;
         let mut current_fg: Option<Color> = None;
         let mut current_bg: Option<Color> = None;
+        let mut current_underline: Option<Color> = None;
         for (col, ch) in chars.iter().enumerate() {
             // Find syntax color for this column
             let syntax_color = Self::get_syntax_color_at(highlights, col, &mut highlight_idx);
@@ -3385,6 +3463,15 @@ impl Terminal {
 
             // Check if in search match
             let is_search_match = in_search_match(col);
+
+            // Check for diagnostic underline
+            let diag_at_col = get_diagnostic_at(col);
+            let diag_underline_color = diag_at_col.map(|d| match d.severity {
+                DiagnosticSeverity::Error => diagnostic_error_color,
+                DiagnosticSeverity::Warning => diagnostic_warning_color,
+                DiagnosticSeverity::Information => diagnostic_info_color,
+                DiagnosticSeverity::Hint => diagnostic_hint_color,
+            });
 
             // Priority: visual selection > search match > base (cursor line or editor bg)
             let (desired_bg, desired_fg) = if is_selected {
@@ -3405,6 +3492,21 @@ impl Terminal {
                 current_fg = Some(desired_fg);
             }
 
+            // Handle underline attribute changes for diagnostics
+            if diag_underline_color != current_underline {
+                if let Some(color) = diag_underline_color {
+                    // Use colored underline (keeps syntax highlighting intact)
+                    execute!(
+                        self.stdout,
+                        SetUnderlineColor(color),
+                        SetAttribute(Attribute::Underlined)
+                    )?;
+                } else {
+                    execute!(self.stdout, SetAttribute(Attribute::NoUnderline))?;
+                }
+                current_underline = diag_underline_color;
+            }
+
             print!("{}", ch);
         }
 
@@ -3414,8 +3516,13 @@ impl Terminal {
             print!(" ");
         }
 
-        // Restore to base background/foreground (don't reset to terminal default)
-        execute!(self.stdout, SetBackgroundColor(base_bg), SetForegroundColor(editor_fg))?;
+        // Restore to base background/foreground and reset underline
+        execute!(
+            self.stdout,
+            SetAttribute(Attribute::NoUnderline),
+            SetBackgroundColor(base_bg),
+            SetForegroundColor(editor_fg)
+        )?;
 
         Ok(())
     }
@@ -4206,10 +4313,10 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
                 // Show the diagnostic message in status
                 if let Some(diag) = editor.diagnostic_at_cursor() {
                     let prefix = match diag.severity {
-                        crate::lsp::types::DiagnosticSeverity::Error => "Error",
-                        crate::lsp::types::DiagnosticSeverity::Warning => "Warning",
-                        crate::lsp::types::DiagnosticSeverity::Information => "Info",
-                        crate::lsp::types::DiagnosticSeverity::Hint => "Hint",
+                        DiagnosticSeverity::Error => "Error",
+                        DiagnosticSeverity::Warning => "Warning",
+                        DiagnosticSeverity::Information => "Info",
+                        DiagnosticSeverity::Hint => "Hint",
                     };
                     editor.set_status(format!("{}: {}", prefix, diag.message));
                 }
@@ -4223,10 +4330,10 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
                 // Show the diagnostic message in status
                 if let Some(diag) = editor.diagnostic_at_cursor() {
                     let prefix = match diag.severity {
-                        crate::lsp::types::DiagnosticSeverity::Error => "Error",
-                        crate::lsp::types::DiagnosticSeverity::Warning => "Warning",
-                        crate::lsp::types::DiagnosticSeverity::Information => "Info",
-                        crate::lsp::types::DiagnosticSeverity::Hint => "Hint",
+                        DiagnosticSeverity::Error => "Error",
+                        DiagnosticSeverity::Warning => "Warning",
+                        DiagnosticSeverity::Information => "Info",
+                        DiagnosticSeverity::Hint => "Hint",
                     };
                     editor.set_status(format!("{}: {}", prefix, diag.message));
                 }
