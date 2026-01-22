@@ -1,6 +1,10 @@
 use std::env;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use std::io::Write;
+
+// Set to true to enable profiling output to /tmp/nevi_profile.log
+const PROFILE_ENABLED: bool = false;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use nevi::copilot::{
@@ -15,6 +19,24 @@ use nevi::{
 };
 
 fn main() -> anyhow::Result<()> {
+    // Profiling file (only created if PROFILE_ENABLED)
+    let mut profile_file = if PROFILE_ENABLED {
+        Some(std::fs::File::create("/tmp/nevi_profile.log").ok())
+    } else {
+        None
+    };
+
+    // Helper macro for profiling
+    macro_rules! profile {
+        ($file:expr, $($arg:tt)*) => {
+            if PROFILE_ENABLED {
+                if let Some(Some(ref mut f)) = $file {
+                    let _ = writeln!(f, $($arg)*);
+                }
+            }
+        };
+    }
+
     // Load configuration
     let settings = load_config();
     // Store LSP settings before moving settings into editor
@@ -144,6 +166,13 @@ fn main() -> anyhow::Result<()> {
     let debounce = Duration::from_millis(200);
     let poll_timeout = Duration::from_millis(16);
     let mut needs_redraw = true;
+    let render_interval = Duration::from_millis(16);
+    let lsp_render_interval = Duration::from_millis(50);
+    let mut last_render = Instant::now() - render_interval;
+    let max_key_events_per_frame: usize = 8;
+    let mut redraw_from_input = false;
+    let typing_pause = Duration::from_millis(50);
+    let mut last_input_at: Option<Instant> = None;
 
     // Autosave state: track when the last edit occurred
     // When autosave_pending is Some, an autosave is scheduled for that time
@@ -159,11 +188,506 @@ fn main() -> anyhow::Result<()> {
     let mut last_resolved_completion: Option<String> = None;
 
     // Main event loop
-    loop {
+    let mut loop_start = Instant::now();
+    'main_loop: loop {
+        // Track loop cycle time
+        let cycle_time = loop_start.elapsed();
+        if cycle_time.as_millis() > 100 {
+            profile!(profile_file, "SLOW_CYCLE: {:?}", cycle_time);
+        }
+        loop_start = Instant::now();
+
+        if terminal.poll_key(poll_timeout)? {
+            let mut events_processed = 0usize;
+            loop {
+                if events_processed >= max_key_events_per_frame {
+                    break;
+                }
+                let prev_version = editor.buffer().version();
+                if let Some(event) = terminal.read_event()? {
+                    // Handle focus gained for autoread
+                    let key = match event {
+                        EditorEvent::FocusGained => {
+                            // Check all open buffers for external changes
+                            let reload_result = editor.check_and_reload_external_changes();
+                            if let Some(msg) = reload_result {
+                                editor.set_status(msg);
+                                needs_redraw = true;
+                            }
+                            continue 'main_loop; // No key to handle
+                        }
+                        EditorEvent::Key(k) => k,
+                    };
+
+                    // Dismiss hover popup on any key press
+                    editor.hover_content = None;
+                    // Dismiss diagnostic float on any key press (it can be reopened with gl)
+                    editor.show_diagnostic_float = false;
+
+                    // Check for manual completion trigger (Ctrl+Space) in insert mode
+                    let manual_completion = editor.mode == Mode::Insert
+                        && key.modifiers == KeyModifiers::CONTROL
+                        && key.code == KeyCode::Char(' ');
+
+                    if manual_completion {
+                        // Request completion from LSP (only if ready for this file type)
+                        if let Some(ref mut mlsp) = multi_lsp {
+                            if let Some(path) = editor.buffer().path.clone() {
+                                if mlsp.is_ready_for_file(&path) {
+                                    let _ = mlsp.completion(
+                                        &path,
+                                        editor.cursor.line as u32,
+                                        editor.cursor.col as u32,
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        let t_handle_key = Instant::now();
+                        let mode_before = editor.mode;
+                        handle_key(&mut editor, key);
+                        let elapsed = t_handle_key.elapsed();
+                        // Only log slow handle_key operations (>1ms) with details
+                        if elapsed.as_micros() > 1000 {
+                            profile!(profile_file, "SLOW handle_key: {:?} mode={:?} key={:?}", elapsed, mode_before, key.code);
+                        } else {
+                            profile!(profile_file, "handle_key: {:?}", elapsed);
+                        }
+                    }
+                    last_input_at = Some(Instant::now());
+
+                    // Check if we should resolve completion item documentation
+                    // Only resolve when selection changes (tracked by last_resolved_label)
+                    if editor.completion.active {
+                        if let Some(item) = editor.completion.selected_item() {
+                            let current_label = &item.label;
+                            // Resolve if: no documentation AND has raw_data AND not already resolved
+                            let should_resolve = item.documentation.is_none()
+                                && item.raw_data.is_some()
+                                && last_resolved_completion.as_ref() != Some(current_label);
+
+                            if should_resolve {
+                                last_resolved_completion = Some(current_label.clone());
+                                if let Some(ref mut mlsp) = multi_lsp {
+                                    if let Some(path) = editor.buffer().path.clone() {
+                                        if mlsp.is_ready_for_file(&path) {
+                                            let raw_data = item.raw_data.clone().unwrap();
+                                            let label = item.label.clone();
+                                            // Debug: show when resolve is triggered
+                                            editor.set_status(format!("Resolving '{}'...", label));
+                                            let _ = mlsp.completion_resolve(&path, raw_data, label);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Clear tracking when completion popup closes
+                        last_resolved_completion = None;
+                    }
+
+                    // Handle pending LSP actions (gd, K) - only if LSP is ready
+                    if let Some(action) = editor.pending_lsp_action.take() {
+                        if let Some(ref mut mlsp) = multi_lsp {
+                            if let Some(path) = editor.buffer().path.clone() {
+                                if !mlsp.is_ready_for_file(&path) {
+                                    // Try to start server for this file type
+                                    if let Err(e) = mlsp.ensure_server_for_file(&path) {
+                                        editor.set_status(format!("LSP: {}", e));
+                                    } else {
+                                        editor.set_status("LSP starting...");
+                                    }
+                                } else {
+                                    let line = editor.cursor.line as u32;
+                                    let col = editor.cursor.col as u32;
+                                    match action {
+                                        LspAction::GotoDefinition => {
+                                            let _ = mlsp.goto_definition(&path, line, col);
+                                        }
+                                        LspAction::Hover => {
+                                            let _ = mlsp.hover(&path, line, col);
+                                        }
+                                        LspAction::Formatting => {
+                                            editor.pending_format = true;
+                                            let _ = mlsp.formatting(
+                                                &path,
+                                                editor.settings.editor.tab_width as u32,
+                                            );
+                                        }
+                                        LspAction::FindReferences => {
+                                            let _ = mlsp.references(&path, line, col);
+                                        }
+                                        LspAction::CodeActions => {
+                                            // Get diagnostics at cursor position
+                                            let diagnostics = editor.all_diagnostics_at_cursor();
+                                            let _ = mlsp.code_action(
+                                                &path,
+                                                line,
+                                                col,
+                                                line,
+                                                col,
+                                                diagnostics,
+                                            );
+                                        }
+                                        LspAction::RenameSymbol(new_name) => {
+                                            let _ = mlsp.rename(&path, line, col, new_name);
+                                        }
+                                    }
+                                }
+                            } else {
+                                editor.set_status("No file path for LSP");
+                            }
+                        } else {
+                            editor.set_status("LSP not available");
+                        }
+                    }
+
+                    // Handle pending Copilot actions
+                    if let Some(action) = editor.pending_copilot_action.take() {
+                        if let Some(ref mut cop) = copilot {
+                            match action {
+                                CopilotAction::Auth => {
+                                    if let Err(e) = cop.sign_in() {
+                                        editor.set_status(format!("Copilot auth error: {}", e));
+                                    } else {
+                                        editor.set_status("Copilot: Check for sign-in prompt...");
+                                    }
+                                }
+                                CopilotAction::SignOut => {
+                                    if let Err(e) = cop.sign_out() {
+                                        editor.set_status(format!("Copilot sign-out error: {}", e));
+                                    } else {
+                                        editor.set_status("Copilot: Signed out");
+                                    }
+                                }
+                                CopilotAction::Status => {
+                                    editor.set_status(cop.status_string());
+                                }
+                                CopilotAction::Toggle => {
+                                    cop.toggle();
+                                    if cop.is_enabled() {
+                                        editor.set_status("Copilot: Enabled");
+                                    } else {
+                                        editor.set_status("Copilot: Disabled");
+                                        editor.copilot_ghost = None;
+                                    }
+                                }
+                                CopilotAction::Accept => {
+                                    // Accept the current Copilot completion
+                                    if let Some(completion) = cop.accept_completion() {
+                                        apply_copilot_completion(&mut editor, &completion);
+                                        editor.copilot_ghost = None;
+                                    }
+                                }
+                                CopilotAction::CycleNext => {
+                                    cop.cycle_next();
+                                    sync_copilot_ghost(&mut editor, cop);
+                                }
+                                CopilotAction::CyclePrev => {
+                                    cop.cycle_prev();
+                                    sync_copilot_ghost(&mut editor, cop);
+                                }
+                                CopilotAction::Dismiss => {
+                                    cop.reject_completions();
+                                    editor.copilot_ghost = None;
+                                }
+                            }
+                        } else {
+                            editor.set_status("Copilot not available");
+                        }
+                    }
+
+                    // Check if the current file has changed (e.g., opened from finder)
+                    // If so, notify LSP with did_close for old file and did_open for new file
+                    let current_file = editor.buffer().path.clone();
+                    if current_file != lsp_current_file {
+                        if let Some(ref mut mlsp) = multi_lsp {
+                            // Close the old file if we had one
+                            if let Some(ref old_path) = lsp_current_file {
+                                let _ = mlsp.did_close(old_path);
+                            }
+
+                            // Try to start server for new file type and open the file
+                            if let Some(ref new_path) = current_file {
+                                // Ensure server is started for this file type
+                                match mlsp.ensure_server_for_file(new_path) {
+                                    Ok(Some(lang)) => {
+                                        editor.set_lsp_status(format!(
+                                            "LSP: {} starting...",
+                                            lang.as_lsp_id()
+                                        ));
+                                    }
+                                    Ok(None) => {
+                                        // No LSP for this file type
+                                        editor.set_lsp_status(mlsp.status(Some(new_path.as_path())));
+                                    }
+                                    Err(e) => {
+                                        editor.set_lsp_status(format!("LSP: failed - {}", e));
+                                    }
+                                }
+
+                                // If server is ready, send did_open
+                                if mlsp.is_ready_for_file(new_path) {
+                                    let text = editor.buffer().content();
+                                    if let Err(e) = mlsp.did_open(new_path, &text) {
+                                        editor.set_lsp_status(format!("LSP: open error: {}", e));
+                                    }
+                                }
+                            }
+                        }
+                        lsp_current_file = current_file;
+                    }
+
+                    // Track file changes for Copilot and send did_open/did_close
+                    // Only update copilot_current_file when did_open is actually sent
+                    let copilot_file = editor.buffer().path.clone();
+                    if copilot_file != copilot_current_file {
+                        if let Some(ref mut cop) = copilot {
+                            if cop.status == CopilotStatus::Ready {
+                                // Close the old file if we had one
+                                if let Some(ref old_path) = copilot_current_file {
+                                    let old_uri = lsp::path_to_uri(old_path);
+                                    let _ = cop.did_close(&old_uri);
+                                }
+
+                                // Open the new file
+                                if let Some(ref new_path) = copilot_file {
+                                    let uri = lsp::path_to_uri(new_path);
+                                    let text = editor.buffer().content();
+                                    let version = editor.buffer().version() as i32;
+                                    let lang_id = LanguageId::from_path(new_path)
+                                        .map(|l| l.as_lsp_id().to_string())
+                                        .unwrap_or_else(|| "plaintext".to_string());
+                                    let _ = cop.did_open(&uri, &lang_id, version, &text);
+                                }
+                                // Only update tracking when we actually sent did_open
+                                copilot_current_file = copilot_file;
+                            }
+                        }
+                    }
+
+                    let new_version = editor.buffer().version();
+                    if new_version != prev_version {
+                        editor.note_buffer_change();
+
+                        // Schedule autosave if enabled (AfterDelay mode)
+                        if autosave_mode == AutosaveMode::AfterDelay {
+                            autosave_pending = Some(Instant::now() + autosave_delay);
+                        }
+
+                        // Clone path once for reuse in LSP and Copilot notifications
+                        let current_buffer_path = editor.buffer().path.clone();
+
+                        // Send document change to LSP (only if ready for this file type)
+                        if let Some(ref mut mlsp) = multi_lsp {
+                            if let Some(ref path) = current_buffer_path {
+                                if mlsp.is_ready_for_file(path) {
+                                    let t_lsp = Instant::now();
+                                    let text = editor.buffer().content();
+                                    profile!(profile_file, "buffer.content() for LSP: {:?}", t_lsp.elapsed());
+                                    let t_send = Instant::now();
+                                    let _ = mlsp.did_change(path, &text);
+                                    profile!(profile_file, "mlsp.did_change: {:?}", t_send.elapsed());
+                                }
+                            }
+                        }
+
+                        // Send document change to Copilot
+                        if let Some(ref mut cop) = copilot {
+                            if cop.status == CopilotStatus::Ready {
+                                if let Some(ref path) = current_buffer_path {
+                                    let t_cop = Instant::now();
+                                    let uri = lsp::path_to_uri(path);
+                                    let text = editor.buffer().content();
+                                    let version = editor.buffer().version() as i32;
+                                    let _ = cop.did_change(&uri, version, &text);
+                                    profile!(profile_file, "copilot.did_change: {:?}", t_cop.elapsed());
+                                }
+                            }
+                        }
+                        // Continue LSP triggers
+                        if let Some(ref mut mlsp) = multi_lsp {
+                            if let Some(ref path) = current_buffer_path {
+                                if mlsp.is_ready_for_file(path) {
+                                    // Check for auto-completion triggers (. or :: or word chars)
+                                    // Use debouncing to avoid flooding LSP with requests
+                                    // Don't re-trigger if completion popup is already active (preserves resolved docs)
+                                    // Explicit triggers like Ctrl+Space or isIncomplete refresh bypass this
+                                    if editor.mode == Mode::Insert
+                                        && !editor.completion.active
+                                        && should_trigger_completion(&editor)
+                                    {
+                                        completion_pending = Some((
+                                            Instant::now(),
+                                            path.clone(),
+                                            editor.cursor.line as u32,
+                                            editor.cursor.col as u32,
+                                        ));
+                                    }
+
+                                    // Check for signature help triggers (( or ,)
+                                    if editor.mode == Mode::Insert
+                                        && should_trigger_signature_help(&editor)
+                                    {
+                                        let _ = mlsp.signature_help(
+                                            &path,
+                                            editor.cursor.line as u32,
+                                            editor.cursor.col as u32,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        // Request Copilot completions (with debouncing)
+                        if let Some(ref mut cop) = copilot {
+                            if cop.is_enabled() && cop.status == CopilotStatus::Ready {
+                                // Clear stale ghost text if cursor moved to different line
+                                // or moved BEFORE the trigger column (typing backwards/deleting)
+                                let is_stale = cop.ghost_text.as_ref().map_or(false, |g| {
+                                    g.trigger_line != editor.cursor.line
+                                        || editor.cursor.col < g.trigger_col
+                                });
+                                if is_stale {
+                                    cop.reject_completions();
+                                    editor.copilot_ghost = None;
+                                }
+
+                                // Check if we should request new completions
+                                // Request when: in insert mode and no current ghost text
+                                // Note: We allow requests even with LSP popup active (they can coexist)
+                                let ghost_renderable =
+                                    cop.ghost_text.as_ref().map_or(false, |ghost| {
+                                        if !ghost.visible {
+                                            return false;
+                                        }
+                                        if ghost.trigger_line != editor.cursor.line
+                                            || editor.cursor.col < ghost.trigger_col
+                                        {
+                                            return false;
+                                        }
+                                        ghost
+                                            .current()
+                                            .and_then(|completion| {
+                                                copilot_inline_completion(&editor, completion)
+                                            })
+                                            .map(|(inline, _)| !inline.is_empty())
+                                            .unwrap_or(false)
+                                    });
+                                let should_request =
+                                    editor.mode == Mode::Insert && !ghost_renderable;
+
+                                if should_request {
+                                    let now = Instant::now();
+                                    let can_request = match copilot_last_request {
+                                        Some(last) => now.duration_since(last) >= copilot_debounce,
+                                        None => true,
+                                    };
+
+                                    if can_request {
+                                        if let Some(path) = editor.buffer().path.clone() {
+                                            // Get current line content for UTF-16 conversion
+                                            let line_content = editor
+                                                .buffer()
+                                                .line(editor.cursor.line)
+                                                .map(|l| l.to_string())
+                                                .unwrap_or_default();
+
+                                            // Get full source content (required by Copilot)
+                                            let source = editor.buffer().content();
+
+                                            // Get language ID
+                                            let lang_id = LanguageId::from_path(&path)
+                                                .map(|l| l.as_lsp_id().to_string())
+                                                .unwrap_or_else(|| "plaintext".to_string());
+
+                                            // Get relative path
+                                            let relative_path = editor
+                                                .project_root
+                                                .as_ref()
+                                                .and_then(|root| path.strip_prefix(root).ok())
+                                                .map(|p| p.to_string_lossy().to_string())
+                                                .unwrap_or_else(|| path.to_string_lossy().to_string());
+
+                                            let uri = lsp::path_to_uri(&path);
+                                            let version = editor.buffer().version() as i32;
+
+                                            let _ = cop.request_completions_with_line(
+                                                &uri,
+                                                version,
+                                                editor.cursor.line,
+                                                editor.cursor.col,
+                                                &line_content,
+                                                &source,
+                                                &lang_id,
+                                                &relative_path,
+                                                4,    // tab_size
+                                                true, // insert_spaces
+                                            );
+                                            copilot_last_request = Some(now);
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Update editor ghost text from Copilot state
+                            // Note: Ghost text can coexist with LSP completion popup
+                            sync_copilot_ghost(&mut editor, cop);
+                        }
+
+                        // Check if signature help should be dismissed
+                        if editor.mode == Mode::Insert && should_dismiss_signature_help(&editor) {
+                            editor.signature_help = None;
+                        }
+                    }
+
+                    // Handle isIncomplete: re-request completions if filter text changed
+                    if editor.needs_completion_refresh {
+                        editor.needs_completion_refresh = false;
+                        if let Some(ref mut mlsp) = multi_lsp {
+                            if let Some(path) = editor.buffer().path.clone() {
+                                if mlsp.is_ready_for_file(&path) {
+                                    let _ = mlsp.completion(
+                                        &path,
+                                        editor.cursor.line as u32,
+                                        editor.cursor.col as u32,
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    editor.maybe_update_syntax();
+                    needs_redraw = true;
+                    redraw_from_input = true;
+                }
+                events_processed += 1;
+                if !terminal.poll_key(Duration::from_millis(0))? {
+                    break;
+                }
+            }
+            // Note: Don't set needs_redraw for events we don't handle (FocusLost, Mouse, etc.)
+        } else {
+            let t_syntax = Instant::now();
+            let syntax_updated = editor.maybe_update_syntax_debounced(debounce);
+            if syntax_updated {
+                profile!(profile_file, "syntax_update: {:?}", t_syntax.elapsed());
+                needs_redraw = true;
+            }
+        }
+
+        let input_pending = terminal.poll_key(Duration::from_millis(0))?;
+        let typing_recently = last_input_at.map_or(false, |t| t.elapsed() < typing_pause);
+        let skip_notifications = input_pending || typing_recently;
+
         // Process LSP notifications (non-blocking)
-        if let Some(ref mut mlsp) = multi_lsp {
-            for (lang, notification) in mlsp.poll_notifications() {
-                match notification {
+        if !skip_notifications {
+            if let Some(ref mut mlsp) = multi_lsp {
+                let t_lsp_poll = Instant::now();
+                let mut lsp_notification_count = 0;
+                for (lang, notification) in mlsp.poll_notifications() {
+                    lsp_notification_count += 1;
+                    match notification {
                     LspNotification::Initialized => {
                         // Update status - server is now ready
                         let current_path = editor.buffer().path.clone();
@@ -193,6 +717,8 @@ fn main() -> anyhow::Result<()> {
                         needs_redraw = true;
                     }
                     LspNotification::Diagnostics { uri, diagnostics } => {
+                        let t_diag = Instant::now();
+                        let diag_count = diagnostics.len();
                         // Store diagnostics for rendering
                         let errors = diagnostics
                             .iter()
@@ -212,6 +738,7 @@ fn main() -> anyhow::Result<()> {
                         } else {
                             editor.set_lsp_status("LSP: ✓");
                         }
+                        profile!(profile_file, "diagnostics: {} items in {:?}", diag_count, t_diag.elapsed());
                         needs_redraw = true;
                     }
                     LspNotification::Completions {
@@ -227,11 +754,14 @@ fn main() -> anyhow::Result<()> {
                         if current_uri.as_ref() == Some(&request_uri) {
                             // Show completion popup if we have items (with frecency sorting)
                             if !items.is_empty() {
+                                let t_comp = Instant::now();
+                                let item_count = items.len();
                                 let line = editor.cursor.line;
                                 let col = editor.cursor.col;
                                 // Calculate trigger_col as start of current word, not cursor position
                                 let trigger_col = calculate_word_start(&editor, line, col);
                                 editor.show_completions(items, line, trigger_col, is_incomplete);
+                                profile!(profile_file, "completions: {} items in {:?}", item_count, t_comp.elapsed());
 
                                 // Immediately apply filter with current prefix
                                 // (user may have typed more characters while waiting for LSP response)
@@ -254,9 +784,9 @@ fn main() -> anyhow::Result<()> {
                             } else {
                                 editor.completion.hide();
                             }
+                            needs_redraw = true;
                         }
-                        // Ignore stale responses for different files
-                        needs_redraw = true;
+                        // NOTE: Only redraw when we actually process completions, not for stale responses
                     }
                     LspNotification::Definition {
                         locations,
@@ -266,8 +796,7 @@ fn main() -> anyhow::Result<()> {
                         let current_uri =
                             editor.buffer().path.as_ref().map(|p| lsp::path_to_uri(p));
                         if current_uri.as_ref() != Some(&request_uri) {
-                            // Stale response - ignore
-                            needs_redraw = true;
+                            // Stale response - ignore (no redraw needed)
                             continue;
                         }
                         // Handle go-to-definition with support for multiple locations
@@ -313,8 +842,7 @@ fn main() -> anyhow::Result<()> {
                         let current_uri =
                             editor.buffer().path.as_ref().map(|p| lsp::path_to_uri(p));
                         if current_uri.as_ref() != Some(&request_uri) {
-                            // Stale response - wrong file
-                            needs_redraw = true;
+                            // Stale response - wrong file (no redraw needed)
                             continue;
                         }
 
@@ -326,8 +854,7 @@ fn main() -> anyhow::Result<()> {
                         let col_diff = (cursor_col as i32 - request_character as i32).abs();
 
                         if line_diff > 2 || (line_diff == 0 && col_diff > 10) {
-                            // Cursor moved too far - discard stale hover
-                            needs_redraw = true;
+                            // Cursor moved too far - discard stale hover (no redraw needed)
                             continue;
                         }
 
@@ -353,8 +880,7 @@ fn main() -> anyhow::Result<()> {
                         let current_uri =
                             editor.buffer().path.as_ref().map(|p| lsp::path_to_uri(p));
                         if current_uri.as_ref() != Some(&request_uri) {
-                            // Stale response - wrong file
-                            needs_redraw = true;
+                            // Stale response - wrong file (no redraw needed)
                             continue;
                         }
 
@@ -362,8 +888,7 @@ fn main() -> anyhow::Result<()> {
                         // Signature help is tied to function call position
                         let cursor_line = editor.cursor.line as u32;
                         if cursor_line != request_line {
-                            // Cursor moved to different line - signature help is stale
-                            needs_redraw = true;
+                            // Cursor moved to different line - signature help is stale (no redraw needed)
                             continue;
                         }
 
@@ -427,7 +952,7 @@ fn main() -> anyhow::Result<()> {
                         let current_uri =
                             editor.buffer().path.as_ref().map(|p| lsp::path_to_uri(p));
                         if current_uri.as_ref() != Some(&request_uri) {
-                            needs_redraw = true;
+                            // Stale response - ignore (no redraw needed)
                             continue;
                         }
 
@@ -461,7 +986,7 @@ fn main() -> anyhow::Result<()> {
                         let current_uri =
                             editor.buffer().path.as_ref().map(|p| lsp::path_to_uri(p));
                         if current_uri.as_ref() != Some(&request_uri) {
-                            needs_redraw = true;
+                            // Stale response - ignore (no redraw needed)
                             continue;
                         }
 
@@ -478,7 +1003,7 @@ fn main() -> anyhow::Result<()> {
                         let current_uri =
                             editor.buffer().path.as_ref().map(|p| lsp::path_to_uri(p));
                         if current_uri.as_ref() != Some(&request_uri) {
-                            needs_redraw = true;
+                            // Stale response - ignore (no redraw needed)
                             continue;
                         }
 
@@ -549,15 +1074,24 @@ fn main() -> anyhow::Result<()> {
                         ));
                         needs_redraw = true;
                     }
+                    }
+                }
+                // Log if LSP processing was slow
+                let lsp_elapsed = t_lsp_poll.elapsed();
+                if lsp_elapsed.as_millis() > 50 || lsp_notification_count > 10 {
+                    profile!(profile_file, "LSP_POLL: {:?} notifications={}", lsp_elapsed, lsp_notification_count);
                 }
             }
         }
 
         // Process Copilot notifications (non-blocking)
-        if let Some(ref mut cop) = copilot {
-            let notifications = cop.poll_notifications();
-            for notif in notifications {
-                match notif {
+        if !skip_notifications {
+            if let Some(ref mut cop) = copilot {
+                let t_copilot_poll = Instant::now();
+                let notifications = cop.poll_notifications();
+                let copilot_count = notifications.len();
+                for notif in notifications {
+                    match notif {
                     CopilotNotification::Initialized => {
                         // Server initialized, check auth status
                         needs_redraw = true;
@@ -614,6 +1148,12 @@ fn main() -> anyhow::Result<()> {
                         // Log status messages (could show in debug mode)
                         let _ = message; // Suppress unused warning
                     }
+                    }
+                }
+                // Log if Copilot processing was slow
+                let copilot_elapsed = t_copilot_poll.elapsed();
+                if copilot_elapsed.as_millis() > 50 || copilot_count > 5 {
+                    profile!(profile_file, "COPILOT_POLL: {:?} notifications={}", copilot_elapsed, copilot_count);
                 }
             }
         }
@@ -621,15 +1161,6 @@ fn main() -> anyhow::Result<()> {
         // Process floating terminal output if visible
         if editor.floating_terminal.is_visible() {
             editor.floating_terminal.process_output();
-        }
-
-        if needs_redraw {
-            // Update size before render
-            if let Ok((w, h)) = Terminal::size() {
-                editor.set_size(w, h);
-            }
-            terminal.render(&editor)?;
-            needs_redraw = false;
         }
 
         // Check if we should quit
@@ -646,452 +1177,6 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
 
-        if terminal.poll_key(poll_timeout)? {
-            let prev_version = editor.buffer().version();
-            if let Some(event) = terminal.read_event()? {
-                // Handle focus gained for autoread
-                let key = match event {
-                    EditorEvent::FocusGained => {
-                        // Check all open buffers for external changes
-                        let reload_result = editor.check_and_reload_external_changes();
-                        if let Some(msg) = reload_result {
-                            editor.set_status(msg);
-                            needs_redraw = true;
-                        }
-                        continue; // No key to handle
-                    }
-                    EditorEvent::Key(k) => k,
-                };
-
-                // Dismiss hover popup on any key press
-                editor.hover_content = None;
-                // Dismiss diagnostic float on any key press (it can be reopened with gl)
-                editor.show_diagnostic_float = false;
-
-                // Check for manual completion trigger (Ctrl+Space) in insert mode
-                let manual_completion = editor.mode == Mode::Insert
-                    && key.modifiers == KeyModifiers::CONTROL
-                    && key.code == KeyCode::Char(' ');
-
-                if manual_completion {
-                    // Request completion from LSP (only if ready for this file type)
-                    if let Some(ref mut mlsp) = multi_lsp {
-                        if let Some(path) = editor.buffer().path.clone() {
-                            if mlsp.is_ready_for_file(&path) {
-                                let _ = mlsp.completion(
-                                    &path,
-                                    editor.cursor.line as u32,
-                                    editor.cursor.col as u32,
-                                );
-                            }
-                        }
-                    }
-                } else {
-                    handle_key(&mut editor, key);
-                }
-
-                // Check if we should resolve completion item documentation
-                // Only resolve when selection changes (tracked by last_resolved_label)
-                if editor.completion.active {
-                    if let Some(item) = editor.completion.selected_item() {
-                        let current_label = &item.label;
-                        // Resolve if: no documentation AND has raw_data AND not already resolved
-                        let should_resolve = item.documentation.is_none()
-                            && item.raw_data.is_some()
-                            && last_resolved_completion.as_ref() != Some(current_label);
-
-                        if should_resolve {
-                            last_resolved_completion = Some(current_label.clone());
-                            if let Some(ref mut mlsp) = multi_lsp {
-                                if let Some(path) = editor.buffer().path.clone() {
-                                    if mlsp.is_ready_for_file(&path) {
-                                        let raw_data = item.raw_data.clone().unwrap();
-                                        let label = item.label.clone();
-                                        // Debug: show when resolve is triggered
-                                        editor.set_status(format!("Resolving '{}'...", label));
-                                        let _ = mlsp.completion_resolve(&path, raw_data, label);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // Clear tracking when completion popup closes
-                    last_resolved_completion = None;
-                }
-
-                // Handle pending LSP actions (gd, K) - only if LSP is ready
-                if let Some(action) = editor.pending_lsp_action.take() {
-                    if let Some(ref mut mlsp) = multi_lsp {
-                        if let Some(path) = editor.buffer().path.clone() {
-                            if !mlsp.is_ready_for_file(&path) {
-                                // Try to start server for this file type
-                                if let Err(e) = mlsp.ensure_server_for_file(&path) {
-                                    editor.set_status(format!("LSP: {}", e));
-                                } else {
-                                    editor.set_status("LSP starting...");
-                                }
-                            } else {
-                                let line = editor.cursor.line as u32;
-                                let col = editor.cursor.col as u32;
-                                match action {
-                                    LspAction::GotoDefinition => {
-                                        let _ = mlsp.goto_definition(&path, line, col);
-                                    }
-                                    LspAction::Hover => {
-                                        let _ = mlsp.hover(&path, line, col);
-                                    }
-                                    LspAction::Formatting => {
-                                        editor.pending_format = true;
-                                        let _ = mlsp.formatting(
-                                            &path,
-                                            editor.settings.editor.tab_width as u32,
-                                        );
-                                    }
-                                    LspAction::FindReferences => {
-                                        let _ = mlsp.references(&path, line, col);
-                                    }
-                                    LspAction::CodeActions => {
-                                        // Get diagnostics at cursor position
-                                        let diagnostics = editor.all_diagnostics_at_cursor();
-                                        let _ = mlsp.code_action(
-                                            &path,
-                                            line,
-                                            col,
-                                            line,
-                                            col,
-                                            diagnostics,
-                                        );
-                                    }
-                                    LspAction::RenameSymbol(new_name) => {
-                                        let _ = mlsp.rename(&path, line, col, new_name);
-                                    }
-                                }
-                            }
-                        } else {
-                            editor.set_status("No file path for LSP");
-                        }
-                    } else {
-                        editor.set_status("LSP not available");
-                    }
-                }
-
-                // Handle pending Copilot actions
-                if let Some(action) = editor.pending_copilot_action.take() {
-                    if let Some(ref mut cop) = copilot {
-                        match action {
-                            CopilotAction::Auth => {
-                                if let Err(e) = cop.sign_in() {
-                                    editor.set_status(format!("Copilot auth error: {}", e));
-                                } else {
-                                    editor.set_status("Copilot: Check for sign-in prompt...");
-                                }
-                            }
-                            CopilotAction::SignOut => {
-                                if let Err(e) = cop.sign_out() {
-                                    editor.set_status(format!("Copilot sign-out error: {}", e));
-                                } else {
-                                    editor.set_status("Copilot: Signed out");
-                                }
-                            }
-                            CopilotAction::Status => {
-                                editor.set_status(cop.status_string());
-                            }
-                            CopilotAction::Toggle => {
-                                cop.toggle();
-                                if cop.is_enabled() {
-                                    editor.set_status("Copilot: Enabled");
-                                } else {
-                                    editor.set_status("Copilot: Disabled");
-                                    editor.copilot_ghost = None;
-                                }
-                            }
-                            CopilotAction::Accept => {
-                                // Accept the current Copilot completion
-                                if let Some(completion) = cop.accept_completion() {
-                                    apply_copilot_completion(&mut editor, &completion);
-                                    editor.copilot_ghost = None;
-                                }
-                            }
-                            CopilotAction::CycleNext => {
-                                cop.cycle_next();
-                                sync_copilot_ghost(&mut editor, cop);
-                            }
-                            CopilotAction::CyclePrev => {
-                                cop.cycle_prev();
-                                sync_copilot_ghost(&mut editor, cop);
-                            }
-                            CopilotAction::Dismiss => {
-                                cop.reject_completions();
-                                editor.copilot_ghost = None;
-                            }
-                        }
-                    } else {
-                        editor.set_status("Copilot not available");
-                    }
-                }
-
-                // Check if the current file has changed (e.g., opened from finder)
-                // If so, notify LSP with did_close for old file and did_open for new file
-                let current_file = editor.buffer().path.clone();
-                if current_file != lsp_current_file {
-                    if let Some(ref mut mlsp) = multi_lsp {
-                        // Close the old file if we had one
-                        if let Some(ref old_path) = lsp_current_file {
-                            let _ = mlsp.did_close(old_path);
-                        }
-
-                        // Try to start server for new file type and open the file
-                        if let Some(ref new_path) = current_file {
-                            // Ensure server is started for this file type
-                            match mlsp.ensure_server_for_file(new_path) {
-                                Ok(Some(lang)) => {
-                                    editor.set_lsp_status(format!(
-                                        "LSP: {} starting...",
-                                        lang.as_lsp_id()
-                                    ));
-                                }
-                                Ok(None) => {
-                                    // No LSP for this file type
-                                    editor.set_lsp_status(mlsp.status(Some(new_path.as_path())));
-                                }
-                                Err(e) => {
-                                    editor.set_lsp_status(format!("LSP: failed - {}", e));
-                                }
-                            }
-
-                            // If server is ready, send did_open
-                            if mlsp.is_ready_for_file(new_path) {
-                                let text = editor.buffer().content();
-                                if let Err(e) = mlsp.did_open(new_path, &text) {
-                                    editor.set_lsp_status(format!("LSP: open error: {}", e));
-                                }
-                            }
-                        }
-                    }
-                    lsp_current_file = current_file;
-                }
-
-                // Track file changes for Copilot and send did_open/did_close
-                // Only update copilot_current_file when did_open is actually sent
-                let copilot_file = editor.buffer().path.clone();
-                if copilot_file != copilot_current_file {
-                    if let Some(ref mut cop) = copilot {
-                        if cop.status == CopilotStatus::Ready {
-                            // Close the old file if we had one
-                            if let Some(ref old_path) = copilot_current_file {
-                                let old_uri = lsp::path_to_uri(old_path);
-                                let _ = cop.did_close(&old_uri);
-                            }
-
-                            // Open the new file
-                            if let Some(ref new_path) = copilot_file {
-                                let uri = lsp::path_to_uri(new_path);
-                                let text = editor.buffer().content();
-                                let version = editor.buffer().version() as i32;
-                                let lang_id = LanguageId::from_path(new_path)
-                                    .map(|l| l.as_lsp_id().to_string())
-                                    .unwrap_or_else(|| "plaintext".to_string());
-                                let _ = cop.did_open(&uri, &lang_id, version, &text);
-                            }
-                            // Only update tracking when we actually sent did_open
-                            copilot_current_file = copilot_file;
-                        }
-                    }
-                }
-
-                let new_version = editor.buffer().version();
-                if new_version != prev_version {
-                    editor.note_buffer_change();
-
-                    // Schedule autosave if enabled (AfterDelay mode)
-                    if autosave_mode == AutosaveMode::AfterDelay {
-                        autosave_pending = Some(Instant::now() + autosave_delay);
-                    }
-
-                    // Clone path once for reuse in LSP and Copilot notifications
-                    let current_buffer_path = editor.buffer().path.clone();
-
-                    // Send document change to LSP (only if ready for this file type)
-                    if let Some(ref mut mlsp) = multi_lsp {
-                        if let Some(ref path) = current_buffer_path {
-                            if mlsp.is_ready_for_file(path) {
-                                let text = editor.buffer().content();
-                                let _ = mlsp.did_change(path, &text);
-                            }
-                        }
-                    }
-
-                    // Send document change to Copilot
-                    if let Some(ref mut cop) = copilot {
-                        if cop.status == CopilotStatus::Ready {
-                            if let Some(ref path) = current_buffer_path {
-                                let uri = lsp::path_to_uri(path);
-                                let text = editor.buffer().content();
-                                let version = editor.buffer().version() as i32;
-                                let _ = cop.did_change(&uri, version, &text);
-                            }
-                        }
-                    }
-
-                    // Continue LSP triggers
-                    if let Some(ref mut mlsp) = multi_lsp {
-                        if let Some(ref path) = current_buffer_path {
-                            if mlsp.is_ready_for_file(path) {
-                                // Check for auto-completion triggers (. or :: or word chars)
-                                // Use debouncing to avoid flooding LSP with requests
-                                // Don't re-trigger if completion popup is already active (preserves resolved docs)
-                                // Explicit triggers like Ctrl+Space or isIncomplete refresh bypass this
-                                if editor.mode == Mode::Insert
-                                    && !editor.completion.active
-                                    && should_trigger_completion(&editor)
-                                {
-                                    completion_pending = Some((
-                                        Instant::now(),
-                                        path.clone(),
-                                        editor.cursor.line as u32,
-                                        editor.cursor.col as u32,
-                                    ));
-                                }
-
-                                // Check for signature help triggers (( or ,)
-                                if editor.mode == Mode::Insert
-                                    && should_trigger_signature_help(&editor)
-                                {
-                                    let _ = mlsp.signature_help(
-                                        &path,
-                                        editor.cursor.line as u32,
-                                        editor.cursor.col as u32,
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    // Request Copilot completions (with debouncing)
-                    if let Some(ref mut cop) = copilot {
-                        if cop.is_enabled() && cop.status == CopilotStatus::Ready {
-                            // Clear stale ghost text if cursor moved to different line
-                            // or moved BEFORE the trigger column (typing backwards/deleting)
-                            let is_stale = cop.ghost_text.as_ref().map_or(false, |g| {
-                                g.trigger_line != editor.cursor.line
-                                    || editor.cursor.col < g.trigger_col
-                            });
-                            if is_stale {
-                                cop.reject_completions();
-                                editor.copilot_ghost = None;
-                            }
-
-                            // Check if we should request new completions
-                            // Request when: in insert mode and no current ghost text
-                            // Note: We allow requests even with LSP popup active (they can coexist)
-                            let ghost_renderable = cop.ghost_text.as_ref().map_or(false, |ghost| {
-                                if !ghost.visible {
-                                    return false;
-                                }
-                                if ghost.trigger_line != editor.cursor.line
-                                    || editor.cursor.col < ghost.trigger_col
-                                {
-                                    return false;
-                                }
-                                ghost
-                                    .current()
-                                    .and_then(|completion| {
-                                        copilot_inline_completion(&editor, completion)
-                                    })
-                                    .map(|(inline, _)| !inline.is_empty())
-                                    .unwrap_or(false)
-                            });
-                            let should_request = editor.mode == Mode::Insert && !ghost_renderable;
-
-                            if should_request {
-                                let now = Instant::now();
-                                let can_request = match copilot_last_request {
-                                    Some(last) => now.duration_since(last) >= copilot_debounce,
-                                    None => true,
-                                };
-
-                                if can_request {
-                                    if let Some(path) = editor.buffer().path.clone() {
-                                        // Get current line content for UTF-16 conversion
-                                        let line_content = editor
-                                            .buffer()
-                                            .line(editor.cursor.line)
-                                            .map(|l| l.to_string())
-                                            .unwrap_or_default();
-
-                                        // Get full source content (required by Copilot)
-                                        let source = editor.buffer().content();
-
-                                        // Get language ID
-                                        let lang_id = LanguageId::from_path(&path)
-                                            .map(|l| l.as_lsp_id().to_string())
-                                            .unwrap_or_else(|| "plaintext".to_string());
-
-                                        // Get relative path
-                                        let relative_path = editor
-                                            .project_root
-                                            .as_ref()
-                                            .and_then(|root| path.strip_prefix(root).ok())
-                                            .map(|p| p.to_string_lossy().to_string())
-                                            .unwrap_or_else(|| path.to_string_lossy().to_string());
-
-                                        let uri = lsp::path_to_uri(&path);
-                                        let version = editor.buffer().version() as i32;
-
-                                        let _ = cop.request_completions_with_line(
-                                            &uri,
-                                            version,
-                                            editor.cursor.line,
-                                            editor.cursor.col,
-                                            &line_content,
-                                            &source,
-                                            &lang_id,
-                                            &relative_path,
-                                            4,    // tab_size
-                                            true, // insert_spaces
-                                        );
-                                        copilot_last_request = Some(now);
-                                    }
-                                }
-                            }
-                        }
-
-                        // Update editor ghost text from Copilot state
-                        // Note: Ghost text can coexist with LSP completion popup
-                        sync_copilot_ghost(&mut editor, cop);
-                    }
-
-                    // Check if signature help should be dismissed
-                    if editor.mode == Mode::Insert && should_dismiss_signature_help(&editor) {
-                        editor.signature_help = None;
-                    }
-                }
-
-                // Handle isIncomplete: re-request completions if filter text changed
-                if editor.needs_completion_refresh {
-                    editor.needs_completion_refresh = false;
-                    if let Some(ref mut mlsp) = multi_lsp {
-                        if let Some(path) = editor.buffer().path.clone() {
-                            if mlsp.is_ready_for_file(&path) {
-                                let _ = mlsp.completion(
-                                    &path,
-                                    editor.cursor.line as u32,
-                                    editor.cursor.col as u32,
-                                );
-                            }
-                        }
-                    }
-                }
-
-                editor.maybe_update_syntax();
-                needs_redraw = true;
-            } else {
-                needs_redraw = true;
-            }
-        } else if editor.maybe_update_syntax_debounced(debounce) {
-            needs_redraw = true;
-        }
 
         // Check for leader key timeout
         // If we're in leader mode with a pending action (exact match that's also a prefix),
@@ -1160,6 +1245,28 @@ fn main() -> anyhow::Result<()> {
                 autosave_pending = None;
             }
         }
+        // Render (debounced to avoid excessive redraws during LSP spam)
+        if needs_redraw {
+            let now = Instant::now();
+            let interval = if redraw_from_input {
+                render_interval
+            } else {
+                lsp_render_interval
+            };
+            if now.duration_since(last_render) >= interval {
+                // Update size before render
+                if let Ok((w, h)) = Terminal::size() {
+                    editor.set_size(w, h);
+                }
+                let t_render = Instant::now();
+                terminal.render(&editor)?;
+                profile!(profile_file, "render: {:?}", t_render.elapsed());
+                needs_redraw = false;
+                last_render = now;
+                redraw_from_input = false;
+            }
+        }
+
     }
 
     // Shutdown all LSP servers gracefully

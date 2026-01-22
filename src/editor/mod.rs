@@ -1211,6 +1211,12 @@ impl Editor {
         self.clamp_cursor();
     }
 
+    /// Get the URI for the current buffer (cached for performance during render)
+    /// This avoids repeated string allocations when checking diagnostics
+    pub fn current_buffer_uri(&self) -> Option<String> {
+        self.buffer().path.as_ref().map(crate::lsp::path_to_uri)
+    }
+
     /// Get diagnostics for the current buffer
     pub fn current_diagnostics(&self) -> &[Diagnostic] {
         if let Some(path) = &self.buffer().path {
@@ -1221,10 +1227,23 @@ impl Editor {
         }
     }
 
+    /// Get diagnostics for the current buffer using a pre-computed URI (avoids repeated allocations)
+    pub fn current_diagnostics_cached(&self, uri: &str) -> &[Diagnostic] {
+        self.diagnostics.get(uri).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
     /// Get diagnostics for a specific line in the current buffer
     /// Handles multi-line diagnostics by checking if line falls within range
     pub fn diagnostics_for_line(&self, line: usize) -> Vec<&Diagnostic> {
         self.current_diagnostics()
+            .iter()
+            .filter(|d| line >= d.line && line <= d.end_line)
+            .collect()
+    }
+
+    /// Get diagnostics for a line using a pre-computed URI (avoids repeated allocations during render)
+    pub fn diagnostics_for_line_cached<'a>(&'a self, line: usize, uri: &str) -> Vec<&'a Diagnostic> {
+        self.current_diagnostics_cached(uri)
             .iter()
             .filter(|d| line >= d.line && line <= d.end_line)
             .collect()
