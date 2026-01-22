@@ -814,6 +814,8 @@ fn default_config_template() -> &'static str {
 # Backspace        - Delete character before
 # Enter            - Insert new line
 # Tab              - Insert tab/spaces
+# Ctrl+w           - Delete word before cursor
+# Ctrl+u           - Delete to start of line
 # Ctrl+l           - Accept Copilot suggestion
 # Alt+]/Alt+[      - Next/previous Copilot suggestion
 #
