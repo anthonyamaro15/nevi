@@ -737,6 +737,9 @@ fn default_config_template() -> &'static str {
 # m{a-zA-Z}        - Set mark (a-z local, A-Z global)
 # '{a-zA-Z}        - Jump to line of mark
 # `{a-zA-Z}        - Jump to exact position of mark
+# :marks           - Show all marks in interactive picker
+# :delmarks {m}    - Delete marks (e.g., :delmarks a, :delmarks a-d)
+# :delmarks!       - Delete all lowercase marks in buffer
 #
 # ----------------------------------------------------------------------------
 # NORMAL MODE - Macros
