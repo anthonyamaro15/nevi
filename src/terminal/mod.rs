@@ -6669,6 +6669,57 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             }
         }
 
+        Command::DeleteMarks(arg) => {
+            use crate::editor::Marks;
+
+            let buffer_key = editor
+                .buffer()
+                .path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| format!("buffer_{}", editor.current_buffer_index()));
+
+            let marks_to_delete = Marks::parse_delmarks_arg(&arg);
+            let mut deleted_count = 0;
+
+            for mark in marks_to_delete {
+                if editor.marks.delete(&buffer_key, mark) {
+                    deleted_count += 1;
+                }
+            }
+
+            if deleted_count > 0 {
+                CommandResult::Message(format!(
+                    "Deleted {} mark{}",
+                    deleted_count,
+                    if deleted_count == 1 { "" } else { "s" }
+                ))
+            } else {
+                CommandResult::Message("No marks deleted".to_string())
+            }
+        }
+
+        Command::DeleteMarksAll => {
+            let buffer_key = editor
+                .buffer()
+                .path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| format!("buffer_{}", editor.current_buffer_index()));
+
+            let deleted_count = editor.marks.delete_all_local(&buffer_key);
+
+            if deleted_count > 0 {
+                CommandResult::Message(format!(
+                    "Deleted {} mark{}",
+                    deleted_count,
+                    if deleted_count == 1 { "" } else { "s" }
+                ))
+            } else {
+                CommandResult::Message("No local marks to delete".to_string())
+            }
+        }
+
         Command::Unknown(cmd) => {
             if cmd.is_empty() {
                 CommandResult::Ok

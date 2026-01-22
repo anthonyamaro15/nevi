@@ -112,6 +112,10 @@ pub enum Command {
     Themes,
     /// :marks - Show all marks
     Marks,
+    /// :delmarks {marks} - Delete specified marks
+    DeleteMarks(String),
+    /// :delmarks! - Delete all lowercase marks in current buffer
+    DeleteMarksAll,
     /// Unknown command
     Unknown(String),
 }
@@ -298,8 +302,16 @@ pub fn parse_command(input: &str) -> Command {
         }
         "Themes" | "themes" => Command::Themes,
 
-        // Marks command
+        // Marks commands
         "marks" => Command::Marks,
+        "delmarks" | "delm" => {
+            if let Some(arg) = args.filter(|s| !s.is_empty()) {
+                Command::DeleteMarks(arg.to_string())
+            } else {
+                Command::Unknown("delmarks: missing mark argument".to_string())
+            }
+        }
+        "delmarks!" | "delm!" => Command::DeleteMarksAll,
 
         // Unknown command
         _ => Command::Unknown(cmd.to_string()),
