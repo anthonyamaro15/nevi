@@ -90,4 +90,34 @@ impl Marks {
     pub fn is_valid_mark(c: char) -> bool {
         c.is_ascii_alphabetic()
     }
+
+    /// Get all local marks for a specific buffer (sorted by name)
+    pub fn get_local_marks(&self, buffer_key: &str) -> Vec<(char, &Mark)> {
+        let mut marks: Vec<(char, &Mark)> = self
+            .local
+            .get(buffer_key)
+            .map(|m| m.iter().map(|(c, mark)| (*c, mark)).collect())
+            .unwrap_or_default();
+        marks.sort_by_key(|(c, _)| *c);
+        marks
+    }
+
+    /// Get all global marks (sorted by name)
+    pub fn get_global_marks(&self) -> Vec<(char, &Mark)> {
+        let mut marks: Vec<(char, &Mark)> = self.global.iter().map(|(c, mark)| (*c, mark)).collect();
+        marks.sort_by_key(|(c, _)| *c);
+        marks
+    }
+
+    /// Delete a mark by name
+    pub fn delete(&mut self, buffer_key: &str, name: char) -> bool {
+        if name.is_lowercase() {
+            self.local
+                .get_mut(buffer_key)
+                .map(|marks| marks.remove(&name).is_some())
+                .unwrap_or(false)
+        } else {
+            self.global.remove(&name).is_some()
+        }
+    }
 }

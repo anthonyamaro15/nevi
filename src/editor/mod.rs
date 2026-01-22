@@ -648,6 +648,8 @@ pub struct Editor {
     pub signature_help: Option<crate::lsp::types::SignatureHelpResult>,
     /// Show diagnostic floating popup at cursor
     pub show_diagnostic_float: bool,
+    /// Marks picker state
+    pub marks_picker: Option<MarksPicker>,
     /// Incremental search matches: (line, start_col, end_col)
     pub search_matches: Vec<(usize, usize, usize)>,
     /// Project root directory (for scoping file finder and grep)
@@ -794,8 +796,54 @@ impl CodeActionsPicker {
     }
 }
 
-/// State for theme picker UI
+/// A mark entry for display in the marks picker
 #[derive(Debug, Clone)]
+pub struct MarkEntry {
+    /// The mark character (a-z for local, A-Z for global)
+    pub name: char,
+    /// Line number (0-indexed)
+    pub line: usize,
+    /// Column number
+    pub col: usize,
+    /// File path (for global marks)
+    pub file_path: Option<std::path::PathBuf>,
+    /// Display file name
+    pub file_name: String,
+    /// Whether this is a global mark
+    pub is_global: bool,
+}
+
+/// Picker state for viewing and jumping to marks
+pub struct MarksPicker {
+    /// List of marks
+    pub items: Vec<MarkEntry>,
+    /// Currently selected index
+    pub selected: usize,
+}
+
+impl MarksPicker {
+    pub fn new(items: Vec<MarkEntry>) -> Self {
+        Self { items, selected: 0 }
+    }
+
+    pub fn move_up(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    pub fn move_down(&mut self) {
+        if self.selected + 1 < self.items.len() {
+            self.selected += 1;
+        }
+    }
+
+    /// Get the currently selected mark
+    pub fn selected_mark(&self) -> Option<&MarkEntry> {
+        self.items.get(self.selected)
+    }
+}
+
 pub struct ThemePicker {
     /// List of all available themes (name, is_bundled)
     pub all_items: Vec<(String, bool)>,
@@ -934,6 +982,7 @@ impl Editor {
             frecency: FrecencyDb::load(),
             signature_help: None,
             show_diagnostic_float: false,
+            marks_picker: None,
             search_matches: Vec::new(),
             project_root: None,
             explorer: FileExplorer::new(),
@@ -2351,6 +2400,7 @@ impl Editor {
         self.completion.hide();
         self.signature_help = None;
         self.show_diagnostic_float = false;
+        self.marks_picker = None;
 
         self.mode = Mode::Normal;
         // In normal mode, cursor can't be past last character

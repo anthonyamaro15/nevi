@@ -110,6 +110,8 @@ pub enum Command {
     Theme(String),
     /// :Themes - Open theme picker
     Themes,
+    /// :marks - Show all marks
+    Marks,
     /// Unknown command
     Unknown(String),
 }
@@ -295,6 +297,9 @@ pub fn parse_command(input: &str) -> Command {
             }
         }
         "Themes" | "themes" => Command::Themes,
+
+        // Marks command
+        "marks" => Command::Marks,
 
         // Unknown command
         _ => Command::Unknown(cmd.to_string()),
