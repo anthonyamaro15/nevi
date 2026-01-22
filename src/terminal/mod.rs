@@ -397,6 +397,9 @@ impl Terminal {
         let search_bg = theme.ui.search_match_bg;
         let search_fg = theme.ui.search_match_fg;
 
+        // Pre-compute URI for diagnostic lookups (avoids repeated string allocations)
+        let cached_uri = if is_active { editor.current_buffer_uri() } else { None };
+
         let mut current_row = 0;
         let mut file_line = pane.viewport_offset;
 
@@ -419,10 +422,9 @@ impl Terminal {
             };
 
             // Get diagnostics for line number coloring
-            let line_diagnostics = if is_active {
-                editor.diagnostics_for_line(file_line)
-            } else {
-                Vec::new()
+            let line_diagnostics = match &cached_uri {
+                Some(uri) => editor.diagnostics_for_line_cached(file_line, uri),
+                None => Vec::new(),
             };
             let has_error = line_diagnostics.iter().any(|d| {
                 matches!(d.severity, DiagnosticSeverity::Error)
@@ -659,6 +661,9 @@ impl Terminal {
         let editor_bg = theme.ui.background;
         let editor_fg = theme.ui.foreground;
 
+        // Pre-compute URI for diagnostic lookups (avoids repeated string allocations)
+        let cached_uri = if is_active { editor.current_buffer_uri() } else { None };
+
         // Render each row in this pane
         for row in 0..pane_height {
             let screen_y = rect.y + row as u16;
@@ -678,10 +683,9 @@ impl Terminal {
 
             if file_line < buffer.len_lines() {
                 // Check for diagnostics on this line (only for active pane)
-                let line_diagnostics = if is_active {
-                    editor.diagnostics_for_line(file_line)
-                } else {
-                    Vec::new()
+                let line_diagnostics = match &cached_uri {
+                    Some(uri) => editor.diagnostics_for_line_cached(file_line, uri),
+                    None => Vec::new(),
                 };
                 let has_error = line_diagnostics.iter().any(|d| {
                     matches!(d.severity, DiagnosticSeverity::Error)
@@ -860,8 +864,9 @@ impl Terminal {
                     }
 
                     // Render inline diagnostic (virtual text) for this line
+                    // Reuse line_diagnostics from earlier instead of calling diagnostics_for_line again
                     if is_active {
-                        if let Some(diag) = editor.diagnostics_for_line(file_line).first() {
+                        if let Some(diag) = line_diagnostics.first() {
                             // Calculate remaining space for diagnostic
                             let remaining = pane_width.saturating_sub(chars_printed + 3); // 3 for " ● "
                             if remaining > 5 {
@@ -3959,6 +3964,8 @@ pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
 }
 
 fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
+    let t_start = std::time::Instant::now();
+
     // Handle leader key sequences
     if let Some(ref mut sequence) = editor.leader_sequence {
         // We're in leader mode, accumulating a sequence
@@ -4024,6 +4031,7 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
     }
 
     // Check if this key is the leader key
+    let t_leader_check = std::time::Instant::now();
     if editor.keymap.has_leader_mappings() {
         if editor.keymap.is_leader_key(key) {
             editor.leader_sequence = Some(String::new());
@@ -4032,20 +4040,29 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.set_status("<leader>");
             return;
         }
-    } else {
-        // Debug: no leader mappings loaded
-        // Uncomment next line to debug: editor.set_status("No leader mappings");
     }
+    let leader_check_elapsed = t_leader_check.elapsed();
 
     // Check for normal mode custom mapping first
     if let Some(mapping) = editor.keymap.get_normal_mapping(key) {
         let mapping = mapping.clone();
+        let t_exec = std::time::Instant::now();
         execute_leader_action(editor, &mapping);
+        let total = t_start.elapsed();
+        if total.as_micros() > 1000 {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("/tmp/nevi_debug.log") {
+                let _ = writeln!(f, "SLOW custom_mapping: total={:?} exec={:?} key={:?}", total, t_exec.elapsed(), key.code);
+            }
+        }
         return;
     }
 
+    let t_process = std::time::Instant::now();
     let action = editor.input_state.process_normal_key(key);
+    let process_elapsed = t_process.elapsed();
 
+    let t_action = std::time::Instant::now();
     match action {
         KeyAction::Pending => {
             // Key was consumed, waiting for more input
@@ -4165,6 +4182,14 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
                 InsertPosition::LineEnd => editor.enter_insert_mode_end(),
                 InsertPosition::NewLineBelow => editor.open_line_below(),
                 InsertPosition::NewLineAbove => editor.open_line_above(),
+            }
+            let action_elapsed = t_action.elapsed();
+            let total = t_start.elapsed();
+            if total.as_micros() > 1000 {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("/tmp/nevi_debug.log") {
+                    let _ = writeln!(f, "SLOW EnterInsert: total={:?} leader_check={:?} process={:?} action={:?}", total, leader_check_elapsed, process_elapsed, action_elapsed);
+                }
             }
         }
 
@@ -4516,6 +4541,8 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
 }
 
 fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
+    let t_insert_start = std::time::Instant::now();
+
     // Apply custom keymap remapping for insert mode
     let key = editor.keymap.remap_insert(key);
 
@@ -4798,6 +4825,15 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
         } else {
             // Cursor moved to different line - hide completion
             editor.completion.hide();
+        }
+    }
+
+    // Log slow insert mode operations
+    let insert_elapsed = t_insert_start.elapsed();
+    if insert_elapsed.as_micros() > 500 {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("/tmp/nevi_debug.log") {
+            let _ = writeln!(f, "SLOW insert_mode: {:?} key={:?}", insert_elapsed, key.code);
         }
     }
 }

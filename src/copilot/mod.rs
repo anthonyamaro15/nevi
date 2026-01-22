@@ -18,8 +18,6 @@ pub mod client;
 pub mod types;
 pub mod utf16;
 
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver};
 use std::thread::{self, JoinHandle};
@@ -27,7 +25,12 @@ use std::thread::{self, JoinHandle};
 use anyhow::{anyhow, Result};
 
 /// Debug logging helper - writes to /tmp/copilot_debug.log
-fn debug_log(msg: &str) {
+/// Disabled by default for performance - enable only when debugging Copilot issues
+#[allow(dead_code)]
+fn debug_log(_msg: &str) {
+    // Disabled for performance - file I/O on every call is too expensive
+    // To enable: uncomment the code below
+    /*
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
@@ -35,6 +38,7 @@ fn debug_log(msg: &str) {
     {
         let _ = writeln!(file, "{}", msg);
     }
+    */
 }
 
 pub use client::CopilotClient;

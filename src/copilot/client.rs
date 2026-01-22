@@ -4,7 +4,6 @@
 //! The protocol is similar to LSP but uses custom methods.
 
 use std::collections::HashMap;
-use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,7 +17,12 @@ use serde_json::{json, Value};
 use super::types::*;
 
 /// Debug logging helper - writes to /tmp/copilot_debug.log
-fn debug_log(msg: &str) {
+/// Disabled by default for performance - enable only when debugging Copilot issues
+#[allow(dead_code)]
+fn debug_log(_msg: &str) {
+    // Disabled for performance - file I/O on every call is too expensive
+    // To enable: uncomment the code below
+    /*
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
@@ -26,6 +30,7 @@ fn debug_log(msg: &str) {
     {
         let _ = writeln!(file, "[client] {}", msg);
     }
+    */
 }
 
 /// Shared pending requests map - maps request ID to request kind

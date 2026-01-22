@@ -447,9 +447,10 @@ fn run_lsp_thread(
 }
 
 /// Convert a file path to a file:// URI
+/// Note: Avoids canonicalize() as it's a filesystem syscall and this function
+/// is called frequently during rendering (for diagnostic lookups).
 pub fn path_to_uri(path: &PathBuf) -> String {
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-    Url::from_file_path(canonical)
+    Url::from_file_path(path)
         .map(|url| url.to_string())
         .unwrap_or_else(|_| format!("file://{}", path.display()))
 }
