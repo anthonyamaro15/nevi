@@ -2589,6 +2589,94 @@ impl Editor {
         }
     }
 
+    /// Delete word before cursor (Ctrl+w in insert mode)
+    /// Deletes backwards to the start of the current word
+    pub fn delete_word_before(&mut self) {
+        if self.cursor.col == 0 {
+            // At start of line, join with previous line (like backspace)
+            self.delete_char_before();
+            return;
+        }
+
+        let Some(line) = self.buffer().line(self.cursor.line) else {
+            return;
+        };
+        let chars: Vec<char> = line.chars().collect();
+        let start_col = self.cursor.col;
+        let mut col = start_col;
+
+        // Skip whitespace backwards
+        while col > 0 && chars.get(col - 1).map(|c| c.is_whitespace()).unwrap_or(false) {
+            col -= 1;
+        }
+
+        // Skip word characters backwards (or non-whitespace non-word chars)
+        if col > 0 {
+            let is_word_char = chars.get(col - 1).map(|c| c.is_alphanumeric() || *c == '_').unwrap_or(false);
+            if is_word_char {
+                // Delete word characters
+                while col > 0 && chars.get(col - 1).map(|c| c.is_alphanumeric() || *c == '_').unwrap_or(false) {
+                    col -= 1;
+                }
+            } else {
+                // Delete non-word, non-whitespace characters
+                while col > 0 {
+                    let c = chars.get(col - 1);
+                    if c.map(|c| c.is_whitespace() || c.is_alphanumeric() || *c == '_').unwrap_or(true) {
+                        break;
+                    }
+                    col -= 1;
+                }
+            }
+        }
+
+        // Delete from col to start_col
+        if col < start_col {
+            let deleted: String = chars[col..start_col].iter().collect();
+            self.cursor.col = col;
+
+            // Record for undo
+            self.undo_stack.record_change(Change::delete(
+                self.cursor.line,
+                self.cursor.col,
+                deleted,
+            ));
+
+            // Delete the characters
+            for _ in 0..(start_col - col) {
+                self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, col);
+            }
+        }
+    }
+
+    /// Delete to start of line (Ctrl+u in insert mode)
+    pub fn delete_to_line_start(&mut self) {
+        if self.cursor.col == 0 {
+            return;
+        }
+
+        let Some(line) = self.buffer().line(self.cursor.line) else {
+            return;
+        };
+        let chars: Vec<char> = line.chars().collect();
+        let deleted: String = chars[..self.cursor.col].iter().collect();
+        let delete_col = self.cursor.col;
+
+        // Record for undo
+        self.undo_stack.record_change(Change::delete(
+            self.cursor.line,
+            0,
+            deleted,
+        ));
+
+        // Delete from start to cursor
+        for _ in 0..delete_col {
+            self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, 0);
+        }
+
+        self.cursor.col = 0;
+    }
+
     /// Open a new line below and enter insert mode
     pub fn open_line_below(&mut self) {
         let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);

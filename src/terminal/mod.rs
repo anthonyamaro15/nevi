@@ -4945,6 +4945,16 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
             editor.enter_normal_mode();
         }
 
+        // Delete word before cursor (Ctrl+w)
+        (KeyModifiers::CONTROL, KeyCode::Char('w')) => {
+            editor.delete_word_before();
+        }
+
+        // Delete to start of line (Ctrl+u)
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+            editor.delete_to_line_start();
+        }
+
         // Backspace
         (KeyModifiers::NONE, KeyCode::Backspace) => {
             // Auto-pairs: delete matching pair if cursor is between them
