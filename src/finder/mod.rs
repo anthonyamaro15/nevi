@@ -9,6 +9,7 @@ pub use matcher::FuzzyMatcher;
 use std::path::PathBuf;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::cell::Cell;
 
 /// Mode for the fuzzy finder
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,15 +91,11 @@ impl FloatingWindow {
     }
 
     /// Calculate centered position for a floating window with optional preview panel
-    pub fn centered_with_preview(term_width: u16, term_height: u16, preview_enabled: bool) -> Self {
-        let width = if preview_enabled {
-            // Wider window when preview is enabled (~90% width)
-            (term_width * 90 / 100).min(200).max(80)
-        } else {
-            // Standard width without preview (80% width)
-            (term_width * 80 / 100).min(120).max(40)
-        };
-        let height = (term_height * 70 / 100).min(40).max(10); // 70% height, max 40, min 10
+    /// Window size is always the same - only internal layout changes with preview toggle
+    pub fn centered_with_preview(term_width: u16, term_height: u16, _preview_enabled: bool) -> Self {
+        // Window is always 90% width (same size whether preview is on or off)
+        let width = (term_width * 90 / 100).min(200).max(80);
+        let height = (term_height * 70 / 100).min(40).max(10);
         let x = (term_width.saturating_sub(width)) / 2;
         let y = (term_height.saturating_sub(height)) / 2;
         Self { x, y, width, height }
@@ -143,6 +140,9 @@ pub struct FuzzyFinder {
     pub preview_path: Option<PathBuf>,
     /// Pending preview update (debounce) - stores the time when update was requested
     pub preview_update_pending: bool,
+    /// Previous preview state (for detecting toggle to clear delta area)
+    /// Uses Cell for interior mutability so render can update it with &self
+    pub prev_preview_enabled: Cell<bool>,
 }
 
 impl FuzzyFinder {
@@ -166,6 +166,7 @@ impl FuzzyFinder {
             preview_scroll: 0,
             preview_path: None,
             preview_update_pending: false,
+            prev_preview_enabled: Cell::new(false),
         }
     }
 
@@ -190,6 +191,7 @@ impl FuzzyFinder {
             preview_scroll: 0,
             preview_path: None,
             preview_update_pending: false,
+            prev_preview_enabled: Cell::new(false),
         }
     }
 
