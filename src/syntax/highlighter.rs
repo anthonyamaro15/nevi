@@ -19,6 +19,16 @@ pub struct HighlightSpan {
     pub fg: Color,
 }
 
+/// Internal span with priority for sorting
+#[derive(Debug, Clone, Copy)]
+struct PrioritySpan {
+    start_col: usize,
+    end_col: usize,
+    fg: Color,
+    /// Capture index - higher = later in query = higher priority
+    priority: u32,
+}
+
 /// Get highlights for a specific line from the parsed tree
 pub fn get_line_highlights(
     tree: &Tree,
@@ -28,12 +38,12 @@ pub fn get_line_highlights(
     line: usize,
     theme: &Theme,
 ) -> Vec<HighlightSpan> {
-    let mut spans = Vec::new();
+    let mut spans: Vec<PrioritySpan> = Vec::new();
     let mut cursor = QueryCursor::new();
 
     // Get the byte range for this line
     if line >= line_start_bytes.len() {
-        return spans;
+        return Vec::new();
     }
 
     let line_start_byte = line_start_bytes[line];
@@ -50,7 +60,7 @@ pub fn get_line_highlights(
     // This prevents the editor from freezing on pathological input
     let line_byte_len = line_end_byte.saturating_sub(line_start_byte);
     if line_byte_len > MAX_QUERY_BYTES {
-        return spans; // Graceful degradation: no highlighting for this line
+        return Vec::new(); // Graceful degradation: no highlighting for this line
     }
 
     // Extract the line content for byte-to-char conversion
@@ -94,20 +104,102 @@ pub fn get_line_highlights(
                 let end_col = byte_offset_to_char_index(&byte_to_char, end_byte_rel);
 
                 if start_col < end_col {
-                    spans.push(HighlightSpan {
+                    spans.push(PrioritySpan {
                         start_col,
                         end_col,
                         fg: color,
+                        priority: capture.index,
                     });
                 }
             }
         }
     }
 
-    // Sort spans by start column
-    spans.sort_by_key(|s| s.start_col);
+    // Sort spans by start column, then by priority (higher priority = later in query = wins)
+    spans.sort_by(|a, b| {
+        a.start_col.cmp(&b.start_col)
+            .then_with(|| a.priority.cmp(&b.priority))
+    });
 
-    spans
+    // Resolve overlapping spans using priority
+    resolve_overlapping_spans_with_priority(spans)
+}
+
+/// Resolve overlapping spans using priority (capture index)
+/// Higher priority captures override lower priority ones in overlapping regions
+fn resolve_overlapping_spans_with_priority(spans: Vec<PrioritySpan>) -> Vec<HighlightSpan> {
+    if spans.is_empty() {
+        return Vec::new();
+    }
+
+    // Find the max column we need to cover
+    let max_col = spans.iter().map(|s| s.end_col).max().unwrap_or(0);
+    if max_col == 0 {
+        return Vec::new();
+    }
+
+    // For each column position, track the highest priority span covering it
+    let mut col_colors: Vec<Option<(Color, u32)>> = vec![None; max_col];
+
+    for span in &spans {
+        for col in span.start_col..span.end_col {
+            if col < col_colors.len() {
+                match col_colors[col] {
+                    None => col_colors[col] = Some((span.fg, span.priority)),
+                    Some((_, existing_priority)) if span.priority > existing_priority => {
+                        col_colors[col] = Some((span.fg, span.priority));
+                    }
+                    _ => {} // Keep existing higher priority
+                }
+            }
+        }
+    }
+
+    // Convert column-based representation back to spans
+    let mut result: Vec<HighlightSpan> = Vec::new();
+    let mut current_span: Option<(usize, Color)> = None;
+
+    for (col, color_opt) in col_colors.iter().enumerate() {
+        match (current_span, color_opt) {
+            (None, Some((color, _))) => {
+                // Start a new span
+                current_span = Some((col, *color));
+            }
+            (Some((_start, current_color)), Some((color, _))) if current_color == *color => {
+                // Continue same span
+            }
+            (Some((start, current_color)), Some((color, _))) => {
+                // Different color - end current and start new
+                result.push(HighlightSpan {
+                    start_col: start,
+                    end_col: col,
+                    fg: current_color,
+                });
+                current_span = Some((col, *color));
+            }
+            (Some((start, current_color)), None) => {
+                // End current span
+                result.push(HighlightSpan {
+                    start_col: start,
+                    end_col: col,
+                    fg: current_color,
+                });
+                current_span = None;
+            }
+            (None, None) => {}
+        }
+    }
+
+    // Don't forget the last span
+    if let Some((start, color)) = current_span {
+        result.push(HighlightSpan {
+            start_col: start,
+            end_col: max_col,
+            fg: color,
+        });
+    }
+
+    result
 }
 
 /// Build a mapping from byte offsets to char indices for a given string
@@ -221,7 +313,6 @@ pub fn javascript_highlight_query() -> &'static str {
 ; Literals and constants
 (comment) @comment
 (string) @string
-(template_string) @string
 (regex) @string
 (number) @number
 (true) @constant
@@ -229,40 +320,50 @@ pub fn javascript_highlight_query() -> &'static str {
 (null) @constant
 (undefined) @constant
 
+; Template strings base
+(template_string) @string
+
 ; Keywords - using tree-sitter's bracket syntax for grouping
 ["import" "export" "from" "as" "default"] @keyword
 ["const" "let" "var" "function" "class" "extends" "static" "get" "set"] @keyword
 ["async" "await" "yield" "new" "delete" "typeof" "instanceof" "in" "of" "void" "with"] @keyword
 ["if" "else" "switch" "case" "for" "while" "do" "break" "continue" "return" "throw" "try" "catch" "finally"] @keyword
 
-; Functions - definitions and calls
+; Operators
+["=" "+=" "-=" "*=" "/=" "%=" "+" "-" "*" "/" "%" "==" "===" "!=" "!==" "<" ">" "<=" ">=" "&&" "||" "!" "=>" "..." "??" "&" "|" "^" "~"] @operator
+
+; Variables - general catch-all (MUST come before more specific patterns)
+(identifier) @variable
+(this) @variable
+(super) @variable
+
+; Properties (override variable)
+(property_identifier) @property
+(shorthand_property_identifier) @property
+
+; Functions - definitions and calls (override variable)
 (function_declaration name: (identifier) @function)
 (function_expression name: (identifier) @function)
 (method_definition name: (property_identifier) @function)
 (call_expression function: (identifier) @function)
 (call_expression function: (member_expression property: (property_identifier) @function))
 
-; Classes and types
+; Classes and types (override variable)
 (class_declaration name: (identifier) @type)
 (new_expression constructor: (identifier) @type)
 
-; Properties
-(property_identifier) @property
-(shorthand_property_identifier) @property
-
-; Variables - general catch-all
-(identifier) @variable
-(this) @variable
-(super) @variable
-
-; JSX elements
+; JSX elements (override variable)
 (jsx_opening_element (identifier) @tag)
 (jsx_closing_element (identifier) @tag)
 (jsx_self_closing_element (identifier) @tag)
 (jsx_attribute (property_identifier) @attribute)
 
-; Operators
-["=" "+=" "-=" "*=" "/=" "%=" "+" "-" "*" "/" "%" "==" "===" "!=" "!==" "<" ">" "<=" ">=" "&&" "||" "!" "=>" "..." "??" "&" "|" "^" "~"] @operator
+; Template string interpolations - highest priority
+(template_substitution
+  "${" @embedded
+  "}" @embedded)
+(template_substitution (identifier) @embedded)
+(template_substitution (member_expression) @embedded)
 "##
 }
 
@@ -273,13 +374,15 @@ pub fn typescript_highlight_query() -> &'static str {
 ; Literals and constants
 (comment) @comment
 (string) @string
-(template_string) @string
 (regex) @string
 (number) @number
 (true) @constant
 (false) @constant
 (null) @constant
 (undefined) @constant
+
+; Template strings base
+(template_string) @string
 
 ; Keywords - JS base
 ["import" "export" "from" "as" "default"] @keyword
@@ -292,39 +395,46 @@ pub fn typescript_highlight_query() -> &'static str {
 ["public" "private" "protected" "readonly" "abstract" "override"] @keyword
 ["keyof" "infer" "is" "asserts" "satisfies"] @keyword
 
-; Type annotations - TypeScript's key feature
+; Operators
+["=" "+=" "-=" "*=" "/=" "%=" "+" "-" "*" "/" "%" "==" "===" "!=" "!==" "<" ">" "<=" ">=" "&&" "||" "!" "=>" "..." "??" "&" "|" "^" "~"] @operator
+
+; Variables - general catch-all (MUST come before more specific patterns)
+(identifier) @variable
+(this) @variable
+(super) @variable
+
+; Properties (override variable)
+(property_identifier) @property
+(shorthand_property_identifier) @property
+
+; Type annotations - TypeScript's key feature (override variable)
 (type_identifier) @type
 (predefined_type) @type
 (type_alias_declaration name: (type_identifier) @type)
 (interface_declaration name: (type_identifier) @type)
 (enum_declaration name: (identifier) @type)
 
-; Functions - definitions and calls
+; Functions - definitions and calls (override variable)
 (function_declaration name: (identifier) @function)
 (function_expression name: (identifier) @function)
 (method_definition name: (property_identifier) @function)
 (call_expression function: (identifier) @function)
 (call_expression function: (member_expression property: (property_identifier) @function))
 
-; Classes and constructors
+; Classes and constructors (override variable)
 (class_declaration name: (type_identifier) @type)
 (new_expression constructor: (identifier) @type)
 
-; Properties
-(property_identifier) @property
-(shorthand_property_identifier) @property
-
-; Variables - general catch-all
-(identifier) @variable
-(this) @variable
-(super) @variable
-
-; Decorators
+; Decorators (override variable)
 (decorator "@" @attribute)
 (decorator (identifier) @attribute)
 
-; Operators
-["=" "+=" "-=" "*=" "/=" "%=" "+" "-" "*" "/" "%" "==" "===" "!=" "!==" "<" ">" "<=" ">=" "&&" "||" "!" "=>" "..." "??" "&" "|" "^" "~"] @operator
+; Template string interpolations - highest priority
+(template_substitution
+  "${" @embedded
+  "}" @embedded)
+(template_substitution (identifier) @embedded)
+(template_substitution (member_expression) @embedded)
 "##
 }
 
@@ -335,13 +445,15 @@ pub fn tsx_highlight_query() -> &'static str {
 ; Literals and constants
 (comment) @comment
 (string) @string
-(template_string) @string
 (regex) @string
 (number) @number
 (true) @constant
 (false) @constant
 (null) @constant
 (undefined) @constant
+
+; Template strings base
+(template_string) @string
 
 ; Keywords - JS base
 ["import" "export" "from" "as" "default"] @keyword
@@ -354,45 +466,52 @@ pub fn tsx_highlight_query() -> &'static str {
 ["public" "private" "protected" "readonly" "abstract" "override"] @keyword
 ["keyof" "infer" "is" "asserts" "satisfies"] @keyword
 
-; Type annotations - TypeScript's key feature
+; Operators
+["=" "+=" "-=" "*=" "/=" "%=" "+" "-" "*" "/" "%" "==" "===" "!=" "!==" "<" ">" "<=" ">=" "&&" "||" "!" "=>" "..." "??" "&" "|" "^" "~"] @operator
+
+; Variables - general catch-all (MUST come before more specific patterns)
+(identifier) @variable
+(this) @variable
+(super) @variable
+
+; Properties (override variable)
+(property_identifier) @property
+(shorthand_property_identifier) @property
+
+; Type annotations - TypeScript's key feature (override variable)
 (type_identifier) @type
 (predefined_type) @type
 (type_alias_declaration name: (type_identifier) @type)
 (interface_declaration name: (type_identifier) @type)
 (enum_declaration name: (identifier) @type)
 
-; Functions - definitions and calls
+; Functions - definitions and calls (override variable)
 (function_declaration name: (identifier) @function)
 (function_expression name: (identifier) @function)
 (method_definition name: (property_identifier) @function)
 (call_expression function: (identifier) @function)
 (call_expression function: (member_expression property: (property_identifier) @function))
 
-; Classes and constructors
+; Classes and constructors (override variable)
 (class_declaration name: (type_identifier) @type)
 (new_expression constructor: (identifier) @type)
 
-; Properties
-(property_identifier) @property
-(shorthand_property_identifier) @property
-
-; Variables - general catch-all
-(identifier) @variable
-(this) @variable
-(super) @variable
-
-; JSX elements - React components and HTML tags
+; JSX elements - React components and HTML tags (override variable)
 (jsx_opening_element (identifier) @tag)
 (jsx_closing_element (identifier) @tag)
 (jsx_self_closing_element (identifier) @tag)
 (jsx_attribute (property_identifier) @attribute)
 
-; Decorators
+; Decorators (override variable)
 (decorator "@" @attribute)
 (decorator (identifier) @attribute)
 
-; Operators
-["=" "+=" "-=" "*=" "/=" "%=" "+" "-" "*" "/" "%" "==" "===" "!=" "!==" "<" ">" "<=" ">=" "&&" "||" "!" "=>" "..." "??" "&" "|" "^" "~"] @operator
+; Template string interpolations - highest priority
+(template_substitution
+  "${" @embedded
+  "}" @embedded)
+(template_substitution (identifier) @embedded)
+(template_substitution (member_expression) @embedded)
 "##
 }
 

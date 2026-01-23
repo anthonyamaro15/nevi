@@ -43,6 +43,7 @@ pub enum HighlightGroup {
     Label,
     Property,
     Tag,
+    Embedded, // For embedded expressions like ${} in template strings
 }
 
 impl HighlightGroup {
@@ -67,6 +68,7 @@ impl HighlightGroup {
             "label" => Some(Self::Label),
             "property" => Some(Self::Property),
             "tag" => Some(Self::Tag),
+            "embedded" => Some(Self::Embedded),
             _ => None,
         }
     }
@@ -100,6 +102,7 @@ impl Theme {
         styles.insert(HighlightGroup::Label, SyntaxStyle::new(Color::Rgb { r: 224, g: 108, b: 117 }));      // Red
         styles.insert(HighlightGroup::Property, SyntaxStyle::new(Color::Rgb { r: 224, g: 108, b: 117 }));   // Red
         styles.insert(HighlightGroup::Tag, SyntaxStyle::new(Color::Rgb { r: 224, g: 108, b: 117 }));        // Red (JSX/HTML tags)
+        styles.insert(HighlightGroup::Embedded, SyntaxStyle::new(Color::Rgb { r: 86, g: 182, b: 194 }));    // Cyan (template string interpolations)
 
         Self {
             name: "default".to_string(),
@@ -163,6 +166,7 @@ impl Theme {
         styles.insert(HighlightGroup::Label, convert(&ui_theme.syntax.label));
         styles.insert(HighlightGroup::Property, convert(&ui_theme.syntax.property));
         styles.insert(HighlightGroup::Tag, convert(&ui_theme.syntax.tag));
+        styles.insert(HighlightGroup::Embedded, convert(&ui_theme.syntax.embedded));
 
         Self {
             name: ui_theme.name.clone(),

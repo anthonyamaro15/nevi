@@ -1,20 +1,23 @@
-# One Dark Theme for Nevi
-# Inspired by Atom's One Dark theme
+# One Dark Darker Theme for Nevi
+# Based on navarasu/onedark.nvim "darker" style
 
 [palette]
-red = "#e06c75"
-green = "#98c379"
-yellow = "#e5c07b"
-blue = "#61afef"
-purple = "#c678dd"
-cyan = "#56b6c2"
-orange = "#d19a66"
-gray = "#5c6370"
-fg = "#abb2bf"
-bg = "#282c34"
-bg_dark = "#21252b"
-bg_lighter = "#2c313c"
-selection = "#3e4451"
+red = "#e55561"
+green = "#8ebd6b"
+yellow = "#e2b86b"
+blue = "#4fa6ed"
+purple = "#bf68d9"
+cyan = "#48b0bd"
+orange = "#cc9057"
+gray = "#535965"
+light_gray = "#7a818e"
+fg = "#a0a8b7"
+bg = "#1f2329"
+bg_dark = "#181b20"
+bg_lighter = "#282c34"
+bg_highlight = "#30363f"
+selection = "#323641"
+black = "#0e1013"
 
 [syntax]
 keyword = { fg = "purple" }
@@ -37,11 +40,11 @@ embedded = { fg = "cyan" }
 [ui]
 background = "bg"
 foreground = "fg"
-cursor_line = "#2c313c"
-selection = "#3e4451"
+cursor_line = "bg_highlight"
+selection = "selection"
 line_number = "gray"
 line_number_active = "fg"
-visual_bg = "#3e4451"
+visual_bg = "selection"
 
 [ui.statusline]
 background = "bg_dark"
@@ -54,41 +57,41 @@ mode_replace = "red"
 
 [ui.popup]
 background = "bg_dark"
-border = "#373741"
+border = "#323641"
 selection = "#374d5f"
 
 [ui.completion]
-background = "#1e1e24"
-border = "#373741"
+background = "black"
+border = "#323641"
 selected = "#374d5f"
 match = "yellow"
-detail = "#64646f"
+detail = "light_gray"
 
 [ui.finder]
-background = "#19191e"
-border = "#646464"
+background = "black"
+border = "gray"
 selected = "#3c3c64"
 match = "yellow"
 prompt = "blue"
 
 [ui.search]
-match_bg = "#b4a03c"
-match_fg = "#000000"
+match_bg = "#e2b86b"
+match_fg = "#0e1013"
 
 [ui.explorer]
 background = "bg_dark"
-border = "#373741"
+border = "#323641"
 selected = "#374d5f"
 directory = "blue"
 
 [ui.harpoon]
 background = "bg_dark"
-border = "#373741"
+border = "#323641"
 selected = "#374d5f"
 
 [diagnostic]
-error = "#ff6464"
-warning = "#ffc864"
+error = "red"
+warning = "yellow"
 info = "blue"
 hint = "cyan"
 

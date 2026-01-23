@@ -51,6 +51,7 @@ pub struct SyntaxToml {
     pub label: Option<StyleToml>,
     pub property: Option<StyleToml>,
     pub tag: Option<StyleToml>,
+    pub embedded: Option<StyleToml>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -246,6 +247,7 @@ fn load_theme_from_toml_inner(name: &str, toml: &ThemeToml) -> Theme {
         label: parse_style(&toml.syntax.label, palette, base.syntax.label),
         property: parse_style(&toml.syntax.property, palette, base.syntax.property),
         tag: parse_style(&toml.syntax.tag, palette, base.syntax.tag),
+        embedded: parse_style(&toml.syntax.embedded, palette, base.syntax.embedded),
     };
 
     // Parse UI colors
