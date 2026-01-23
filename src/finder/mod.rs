@@ -90,15 +90,11 @@ impl FloatingWindow {
     }
 
     /// Calculate centered position for a floating window with optional preview panel
-    pub fn centered_with_preview(term_width: u16, term_height: u16, preview_enabled: bool) -> Self {
-        let width = if preview_enabled {
-            // Wider window when preview is enabled (~90% width)
-            (term_width * 90 / 100).min(200).max(80)
-        } else {
-            // Standard width without preview (80% width)
-            (term_width * 80 / 100).min(120).max(40)
-        };
-        let height = (term_height * 70 / 100).min(40).max(10); // 70% height, max 40, min 10
+    /// Window size is always the same - only internal layout changes with preview toggle
+    pub fn centered_with_preview(term_width: u16, term_height: u16, _preview_enabled: bool) -> Self {
+        // Window is always 90% width (same size whether preview is on or off)
+        let width = (term_width * 90 / 100).min(200).max(80);
+        let height = (term_height * 70 / 100).min(40).max(10);
         let x = (term_width.saturating_sub(width)) / 2;
         let y = (term_height.saturating_sub(height)) / 2;
         Self { x, y, width, height }

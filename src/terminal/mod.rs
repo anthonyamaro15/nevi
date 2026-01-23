@@ -1,7 +1,7 @@
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-    execute,
+    execute, queue,
     terminal::{self, ClearType},
     style::{SetForegroundColor, SetBackgroundColor, ResetColor, Color, SetAttribute, Attribute, SetUnderlineColor},
 };
@@ -3317,19 +3317,7 @@ impl Terminal {
             preview_enabled
         );
 
-        // Clear the maximum possible finder area to avoid artifacts when toggling preview
-        // Always use preview-enabled dimensions for clearing
-        let max_win = crate::finder::FloatingWindow::centered_with_preview(
-            editor.term_width,
-            editor.term_height,
-            true, // Always calculate max size (with preview)
-        );
-        let bg = editor.theme().ui.background;
-        execute!(self.stdout, SetBackgroundColor(bg))?;
-        for row in 0..max_win.height {
-            execute!(self.stdout, cursor::MoveTo(max_win.x, max_win.y + row))?;
-            print!("{}", " ".repeat(max_win.width as usize));
-        }
+        // No clearing needed - window size is constant, rows fully overwrite their content
 
         // Use theme colors for finder
         let theme = editor.theme();
@@ -3347,19 +3335,21 @@ impl Terminal {
         };
 
         // Calculate panel widths
+        // Window is always same size - only internal layout changes
         let (results_width, preview_width) = if preview_enabled {
-            // ~45% for results, ~55% for preview (minus borders)
+            // 50/50 split for results and preview (minus borders)
             let total_inner = (win.width - 3) as usize; // -2 outer borders, -1 separator
-            let results = (total_inner * 45 / 100).max(20);
+            let results = total_inner / 2;
             let preview = total_inner.saturating_sub(results);
             (results, preview)
         } else {
+            // Results takes full width when preview is off
             ((win.width - 2) as usize, 0)
         };
 
         // Draw top border with title
-        execute!(self.stdout, cursor::MoveTo(win.x, win.y), SetForegroundColor(border_color))?;
-        print!("\u{250c}"); // ┌
+        queue!(self.stdout, cursor::MoveTo(win.x, win.y), SetForegroundColor(border_color))?;
+        write!(self.stdout, "\u{250c}")?; // ┌
         let title = match editor.finder.mode {
             crate::finder::FinderMode::Files => " Find Files ",
             crate::finder::FinderMode::Grep => " Live Grep ",
@@ -3372,17 +3362,17 @@ impl Terminal {
             let title_start = (results_width.saturating_sub(title.len())) / 2;
             for i in 1..=results_width {
                 if i == title_start + 1 {
-                    execute!(self.stdout, SetForegroundColor(title_color))?;
-                    print!("{}", title);
-                    execute!(self.stdout, SetForegroundColor(border_color))?;
+                    queue!(self.stdout, SetForegroundColor(title_color))?;
+                    write!(self.stdout, "{}", title)?;
+                    queue!(self.stdout, SetForegroundColor(border_color))?;
                 } else if i > title_start && i <= title_start + title.len() {
                     // Skip - already printed title
                 } else {
-                    print!("\u{2500}"); // ─
+                    write!(self.stdout, "\u{2500}")?; // ─
                 }
             }
             // Separator junction
-            print!("\u{252c}"); // ┬
+            write!(self.stdout, "\u{252c}")?; // ┬
 
             // Preview header with filename
             let preview_title = if let Some(item) = editor.finder.selected_item() {
@@ -3396,30 +3386,30 @@ impl Terminal {
             let preview_title_start = (preview_width.saturating_sub(preview_title.len())) / 2;
             for i in 0..preview_width {
                 if i == preview_title_start {
-                    execute!(self.stdout, SetForegroundColor(title_color))?;
-                    print!("{}", preview_title);
-                    execute!(self.stdout, SetForegroundColor(border_color))?;
+                    queue!(self.stdout, SetForegroundColor(title_color))?;
+                    write!(self.stdout, "{}", preview_title)?;
+                    queue!(self.stdout, SetForegroundColor(border_color))?;
                 } else if i > preview_title_start && i < preview_title_start + preview_title.len() {
                     // Skip - already printed title
                 } else {
-                    print!("\u{2500}"); // ─
+                    write!(self.stdout, "\u{2500}")?; // ─
                 }
             }
         } else {
             let title_start = (win.width as usize - title.len()) / 2;
             for i in 1..(win.width - 1) {
                 if i as usize == title_start {
-                    execute!(self.stdout, SetForegroundColor(title_color))?;
-                    print!("{}", title);
-                    execute!(self.stdout, SetForegroundColor(border_color))?;
+                    queue!(self.stdout, SetForegroundColor(title_color))?;
+                    write!(self.stdout, "{}", title)?;
+                    queue!(self.stdout, SetForegroundColor(border_color))?;
                 } else if i as usize >= title_start && (i as usize) < title_start + title.len() {
                     // Skip - already printed title
                 } else {
-                    print!("\u{2500}"); // ─
+                    write!(self.stdout, "\u{2500}")?; // ─
                 }
             }
         }
-        print!("\u{2510}"); // ┐
+        write!(self.stdout, "\u{2510}")?; // ┐
 
         // Layout: top border, items list, separator, input line, bottom border
         // Height calculation: total height - 4 (top border, separator, input, bottom border)
@@ -3438,8 +3428,8 @@ impl Terminal {
 
         for row in 0..list_height {
             let y = win.y + 1 + row as u16;
-            execute!(self.stdout, cursor::MoveTo(win.x, y), SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
-            print!("\u{2502}"); // │
+            queue!(self.stdout, cursor::MoveTo(win.x, y), SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
+            write!(self.stdout, "\u{2502}")?; // │
 
             // Reverse display: row 0 = least relevant, bottom row = best match
             let list_idx = if row >= first_item_row {
@@ -3455,7 +3445,7 @@ impl Terminal {
                 let is_selected = list_idx == editor.finder.selected;
 
                 if is_selected {
-                    execute!(self.stdout, SetBackgroundColor(selected_bg))?;
+                    queue!(self.stdout, SetBackgroundColor(selected_bg))?;
                 }
 
                 // Get file type indicator (2 chars + space)
@@ -3476,8 +3466,8 @@ impl Terminal {
                     "SH" | "ZS" | "FS" => Color::Rgb { r: 100, g: 200, b: 100 }, // Shell - green
                     _ => Color::Rgb { r: 120, g: 120, b: 120 },     // Default - gray
                 };
-                execute!(self.stdout, SetForegroundColor(icon_color))?;
-                print!("{} ", icon);
+                queue!(self.stdout, SetForegroundColor(icon_color))?;
+                write!(self.stdout, "{} ", icon)?;
 
                 // Truncate display to fit and highlight matches
                 // Leave space for icon (3 chars) and scroll indicator if needed
@@ -3492,9 +3482,9 @@ impl Terminal {
 
                 // Reset foreground color for text
                 if is_selected {
-                    execute!(self.stdout, SetForegroundColor(finder_fg))?;
+                    queue!(self.stdout, SetForegroundColor(finder_fg))?;
                 } else {
-                    execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+                    queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
                 }
 
                 // For diagnostics mode, color the severity indicator
@@ -3513,15 +3503,15 @@ impl Terminal {
                     };
 
                     if let Some(color) = severity_color {
-                        execute!(self.stdout, SetForegroundColor(color))?;
-                        print!("{}", prefix);
+                        queue!(self.stdout, SetForegroundColor(color))?;
+                        write!(self.stdout, "{}", prefix)?;
                         skip_severity_coloring = 3;
 
                         // Reset to normal text color
                         if is_selected {
-                            execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(selected_bg))?;
+                            queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(selected_bg))?;
                         } else {
-                            execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+                            queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
                         }
                     }
                 }
@@ -3542,14 +3532,14 @@ impl Terminal {
                         // Flush current span
                         if !current_span.is_empty() {
                             if in_highlight {
-                                execute!(self.stdout, SetForegroundColor(match_color))?;
+                                queue!(self.stdout, SetForegroundColor(match_color))?;
                             }
-                            print!("{}", current_span);
+                            write!(self.stdout, "{}", current_span)?;
                             if in_highlight {
                                 if is_selected {
-                                    execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(selected_bg))?;
+                                    queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(selected_bg))?;
                                 } else {
-                                    execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+                                    queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
                                 }
                             }
                             current_span.clear();
@@ -3562,14 +3552,14 @@ impl Terminal {
                 // Flush final span
                 if !current_span.is_empty() {
                     if in_highlight {
-                        execute!(self.stdout, SetForegroundColor(match_color))?;
+                        queue!(self.stdout, SetForegroundColor(match_color))?;
                     }
-                    print!("{}", current_span);
+                    write!(self.stdout, "{}", current_span)?;
                     if in_highlight {
                         if is_selected {
-                            execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(selected_bg))?;
+                            queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(selected_bg))?;
                         } else {
-                            execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+                            queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
                         }
                     }
                 }
@@ -3577,23 +3567,25 @@ impl Terminal {
                 // Pad to fill results panel (batched)
                 let pad_len = max_len.saturating_sub(display_chars.len());
                 if pad_len > 0 {
-                    print!("{}", " ".repeat(pad_len));
+                    write!(self.stdout, "{}", " ".repeat(pad_len))?;
                 }
+                // Print the spacing column that was reserved
+                write!(self.stdout, " ")?;
 
                 // Reset after selected item
                 if is_selected {
-                    execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+                    queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
                 }
             } else {
                 // Empty row - set finder background (batched padding)
-                execute!(self.stdout, SetBackgroundColor(finder_bg))?;
+                queue!(self.stdout, SetBackgroundColor(finder_bg))?;
                 let pad_len = if show_scroll_indicator {
-                    results_width.saturating_sub(2) // -1 for scroll indicator, -1 for spacing
+                    results_width.saturating_sub(1) // -1 for scroll indicator
                 } else {
-                    results_width.saturating_sub(1) // -1 for spacing
+                    results_width
                 };
                 if pad_len > 0 {
-                    print!("{}", " ".repeat(pad_len));
+                    write!(self.stdout, "{}", " ".repeat(pad_len))?;
                 }
             }
 
@@ -3609,124 +3601,127 @@ impl Terminal {
                     && editor.finder.selected < scroll_bar_pos + (total_items / list_height).max(1);
 
                 if selected_in_range || (row == 0 && scroll_offset == 0) || (row == list_height - 1 && scroll_offset + list_height >= total_items) {
-                    execute!(self.stdout, SetForegroundColor(title_color))?;
-                    print!("\u{2588}"); // █ (full block for thumb)
+                    queue!(self.stdout, SetForegroundColor(title_color))?;
+                    write!(self.stdout, "\u{2588}")?; // █ (full block for thumb)
                 } else if scroll_offset > 0 || scroll_offset + list_height < total_items {
-                    execute!(self.stdout, SetForegroundColor(scroll_indicator_color))?;
-                    print!("\u{2591}"); // ░ (light shade for track)
+                    queue!(self.stdout, SetForegroundColor(scroll_indicator_color))?;
+                    write!(self.stdout, "\u{2591}")?; // ░ (light shade for track)
                 } else {
-                    print!(" ");
+                    write!(self.stdout, " ")?;
                 }
             }
 
             // Draw separator and preview panel if enabled
             if preview_enabled {
-                execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
-                print!("\u{2502}"); // │ vertical separator
+                queue!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
+                write!(self.stdout, "\u{2502}")?; // │ vertical separator
 
                 // Render preview content for this row
                 self.render_finder_preview_row(editor, row, list_height, preview_width)?;
             }
 
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
-            print!("\u{2502}"); // │ right border
+            queue!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
+            write!(self.stdout, "\u{2502}")?; // │ right border
         }
 
         // Draw separator above input
         let sep_y = win.y + 1 + list_height as u16;
-        execute!(self.stdout, cursor::MoveTo(win.x, sep_y), SetForegroundColor(border_color))?;
-        print!("\u{251c}"); // ├
+        queue!(self.stdout, cursor::MoveTo(win.x, sep_y), SetForegroundColor(border_color))?;
+        write!(self.stdout, "\u{251c}")?; // ├
         if preview_enabled {
             for _ in 0..results_width {
-                print!("\u{2500}"); // ─
+                write!(self.stdout, "\u{2500}")?; // ─
             }
-            print!("\u{2534}"); // ┴ (junction with preview separator)
+            write!(self.stdout, "\u{2534}")?; // ┴ (junction with preview separator)
             for _ in 0..preview_width {
-                print!("\u{2500}"); // ─
+                write!(self.stdout, "\u{2500}")?; // ─
             }
         } else {
             for _ in 1..(win.width - 1) {
-                print!("\u{2500}"); // ─
+                write!(self.stdout, "\u{2500}")?; // ─
             }
         }
-        print!("\u{2524}"); // ┤
+        write!(self.stdout, "\u{2524}")?; // ┤
 
         // Draw input line (above bottom border)
         let input_y = sep_y + 1;
-        execute!(self.stdout, cursor::MoveTo(win.x, input_y), SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
-        print!("\u{2502}"); // │
-        execute!(self.stdout, SetBackgroundColor(input_bg))?;
+        queue!(self.stdout, cursor::MoveTo(win.x, input_y), SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
+        write!(self.stdout, "\u{2502}")?; // │
+        queue!(self.stdout, SetBackgroundColor(input_bg))?;
 
         // Mode indicator
         let mode_str = if editor.finder.is_normal_mode() { "N" } else { "I" };
-        execute!(self.stdout, SetForegroundColor(mode_color))?;
-        print!("[{}]", mode_str);
-        execute!(self.stdout, SetForegroundColor(finder_fg))?;
-        print!(" > ");
+        queue!(self.stdout, SetForegroundColor(mode_color))?;
+        write!(self.stdout, "[{}]", mode_str)?;
+        queue!(self.stdout, SetForegroundColor(finder_fg))?;
+        write!(self.stdout, " > ")?;
 
         // Query text
         let prefix_len = 6; // "[N] > " or "[I] > "
         let query_display: String = editor.finder.query.chars().take((win.width - prefix_len as u16 - 3) as usize).collect();
-        print!("{}", query_display);
+        write!(self.stdout, "{}", query_display)?;
 
         // Pad to fill line (terminal cursor will be positioned separately)
         let used = prefix_len + query_display.len();
         for _ in used..(win.width - 2) as usize {
-            print!(" ");
+            write!(self.stdout, " ")?;
         }
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
-        print!("\u{2502}"); // │
+        queue!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
+        write!(self.stdout, "\u{2502}")?; // │
 
         // Draw bottom border with count indicator
         let status = format!(" {}/{} ", editor.finder.filtered.len(), editor.finder.items.len());
-        execute!(self.stdout, cursor::MoveTo(win.x, win.y + win.height - 1), SetForegroundColor(border_color))?;
-        print!("\u{2514}"); // └
+        queue!(self.stdout, cursor::MoveTo(win.x, win.y + win.height - 1), SetForegroundColor(border_color))?;
+        write!(self.stdout, "\u{2514}")?; // └
 
         if preview_enabled {
             // Status centered over results panel, preview indicator shown
             let status_start = (results_width.saturating_sub(status.len())) / 2;
             for i in 0..results_width {
                 if i == status_start {
-                    execute!(self.stdout, SetForegroundColor(theme.ui.line_number))?;
-                    print!("{}", status);
-                    execute!(self.stdout, SetForegroundColor(border_color))?;
+                    queue!(self.stdout, SetForegroundColor(theme.ui.line_number))?;
+                    write!(self.stdout, "{}", status)?;
+                    queue!(self.stdout, SetForegroundColor(border_color))?;
                 } else if i > status_start && i < status_start + status.len() {
                     // Skip - already printed status
                 } else {
-                    print!("\u{2500}"); // ─
+                    write!(self.stdout, "\u{2500}")?; // ─
                 }
             }
             // Preview toggle hint
             let hint = " Ctrl+t: toggle ";
             let hint_start = (preview_width.saturating_sub(hint.len())) / 2;
-            for i in 0..=preview_width {
+            for i in 0..preview_width {
                 if i == hint_start {
-                    execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
-                    print!("{}", hint);
-                    execute!(self.stdout, SetForegroundColor(border_color))?;
+                    queue!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
+                    write!(self.stdout, "{}", hint)?;
+                    queue!(self.stdout, SetForegroundColor(border_color))?;
                 } else if i > hint_start && i < hint_start + hint.len() {
                     // Skip - already printed hint
                 } else {
-                    print!("\u{2500}"); // ─
+                    write!(self.stdout, "\u{2500}")?; // ─
                 }
             }
         } else {
             let status_start = (win.width as usize - status.len()) / 2;
             for i in 1..(win.width - 1) {
                 if i as usize == status_start {
-                    execute!(self.stdout, SetForegroundColor(theme.ui.line_number))?;
-                    print!("{}", status);
-                    execute!(self.stdout, SetForegroundColor(border_color))?;
+                    queue!(self.stdout, SetForegroundColor(theme.ui.line_number))?;
+                    write!(self.stdout, "{}", status)?;
+                    queue!(self.stdout, SetForegroundColor(border_color))?;
                 } else if i as usize >= status_start && (i as usize) < status_start + status.len() {
                     // Skip - already printed status
                 } else {
-                    print!("\u{2500}"); // ─
+                    write!(self.stdout, "\u{2500}")?; // ─
                 }
             }
         }
-        print!("\u{2518}"); // ┘
+        write!(self.stdout, "\u{2518}")?; // ┘
 
-        execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+        queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+
+        // Flush all queued commands at once to prevent flicker
+        self.stdout.flush()?;
 
         log_finder_profile(&format!(
             "render_finder: {:?} items={} preview={}",
@@ -3751,7 +3746,7 @@ impl Terminal {
         let finder_fg = theme.ui.foreground;
         let line_num_color = theme.ui.line_number;
 
-        execute!(self.stdout, SetBackgroundColor(finder_bg), SetForegroundColor(finder_fg))?;
+        queue!(self.stdout, SetBackgroundColor(finder_bg), SetForegroundColor(finder_fg))?;
 
         // Get preview content
         let preview_content = &editor.finder.preview_content;
@@ -3762,17 +3757,17 @@ impl Terminal {
             if row == list_height / 2 {
                 let msg = "No preview";
                 let padding = (preview_width.saturating_sub(msg.len())) / 2;
-                execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
+                queue!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
                 for _ in 0..padding {
-                    print!(" ");
+                    write!(self.stdout, " ")?;
                 }
-                print!("{}", msg);
+                write!(self.stdout, "{}", msg)?;
                 for _ in 0..(preview_width.saturating_sub(padding + msg.len())) {
-                    print!(" ");
+                    write!(self.stdout, " ")?;
                 }
             } else {
                 for _ in 0..preview_width {
-                    print!(" ");
+                    write!(self.stdout, " ")?;
                 }
             }
             return Ok(());
@@ -3785,8 +3780,8 @@ impl Terminal {
 
             // Line number (4 chars + separator)
             let line_num_width = 4;
-            execute!(self.stdout, SetForegroundColor(line_num_color))?;
-            print!("{:>width$}\u{2502}", line_idx + 1, width = line_num_width);
+            queue!(self.stdout, SetForegroundColor(line_num_color))?;
+            write!(self.stdout, "{:>width$}\u{2502}", line_idx + 1, width = line_num_width)?;
 
             // Get syntax highlights if available
             let highlights = self.get_preview_highlights(editor, line_idx);
@@ -3795,12 +3790,12 @@ impl Terminal {
             let content_width = preview_width.saturating_sub(line_num_width + 1);
             let chars: Vec<char> = line.chars().take(content_width).collect();
 
-            execute!(self.stdout, SetForegroundColor(finder_fg))?;
+            queue!(self.stdout, SetForegroundColor(finder_fg))?;
 
             if highlights.is_empty() {
                 // No highlighting, just render the text
                 for ch in &chars {
-                    print!("{}", ch);
+                    write!(self.stdout, "{}", ch)?;
                 }
             } else {
                 // Render with syntax highlighting
@@ -3813,23 +3808,23 @@ impl Terminal {
                             break;
                         }
                     }
-                    execute!(self.stdout, SetForegroundColor(color))?;
-                    print!("{}", ch);
+                    queue!(self.stdout, SetForegroundColor(color))?;
+                    write!(self.stdout, "{}", ch)?;
                 }
             }
 
             // Pad remaining space
             for _ in chars.len()..content_width {
-                print!(" ");
+                write!(self.stdout, " ")?;
             }
         } else {
             // Beyond content - empty row
             for _ in 0..preview_width {
-                print!(" ");
+                write!(self.stdout, " ")?;
             }
         }
 
-        execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+        queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
         Ok(())
     }
 
