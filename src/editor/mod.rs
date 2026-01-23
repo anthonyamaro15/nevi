@@ -4254,6 +4254,38 @@ impl Editor {
         self.clamp_cursor();
     }
 
+    /// Join current line with next line without inserting space (gJ command)
+    pub fn join_lines_no_space(&mut self) {
+        let total_lines = self.buffers[self.current_buffer_idx].len_lines();
+        if self.cursor.line >= total_lines.saturating_sub(1) {
+            // Already on last line, nothing to join
+            return;
+        }
+
+        // Get current line length (before newline)
+        let current_line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
+
+        // Begin undo group
+        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+
+        // Record the deletion of newline for undo
+        self.undo_stack.record_change(Change::delete(
+            self.cursor.line,
+            current_line_len,
+            "\n".to_string(),
+        ));
+
+        // Delete the newline character at end of current line
+        // This joins the lines together without adding space or removing whitespace
+        self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, current_line_len);
+
+        // Position cursor at the join point
+        self.cursor.col = current_line_len;
+
+        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.clamp_cursor();
+    }
+
     // ============================================
     // Surround operations (vim-surround style)
     // ============================================

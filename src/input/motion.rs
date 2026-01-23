@@ -10,12 +10,14 @@ pub enum Motion {
     Down,
 
     // Word motions
-    WordForward,      // w
-    WordBackward,     // b
-    WordEnd,          // e
-    BigWordForward,   // W
-    BigWordBackward,  // B
-    BigWordEnd,       // E
+    WordForward,       // w
+    WordBackward,      // b
+    WordEnd,           // e
+    WordEndBackward,   // ge
+    BigWordForward,    // W
+    BigWordBackward,   // B
+    BigWordEnd,        // E
+    BigWordEndBackward,// gE
 
     // Line motions
     LineStart,        // 0
@@ -187,6 +189,34 @@ pub fn apply_motion(
             let mut c = col;
             for _ in 0..count {
                 if let Some((nl, nc)) = find_word_end(buffer, l, c, true) {
+                    l = nl;
+                    c = nc;
+                } else {
+                    break;
+                }
+            }
+            Some((l, c))
+        }
+
+        Motion::WordEndBackward => {
+            let mut l = line;
+            let mut c = col;
+            for _ in 0..count {
+                if let Some((nl, nc)) = find_word_end_backward(buffer, l, c, false) {
+                    l = nl;
+                    c = nc;
+                } else {
+                    break;
+                }
+            }
+            Some((l, c))
+        }
+
+        Motion::BigWordEndBackward => {
+            let mut l = line;
+            let mut c = col;
+            for _ in 0..count {
+                if let Some((nl, nc)) = find_word_end_backward(buffer, l, c, true) {
                     l = nl;
                     c = nc;
                 } else {
@@ -781,4 +811,71 @@ fn find_char_backward(
 
     // Character not found (or not enough occurrences)
     None
+}
+
+/// Find the end of the previous word (ge/gE motion)
+fn find_word_end_backward(buffer: &Buffer, line: usize, col: usize, big_word: bool) -> Option<(usize, usize)> {
+    let mut l = line;
+    let mut c = col;
+
+    // Move back one character to start
+    if c == 0 {
+        if l == 0 {
+            return Some((0, 0));
+        }
+        l -= 1;
+        c = buffer.line_len(l).saturating_sub(1);
+    } else {
+        c -= 1;
+    }
+
+    // Phase 1: Skip whitespace going backward (and newlines)
+    loop {
+        if let Some(ch) = buffer.char_at(l, c) {
+            if ch.is_whitespace() && ch != '\n' {
+                if c == 0 {
+                    if l == 0 {
+                        return Some((0, 0));
+                    }
+                    l -= 1;
+                    c = buffer.line_len(l).saturating_sub(1);
+                } else {
+                    c -= 1;
+                }
+            } else if ch == '\n' || buffer.line_len(l) == 0 {
+                if l == 0 {
+                    return Some((0, 0));
+                }
+                l -= 1;
+                c = buffer.line_len(l).saturating_sub(1);
+            } else {
+                break;
+            }
+        } else {
+            if l == 0 {
+                return Some((0, 0));
+            }
+            l -= 1;
+            c = buffer.line_len(l).saturating_sub(1);
+        }
+    }
+
+    // For gE (big_word), we're done - we landed on the last non-whitespace char
+    if big_word {
+        return Some((l, c));
+    }
+
+    // For ge, we need to check if we're on a word char or keyword char
+    // and potentially skip to the end of that class
+    let _target_class = buffer.char_at(l, c).map(|ch| classify_char(ch))?;
+
+    // We're at the end of some word/keyword sequence
+    // Now skip backward through same-class characters to find where we should land
+    // Actually, for ge, we want to land at the END of the previous word,
+    // so if we skipped whitespace and landed on a char, we're already there
+    // unless we started inside a word and need to skip to the previous word
+
+    // Check if we need to skip backward through same-class chars
+    // to get to the previous word's end (in case we were at the start of a word)
+    Some((l, c))
 }

@@ -4486,6 +4486,10 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.join_lines();
         }
 
+        KeyAction::JoinLinesNoSpace => {
+            editor.join_lines_no_space();
+        }
+
         KeyAction::ScrollCenter => {
             editor.scroll_cursor_center();
         }
