@@ -677,6 +677,7 @@ fn default_config_template() -> &'static str {
 # w/W              - Move to start of next word/WORD
 # b/B              - Move to start of previous word/WORD
 # e/E              - Move to end of word/WORD
+# ge/gE            - Move to end of previous word/WORD
 # 0                - Move to start of line
 # ^                - Move to first non-blank character
 # $                - Move to end of line
@@ -712,6 +713,7 @@ fn default_config_template() -> &'static str {
 # x/X              - Delete char under/before cursor
 # r{char}          - Replace character
 # J                - Join lines with space
+# gJ               - Join lines without space
 # .                - Repeat last change
 # u/Ctrl+r         - Undo/redo
 #

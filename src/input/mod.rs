@@ -136,6 +136,8 @@ pub enum KeyAction {
     ReplaceChar(char),
     /// Join current line with next (J)
     JoinLines,
+    /// Join lines without space (gJ)
+    JoinLinesNoSpace,
     /// Scroll cursor to center of screen (zz)
     ScrollCenter,
     /// Scroll cursor to top of screen (zt)
@@ -1122,6 +1124,23 @@ impl InputState {
             ('g', KeyModifiers::NONE, KeyCode::Char('i')) => {
                 self.reset();
                 KeyAction::GotoLastInsert
+            }
+            // ge - move to end of previous word
+            ('g', KeyModifiers::NONE, KeyCode::Char('e')) => {
+                let action = self.motion_or_operator(Motion::WordEndBackward, count);
+                self.reset();
+                action
+            }
+            // gE - move to end of previous WORD
+            ('g', KeyModifiers::SHIFT, KeyCode::Char('E')) => {
+                let action = self.motion_or_operator(Motion::BigWordEndBackward, count);
+                self.reset();
+                action
+            }
+            // gJ - join lines without space
+            ('g', KeyModifiers::SHIFT, KeyCode::Char('J')) => {
+                self.reset();
+                KeyAction::JoinLinesNoSpace
             }
             // zz - scroll cursor to center of screen
             ('z', KeyModifiers::NONE, KeyCode::Char('z')) => {
