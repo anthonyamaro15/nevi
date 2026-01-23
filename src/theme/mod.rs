@@ -49,7 +49,7 @@ impl StyleDef {
     }
 }
 
-/// Syntax highlighting colors (15 groups)
+/// Syntax highlighting colors (16 groups)
 #[derive(Debug, Clone)]
 pub struct SyntaxColors {
     pub keyword: StyleDef,
@@ -67,6 +67,7 @@ pub struct SyntaxColors {
     pub label: StyleDef,
     pub property: StyleDef,
     pub tag: StyleDef,
+    pub embedded: StyleDef, // For embedded expressions like ${} in template strings
 }
 
 /// UI element colors
@@ -184,6 +185,7 @@ impl Theme {
                 label: StyleDef::new(red),
                 property: StyleDef::new(red),
                 tag: StyleDef::new(red),
+                embedded: StyleDef::new(cyan),
             },
             ui: UiColors {
                 background: bg,

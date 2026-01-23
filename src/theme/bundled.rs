@@ -7,6 +7,7 @@ use super::Theme;
 
 // Bundled theme TOML files
 const ONEDARK_TOML: &str = include_str!("../../themes/onedark.toml");
+const ONEDARK_DARKER_TOML: &str = include_str!("../../themes/onedark-darker.toml");
 const DRACULA_TOML: &str = include_str!("../../themes/dracula.toml");
 const GRUVBOX_TOML: &str = include_str!("../../themes/gruvbox.toml");
 const NORD_TOML: &str = include_str!("../../themes/nord.toml");
@@ -31,6 +32,10 @@ pub fn get_bundled_themes() -> Vec<Theme> {
         themes.push(theme);
     } else {
         themes.push(Theme::onedark());
+    }
+
+    if let Some(theme) = load_theme_from_toml("onedark-darker", ONEDARK_DARKER_TOML) {
+        themes.push(theme);
     }
 
     if let Some(theme) = load_theme_from_toml("dracula", DRACULA_TOML) {
@@ -96,6 +101,7 @@ pub fn get_bundled_themes() -> Vec<Theme> {
 pub fn bundled_theme_names() -> Vec<&'static str> {
     vec![
         "onedark",
+        "onedark-darker",
         "dracula",
         "gruvbox",
         "nord",
