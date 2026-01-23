@@ -2525,7 +2525,7 @@ impl Terminal {
         let global_mark_color = Color::Rgb { r: 249, g: 226, b: 175 }; // Yellow for global
 
         // Calculate popup dimensions
-        let popup_width: u16 = 44; // Fixed width for consistency
+        let popup_width: u16 = 60.min(editor.term_width.saturating_sub(4)); // More room for file names
         let max_visible_items = 10.min(picker.items.len());
         let popup_height: u16 = (max_visible_items + 4) as u16; // +4 for top border, header, separator, bottom border
         let inner_width = (popup_width - 2) as usize; // Width inside the borders
@@ -2910,7 +2910,7 @@ impl Terminal {
         let selected = editor.harpoon.menu_selection;
 
         // Calculate popup dimensions
-        let popup_width = 50u16.min(editor.term_width.saturating_sub(4));
+        let popup_width = 70u16.min(editor.term_width.saturating_sub(4));
         let popup_height = (files.len() as u16 + 4).max(6).min(12);
 
         // Center the popup
@@ -2934,7 +2934,7 @@ impl Terminal {
         for i in 1..(popup_width - 1) {
             if i as usize == title_start {
                 print!("{}", title);
-            } else if i as usize > title_start && i as usize <= title_start + title.len() {
+            } else if i as usize > title_start && (i as usize) < title_start + title.len() {
                 // Skip - title already printed
             } else {
                 print!("─");
@@ -2960,7 +2960,7 @@ impl Terminal {
             print!(" {} ", slot + 1);
 
             // File path or empty
-            let content_width = (popup_width - 7) as usize;
+            let content_width = (popup_width - 5) as usize; // │ + " 1 " + content + │
             if let Some(path) = files.get(slot) {
                 execute!(self.stdout, SetForegroundColor(text_color))?;
                 // Show just the filename, or relative path if possible
@@ -3017,7 +3017,7 @@ impl Terminal {
         let theme = editor.theme();
 
         // Calculate popup dimensions
-        let popup_width = 50u16.min(editor.term_width.saturating_sub(4));
+        let popup_width = 60u16.min(editor.term_width.saturating_sub(4));
         let filtered_count = picker.filtered.len();
         let max_visible = 10usize; // Max visible items
         let visible_count = filtered_count.min(max_visible);
@@ -3049,7 +3049,7 @@ impl Terminal {
         for i in 1..(popup_width - 1) {
             if i as usize == title_start {
                 print!("{}", title);
-            } else if i as usize > title_start && i as usize <= title_start + title.len() {
+            } else if i as usize > title_start && (i as usize) < title_start + title.len() {
                 // Skip - title already printed
             } else {
                 print!("─");
@@ -3317,6 +3317,20 @@ impl Terminal {
             preview_enabled
         );
 
+        // Clear the maximum possible finder area to avoid artifacts when toggling preview
+        // Always use preview-enabled dimensions for clearing
+        let max_win = crate::finder::FloatingWindow::centered_with_preview(
+            editor.term_width,
+            editor.term_height,
+            true, // Always calculate max size (with preview)
+        );
+        let bg = editor.theme().ui.background;
+        execute!(self.stdout, SetBackgroundColor(bg))?;
+        for row in 0..max_win.height {
+            execute!(self.stdout, cursor::MoveTo(max_win.x, max_win.y + row))?;
+            print!("{}", " ".repeat(max_win.width as usize));
+        }
+
         // Use theme colors for finder
         let theme = editor.theme();
         let border_color = theme.ui.finder_border;
@@ -3471,7 +3485,7 @@ impl Terminal {
                 let base_width = if show_scroll_indicator {
                     results_width.saturating_sub(2) // -1 for scroll indicator, -1 for spacing
                 } else {
-                    results_width.saturating_sub(1)
+                    results_width.saturating_sub(1) // -1 for spacing
                 };
                 let max_len = base_width.saturating_sub(icon_width);
                 let display_chars: Vec<char> = item.display.chars().take(max_len).collect();
@@ -3574,9 +3588,9 @@ impl Terminal {
                 // Empty row - set finder background (batched padding)
                 execute!(self.stdout, SetBackgroundColor(finder_bg))?;
                 let pad_len = if show_scroll_indicator {
-                    results_width.saturating_sub(2)
+                    results_width.saturating_sub(2) // -1 for scroll indicator, -1 for spacing
                 } else {
-                    results_width.saturating_sub(1)
+                    results_width.saturating_sub(1) // -1 for spacing
                 };
                 if pad_len > 0 {
                     print!("{}", " ".repeat(pad_len));

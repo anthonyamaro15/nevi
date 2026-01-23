@@ -467,6 +467,48 @@ impl SyntaxManager {
         self.theme = theme;
     }
 
+    /// Get the syntax tree and source for indent calculation.
+    ///
+    /// Returns a reference to the parsed tree and the cached source text.
+    pub fn get_tree_and_source(&self) -> Option<(&Tree, &str)> {
+        self.tree.as_ref().map(|t| (t, self.source_cache.as_str()))
+    }
+
+    /// Convert a (line, col) position to a byte offset in the source.
+    ///
+    /// # Arguments
+    /// * `line` - Zero-based line number
+    /// * `col` - Zero-based column number (in characters, not bytes)
+    ///
+    /// # Returns
+    /// The byte offset, or None if the position is invalid
+    pub fn position_to_byte(&self, line: usize, col: usize) -> Option<usize> {
+        if line >= self.line_start_bytes.len() {
+            return None;
+        }
+
+        let line_start = self.line_start_bytes[line];
+
+        // Get the line content and convert character offset to byte offset
+        let line_end = self.line_start_bytes
+            .get(line + 1)
+            .copied()
+            .unwrap_or(self.source_cache.len());
+
+        let line_content = &self.source_cache[line_start..line_end];
+
+        // Convert character column to byte offset within the line
+        let mut byte_offset = 0;
+        for (char_idx, ch) in line_content.chars().enumerate() {
+            if char_idx >= col {
+                break;
+            }
+            byte_offset += ch.len_utf8();
+        }
+
+        Some(line_start + byte_offset)
+    }
+
     /// Sync theme from the UI theme system
     pub fn sync_theme(&mut self, ui_theme: &crate::theme::Theme) {
         self.theme = Theme::from_ui_theme(ui_theme);

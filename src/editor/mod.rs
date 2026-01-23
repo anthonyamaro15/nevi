@@ -2421,8 +2421,8 @@ impl Editor {
     pub fn insert_char(&mut self, ch: char) {
         if ch == '\n' && self.settings.editor.auto_indent {
             self.insert_newline_with_indent();
-        } else if ch == '}' && self.settings.editor.auto_indent {
-            self.insert_closing_brace();
+        } else if matches!(ch, '}' | ']' | ')') && self.settings.editor.auto_indent {
+            self.insert_closing_bracket(ch);
         } else {
             // Standard character insertion
             self.undo_stack.record_change(Change::insert(
@@ -2443,8 +2443,88 @@ impl Editor {
         self.scroll_to_cursor();
     }
 
-    /// Insert newline with smart indentation
+    /// Insert newline with smart indentation using tree-sitter when available
     fn insert_newline_with_indent(&mut self) {
+        let tab_width = self.settings.editor.tab_width;
+        let language = self.syntax.language_name().map(|s| s.to_string());
+
+        // Check if cursor is between matching brackets like {|} or [|] or (|)
+        let between_brackets = self.is_cursor_between_brackets();
+
+        // Try tree-sitter based indentation for supported languages
+        if matches!(language.as_deref(), Some("javascript" | "typescript" | "tsx" | "css" | "json" | "toml" | "html")) {
+            if let Some((tree, source)) = self.syntax.get_tree_and_source() {
+                if let Some(cursor_byte) = self.syntax.position_to_byte(self.cursor.line, self.cursor.col) {
+                    let indent_spaces = crate::indent::calculate_indent(tree, source, cursor_byte, tab_width);
+                    let indent = " ".repeat(indent_spaces);
+
+                    if between_brackets {
+                        // Bracket expansion: insert two newlines
+                        // First line: indented content line (where cursor goes)
+                        // Second line: closing bracket at base indent
+                        let base_indent = self.buffers[self.current_buffer_idx].get_line_indent(self.cursor.line);
+                        let insert_text = format!("\n{}\n{}", indent, base_indent);
+
+                        self.undo_stack.record_change(Change::insert(
+                            self.cursor.line,
+                            self.cursor.col,
+                            insert_text.clone(),
+                        ));
+
+                        self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, self.cursor.col, &insert_text);
+
+                        // Move cursor to the indented middle line
+                        self.cursor.line += 1;
+                        self.cursor.col = indent.len();
+                    } else {
+                        // Regular newline with indent
+                        let insert_text = format!("\n{}", indent);
+                        self.undo_stack.record_change(Change::insert(
+                            self.cursor.line,
+                            self.cursor.col,
+                            insert_text.clone(),
+                        ));
+
+                        self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, self.cursor.col, &insert_text);
+
+                        self.cursor.line += 1;
+                        self.cursor.col = indent.len();
+                    }
+                    return;
+                }
+            }
+        }
+
+        // Fallback to basic indentation
+        self.insert_newline_basic_indent_with_expansion(between_brackets);
+    }
+
+    /// Check if cursor is positioned between matching brackets like {|} or [|] or (|)
+    fn is_cursor_between_brackets(&self) -> bool {
+        let buffer = &self.buffers[self.current_buffer_idx];
+        let Some(line) = buffer.line(self.cursor.line) else {
+            return false;
+        };
+
+        let chars: Vec<char> = line.chars().collect();
+        let col = self.cursor.col;
+
+        // Need at least one char before and one after cursor
+        if col == 0 || col >= chars.len() {
+            return false;
+        }
+
+        let char_before = chars[col - 1];
+        let char_after = chars[col];
+
+        matches!(
+            (char_before, char_after),
+            ('{', '}') | ('[', ']') | ('(', ')')
+        )
+    }
+
+    /// Basic indentation fallback for non-tree-sitter languages
+    fn insert_newline_basic_indent_with_expansion(&mut self, between_brackets: bool) {
         let buffer = &self.buffers[self.current_buffer_idx];
         let base_indent = buffer.get_line_indent(self.cursor.line);
         let ends_with_brace = buffer.line_ends_with(self.cursor.line, '{');
@@ -2452,58 +2532,116 @@ impl Editor {
 
         // Calculate the full indent for the new line
         let mut indent = base_indent.clone();
-        if ends_with_brace {
-            // Add one level of indentation after {
+        if ends_with_brace || between_brackets {
+            // Add one level of indentation after { or between brackets
             indent.push_str(&" ".repeat(tab_width));
         }
 
-        // Record the full insertion for undo (newline + indent)
-        let insert_text = format!("\n{}", indent);
-        self.undo_stack.record_change(Change::insert(
-            self.cursor.line,
-            self.cursor.col,
-            insert_text.clone(),
-        ));
-
-        // Insert newline and indent
-        self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, self.cursor.col, &insert_text);
-
-        // Move cursor to end of indentation on new line
-        self.cursor.line += 1;
-        self.cursor.col = indent.len();
-    }
-
-    /// Insert closing brace with auto-dedent
-    fn insert_closing_brace(&mut self) {
-        let tab_width = self.settings.editor.tab_width;
-        let should_dedent = self.should_dedent_for_brace();
-
-        if should_dedent && self.cursor.col >= tab_width {
-            // Delete one level of indent before inserting }
-            let delete_start = self.cursor.col - tab_width;
-
-            // Record the deletion for undo
-            let deleted_text = " ".repeat(tab_width);
-            self.undo_stack.record_change(Change::delete(
+        if between_brackets {
+            // Bracket expansion: insert two newlines
+            let insert_text = format!("\n{}\n{}", indent, base_indent);
+            self.undo_stack.record_change(Change::insert(
                 self.cursor.line,
-                delete_start,
-                deleted_text,
+                self.cursor.col,
+                insert_text.clone(),
             ));
 
-            // Delete the indent
-            for _ in 0..tab_width {
-                self.cursor.col -= 1;
-                self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
+            self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, self.cursor.col, &insert_text);
+
+            // Move cursor to the indented middle line
+            self.cursor.line += 1;
+            self.cursor.col = indent.len();
+        } else {
+            // Regular newline with indent
+            let insert_text = format!("\n{}", indent);
+            self.undo_stack.record_change(Change::insert(
+                self.cursor.line,
+                self.cursor.col,
+                insert_text.clone(),
+            ));
+
+            self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, self.cursor.col, &insert_text);
+
+            self.cursor.line += 1;
+            self.cursor.col = indent.len();
+        }
+    }
+
+    /// Insert closing bracket with smart auto-dedent
+    ///
+    /// Handles }, ], and ) characters with tree-sitter based dedent detection
+    fn insert_closing_bracket(&mut self, bracket: char) {
+        let tab_width = self.settings.editor.tab_width;
+        let language = self.syntax.language_name().map(|s| s.to_string());
+
+        // Try tree-sitter based dedent for supported languages
+        if matches!(language.as_deref(), Some("javascript" | "typescript" | "tsx" | "css" | "json" | "toml" | "html")) {
+            if let Some((tree, source)) = self.syntax.get_tree_and_source() {
+                if let Some(cursor_byte) = self.syntax.position_to_byte(self.cursor.line, self.cursor.col) {
+                    let dedent_amount = crate::indent::get_dedent_amount(tree, source, cursor_byte, bracket, tab_width);
+
+                    if dedent_amount > 0 && self.cursor.col >= dedent_amount {
+                        let delete_start = self.cursor.col - dedent_amount;
+
+                        // Record the deletion for undo
+                        let deleted_text = " ".repeat(dedent_amount);
+                        self.undo_stack.record_change(Change::delete(
+                            self.cursor.line,
+                            delete_start,
+                            deleted_text,
+                        ));
+
+                        // Delete the indent
+                        for _ in 0..dedent_amount {
+                            self.cursor.col -= 1;
+                            self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
+                        }
+                    }
+
+                    // Insert the bracket
+                    self.undo_stack.record_change(Change::insert(
+                        self.cursor.line,
+                        self.cursor.col,
+                        bracket.to_string(),
+                    ));
+                    self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, self.cursor.col, bracket);
+                    self.cursor.col += 1;
+                    return;
+                }
             }
         }
 
-        // Record and insert the }
+        // Fallback to basic dedent logic (only for closing brace)
+        if bracket == '}' {
+            let should_dedent = self.should_dedent_for_brace();
+
+            if should_dedent && self.cursor.col >= tab_width {
+                // Delete one level of indent before inserting }
+                let delete_start = self.cursor.col - tab_width;
+
+                // Record the deletion for undo
+                let deleted_text = " ".repeat(tab_width);
+                self.undo_stack.record_change(Change::delete(
+                    self.cursor.line,
+                    delete_start,
+                    deleted_text,
+                ));
+
+                // Delete the indent
+                for _ in 0..tab_width {
+                    self.cursor.col -= 1;
+                    self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
+                }
+            }
+        }
+
+        // Record and insert the bracket
         self.undo_stack.record_change(Change::insert(
             self.cursor.line,
             self.cursor.col,
-            "}".to_string(),
+            bracket.to_string(),
         ));
-        self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, self.cursor.col, '}');
+        self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, self.cursor.col, bracket);
         self.cursor.col += 1;
     }
 
