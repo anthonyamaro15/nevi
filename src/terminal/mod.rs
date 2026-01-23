@@ -195,11 +195,12 @@ impl Terminal {
         // Re-enable raw mode
         terminal::enable_raw_mode()?;
 
-        // Re-enter alternate screen and hide cursor
+        // Re-enter alternate screen, hide cursor, and re-enable focus change reporting
         execute!(
             self.stdout,
             terminal::EnterAlternateScreen,
-            cursor::Hide
+            cursor::Hide,
+            event::EnableFocusChange
         )?;
 
         // Check if command succeeded
