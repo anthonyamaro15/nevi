@@ -9,6 +9,7 @@ pub mod formatter;
 pub mod frecency;
 pub mod git;
 pub mod harpoon;
+pub mod indent;
 pub mod input;
 pub mod lsp;
 pub mod syntax;
