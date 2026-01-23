@@ -610,6 +610,8 @@ pub struct Editor {
     pub visual: VisualSelection,
     /// Syntax highlighting manager
     pub syntax: SyntaxManager,
+    /// Syntax highlighting manager for finder preview
+    pub preview_syntax: SyntaxManager,
     /// Last parsed syntax version for the active buffer
     last_syntax_version: u64,
     /// Time of the last buffer edit (for syntax debounce)
@@ -943,6 +945,10 @@ impl Editor {
         let mut syntax = SyntaxManager::new();
         syntax.sync_theme(theme_manager.theme());
 
+        // Create preview syntax manager for finder preview
+        let mut preview_syntax = SyntaxManager::new();
+        preview_syntax.sync_theme(theme_manager.theme());
+
         Self {
             buffers: vec![Buffer::new()],
             current_buffer_idx: 0,
@@ -963,6 +969,7 @@ impl Editor {
             search: SearchState::default(),
             visual: VisualSelection::default(),
             syntax,
+            preview_syntax,
             last_syntax_version: 0,
             last_edit_at: None,
             settings,
@@ -5397,6 +5404,8 @@ impl Editor {
         let root = self.working_directory();
         self.finder.open_files(&root);
         self.mode = Mode::Finder;
+        // Initialize preview for the first selected item
+        self.update_finder_preview();
     }
 
     /// Open the fuzzy finder in buffer mode
@@ -5504,6 +5513,53 @@ impl Editor {
     pub fn close_finder(&mut self) {
         self.mode = Mode::Normal;
         self.clear_status();
+        // Clear preview state
+        self.finder.preview_content.clear();
+        self.finder.preview_path = None;
+        self.finder.preview_scroll = 0;
+        self.finder.preview_update_pending = false;
+    }
+
+    /// Update the preview syntax highlighting for the currently selected finder item
+    pub fn update_finder_preview(&mut self) {
+        // Only for Files mode with preview enabled
+        if !self.finder.preview_enabled || self.finder.mode != crate::finder::FinderMode::Files {
+            return;
+        }
+
+        // Get the selected item's path
+        let selected_path = match self.finder.selected_item() {
+            Some(item) => item.path.clone(),
+            None => return,
+        };
+
+        // Check if we need to update (path changed)
+        if self.finder.preview_path.as_ref() == Some(&selected_path) {
+            return;
+        }
+
+        // Update the preview content (this sets preview_path)
+        self.finder.update_preview_content();
+
+        // Skip syntax parsing for error messages / non-file content
+        // These start with '(' like "(Binary file...)", "(Directory)", "(Unable to read...)"
+        if self.finder.preview_content.len() <= 1 {
+            if let Some(first) = self.finder.preview_content.first() {
+                if first.starts_with('(') {
+                    return;
+                }
+            }
+        }
+
+        // Set up syntax highlighting for the preview file
+        self.preview_syntax.set_language_from_path(&selected_path);
+
+        // Sync theme
+        self.preview_syntax.sync_theme(self.theme_manager.theme());
+
+        // Parse the content
+        let content = self.finder.preview_content.join("\n");
+        self.preview_syntax.parse_string(&content);
     }
 
     // === File Explorer Methods ===

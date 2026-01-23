@@ -376,6 +376,44 @@ impl SyntaxManager {
         self.highlight_cache.replace(vec![None; self.line_start_bytes.len()]);
     }
 
+    /// Parse string content directly (for preview panels, etc.)
+    /// Designed for small content like finder preview (~150 lines max)
+    pub fn parse_string(&mut self, content: &str) {
+        if self.language.is_none() {
+            return;
+        }
+
+        // Safety limits - preview content is already capped at ~150 lines
+        // These are just failsafes in case of unexpected input
+        const MAX_HIGHLIGHT_LINES: usize = 200;
+        const MAX_HIGHLIGHT_CHARS: usize = 20_000;
+
+        let line_count = content.lines().count();
+        let char_count = content.chars().count();
+
+        if line_count > MAX_HIGHLIGHT_LINES || char_count > MAX_HIGHLIGHT_CHARS {
+            self.tree = None;
+            self.source_cache.clear();
+            self.line_start_bytes.clear();
+            self.highlight_cache.borrow_mut().clear();
+            self.cache_version.set(0);
+            return;
+        }
+
+        self.source_cache = content.to_string();
+        self.line_start_bytes.clear();
+        self.line_start_bytes.push(0);
+        for (idx, b) in self.source_cache.bytes().enumerate() {
+            if b == b'\n' {
+                self.line_start_bytes.push(idx + 1);
+            }
+        }
+        self.tree = self.parser.parse(&self.source_cache, None);
+        self.parse_version = self.parse_version.wrapping_add(1);
+        self.cache_version.set(self.parse_version);
+        self.highlight_cache.replace(vec![None; self.line_start_bytes.len()]);
+    }
+
     /// Check if syntax highlighting is available
     pub fn has_highlighting(&self) -> bool {
         self.tree.is_some() && self.query.is_some()
