@@ -5522,8 +5522,11 @@ impl Editor {
 
     /// Update the preview syntax highlighting for the currently selected finder item
     pub fn update_finder_preview(&mut self) {
-        // Only for Files mode with preview enabled
-        if !self.finder.preview_enabled || self.finder.mode != crate::finder::FinderMode::Files {
+        // Only for Files and Grep modes with preview enabled
+        if !self.finder.preview_enabled
+            || (self.finder.mode != crate::finder::FinderMode::Files
+                && self.finder.mode != crate::finder::FinderMode::Grep)
+        {
             return;
         }
 

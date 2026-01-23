@@ -139,6 +139,8 @@ pub struct FuzzyFinder {
     pub preview_path: Option<PathBuf>,
     /// Pending preview update (debounce) - stores the time when update was requested
     pub preview_update_pending: bool,
+    /// Pending grep search (debounce) - set when query changes in grep mode
+    pub grep_search_pending: bool,
 }
 
 impl FuzzyFinder {
@@ -162,6 +164,7 @@ impl FuzzyFinder {
             preview_scroll: 0,
             preview_path: None,
             preview_update_pending: false,
+            grep_search_pending: false,
         }
     }
 
@@ -186,6 +189,7 @@ impl FuzzyFinder {
             preview_scroll: 0,
             preview_path: None,
             preview_update_pending: false,
+            grep_search_pending: false,
         }
     }
 
@@ -452,23 +456,14 @@ impl FuzzyFinder {
 
         match self.mode {
             FinderMode::Grep => {
-                // In grep mode, search file contents
+                // In grep mode, defer search to debounce mechanism
+                // This avoids running expensive grep on every keystroke
                 if self.query.len() >= 2 {
-                    // Only search after 2+ chars to avoid too many results
-                    self.items = self.grep_searcher.search(&self.cwd, &self.query);
-                    self.filtered = (0..self.items.len()).collect();
-
-                    // For grep, highlight the search query in results
-                    let query_lower = self.query.to_lowercase();
-                    for item in &mut self.items {
-                        let display_lower = item.display.to_lowercase();
-                        if let Some(pos) = display_lower.find(&query_lower) {
-                            item.match_indices = (pos..pos + self.query.len()).collect();
-                        }
-                    }
+                    self.grep_search_pending = true;
                 } else {
                     self.items.clear();
                     self.filtered.clear();
+                    self.grep_search_pending = false;
                 }
             }
             _ => {
@@ -512,6 +507,33 @@ impl FuzzyFinder {
         format!("{}/{}", self.filtered.len(), self.items.len())
     }
 
+    /// Execute the pending grep search (called after debounce from main loop)
+    pub fn execute_grep_search(&mut self) {
+        if self.mode != FinderMode::Grep || !self.grep_search_pending {
+            return;
+        }
+
+        self.grep_search_pending = false;
+
+        if self.query.len() >= 2 {
+            self.items = self.grep_searcher.search(&self.cwd, &self.query);
+            self.filtered = (0..self.items.len()).collect();
+
+            // For grep, highlight the search query in results
+            let query_lower = self.query.to_lowercase();
+            for item in &mut self.items {
+                let display_lower = item.display.to_lowercase();
+                if let Some(pos) = display_lower.find(&query_lower) {
+                    item.match_indices = (pos..pos + self.query.len()).collect();
+                }
+            }
+
+            // Reset selection after new results
+            self.selected = 0;
+            self.scroll_offset = 0;
+        }
+    }
+
     /// Toggle preview panel on/off
     pub fn toggle_preview(&mut self) {
         self.preview_enabled = !self.preview_enabled;
@@ -530,13 +552,14 @@ impl FuzzyFinder {
             return None;
         }
 
-        // Only show preview for Files mode
-        if self.mode != FinderMode::Files {
+        // Only show preview for Files and Grep modes
+        if self.mode != FinderMode::Files && self.mode != FinderMode::Grep {
             return None;
         }
 
         let selected_item = self.selected_item()?;
         let selected_path = selected_item.path.clone();
+        let selected_line = selected_item.line;
 
         // Check if we need to load new content
         if self.preview_path.as_ref() != Some(&selected_path) {
@@ -586,6 +609,15 @@ impl FuzzyFinder {
                 }
                 Err(_) => {
                     self.preview_content = vec!["(Unable to read file)".to_string()];
+                }
+            }
+
+            // For grep results, scroll preview to show the matching line
+            if self.mode == FinderMode::Grep {
+                if let Some(line_num) = selected_line {
+                    // Center the matching line in the preview
+                    let preview_height = 20; // Approximate, will be adjusted by render
+                    self.preview_scroll = line_num.saturating_sub(preview_height / 2);
                 }
             }
         }

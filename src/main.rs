@@ -198,6 +198,10 @@ fn main() -> anyhow::Result<()> {
     let preview_debounce = Duration::from_millis(50);
     let mut preview_pending_since: Option<Instant> = None;
 
+    // Grep search debouncing: delay grep searches to avoid searching on every keystroke
+    let grep_debounce = Duration::from_millis(150);
+    let mut grep_pending_since: Option<Instant> = None;
+
     // Main event loop
     let mut loop_start = Instant::now();
     'main_loop: loop {
@@ -1250,6 +1254,29 @@ fn main() -> anyhow::Result<()> {
         } else {
             // Clear pending time when no update is needed
             preview_pending_since = None;
+        }
+
+        // Check for pending grep searches (debounced)
+        // This avoids running expensive grep on every keystroke
+        if editor.finder.grep_search_pending {
+            // Track when the grep search was first requested
+            if grep_pending_since.is_none() {
+                grep_pending_since = Some(Instant::now());
+            }
+
+            // Only search if debounce time has passed and no input is pending
+            if let Some(pending_since) = grep_pending_since {
+                if pending_since.elapsed() >= grep_debounce && !input_pending {
+                    let t_grep = Instant::now();
+                    editor.finder.execute_grep_search();
+                    grep_pending_since = None;
+                    needs_redraw = true;
+                    profile!(profile_file, "grep_search (debounced): {:?}", t_grep.elapsed());
+                }
+            }
+        } else {
+            // Clear pending time when no search is needed
+            grep_pending_since = None;
         }
 
         // Check for autosave (only if not in modal/picker and buffer has file path)

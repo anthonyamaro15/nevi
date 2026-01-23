@@ -1418,7 +1418,8 @@ impl Terminal {
                     // Cursor in finder input line (at bottom of finder window)
                     // Must use same window calculation as render_finder
                     let preview_enabled = editor.finder.preview_enabled
-                        && editor.finder.mode == crate::finder::FinderMode::Files;
+                        && (editor.finder.mode == crate::finder::FinderMode::Files
+                            || editor.finder.mode == crate::finder::FinderMode::Grep);
                     let win = crate::finder::FloatingWindow::centered_with_preview(
                         editor.term_width,
                         editor.term_height,
@@ -3310,7 +3311,8 @@ impl Terminal {
         use crate::finder::FuzzyFinder;
 
         let preview_enabled = editor.finder.preview_enabled
-            && editor.finder.mode == crate::finder::FinderMode::Files;
+            && (editor.finder.mode == crate::finder::FinderMode::Files
+                || editor.finder.mode == crate::finder::FinderMode::Grep);
         let win = crate::finder::FloatingWindow::centered_with_preview(
             editor.term_width,
             editor.term_height,
@@ -5824,7 +5826,8 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
     // Helper to adjust scroll after navigation
     let adjust_scroll = |editor: &mut Editor| {
         let preview_enabled = editor.finder.preview_enabled
-            && editor.finder.mode == crate::finder::FinderMode::Files;
+            && (editor.finder.mode == crate::finder::FinderMode::Files
+                || editor.finder.mode == crate::finder::FinderMode::Grep);
         let win = crate::finder::FloatingWindow::centered_with_preview(
             editor.term_width,
             editor.term_height,
