@@ -9,7 +9,6 @@ pub use matcher::FuzzyMatcher;
 use std::path::PathBuf;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::cell::Cell;
 
 /// Mode for the fuzzy finder
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,9 +139,6 @@ pub struct FuzzyFinder {
     pub preview_path: Option<PathBuf>,
     /// Pending preview update (debounce) - stores the time when update was requested
     pub preview_update_pending: bool,
-    /// Previous preview state (for detecting toggle to clear delta area)
-    /// Uses Cell for interior mutability so render can update it with &self
-    pub prev_preview_enabled: Cell<bool>,
 }
 
 impl FuzzyFinder {
@@ -166,7 +162,6 @@ impl FuzzyFinder {
             preview_scroll: 0,
             preview_path: None,
             preview_update_pending: false,
-            prev_preview_enabled: Cell::new(false),
         }
     }
 
@@ -191,7 +186,6 @@ impl FuzzyFinder {
             preview_scroll: 0,
             preview_path: None,
             preview_update_pending: false,
-            prev_preview_enabled: Cell::new(false),
         }
     }
 

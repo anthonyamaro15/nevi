@@ -3720,9 +3720,6 @@ impl Terminal {
 
         queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
 
-        // Update previous preview state for next render's delta clear logic
-        editor.finder.prev_preview_enabled.set(preview_enabled);
-
         // Flush all queued commands at once to prevent flicker
         self.stdout.flush()?;
 
