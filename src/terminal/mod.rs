@@ -7,6 +7,19 @@ use crossterm::{
 };
 use std::io::{self, Write, Stdout};
 use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Enable finder profiling (writes to /tmp/nevi_finder_profile.log)
+pub static FINDER_PROFILE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+fn log_finder_profile(msg: &str) {
+    if FINDER_PROFILE_ENABLED.load(Ordering::Relaxed) {
+        use std::fs::OpenOptions;
+        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open("/tmp/nevi_finder_profile.log") {
+            let _ = writeln!(f, "{}", msg);
+        }
+    }
+}
 
 use crate::editor::{Editor, Mode, PaneDirection, Pane, SplitLayout, LspAction, MarkEntry, MarksPicker};
 use crate::input::{KeyAction, InsertPosition, Operator, TextObject, TextObjectModifier, TextObjectType};
@@ -222,30 +235,36 @@ impl Terminal {
     pub fn render(&mut self, editor: &Editor) -> anyhow::Result<()> {
         execute!(self.stdout, cursor::MoveTo(0, 0))?;
 
-        let num_panes = editor.panes().len();
+        // Skip rendering background when finder is open - it's a large overlay
+        // that covers most of the screen, so rendering underneath is wasted work
+        let skip_background = editor.mode == Mode::Finder;
 
-        // Render file explorer sidebar if visible
-        if editor.explorer.visible {
-            self.render_explorer(editor)?;
+        if !skip_background {
+            let num_panes = editor.panes().len();
+
+            // Render file explorer sidebar if visible
+            if editor.explorer.visible {
+                self.render_explorer(editor)?;
+            }
+
+            // Render all panes
+            for (pane_idx, pane) in editor.panes().iter().enumerate() {
+                let is_active = pane_idx == editor.active_pane_idx();
+                self.render_pane(editor, pane, is_active)?;
+            }
+
+            // Draw separators between panes if we have multiple panes
+            if num_panes > 1 {
+                self.render_pane_separators(editor)?;
+            }
+
+            // Render status line
+            let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+            self.render_status_line(editor, line_num_width)?;
+
+            // Render command/message line
+            self.render_command_line(editor)?;
         }
-
-        // Render all panes
-        for (pane_idx, pane) in editor.panes().iter().enumerate() {
-            let is_active = pane_idx == editor.active_pane_idx();
-            self.render_pane(editor, pane, is_active)?;
-        }
-
-        // Draw separators between panes if we have multiple panes
-        if num_panes > 1 {
-            self.render_pane_separators(editor)?;
-        }
-
-        // Render status line
-        let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
-        self.render_status_line(editor, line_num_width)?;
-
-        // Render command/message line
-        self.render_command_line(editor)?;
 
         // Render finder if in finder mode
         if editor.mode == Mode::Finder {
@@ -1397,7 +1416,14 @@ impl Terminal {
                     execute!(self.stdout, cursor::Hide)?;
                 } else {
                     // Cursor in finder input line (at bottom of finder window)
-                    let win = crate::finder::FloatingWindow::centered(editor.term_width, editor.term_height);
+                    // Must use same window calculation as render_finder
+                    let preview_enabled = editor.finder.preview_enabled
+                        && editor.finder.mode == crate::finder::FinderMode::Files;
+                    let win = crate::finder::FloatingWindow::centered_with_preview(
+                        editor.term_width,
+                        editor.term_height,
+                        preview_enabled,
+                    );
                     // Input line is 2 rows above the bottom border:
                     // bottom border at win.y + win.height - 1
                     // input line at win.y + win.height - 2
@@ -3280,9 +3306,16 @@ impl Terminal {
 
     /// Render the fuzzy finder floating window
     fn render_finder(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        let t_start = Instant::now();
         use crate::finder::FuzzyFinder;
 
-        let win = crate::finder::FloatingWindow::centered(editor.term_width, editor.term_height);
+        let preview_enabled = editor.finder.preview_enabled
+            && editor.finder.mode == crate::finder::FinderMode::Files;
+        let win = crate::finder::FloatingWindow::centered_with_preview(
+            editor.term_width,
+            editor.term_height,
+            preview_enabled
+        );
 
         // Use theme colors for finder
         let theme = editor.theme();
@@ -3299,6 +3332,17 @@ impl Terminal {
             theme.ui.statusline_mode_insert // Use insert mode color
         };
 
+        // Calculate panel widths
+        let (results_width, preview_width) = if preview_enabled {
+            // ~45% for results, ~55% for preview (minus borders)
+            let total_inner = (win.width - 3) as usize; // -2 outer borders, -1 separator
+            let results = (total_inner * 45 / 100).max(20);
+            let preview = total_inner.saturating_sub(results);
+            (results, preview)
+        } else {
+            ((win.width - 2) as usize, 0)
+        };
+
         // Draw top border with title
         execute!(self.stdout, cursor::MoveTo(win.x, win.y), SetForegroundColor(border_color))?;
         print!("\u{250c}"); // ┌
@@ -3308,16 +3352,57 @@ impl Terminal {
             crate::finder::FinderMode::Buffers => " Buffers ",
             crate::finder::FinderMode::Diagnostics => " Diagnostics ",
         };
-        let title_start = (win.width as usize - title.len()) / 2;
-        for i in 1..(win.width - 1) {
-            if i as usize == title_start {
-                execute!(self.stdout, SetForegroundColor(title_color))?;
-                print!("{}", title);
-                execute!(self.stdout, SetForegroundColor(border_color))?;
-            } else if i as usize >= title_start && (i as usize) < title_start + title.len() {
-                // Skip - already printed title
+
+        if preview_enabled {
+            // Title centered over results panel
+            let title_start = (results_width.saturating_sub(title.len())) / 2;
+            for i in 1..=results_width {
+                if i == title_start + 1 {
+                    execute!(self.stdout, SetForegroundColor(title_color))?;
+                    print!("{}", title);
+                    execute!(self.stdout, SetForegroundColor(border_color))?;
+                } else if i > title_start && i <= title_start + title.len() {
+                    // Skip - already printed title
+                } else {
+                    print!("\u{2500}"); // ─
+                }
+            }
+            // Separator junction
+            print!("\u{252c}"); // ┬
+
+            // Preview header with filename
+            let preview_title = if let Some(item) = editor.finder.selected_item() {
+                let filename = item.path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Preview");
+                format!(" {} ", filename)
             } else {
-                print!("\u{2500}"); // ─
+                " Preview ".to_string()
+            };
+            let preview_title_start = (preview_width.saturating_sub(preview_title.len())) / 2;
+            for i in 0..preview_width {
+                if i == preview_title_start {
+                    execute!(self.stdout, SetForegroundColor(title_color))?;
+                    print!("{}", preview_title);
+                    execute!(self.stdout, SetForegroundColor(border_color))?;
+                } else if i > preview_title_start && i < preview_title_start + preview_title.len() {
+                    // Skip - already printed title
+                } else {
+                    print!("\u{2500}"); // ─
+                }
+            }
+        } else {
+            let title_start = (win.width as usize - title.len()) / 2;
+            for i in 1..(win.width - 1) {
+                if i as usize == title_start {
+                    execute!(self.stdout, SetForegroundColor(title_color))?;
+                    print!("{}", title);
+                    execute!(self.stdout, SetForegroundColor(border_color))?;
+                } else if i as usize >= title_start && (i as usize) < title_start + title.len() {
+                    // Skip - already printed title
+                } else {
+                    print!("\u{2500}"); // ─
+                }
             }
         }
         print!("\u{2510}"); // ┐
@@ -3384,9 +3469,9 @@ impl Terminal {
                 // Leave space for icon (3 chars) and scroll indicator if needed
                 let icon_width = 3; // icon + space
                 let base_width = if show_scroll_indicator {
-                    (win.width as usize).saturating_sub(4)
+                    results_width.saturating_sub(2) // -1 for scroll indicator, -1 for spacing
                 } else {
-                    (win.width as usize).saturating_sub(3)
+                    results_width.saturating_sub(1)
                 };
                 let max_len = base_width.saturating_sub(icon_width);
                 let display_chars: Vec<char> = item.display.chars().take(max_len).collect();
@@ -3427,28 +3512,58 @@ impl Terminal {
                     }
                 }
 
+                // Batch characters into spans to reduce print calls and color changes
+                // Build normal text and highlighted text separately, then print in spans
+                let mut current_span = String::new();
+                let mut in_highlight = false;
+
                 for (char_idx, ch) in display_chars.iter().enumerate() {
-                    // Skip chars already printed as severity indicator
                     if char_idx < skip_severity_coloring {
                         continue;
                     }
 
-                    if item.match_indices.contains(&char_idx) {
+                    let is_match = item.match_indices.contains(&char_idx);
+
+                    if is_match != in_highlight {
+                        // Flush current span
+                        if !current_span.is_empty() {
+                            if in_highlight {
+                                execute!(self.stdout, SetForegroundColor(match_color))?;
+                            }
+                            print!("{}", current_span);
+                            if in_highlight {
+                                if is_selected {
+                                    execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(selected_bg))?;
+                                } else {
+                                    execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+                                }
+                            }
+                            current_span.clear();
+                        }
+                        in_highlight = is_match;
+                    }
+                    current_span.push(*ch);
+                }
+
+                // Flush final span
+                if !current_span.is_empty() {
+                    if in_highlight {
                         execute!(self.stdout, SetForegroundColor(match_color))?;
-                        print!("{}", ch);
+                    }
+                    print!("{}", current_span);
+                    if in_highlight {
                         if is_selected {
                             execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(selected_bg))?;
                         } else {
                             execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
                         }
-                    } else {
-                        print!("{}", ch);
                     }
                 }
 
-                // Pad to fill line
-                for _ in display_chars.len()..max_len {
-                    print!(" ");
+                // Pad to fill results panel (batched)
+                let pad_len = max_len.saturating_sub(display_chars.len());
+                if pad_len > 0 {
+                    print!("{}", " ".repeat(pad_len));
                 }
 
                 // Reset after selected item
@@ -3456,19 +3571,19 @@ impl Terminal {
                     execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
                 }
             } else {
-                // Empty row - set finder background
+                // Empty row - set finder background (batched padding)
                 execute!(self.stdout, SetBackgroundColor(finder_bg))?;
                 let pad_len = if show_scroll_indicator {
-                    (win.width as usize).saturating_sub(4)
+                    results_width.saturating_sub(2)
                 } else {
-                    (win.width as usize).saturating_sub(3)
+                    results_width.saturating_sub(1)
                 };
-                for _ in 0..pad_len {
-                    print!(" ");
+                if pad_len > 0 {
+                    print!("{}", " ".repeat(pad_len));
                 }
             }
 
-            // Draw scroll indicator
+            // Draw scroll indicator for results panel
             if show_scroll_indicator {
                 // Calculate which part of the scrollbar to highlight
                 let scroll_bar_pos = if total_items > 0 {
@@ -3490,16 +3605,35 @@ impl Terminal {
                 }
             }
 
+            // Draw separator and preview panel if enabled
+            if preview_enabled {
+                execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
+                print!("\u{2502}"); // │ vertical separator
+
+                // Render preview content for this row
+                self.render_finder_preview_row(editor, row, list_height, preview_width)?;
+            }
+
             execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
-            print!("\u{2502}"); // │
+            print!("\u{2502}"); // │ right border
         }
 
         // Draw separator above input
         let sep_y = win.y + 1 + list_height as u16;
         execute!(self.stdout, cursor::MoveTo(win.x, sep_y), SetForegroundColor(border_color))?;
         print!("\u{251c}"); // ├
-        for _ in 1..(win.width - 1) {
-            print!("\u{2500}"); // ─
+        if preview_enabled {
+            for _ in 0..results_width {
+                print!("\u{2500}"); // ─
+            }
+            print!("\u{2534}"); // ┴ (junction with preview separator)
+            for _ in 0..preview_width {
+                print!("\u{2500}"); // ─
+            }
+        } else {
+            for _ in 1..(win.width - 1) {
+                print!("\u{2500}"); // ─
+            }
         }
         print!("\u{2524}"); // ┤
 
@@ -3533,22 +3667,162 @@ impl Terminal {
         let status = format!(" {}/{} ", editor.finder.filtered.len(), editor.finder.items.len());
         execute!(self.stdout, cursor::MoveTo(win.x, win.y + win.height - 1), SetForegroundColor(border_color))?;
         print!("\u{2514}"); // └
-        let status_start = (win.width as usize - status.len()) / 2;
-        for i in 1..(win.width - 1) {
-            if i as usize == status_start {
-                execute!(self.stdout, SetForegroundColor(theme.ui.line_number))?;
-                print!("{}", status);
-                execute!(self.stdout, SetForegroundColor(border_color))?;
-            } else if i as usize >= status_start && (i as usize) < status_start + status.len() {
-                // Skip - already printed status
-            } else {
-                print!("\u{2500}"); // ─
+
+        if preview_enabled {
+            // Status centered over results panel, preview indicator shown
+            let status_start = (results_width.saturating_sub(status.len())) / 2;
+            for i in 0..results_width {
+                if i == status_start {
+                    execute!(self.stdout, SetForegroundColor(theme.ui.line_number))?;
+                    print!("{}", status);
+                    execute!(self.stdout, SetForegroundColor(border_color))?;
+                } else if i > status_start && i < status_start + status.len() {
+                    // Skip - already printed status
+                } else {
+                    print!("\u{2500}"); // ─
+                }
+            }
+            // Preview toggle hint
+            let hint = " Ctrl+t: toggle ";
+            let hint_start = (preview_width.saturating_sub(hint.len())) / 2;
+            for i in 0..=preview_width {
+                if i == hint_start {
+                    execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
+                    print!("{}", hint);
+                    execute!(self.stdout, SetForegroundColor(border_color))?;
+                } else if i > hint_start && i < hint_start + hint.len() {
+                    // Skip - already printed hint
+                } else {
+                    print!("\u{2500}"); // ─
+                }
+            }
+        } else {
+            let status_start = (win.width as usize - status.len()) / 2;
+            for i in 1..(win.width - 1) {
+                if i as usize == status_start {
+                    execute!(self.stdout, SetForegroundColor(theme.ui.line_number))?;
+                    print!("{}", status);
+                    execute!(self.stdout, SetForegroundColor(border_color))?;
+                } else if i as usize >= status_start && (i as usize) < status_start + status.len() {
+                    // Skip - already printed status
+                } else {
+                    print!("\u{2500}"); // ─
+                }
             }
         }
         print!("\u{2518}"); // ┘
 
         execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+
+        log_finder_profile(&format!(
+            "render_finder: {:?} items={} preview={}",
+            t_start.elapsed(),
+            editor.finder.filtered.len(),
+            preview_enabled
+        ));
+
         Ok(())
+    }
+
+    /// Render a single row of the preview panel
+    fn render_finder_preview_row(
+        &mut self,
+        editor: &Editor,
+        row: usize,
+        list_height: usize,
+        preview_width: usize,
+    ) -> anyhow::Result<()> {
+        let theme = editor.theme();
+        let finder_bg = theme.ui.finder_bg;
+        let finder_fg = theme.ui.foreground;
+        let line_num_color = theme.ui.line_number;
+
+        execute!(self.stdout, SetBackgroundColor(finder_bg), SetForegroundColor(finder_fg))?;
+
+        // Get preview content
+        let preview_content = &editor.finder.preview_content;
+        let preview_scroll = editor.finder.preview_scroll;
+
+        if preview_content.is_empty() {
+            // No preview available
+            if row == list_height / 2 {
+                let msg = "No preview";
+                let padding = (preview_width.saturating_sub(msg.len())) / 2;
+                execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
+                for _ in 0..padding {
+                    print!(" ");
+                }
+                print!("{}", msg);
+                for _ in 0..(preview_width.saturating_sub(padding + msg.len())) {
+                    print!(" ");
+                }
+            } else {
+                for _ in 0..preview_width {
+                    print!(" ");
+                }
+            }
+            return Ok(());
+        }
+
+        let line_idx = preview_scroll + row;
+
+        if line_idx < preview_content.len() {
+            let line = &preview_content[line_idx];
+
+            // Line number (4 chars + separator)
+            let line_num_width = 4;
+            execute!(self.stdout, SetForegroundColor(line_num_color))?;
+            print!("{:>width$}\u{2502}", line_idx + 1, width = line_num_width);
+
+            // Get syntax highlights if available
+            let highlights = self.get_preview_highlights(editor, line_idx);
+
+            // Render line content with syntax highlighting
+            let content_width = preview_width.saturating_sub(line_num_width + 1);
+            let chars: Vec<char> = line.chars().take(content_width).collect();
+
+            execute!(self.stdout, SetForegroundColor(finder_fg))?;
+
+            if highlights.is_empty() {
+                // No highlighting, just render the text
+                for ch in &chars {
+                    print!("{}", ch);
+                }
+            } else {
+                // Render with syntax highlighting
+                for (col, ch) in chars.iter().enumerate() {
+                    // Find highlight for this column
+                    let mut color = finder_fg;
+                    for span in &highlights {
+                        if col >= span.start_col && col < span.end_col {
+                            color = span.fg;
+                            break;
+                        }
+                    }
+                    execute!(self.stdout, SetForegroundColor(color))?;
+                    print!("{}", ch);
+                }
+            }
+
+            // Pad remaining space
+            for _ in chars.len()..content_width {
+                print!(" ");
+            }
+        } else {
+            // Beyond content - empty row
+            for _ in 0..preview_width {
+                print!(" ");
+            }
+        }
+
+        execute!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+        Ok(())
+    }
+
+    /// Get syntax highlights for a preview line
+    fn get_preview_highlights(&self, editor: &Editor, line_idx: usize) -> Vec<HighlightSpan> {
+        // Use the preview syntax manager from editor if available
+        editor.preview_syntax.get_line_highlights(line_idx)
     }
 
     /// Render a line with syntax highlighting and optional visual selection
@@ -5530,17 +5804,37 @@ fn handle_visual_mode(editor: &mut Editor, key: KeyEvent) {
 }
 
 fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
+    let t_start = Instant::now();
+
     // Check if we're in normal mode for vim-like navigation
     let is_normal_mode = editor.finder.is_normal_mode();
 
+    // Track if selection might have changed (for preview update)
+    let mut selection_changed = false;
+
     // Helper to adjust scroll after navigation
     let adjust_scroll = |editor: &mut Editor| {
-        let win = crate::finder::FloatingWindow::centered(editor.term_width, editor.term_height);
+        let preview_enabled = editor.finder.preview_enabled
+            && editor.finder.mode == crate::finder::FinderMode::Files;
+        let win = crate::finder::FloatingWindow::centered_with_preview(
+            editor.term_width,
+            editor.term_height,
+            preview_enabled,
+        );
         let list_height = (win.height - 4) as usize;
         editor.finder.adjust_scroll(list_height);
     };
 
     match (key.modifiers, key.code) {
+        // Toggle preview panel - Ctrl+t (works in both modes)
+        (KeyModifiers::CONTROL, KeyCode::Char('t')) => {
+            editor.finder.toggle_preview();
+            if editor.finder.preview_enabled {
+                // Mark preview as needing immediate update (skip debounce on toggle)
+                editor.update_finder_preview();
+            }
+        }
+
         // Cancel finder - Ctrl+c always closes
         (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
             editor.close_finder();
@@ -5587,6 +5881,7 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
         (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
             editor.finder.select_next();  // Visually goes UP
             adjust_scroll(editor);
+            selection_changed = true;
         }
 
         // Navigate down - works in both modes
@@ -5596,6 +5891,7 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
         (KeyModifiers::CONTROL, KeyCode::Char('n')) => {
             editor.finder.select_prev();  // Visually goes DOWN
             adjust_scroll(editor);
+            selection_changed = true;
         }
 
         // Normal mode specific: j/k for navigation
@@ -5604,10 +5900,12 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
         (KeyModifiers::NONE, KeyCode::Char('j')) if is_normal_mode => {
             editor.finder.select_prev();  // Visually goes DOWN (toward index 0 at bottom)
             adjust_scroll(editor);
+            selection_changed = true;
         }
         (KeyModifiers::NONE, KeyCode::Char('k')) if is_normal_mode => {
             editor.finder.select_next();  // Visually goes UP (toward higher indices at top)
             adjust_scroll(editor);
+            selection_changed = true;
         }
 
         // Normal mode: 'i' to enter insert mode
@@ -5615,10 +5913,19 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
             editor.finder.enter_insert_mode();
         }
 
+        // Normal mode: 'p' to toggle preview
+        (KeyModifiers::NONE, KeyCode::Char('p')) if is_normal_mode => {
+            editor.finder.toggle_preview();
+            if editor.finder.preview_enabled {
+                editor.update_finder_preview();
+            }
+        }
+
         // Normal mode: 'gg' to go to top (simplified to just 'g' for now)
         (KeyModifiers::NONE, KeyCode::Char('g')) if is_normal_mode => {
             editor.finder.selected = 0;
             editor.finder.scroll_offset = 0;
+            selection_changed = true;
         }
 
         // Normal mode: 'G' to go to bottom
@@ -5626,22 +5933,37 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
             if !editor.finder.filtered.is_empty() {
                 editor.finder.selected = editor.finder.filtered.len() - 1;
                 adjust_scroll(editor);
+                selection_changed = true;
             }
         }
 
         // Backspace
         (KeyModifiers::NONE, KeyCode::Backspace) => {
             editor.finder.delete_char_before();
+            selection_changed = true; // Filter might have changed selection
         }
 
         // Regular character - insert mode types, normal mode switches to insert first
         (_, KeyCode::Char(c)) if !c.is_control() => {
             // insert_char already switches to insert mode if needed
             editor.finder.insert_char(c);
+            selection_changed = true; // Filter might have changed selection
         }
 
         _ => {}
     }
+
+    // Mark preview as needing update (debounced in main loop)
+    // This avoids the 10-40ms tree-sitter parsing on every keystroke
+    if selection_changed && editor.finder.preview_enabled {
+        editor.finder.preview_update_pending = true;
+    }
+
+    log_finder_profile(&format!(
+        "handle_finder: {:?} key={:?}",
+        t_start.elapsed(),
+        key.code
+    ));
 }
 
 fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {

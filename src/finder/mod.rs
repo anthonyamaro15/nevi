@@ -7,6 +7,8 @@ pub use grep::GrepSearcher;
 pub use matcher::FuzzyMatcher;
 
 use std::path::PathBuf;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 
 /// Mode for the fuzzy finder
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +86,18 @@ pub struct FloatingWindow {
 impl FloatingWindow {
     /// Calculate centered position for a floating window
     pub fn centered(term_width: u16, term_height: u16) -> Self {
-        let width = (term_width * 80 / 100).min(120).max(40);  // 80% width, max 120, min 40
+        Self::centered_with_preview(term_width, term_height, false)
+    }
+
+    /// Calculate centered position for a floating window with optional preview panel
+    pub fn centered_with_preview(term_width: u16, term_height: u16, preview_enabled: bool) -> Self {
+        let width = if preview_enabled {
+            // Wider window when preview is enabled (~90% width)
+            (term_width * 90 / 100).min(200).max(80)
+        } else {
+            // Standard width without preview (80% width)
+            (term_width * 80 / 100).min(120).max(40)
+        };
         let height = (term_height * 70 / 100).min(40).max(10); // 70% height, max 40, min 10
         let x = (term_width.saturating_sub(width)) / 2;
         let y = (term_height.saturating_sub(height)) / 2;
@@ -120,6 +133,16 @@ pub struct FuzzyFinder {
     cwd: PathBuf,
     /// Whether the finder has been populated
     pub populated: bool,
+    /// Preview panel enabled
+    pub preview_enabled: bool,
+    /// Cached preview content (lines)
+    pub preview_content: Vec<String>,
+    /// Preview scroll offset
+    pub preview_scroll: usize,
+    /// Path of currently previewed file
+    pub preview_path: Option<PathBuf>,
+    /// Pending preview update (debounce) - stores the time when update was requested
+    pub preview_update_pending: bool,
 }
 
 impl FuzzyFinder {
@@ -138,6 +161,11 @@ impl FuzzyFinder {
             grep_searcher: GrepSearcher::new(),
             cwd: PathBuf::new(),
             populated: false,
+            preview_enabled: false,
+            preview_content: Vec::new(),
+            preview_scroll: 0,
+            preview_path: None,
+            preview_update_pending: false,
         }
     }
 
@@ -157,6 +185,11 @@ impl FuzzyFinder {
             grep_searcher: GrepSearcher::from_settings(settings),
             cwd: PathBuf::new(),
             populated: false,
+            preview_enabled: false,
+            preview_content: Vec::new(),
+            preview_scroll: 0,
+            preview_path: None,
+            preview_update_pending: false,
         }
     }
 
@@ -482,6 +515,125 @@ impl FuzzyFinder {
     pub fn status_text(&self) -> String {
         format!("{}/{}", self.filtered.len(), self.items.len())
     }
+
+    /// Toggle preview panel on/off
+    pub fn toggle_preview(&mut self) {
+        self.preview_enabled = !self.preview_enabled;
+        if self.preview_enabled {
+            // Clear cache to force reload when re-enabled
+            self.preview_path = None;
+            self.preview_content.clear();
+            self.preview_scroll = 0;
+        }
+    }
+
+    /// Update preview content if the selected file changed
+    /// Returns the current preview path and content for rendering
+    pub fn update_preview_content(&mut self) -> Option<(PathBuf, &[String])> {
+        if !self.preview_enabled {
+            return None;
+        }
+
+        // Only show preview for Files mode
+        if self.mode != FinderMode::Files {
+            return None;
+        }
+
+        let selected_item = self.selected_item()?;
+        let selected_path = selected_item.path.clone();
+
+        // Check if we need to load new content
+        if self.preview_path.as_ref() != Some(&selected_path) {
+            self.preview_content.clear();
+            self.preview_scroll = 0;
+            self.preview_path = Some(selected_path.clone());
+
+            // Check if file is likely binary
+            if is_likely_binary(&selected_path) {
+                self.preview_content = vec!["(Binary file - no preview)".to_string()];
+                return Some((selected_path, &self.preview_content));
+            }
+
+            // Check if it's a directory
+            if selected_path.is_dir() {
+                self.preview_content = vec!["(Directory)".to_string()];
+                return Some((selected_path, &self.preview_content));
+            }
+
+            // Read only the lines we need using buffered reader
+            // This avoids reading entire large files into memory
+            const MAX_PREVIEW_LINES: usize = 150;
+            match File::open(&selected_path) {
+                Ok(file) => {
+                    let reader = BufReader::new(file);
+                    let mut line_count = 0;
+                    for line in reader.lines().take(MAX_PREVIEW_LINES + 1) {
+                        match line {
+                            Ok(l) => {
+                                if line_count < MAX_PREVIEW_LINES {
+                                    self.preview_content.push(l);
+                                }
+                                line_count += 1;
+                            }
+                            Err(_) => {
+                                // Binary file or encoding issue - stop reading
+                                if self.preview_content.is_empty() {
+                                    self.preview_content = vec!["(Unable to read file)".to_string()];
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    if line_count > MAX_PREVIEW_LINES {
+                        self.preview_content.push("... (truncated)".to_string());
+                    }
+                }
+                Err(_) => {
+                    self.preview_content = vec!["(Unable to read file)".to_string()];
+                }
+            }
+        }
+
+        Some((self.preview_path.clone()?, &self.preview_content))
+    }
+
+    /// Scroll preview down
+    pub fn scroll_preview_down(&mut self, amount: usize) {
+        if !self.preview_content.is_empty() {
+            self.preview_scroll = self.preview_scroll.saturating_add(amount)
+                .min(self.preview_content.len().saturating_sub(1));
+        }
+    }
+
+    /// Scroll preview up
+    pub fn scroll_preview_up(&mut self, amount: usize) {
+        self.preview_scroll = self.preview_scroll.saturating_sub(amount);
+    }
+
+    /// Reset preview scroll to top
+    pub fn reset_preview_scroll(&mut self) {
+        self.preview_scroll = 0;
+    }
+}
+
+/// Check if a file is likely binary based on extension
+fn is_likely_binary(path: &PathBuf) -> bool {
+    let binary_exts = [
+        "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "svg",
+        "mp3", "mp4", "wav", "avi", "mov", "mkv", "flv",
+        "zip", "tar", "gz", "bz2", "xz", "7z", "rar",
+        "exe", "dll", "so", "dylib", "bin",
+        "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+        "wasm", "o", "a", "class", "pyc",
+        "ttf", "otf", "woff", "woff2", "eot",
+        "db", "sqlite", "sqlite3",
+    ];
+
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        return binary_exts.contains(&ext.to_lowercase().as_str());
+    }
+
+    false
 }
 
 impl Default for FuzzyFinder {

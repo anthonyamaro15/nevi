@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use std::io::Write;
 
 // Set to true to enable profiling output to /tmp/nevi_profile.log
-const PROFILE_ENABLED: bool = false;
+const PROFILE_ENABLED: bool = true;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use nevi::copilot::{
@@ -50,6 +50,13 @@ fn main() -> anyhow::Result<()> {
 
     // Initialize editor with settings
     let mut editor = Editor::new(settings);
+
+    // Enable finder profiling when PROFILE_ENABLED is true
+    if PROFILE_ENABLED {
+        nevi::terminal::FINDER_PROFILE_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+        // Clear the finder profile log
+        let _ = std::fs::write("/tmp/nevi_finder_profile.log", "");
+    }
 
     // Display any startup errors (config parse errors, etc.)
     let startup_errors = editor.take_startup_errors();
@@ -186,6 +193,10 @@ fn main() -> anyhow::Result<()> {
     // Track which completion item we've already requested resolve for
     // (to avoid spamming resolve requests on every key press)
     let mut last_resolved_completion: Option<String> = None;
+
+    // Finder preview debouncing: delay preview updates to avoid tree-sitter parsing on every keystroke
+    let preview_debounce = Duration::from_millis(50);
+    let mut preview_pending_since: Option<Instant> = None;
 
     // Main event loop
     let mut loop_start = Instant::now();
@@ -1215,6 +1226,30 @@ fn main() -> anyhow::Result<()> {
                 }
                 completion_pending = None;
             }
+        }
+
+        // Check for pending finder preview updates (debounced)
+        // This avoids the 10-40ms tree-sitter parsing on every keystroke
+        if editor.finder.preview_update_pending {
+            // Track when the preview update was first requested
+            if preview_pending_since.is_none() {
+                preview_pending_since = Some(Instant::now());
+            }
+
+            // Only update if debounce time has passed and no input is pending
+            if let Some(pending_since) = preview_pending_since {
+                if pending_since.elapsed() >= preview_debounce && !input_pending {
+                    let t_preview = Instant::now();
+                    editor.update_finder_preview();
+                    editor.finder.preview_update_pending = false;
+                    preview_pending_since = None;
+                    needs_redraw = true;
+                    profile!(profile_file, "preview_update (debounced): {:?}", t_preview.elapsed());
+                }
+            }
+        } else {
+            // Clear pending time when no update is needed
+            preview_pending_since = None;
         }
 
         // Check for autosave (only if not in modal/picker and buffer has file path)
