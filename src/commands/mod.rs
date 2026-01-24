@@ -51,6 +51,8 @@ pub enum Command {
     FindBuffers,
     /// :LiveGrep - Open fuzzy finder for live grep
     LiveGrep,
+    /// :SearchWord - Live grep with word under cursor
+    SearchWord,
     /// :FindDiagnostics - Open fuzzy finder for LSP diagnostics
     FindDiagnostics,
     /// :DiagnosticFloat - Show diagnostic floating popup at cursor line
@@ -228,6 +230,7 @@ pub fn parse_command(input: &str) -> Command {
         "FindFiles" | "findfiles" | "ff" | "files" => Command::FindFiles,
         "FindBuffers" | "findbuffers" | "fb" | "buffers" => Command::FindBuffers,
         "LiveGrep" | "livegrep" | "grep" | "rg" => Command::LiveGrep,
+        "SearchWord" | "searchword" | "sw" => Command::SearchWord,
         "FindDiagnostics" | "finddiagnostics" | "diagnostics" | "diag" | "fd" => Command::FindDiagnostics,
         "DiagnosticFloat" | "diagnosticfloat" | "df" | "linediag" => Command::DiagnosticFloat,
 

@@ -247,6 +247,36 @@ impl FuzzyFinder {
         self.populated = true;
     }
 
+    /// Open the finder in grep mode with a pre-filled query (e.g., word under cursor)
+    pub fn open_grep_with_query(&mut self, cwd: &std::path::Path, query: &str) {
+        self.mode = FinderMode::Grep;
+        self.input_mode = FinderInputMode::Insert;
+        self.query = query.to_string();
+        self.cursor = query.chars().count();
+        self.selected = 0;
+        self.scroll_offset = 0;
+        self.cwd = cwd.to_path_buf();
+
+        // Immediately run search if query is long enough
+        if query.len() >= 2 {
+            self.items = self.grep_searcher.search(&self.cwd, &self.query);
+            self.filtered = (0..self.items.len()).collect();
+
+            // Highlight the search query in results
+            let query_lower = self.query.to_lowercase();
+            for item in &mut self.items {
+                let display_lower = item.display.to_lowercase();
+                if let Some(pos) = display_lower.find(&query_lower) {
+                    item.match_indices = (pos..pos + self.query.len()).collect();
+                }
+            }
+        } else {
+            self.items.clear();
+            self.filtered.clear();
+        }
+        self.populated = true;
+    }
+
     /// Open the finder in diagnostics mode
     /// Takes diagnostic items pre-formatted by the editor
     pub fn open_diagnostics(&mut self, diagnostic_items: Vec<FinderItem>) {
