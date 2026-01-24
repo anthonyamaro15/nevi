@@ -812,6 +812,7 @@ fn default_config_template() -> &'static str {
 # i/a              - Insert before/after cursor
 # I/A              - Insert at line start/end
 # o/O              - Open line below/above
+# gi               - Go to last insert position and enter insert mode
 # v/V/Ctrl+v       - Visual / Visual line / Visual block
 # R                - Replace mode
 # :                - Command mode
