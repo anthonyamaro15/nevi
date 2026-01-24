@@ -21,7 +21,7 @@ fn log_finder_profile(msg: &str) {
     }
 }
 
-use crate::editor::{Editor, Mode, PaneDirection, Pane, SplitLayout, LspAction, MarkEntry, MarksPicker};
+use crate::editor::{Editor, Mode, PaneDirection, Pane, SplitLayout, LspAction};
 use crate::input::{KeyAction, InsertPosition, Operator, TextObject, TextObjectModifier, TextObjectType};
 use crate::commands::{Command, CommandResult, parse_command};
 use crate::config::LeaderAction;
@@ -292,9 +292,6 @@ impl Terminal {
         }
 
         // Render marks picker if active
-        if editor.marks_picker.is_some() {
-            self.render_marks_picker(editor)?;
-        }
 
         // Render references picker if active
         if editor.references_picker.is_some() {
@@ -1415,7 +1412,8 @@ impl Terminal {
                     let preview_enabled = editor.finder.preview_enabled
                         && (editor.finder.mode == crate::finder::FinderMode::Files
                             || editor.finder.mode == crate::finder::FinderMode::Grep
-                            || editor.finder.mode == crate::finder::FinderMode::Harpoon);
+                            || editor.finder.mode == crate::finder::FinderMode::Harpoon
+                            || editor.finder.mode == crate::finder::FinderMode::Marks);
                     let win = crate::finder::FloatingWindow::centered_with_preview(
                         editor.term_width,
                         editor.term_height,
@@ -2500,164 +2498,6 @@ impl Terminal {
         Ok(())
     }
 
-    /// Render the marks picker as an interactive popup
-    fn render_marks_picker(&mut self, editor: &Editor) -> anyhow::Result<()> {
-        let picker = match &editor.marks_picker {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-
-        if picker.items.is_empty() {
-            return Ok(());
-        }
-
-        // Get theme colors
-        let theme = &editor.theme_manager.current;
-        let bg_color = theme.ui.finder_bg;
-        let border_color = theme.ui.finder_border;
-        let selection_bg = theme.ui.finder_selected;
-        let text_color = theme.ui.foreground;
-        let dim_color = Color::Rgb { r: 108, g: 112, b: 134 };
-        let local_mark_color = Color::Rgb { r: 137, g: 180, b: 250 }; // Blue for local
-        let global_mark_color = Color::Rgb { r: 249, g: 226, b: 175 }; // Yellow for global
-
-        // Calculate popup dimensions
-        let popup_width: u16 = 60.min(editor.term_width.saturating_sub(4)); // More room for file names
-        let max_visible_items = 10.min(picker.items.len());
-        let popup_height: u16 = (max_visible_items + 4) as u16; // +4 for top border, header, separator, bottom border
-        let inner_width = (popup_width - 2) as usize; // Width inside the borders
-
-        // Center the popup
-        let popup_x = (editor.term_width.saturating_sub(popup_width)) / 2;
-        let popup_y = (editor.term_height.saturating_sub(popup_height)) / 2;
-
-        // Helper to draw a full-width line with borders
-        let draw_line = |stdout: &mut std::io::Stdout, y: u16, content: &str, fg: Color, bg: Color, left_border: &str, right_border: &str| -> anyhow::Result<()> {
-            execute!(stdout, cursor::MoveTo(popup_x, y))?;
-            execute!(stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
-            print!("{}", left_border);
-            execute!(stdout, SetForegroundColor(fg), SetBackgroundColor(bg))?;
-            let content_chars: Vec<char> = content.chars().collect();
-            let content_len = content_chars.len();
-            if content_len >= inner_width {
-                let truncated: String = content_chars.into_iter().take(inner_width).collect();
-                print!("{}", truncated);
-            } else {
-                print!("{}", content);
-                print!("{:width$}", "", width = inner_width - content_len);
-            }
-            execute!(stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
-            print!("{}", right_border);
-            Ok(())
-        };
-
-        // Draw top border with title
-        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
-        let title = " Marks ";
-        let border_inner = inner_width.saturating_sub(title.len());
-        let left_dashes = border_inner / 2;
-        let right_dashes = border_inner - left_dashes;
-        print!("╭");
-        for _ in 0..left_dashes { print!("─"); }
-        execute!(self.stdout, SetForegroundColor(text_color))?;
-        print!("{}", title);
-        execute!(self.stdout, SetForegroundColor(border_color))?;
-        for _ in 0..right_dashes { print!("─"); }
-        print!("╮");
-
-        // Draw header row
-        let header = format!(" {:<4}{:>6}{:>5}  {:<}", "mark", "line", "col", "file");
-        draw_line(&mut self.stdout, popup_y + 1, &header, dim_color, bg_color, "│", "│")?;
-
-        // Draw separator
-        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 2))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
-        print!("├");
-        for _ in 0..inner_width { print!("─"); }
-        print!("┤");
-
-        // Calculate visible range based on selection
-        let scroll_offset = if picker.selected >= max_visible_items {
-            picker.selected - max_visible_items + 1
-        } else {
-            0
-        };
-
-        // Draw items
-        for (i, item) in picker.items.iter().skip(scroll_offset).take(max_visible_items).enumerate() {
-            let actual_idx = scroll_offset + i;
-            let is_selected = actual_idx == picker.selected;
-            let row_y = popup_y + 3 + i as u16;
-
-            execute!(self.stdout, cursor::MoveTo(popup_x, row_y))?;
-
-            // Left border
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
-            print!("│");
-
-            // Row background
-            let row_bg = if is_selected { selection_bg } else { bg_color };
-            execute!(self.stdout, SetBackgroundColor(row_bg))?;
-
-            // Selection indicator
-            if is_selected {
-                execute!(self.stdout, SetForegroundColor(local_mark_color))?;
-                print!(" ▸");
-            } else {
-                print!("  ");
-            }
-
-            // Mark name
-            let mark_color = if item.is_global { global_mark_color } else { local_mark_color };
-            execute!(self.stdout, SetForegroundColor(mark_color))?;
-            print!("{:<3}", item.name);
-
-            // Line and col
-            execute!(self.stdout, SetForegroundColor(text_color))?;
-            print!("{:>6}{:>5}  ", item.line + 1, item.col);
-
-            // File name - calculate remaining space
-            // Used so far: 2 (indicator) + 3 (mark) + 6 (line) + 5 (col) + 2 (spaces) = 18
-            let file_max_len = inner_width.saturating_sub(18);
-            let file_display: String = item.file_name.chars().take(file_max_len).collect();
-            execute!(self.stdout, SetForegroundColor(dim_color))?;
-            print!("{:<width$}", file_display, width = file_max_len);
-
-            // Right border
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
-            print!("│");
-        }
-
-        // Fill remaining rows if fewer items than max
-        for i in picker.items.len()..max_visible_items {
-            let row_y = popup_y + 3 + i as u16;
-            execute!(self.stdout, cursor::MoveTo(popup_x, row_y))?;
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
-            print!("│");
-            print!("{:width$}", "", width = inner_width);
-            print!("│");
-        }
-
-        // Draw bottom border with hints
-        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + popup_height - 1))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
-        let hint = " j/k Enter Esc ";
-        let hint_inner = inner_width.saturating_sub(hint.len());
-        let hint_left = hint_inner / 2;
-        let hint_right = hint_inner - hint_left;
-        print!("╰");
-        for _ in 0..hint_left { print!("─"); }
-        execute!(self.stdout, SetForegroundColor(dim_color))?;
-        print!("{}", hint);
-        execute!(self.stdout, SetForegroundColor(border_color))?;
-        for _ in 0..hint_right { print!("─"); }
-        print!("╯");
-
-        execute!(self.stdout, ResetColor)?;
-        Ok(())
-    }
-
     /// Render the references picker as a floating popup
     fn render_references_picker(&mut self, editor: &Editor) -> anyhow::Result<()> {
         let picker = match &editor.references_picker {
@@ -3206,7 +3046,8 @@ impl Terminal {
         let preview_enabled = editor.finder.preview_enabled
             && (editor.finder.mode == crate::finder::FinderMode::Files
                 || editor.finder.mode == crate::finder::FinderMode::Grep
-                || editor.finder.mode == crate::finder::FinderMode::Harpoon);
+                || editor.finder.mode == crate::finder::FinderMode::Harpoon
+                || editor.finder.mode == crate::finder::FinderMode::Marks);
         let win = crate::finder::FloatingWindow::centered_with_preview(
             editor.term_width,
             editor.term_height,
@@ -3252,6 +3093,7 @@ impl Terminal {
             crate::finder::FinderMode::Buffers => " Buffers ",
             crate::finder::FinderMode::Diagnostics => " Diagnostics ",
             crate::finder::FinderMode::Harpoon => " Harpoon ",
+            crate::finder::FinderMode::Marks => " Marks ",
         };
 
         if preview_enabled {
@@ -4024,96 +3866,6 @@ fn handle_code_actions_picker_key(editor: &mut Editor, key: KeyEvent) {
     }
 }
 
-/// Handle key input for the marks picker
-fn handle_marks_picker_key(editor: &mut Editor, key: KeyEvent) {
-    match (key.modifiers, key.code) {
-        // Close picker
-        (KeyModifiers::NONE, KeyCode::Esc) |
-        (KeyModifiers::CONTROL, KeyCode::Char('[')) |
-        (KeyModifiers::NONE, KeyCode::Char('q')) => {
-            editor.marks_picker = None;
-        }
-
-        // Navigate up
-        (KeyModifiers::NONE, KeyCode::Up) |
-        (KeyModifiers::NONE, KeyCode::Char('k')) |
-        (KeyModifiers::CONTROL, KeyCode::Char('k')) |
-        (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
-            if let Some(picker) = &mut editor.marks_picker {
-                picker.move_up();
-            }
-        }
-
-        // Navigate down
-        (KeyModifiers::NONE, KeyCode::Down) |
-        (KeyModifiers::NONE, KeyCode::Char('j')) |
-        (KeyModifiers::CONTROL, KeyCode::Char('j')) |
-        (KeyModifiers::CONTROL, KeyCode::Char('n')) => {
-            if let Some(picker) = &mut editor.marks_picker {
-                picker.move_down();
-            }
-        }
-
-        // Jump to selected mark
-        (KeyModifiers::NONE, KeyCode::Enter) |
-        (KeyModifiers::NONE, KeyCode::Char('l')) => {
-            if let Some(picker) = &editor.marks_picker {
-                if let Some(mark) = picker.selected_mark() {
-                    let line = mark.line;
-                    let col = mark.col;
-                    let file_path = mark.file_path.clone();
-                    let is_global = mark.is_global;
-
-                    // Close picker first
-                    editor.marks_picker = None;
-
-                    // If it's a global mark with a different file, open it
-                    if is_global {
-                        if let Some(path) = file_path {
-                            let current_path = editor.buffer().path.clone();
-                            if current_path.as_ref() != Some(&path) {
-                                // Open the file
-                                if let Err(e) = editor.open_file(path.clone()) {
-                                    editor.set_status(format!("Error opening file: {}", e));
-                                    return;
-                                }
-                            }
-                        }
-                    }
-
-                    // Record jump before moving
-                    editor.record_jump();
-
-                    // Jump to position
-                    editor.cursor.line = line;
-                    editor.cursor.col = col;
-                    editor.scroll_cursor_center();
-                }
-            } else {
-                editor.marks_picker = None;
-            }
-        }
-
-        // Go to top
-        (KeyModifiers::NONE, KeyCode::Char('g')) => {
-            if let Some(picker) = &mut editor.marks_picker {
-                picker.selected = 0;
-            }
-        }
-
-        // Go to bottom
-        (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
-            if let Some(picker) = &mut editor.marks_picker {
-                if !picker.items.is_empty() {
-                    picker.selected = picker.items.len() - 1;
-                }
-            }
-        }
-
-        _ => {}
-    }
-}
-
 /// Handle key input for the theme picker
 fn handle_theme_picker_key(editor: &mut Editor, key: KeyEvent) {
     match (key.modifiers, key.code) {
@@ -4272,12 +4024,6 @@ pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
     }
 
     // Handle harpoon menu if active
-    // Handle marks picker if active
-    if editor.marks_picker.is_some() {
-        handle_marks_picker_key(editor, key);
-        return;
-    }
-
     // Handle theme picker if active
     if editor.theme_picker.is_some() {
         handle_theme_picker_key(editor, key);
@@ -5657,7 +5403,8 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
         let preview_enabled = editor.finder.preview_enabled
             && (editor.finder.mode == crate::finder::FinderMode::Files
                 || editor.finder.mode == crate::finder::FinderMode::Grep
-                || editor.finder.mode == crate::finder::FinderMode::Harpoon);
+                || editor.finder.mode == crate::finder::FinderMode::Harpoon
+                || editor.finder.mode == crate::finder::FinderMode::Marks);
         let win = crate::finder::FloatingWindow::centered_with_preview(
             editor.term_width,
             editor.term_height,
@@ -5785,10 +5532,16 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
             if editor.finder.selected < editor.finder.filtered.len() {
                 let item_idx = editor.finder.filtered[editor.finder.selected];
                 editor.harpoon.remove(item_idx);
-                // Refresh the finder with updated harpoon files
-                let files: Vec<_> = editor.harpoon.files().to_vec();
-                editor.finder.open_harpoon(files);
-                adjust_scroll(editor);
+                // Check if any files remain
+                if editor.harpoon.is_empty() {
+                    editor.set_status("Harpoon is empty");
+                    editor.close_finder();
+                } else {
+                    // Refresh the finder with updated harpoon files
+                    let files: Vec<_> = editor.harpoon.files().to_vec();
+                    editor.finder.open_harpoon(files);
+                    adjust_scroll(editor);
+                }
             }
         }
 
@@ -5823,6 +5576,41 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
                     editor.finder.open_harpoon(files);
                     editor.finder.selected = new_selected;
                     adjust_scroll(editor);
+                }
+            }
+        }
+
+        // Marks mode: 'd' to delete selected mark
+        (KeyModifiers::NONE, KeyCode::Char('d'))
+            if is_normal_mode && editor.finder.mode == crate::finder::FinderMode::Marks => {
+            if editor.finder.selected < editor.finder.filtered.len() {
+                let item_idx = editor.finder.filtered[editor.finder.selected];
+                if let Some(item) = editor.finder.items.get(item_idx) {
+                    // Extract mark name from display string (format: " X   line:col  filename")
+                    let mark_name = item.display.chars().nth(1);
+                    if let Some(name) = mark_name {
+                        // Get buffer key for deletion
+                        let buffer_key = editor.buffer()
+                            .path
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|| format!("buffer_{}", editor.current_buffer_index()));
+
+                        if editor.marks.delete(&buffer_key, name) {
+                            editor.set_status(format!("Deleted mark '{}'", name));
+                            // Check if any marks remain
+                            let local_marks = editor.marks.get_local_marks(&buffer_key);
+                            let global_marks = editor.marks.get_global_marks();
+                            if local_marks.is_empty() && global_marks.is_empty() {
+                                // No more marks, close the finder
+                                editor.close_finder();
+                            } else {
+                                // Refresh the finder with updated marks
+                                editor.open_finder_marks();
+                                adjust_scroll(editor);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -6849,63 +6637,8 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
         }
 
         Command::Marks => {
-            // Get buffer key for local marks
-            let buffer_key = editor
-                .buffer()
-                .path
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|| format!("buffer_{}", editor.current_buffer_index()));
-
-            let local_marks = editor.marks.get_local_marks(&buffer_key);
-            let global_marks = editor.marks.get_global_marks();
-
-            if local_marks.is_empty() && global_marks.is_empty() {
-                CommandResult::Message("No marks set".to_string())
-            } else {
-                // Build mark entries
-                let mut items = Vec::new();
-
-                // Add local marks
-                let current_file = editor.buffer().path.clone();
-                let current_file_name = current_file
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-
-                for (name, mark) in local_marks {
-                    items.push(MarkEntry {
-                        name,
-                        line: mark.line,
-                        col: mark.col,
-                        file_path: current_file.clone(),
-                        file_name: current_file_name.clone(),
-                        is_global: false,
-                    });
-                }
-
-                // Add global marks
-                for (name, mark) in global_marks {
-                    let file_name = mark
-                        .path
-                        .as_ref()
-                        .and_then(|p| p.file_name())
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    items.push(MarkEntry {
-                        name,
-                        line: mark.line,
-                        col: mark.col,
-                        file_path: mark.path.clone(),
-                        file_name,
-                        is_global: true,
-                    });
-                }
-
-                editor.marks_picker = Some(MarksPicker::new(items));
-                CommandResult::Ok
-            }
+            editor.open_finder_marks();
+            CommandResult::Ok
         }
 
         Command::DeleteMarks(arg) => {

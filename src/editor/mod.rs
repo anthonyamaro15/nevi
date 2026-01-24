@@ -726,8 +726,6 @@ pub struct Editor {
     pub signature_help: Option<crate::lsp::types::SignatureHelpResult>,
     /// Show diagnostic floating popup at cursor
     pub show_diagnostic_float: bool,
-    /// Marks picker state
-    pub marks_picker: Option<MarksPicker>,
     /// Incremental search matches: (line, start_col, end_col)
     pub search_matches: Vec<(usize, usize, usize)>,
     /// Project root directory (for scoping file finder and grep)
@@ -870,54 +868,6 @@ impl CodeActionsPicker {
     }
 
     pub fn selected_item(&self) -> Option<&CodeActionItem> {
-        self.items.get(self.selected)
-    }
-}
-
-/// A mark entry for display in the marks picker
-#[derive(Debug, Clone)]
-pub struct MarkEntry {
-    /// The mark character (a-z for local, A-Z for global)
-    pub name: char,
-    /// Line number (0-indexed)
-    pub line: usize,
-    /// Column number
-    pub col: usize,
-    /// File path (for global marks)
-    pub file_path: Option<std::path::PathBuf>,
-    /// Display file name
-    pub file_name: String,
-    /// Whether this is a global mark
-    pub is_global: bool,
-}
-
-/// Picker state for viewing and jumping to marks
-pub struct MarksPicker {
-    /// List of marks
-    pub items: Vec<MarkEntry>,
-    /// Currently selected index
-    pub selected: usize,
-}
-
-impl MarksPicker {
-    pub fn new(items: Vec<MarkEntry>) -> Self {
-        Self { items, selected: 0 }
-    }
-
-    pub fn move_up(&mut self) {
-        if self.selected > 0 {
-            self.selected -= 1;
-        }
-    }
-
-    pub fn move_down(&mut self) {
-        if self.selected + 1 < self.items.len() {
-            self.selected += 1;
-        }
-    }
-
-    /// Get the currently selected mark
-    pub fn selected_mark(&self) -> Option<&MarkEntry> {
         self.items.get(self.selected)
     }
 }
@@ -1066,7 +1016,6 @@ impl Editor {
             frecency: FrecencyDb::load(),
             signature_help: None,
             show_diagnostic_float: false,
-            marks_picker: None,
             search_matches: Vec::new(),
             project_root: None,
             explorer: FileExplorer::new(),
@@ -2493,7 +2442,6 @@ impl Editor {
         self.completion.hide();
         self.signature_help = None;
         self.show_diagnostic_float = false;
-        self.marks_picker = None;
 
         self.mode = Mode::Normal;
         // In normal mode, cursor can't be past last character
@@ -5602,6 +5550,59 @@ impl Editor {
         self.mode = Mode::Finder;
     }
 
+    /// Open the fuzzy finder in marks mode
+    pub fn open_finder_marks(&mut self) {
+        use crate::finder::MarkInfo;
+
+        let mut marks_info: Vec<MarkInfo> = Vec::new();
+        let current_file_name = self.buffer().display_name().to_string();
+        let current_file_path = self.buffer().path.clone();
+
+        // Get buffer key for local marks
+        let buffer_key = self.buffer()
+            .path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| format!("buffer_{}", self.current_buffer_index()));
+
+        // Collect local marks (a-z) from current buffer
+        for (name, mark) in self.marks.get_local_marks(&buffer_key) {
+            marks_info.push(MarkInfo {
+                name,
+                line: mark.line,
+                col: mark.col,
+                file_path: current_file_path.clone(),
+                file_name: current_file_name.clone(),
+            });
+        }
+
+        // Collect global marks (A-Z)
+        for (name, mark) in self.marks.get_global_marks() {
+            let file_name = mark.path.as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            marks_info.push(MarkInfo {
+                name,
+                line: mark.line,
+                col: mark.col,
+                file_path: mark.path.clone(),
+                file_name,
+            });
+        }
+
+        // Sort marks alphabetically
+        marks_info.sort_by_key(|m| m.name);
+
+        if marks_info.is_empty() {
+            self.set_status("No marks set");
+            return;
+        }
+
+        self.finder.open_marks(marks_info);
+        self.mode = Mode::Finder;
+    }
+
     /// Open the fuzzy finder in grep mode with word under cursor pre-filled
     pub fn open_finder_grep_word(&mut self) {
         if let Some(word) = self.get_word_under_cursor() {
@@ -5705,11 +5706,12 @@ impl Editor {
 
     /// Update the preview syntax highlighting for the currently selected finder item
     pub fn update_finder_preview(&mut self) {
-        // Only for Files, Grep, and Harpoon modes with preview enabled
+        // Only for Files, Grep, Harpoon, and Marks modes with preview enabled
         if !self.finder.preview_enabled
             || (self.finder.mode != crate::finder::FinderMode::Files
                 && self.finder.mode != crate::finder::FinderMode::Grep
-                && self.finder.mode != crate::finder::FinderMode::Harpoon)
+                && self.finder.mode != crate::finder::FinderMode::Harpoon
+                && self.finder.mode != crate::finder::FinderMode::Marks)
         {
             return;
         }
