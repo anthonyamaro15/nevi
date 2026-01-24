@@ -125,7 +125,8 @@ impl UndoStack {
 
     /// Start a new undo group (call before making changes)
     /// If the last edit was within the group_interval, the existing group is continued
-    pub fn begin_undo_group(&mut self, cursor_line: usize, cursor_col: usize) {
+    /// Returns true if a new group was started, false if continuing existing group
+    pub fn begin_undo_group(&mut self, cursor_line: usize, cursor_col: usize) -> bool {
         let now = Instant::now();
 
         // Check if we should continue the existing group (rapid edits)
@@ -135,12 +136,13 @@ impl UndoStack {
 
         if should_continue && self.current_entry.is_some() {
             // Continue existing group - don't finalize
-            return;
+            return false;
         }
 
         // Finalize any existing group and start a new one
         self.end_undo_group(cursor_line, cursor_col);
         self.current_entry = Some(UndoEntry::new(cursor_line, cursor_col));
+        true
     }
 
     /// End the current undo group (call after changes are done)

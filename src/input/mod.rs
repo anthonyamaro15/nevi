@@ -199,6 +199,10 @@ pub enum KeyAction {
     JumpBack,
     /// Jump forward in jump list (Ctrl+i)
     JumpForward,
+    /// Go to older change position (g;)
+    ChangeListOlder,
+    /// Go to newer change position (g,)
+    ChangeListNewer,
     /// Go to next diagnostic (]d)
     NextDiagnostic,
     /// Go to previous diagnostic ([d)
@@ -1141,6 +1145,16 @@ impl InputState {
             ('g', KeyModifiers::SHIFT, KeyCode::Char('J')) => {
                 self.reset();
                 KeyAction::JoinLinesNoSpace
+            }
+            // g; - go to older change position
+            ('g', KeyModifiers::NONE, KeyCode::Char(';')) => {
+                self.reset();
+                KeyAction::ChangeListOlder
+            }
+            // g, - go to newer change position
+            ('g', KeyModifiers::NONE, KeyCode::Char(',')) => {
+                self.reset();
+                KeyAction::ChangeListNewer
             }
             // zz - scroll cursor to center of screen
             ('z', KeyModifiers::NONE, KeyCode::Char('z')) => {
