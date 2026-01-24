@@ -6596,14 +6596,21 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
         }
 
         Command::WriteAll => {
-            match editor.save_all() {
-                Ok(count) => {
-                    if count == 0 {
+            match editor.format_and_save_all() {
+                Ok((saved_count, formatted_count, formatter_name)) => {
+                    if saved_count == 0 {
                         CommandResult::Message("No modified buffers to save".to_string())
-                    } else if count == 1 {
-                        CommandResult::Message("Saved 1 buffer".to_string())
                     } else {
-                        CommandResult::Message(format!("Saved {} buffers", count))
+                        let buffer_word = if saved_count == 1 { "buffer" } else { "buffers" };
+                        if formatted_count > 0 {
+                            let formatter = formatter_name.unwrap_or_else(|| "formatter".to_string());
+                            CommandResult::Message(format!(
+                                "Formatted with {} and saved {} {}",
+                                formatter, saved_count, buffer_word
+                            ))
+                        } else {
+                            CommandResult::Message(format!("Saved {} {}", saved_count, buffer_word))
+                        }
                     }
                 }
                 Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
