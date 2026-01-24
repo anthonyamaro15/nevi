@@ -238,8 +238,6 @@ fn main() -> anyhow::Result<()> {
                     editor.hover_content = None;
                     // Dismiss diagnostic float on any key press (it can be reopened with gl)
                     editor.show_diagnostic_float = false;
-                    // Dismiss marks picker on any key press (handled separately below)
-                    // Note: marks_picker has its own key handling
 
                     // Check for manual completion trigger (Ctrl+Space) in insert mode
                     let manual_completion = editor.mode == Mode::Insert

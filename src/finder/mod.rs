@@ -18,6 +18,7 @@ pub enum FinderMode {
     Buffers,
     Diagnostics,
     Harpoon,
+    Marks,
 }
 
 /// Input mode for the fuzzy finder (like vim modes)
@@ -73,6 +74,21 @@ impl FinderItem {
         self.score = score;
         self
     }
+}
+
+/// Mark info for the marks finder
+#[derive(Debug, Clone)]
+pub struct MarkInfo {
+    /// The mark character (a-z for local, A-Z for global)
+    pub name: char,
+    /// Line number (0-indexed)
+    pub line: usize,
+    /// Column number
+    pub col: usize,
+    /// File path (for global marks)
+    pub file_path: Option<PathBuf>,
+    /// Display file name
+    pub file_name: String,
 }
 
 /// Floating window dimensions
@@ -251,6 +267,35 @@ impl FuzzyFinder {
                     .unwrap_or_else(|| path.to_string_lossy().to_string());
                 let mut item = FinderItem::new(format!("{:>2}  {}", idx + 1, display), path);
                 item.score = idx as u32;
+                item
+            })
+            .collect();
+        self.filtered = (0..self.items.len()).collect();
+        self.populated = true;
+    }
+
+    /// Open the finder in marks mode
+    pub fn open_marks(&mut self, marks: Vec<MarkInfo>) {
+        self.mode = FinderMode::Marks;
+        self.input_mode = FinderInputMode::Normal; // Start in normal mode for quick navigation
+        self.query.clear();
+        self.cursor = 0;
+        self.selected = 0;
+        self.scroll_offset = 0;
+
+        // Populate marks
+        self.items = marks
+            .into_iter()
+            .map(|mark| {
+                let display = format!(
+                    " {}   {:>4}:{:<3}  {}",
+                    mark.name,
+                    mark.line + 1,
+                    mark.col,
+                    mark.file_name
+                );
+                let mut item = FinderItem::new(display, mark.file_path.unwrap_or_default());
+                item.line = Some(mark.line + 1);
                 item
             })
             .collect();
@@ -609,8 +654,8 @@ impl FuzzyFinder {
             return None;
         }
 
-        // Only show preview for Files, Grep, and Harpoon modes
-        if self.mode != FinderMode::Files && self.mode != FinderMode::Grep && self.mode != FinderMode::Harpoon {
+        // Only show preview for Files, Grep, Harpoon, and Marks modes
+        if self.mode != FinderMode::Files && self.mode != FinderMode::Grep && self.mode != FinderMode::Harpoon && self.mode != FinderMode::Marks {
             return None;
         }
 
