@@ -6752,6 +6752,11 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             CommandResult::Ok
         }
 
+        Command::SearchWord => {
+            editor.open_finder_grep_word();
+            CommandResult::Ok
+        }
+
         Command::FindDiagnostics => {
             editor.open_finder_diagnostics();
             CommandResult::Ok

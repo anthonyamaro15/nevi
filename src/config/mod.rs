@@ -207,6 +207,11 @@ impl Default for KeymapSettings {
                     desc: Some("Live grep".to_string()),
                 },
                 LeaderMapping {
+                    key: "sw".to_string(),
+                    action: ":SearchWord".to_string(),
+                    desc: Some("Search word under cursor".to_string()),
+                },
+                LeaderMapping {
                     key: "fb".to_string(),
                     action: ":FindBuffers".to_string(),
                     desc: Some("Find buffers".to_string()),

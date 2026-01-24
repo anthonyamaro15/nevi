@@ -3362,7 +3362,7 @@ impl Editor {
     }
 
     /// Get the word under the cursor
-    fn get_word_under_cursor(&self) -> Option<String> {
+    pub fn get_word_under_cursor(&self) -> Option<String> {
         let line = self.buffers[self.current_buffer_idx].line(self.cursor.line)?;
         let line_str: String = line.chars().collect();
         let col = self.cursor.col;
@@ -5428,6 +5428,17 @@ impl Editor {
         let root = self.working_directory();
         self.finder.open_grep(&root);
         self.mode = Mode::Finder;
+    }
+
+    /// Open the fuzzy finder in grep mode with word under cursor pre-filled
+    pub fn open_finder_grep_word(&mut self) {
+        if let Some(word) = self.get_word_under_cursor() {
+            let root = self.working_directory();
+            self.finder.open_grep_with_query(&root, &word);
+            self.mode = Mode::Finder;
+        } else {
+            self.set_status("No word under cursor".to_string());
+        }
     }
 
     /// Open the fuzzy finder in diagnostics mode

@@ -185,6 +185,7 @@ Nevi aims for full vim/neovim keybind compatibility. Most common keybindings are
 |-----|--------|
 | `ff` | Find files |
 | `fg` | Live grep |
+| `sw` | Search word under cursor |
 | `fb` | Find buffers |
 | `ft` | Theme picker |
 | `e` | File explorer |
