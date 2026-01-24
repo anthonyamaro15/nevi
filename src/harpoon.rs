@@ -1,12 +1,9 @@
 //! Harpoon - Quick file marks for fast navigation
 //!
-//! Provides up to 4 slots for frequently accessed files with instant jump.
+//! Provides unlimited slots for frequently accessed files with instant jump.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-
-/// Maximum number of harpoon slots
-pub const MAX_SLOTS: usize = 4;
 
 /// Harpoon file data for persistence
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -17,16 +14,12 @@ struct HarpoonData {
 /// Harpoon manager for quick file navigation
 #[derive(Debug)]
 pub struct Harpoon {
-    /// List of marked file paths (max 4)
+    /// List of marked file paths
     files: Vec<PathBuf>,
     /// Current index for ]h/[h navigation
     current_index: Option<usize>,
     /// Project root for persistence
     project_root: Option<PathBuf>,
-    /// Whether the menu is currently open
-    pub menu_open: bool,
-    /// Currently selected item in menu (0-indexed)
-    pub menu_selection: usize,
 }
 
 impl Default for Harpoon {
@@ -39,11 +32,9 @@ impl Harpoon {
     /// Create a new Harpoon instance
     pub fn new() -> Self {
         Self {
-            files: Vec::with_capacity(MAX_SLOTS),
+            files: Vec::new(),
             current_index: None,
             project_root: None,
-            menu_open: false,
-            menu_selection: 0,
         }
     }
 
@@ -72,7 +63,6 @@ impl Harpoon {
             Ok(content) => {
                 if let Ok(data) = serde_json::from_str::<HarpoonData>(&content) {
                     self.files = data.files.into_iter()
-                        .take(MAX_SLOTS)
                         .map(PathBuf::from)
                         .collect();
                 }
@@ -104,7 +94,6 @@ impl Harpoon {
     }
 
     /// Add a file to harpoon. If already exists, moves it to the end.
-    /// If at max capacity, removes the first file.
     pub fn add_file(&mut self, path: &Path) -> String {
         let path = path.to_path_buf();
 
@@ -117,11 +106,6 @@ impl Harpoon {
             return format!("Moved to harpoon slot {}", self.files.len());
         }
 
-        // If at max capacity, remove first
-        if self.files.len() >= MAX_SLOTS {
-            self.files.remove(0);
-        }
-
         self.files.push(path);
         self.save();
         format!("Added to harpoon slot {}", self.files.len())
@@ -132,19 +116,15 @@ impl Harpoon {
         if index < self.files.len() {
             self.files.remove(index);
             self.save();
-            // Adjust menu selection if needed
-            if self.menu_selection >= self.files.len() && self.menu_selection > 0 {
-                self.menu_selection = self.files.len().saturating_sub(1);
-            }
             true
         } else {
             false
         }
     }
 
-    /// Get file at slot (1-indexed, like keybindings)
+    /// Get file at slot (1-indexed)
     pub fn get_slot(&self, slot: usize) -> Option<&PathBuf> {
-        if slot >= 1 && slot <= MAX_SLOTS {
+        if slot >= 1 {
             self.files.get(slot - 1)
         } else {
             None
@@ -207,58 +187,11 @@ impl Harpoon {
         self.files.is_empty()
     }
 
-    /// Toggle menu open/closed
-    pub fn toggle_menu(&mut self) {
-        self.menu_open = !self.menu_open;
-        if self.menu_open {
-            self.menu_selection = 0;
-        }
-    }
-
-    /// Close menu
-    pub fn close_menu(&mut self) {
-        self.menu_open = false;
-    }
-
-    /// Move menu selection up
-    pub fn menu_up(&mut self) {
-        if !self.files.is_empty() && self.menu_selection > 0 {
-            self.menu_selection -= 1;
-        }
-    }
-
-    /// Move menu selection down
-    pub fn menu_down(&mut self) {
-        if !self.files.is_empty() && self.menu_selection < self.files.len() - 1 {
-            self.menu_selection += 1;
-        }
-    }
-
-    /// Get currently selected file in menu
-    pub fn menu_selected_file(&self) -> Option<&PathBuf> {
-        self.files.get(self.menu_selection)
-    }
-
-    /// Move selected item up in the list
-    pub fn move_up(&mut self) {
-        if self.menu_selection > 0 && self.files.len() > 1 {
-            self.files.swap(self.menu_selection, self.menu_selection - 1);
-            self.menu_selection -= 1;
+    /// Swap two items in the list
+    pub fn swap(&mut self, a: usize, b: usize) {
+        if a < self.files.len() && b < self.files.len() && a != b {
+            self.files.swap(a, b);
             self.save();
         }
-    }
-
-    /// Move selected item down in the list
-    pub fn move_down(&mut self) {
-        if self.menu_selection < self.files.len() - 1 && self.files.len() > 1 {
-            self.files.swap(self.menu_selection, self.menu_selection + 1);
-            self.menu_selection += 1;
-            self.save();
-        }
-    }
-
-    /// Remove currently selected item in menu
-    pub fn remove_selected(&mut self) -> bool {
-        self.remove(self.menu_selection)
     }
 }
