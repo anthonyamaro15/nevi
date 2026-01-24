@@ -1073,6 +1073,15 @@ impl Editor {
         self.languages_config.get_formatter(&language)
     }
 
+    /// Get the formatter config for a specific buffer by index (if any)
+    pub fn get_formatter_for_buffer(&self, buffer_idx: usize) -> Option<&crate::config::FormatterConfig> {
+        let buffer = self.buffers.get(buffer_idx)?;
+        let path = buffer.path.as_ref()?;
+        let ext = path.extension()?.to_str()?;
+        let language = Self::extension_to_language(ext);
+        self.languages_config.get_formatter(&language)
+    }
+
     /// Get the effective tab width for the current buffer
     /// Returns language-specific override or falls back to editor default
     pub fn get_effective_tab_width(&self) -> usize {
@@ -3072,6 +3081,47 @@ impl Editor {
         }
         self.update_git_diff();
         Ok(saved_count)
+    }
+
+    /// Format and save all modified buffers (respects format_on_save setting)
+    /// Returns (saved_count, formatted_count, formatter_name)
+    pub fn format_and_save_all(&mut self) -> anyhow::Result<(usize, usize, Option<String>)> {
+        let mut saved_count = 0;
+        let mut formatted_count = 0;
+        let mut formatter_name: Option<String> = None;
+        let format_on_save = self.settings.editor.format_on_save;
+
+        for i in 0..self.buffers.len() {
+            if self.buffers[i].dirty && self.buffers[i].path.is_some() {
+                // Try to format if format_on_save is enabled
+                if format_on_save {
+                    if let Some(formatter_config) = self.get_formatter_for_buffer(i).cloned() {
+                        let content = self.buffers[i].content();
+                        let file_path = self.buffers[i].path.as_ref()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default();
+
+                        match crate::formatter::format_with_external(&content, &file_path, &formatter_config) {
+                            Ok(formatted) => {
+                                if formatted != content {
+                                    self.buffers[i].set_content(&formatted);
+                                    formatted_count += 1;
+                                }
+                                formatter_name = Some(formatter_config.command.clone());
+                            }
+                            Err(_e) => {
+                                // Formatter failed - continue with save anyway
+                            }
+                        }
+                    }
+                }
+                // Save the buffer
+                self.buffers[i].save()?;
+                saved_count += 1;
+            }
+        }
+        self.update_git_diff();
+        Ok((saved_count, formatted_count, formatter_name))
     }
 
     /// Get list of buffers with unsaved changes (for error messages)
