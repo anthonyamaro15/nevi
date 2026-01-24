@@ -383,6 +383,80 @@ impl JumpList {
     }
 }
 
+/// A position in the change list (where edits occurred)
+#[derive(Debug, Clone)]
+pub struct ChangeLocation {
+    /// Line number where change occurred
+    pub line: usize,
+    /// Column number where change occurred
+    pub col: usize,
+}
+
+/// Change list for navigating to previous edit positions (g; and g,)
+#[derive(Debug, Default)]
+pub struct ChangeList {
+    /// List of change locations
+    changes: Vec<ChangeLocation>,
+    /// Current position in the change list
+    /// When position == changes.len(), we're "at the end" (not navigating)
+    position: usize,
+}
+
+impl ChangeList {
+    /// Maximum number of changes to track
+    const MAX_CHANGES: usize = 100;
+
+    /// Record a change position
+    pub fn record(&mut self, line: usize, col: usize) {
+        // Don't record duplicate consecutive changes on the same line
+        if let Some(last) = self.changes.last() {
+            if last.line == line {
+                // Update the column position instead of adding a new entry
+                self.changes.last_mut().unwrap().col = col;
+                self.position = self.changes.len();
+                return;
+            }
+        }
+
+        self.changes.push(ChangeLocation { line, col });
+        self.position = self.changes.len();
+
+        // Limit change list size
+        if self.changes.len() > Self::MAX_CHANGES {
+            self.changes.remove(0);
+            self.position = self.changes.len();
+        }
+    }
+
+    /// Go to older change position (g;)
+    pub fn go_older(&mut self) -> Option<&ChangeLocation> {
+        if self.position > 0 {
+            self.position -= 1;
+            self.changes.get(self.position)
+        } else {
+            None
+        }
+    }
+
+    /// Go to newer change position (g,)
+    pub fn go_newer(&mut self) -> Option<&ChangeLocation> {
+        if self.position < self.changes.len().saturating_sub(1) {
+            self.position += 1;
+            self.changes.get(self.position)
+        } else if self.position < self.changes.len() {
+            // At the last recorded change, return it
+            self.changes.get(self.position)
+        } else {
+            None
+        }
+    }
+
+    /// Check if we have any changes recorded
+    pub fn is_empty(&self) -> bool {
+        self.changes.is_empty()
+    }
+}
+
 /// Autocomplete state
 pub struct CompletionState {
     /// Whether completion popup is active
@@ -640,6 +714,8 @@ pub struct Editor {
     pub pending_lsp_action: Option<LspAction>,
     /// Jump list for Ctrl+o/Ctrl+i navigation
     pub jump_list: JumpList,
+    /// Change list for g;/g, navigation (positions where edits occurred)
+    pub change_list: ChangeList,
     /// Hover popup content (shown with K command)
     pub hover_content: Option<String>,
     /// Flag to signal that completion needs to be re-requested (for isIncomplete)
@@ -984,6 +1060,7 @@ impl Editor {
             completion: CompletionState::default(),
             pending_lsp_action: None,
             jump_list: JumpList::default(),
+            change_list: ChangeList::default(),
             hover_content: None,
             needs_completion_refresh: false,
             frecency: FrecencyDb::load(),
@@ -1213,7 +1290,7 @@ impl Editor {
         });
 
         // Begin an undo group for all formatting changes
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
 
         // Apply each edit
         for edit in sorted_edits {
@@ -2053,7 +2130,7 @@ impl Editor {
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
             // Record for undo
-            self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+            self.begin_change();
             self.undo_stack.record_change(Change::delete(
                 start_line,
                 start_col,
@@ -2076,7 +2153,7 @@ impl Editor {
         let text = self.get_lines_text(start_line, end_line);
 
         // Record for undo
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
         self.undo_stack.record_change(Change::delete(
             start_line,
             0,
@@ -2119,7 +2196,7 @@ impl Editor {
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
             // Begin undo group (will include the delete and subsequent inserts)
-            self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+            self.begin_change();
             self.undo_stack.record_change(Change::delete(
                 start_line,
                 start_col,
@@ -2145,7 +2222,7 @@ impl Editor {
         let text = self.get_lines_text(self.cursor.line, end_line);
 
         // Begin undo group (will include the delete and subsequent inserts)
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
         self.undo_stack.record_change(Change::delete(
             self.cursor.line,
             0,
@@ -2175,7 +2252,7 @@ impl Editor {
     /// Paste after cursor from a register
     pub fn paste_after(&mut self, register: Option<char>) {
         if let Some(content) = self.registers.get_content(register) {
-            self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+            self.begin_change();
 
             match content {
                 RegisterContent::Lines(text) => {
@@ -2230,7 +2307,7 @@ impl Editor {
     /// Paste before cursor from a register
     pub fn paste_before(&mut self, register: Option<char>) {
         if let Some(content) = self.registers.get_content(register) {
-            self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+            self.begin_change();
 
             match content {
                 RegisterContent::Lines(text) => {
@@ -2279,7 +2356,7 @@ impl Editor {
     pub fn enter_insert_mode(&mut self) {
         self.last_insert_position = Some((self.cursor.line, self.cursor.col));
         self.mode = Mode::Insert;
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
     }
 
     /// Enter insert mode after cursor
@@ -2290,7 +2367,7 @@ impl Editor {
         }
         self.last_insert_position = Some((self.cursor.line, self.cursor.col));
         self.mode = Mode::Insert;
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
     }
 
     /// Enter insert mode at end of line
@@ -2298,7 +2375,7 @@ impl Editor {
         self.cursor.col = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
         self.last_insert_position = Some((self.cursor.line, self.cursor.col));
         self.mode = Mode::Insert;
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
     }
 
     /// Enter insert mode at start of line (first non-blank)
@@ -2311,7 +2388,7 @@ impl Editor {
                     self.cursor.col = col;
                     self.last_insert_position = Some((self.cursor.line, self.cursor.col));
                     self.mode = Mode::Insert;
-                    self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+                    self.begin_change();
                     return;
                 }
             }
@@ -2319,12 +2396,12 @@ impl Editor {
         self.cursor.col = 0;
         self.last_insert_position = Some((self.cursor.line, self.cursor.col));
         self.mode = Mode::Insert;
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
     }
 
     /// Enter replace mode
     pub fn enter_replace_mode(&mut self) {
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
         self.mode = Mode::Replace;
     }
 
@@ -2708,7 +2785,7 @@ impl Editor {
         if line_len > 0 {
             if let Some(ch) = self.buffers[self.current_buffer_idx].char_at(self.cursor.line, self.cursor.col) {
                 // Record for undo (single operation = single undo group)
-                self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+                self.begin_change();
                 self.undo_stack.record_change(Change::delete(
                     self.cursor.line,
                     self.cursor.col,
@@ -2853,7 +2930,7 @@ impl Editor {
 
         // Start undo group and record the insertion
         let insert_text = format!("\n{}", indent);
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
         self.undo_stack.record_change(Change::insert(
             self.cursor.line,
             line_len,
@@ -2880,7 +2957,7 @@ impl Editor {
 
         // Start undo group and record the insertion
         let insert_text = format!("{}\n", indent);
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
         self.undo_stack.record_change(Change::insert(
             self.cursor.line,
             0,
@@ -2984,6 +3061,44 @@ impl Editor {
             true
         } else {
             false
+        }
+    }
+
+    /// Go to older change position (g;)
+    pub fn change_list_older(&mut self) -> bool {
+        if let Some(loc) = self.change_list.go_older().cloned() {
+            self.cursor.line = loc.line;
+            self.cursor.col = loc.col;
+            self.clamp_cursor();
+            self.scroll_to_cursor();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Go to newer change position (g,)
+    pub fn change_list_newer(&mut self) -> bool {
+        if let Some(loc) = self.change_list.go_newer().cloned() {
+            self.cursor.line = loc.line;
+            self.cursor.col = loc.col;
+            self.clamp_cursor();
+            self.scroll_to_cursor();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Begin an undo group and record change position
+    /// This should be called before making changes to the buffer
+    pub fn begin_change(&mut self) {
+        let line = self.cursor.line;
+        let col = self.cursor.col;
+        let new_group = self.undo_stack.begin_undo_group(line, col);
+        if new_group {
+            // Record to change list when starting a new undo group
+            self.change_list.record(line, col);
         }
     }
 
@@ -3458,7 +3573,7 @@ impl Editor {
         }
 
         // Begin undo group for all replacements
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
 
         let mut total_replacements = 0;
         let pattern_len = pattern.len();
@@ -3766,7 +3881,7 @@ impl Editor {
                 let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
                 // Record for undo
-                self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+                self.begin_change();
                 self.undo_stack.record_change(Change::delete(
                     start_line,
                     start_col,
@@ -3911,7 +4026,7 @@ impl Editor {
                 let text = self.get_lines_text(start_line, end_line);
 
                 // Begin undo group
-                self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+                self.begin_change();
                 self.undo_stack.record_change(Change::delete(
                     start_line,
                     0,
@@ -3943,7 +4058,7 @@ impl Editor {
                 let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
                 // Begin undo group
-                self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+                self.begin_change();
                 self.undo_stack.record_change(Change::delete(
                     start_line,
                     start_col,
@@ -4259,7 +4374,7 @@ impl Editor {
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
             // Record for undo
-            self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+            self.begin_change();
             self.undo_stack.record_change(Change::delete(start_line, start_col, text.clone()));
 
             // Delete the range (inclusive)
@@ -4286,7 +4401,7 @@ impl Editor {
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
             // Record for undo (will be continued in insert mode)
-            self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+            self.begin_change();
             self.undo_stack.record_change(Change::delete(start_line, start_col, text.clone()));
 
             // Delete the range (inclusive)
@@ -4353,7 +4468,7 @@ impl Editor {
         let old_char = old_char.unwrap();
 
         // Record for undo
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
         self.undo_stack.record_change(Change::delete(
             self.cursor.line,
             self.cursor.col,
@@ -4394,7 +4509,7 @@ impl Editor {
         let leading_ws = next_line.chars().take_while(|c| c.is_whitespace() && *c != '\n').count();
 
         // Begin undo group
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
 
         // Delete the newline at end of current line
         if current_line_len > 0 {
@@ -4461,7 +4576,7 @@ impl Editor {
         let current_line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
 
         // Begin undo group
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
 
         // Record the deletion of newline for undo
         self.undo_stack.record_change(Change::delete(
@@ -4491,7 +4606,7 @@ impl Editor {
 
         // Find the surrounding pair
         if let Some((start_pos, end_pos)) = self.find_surrounding_pair(open, close) {
-            self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+            self.begin_change();
 
             // Delete closing char first (so positions don't shift)
             self.undo_stack.record_change(Change::delete(
@@ -4528,7 +4643,7 @@ impl Editor {
 
         // Find the surrounding pair
         if let Some((start_pos, end_pos)) = self.find_surrounding_pair(old_open, old_close) {
-            self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+            self.begin_change();
 
             // Replace closing char first (so positions don't shift for same-line pairs)
             self.undo_stack.record_change(Change::delete(
@@ -4570,7 +4685,7 @@ impl Editor {
 
         // Find the range of the text object
         if let Some((start_line, start_col, end_line, end_col)) = self.find_text_object_range(text_object) {
-            self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+            self.begin_change();
 
             // Insert closing char first (so start position doesn't shift if on same line)
             let close_col = if start_line == end_line { end_col + 1 } else { end_col + 1 };
@@ -4625,7 +4740,7 @@ impl Editor {
             }
         }
 
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
 
         if all_commented {
             // Uncomment all lines
@@ -4781,7 +4896,7 @@ impl Editor {
         let max_line = buffer.len_lines().saturating_sub(1);
         let end_line = end_line.min(max_line);
 
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
 
         for line_num in start_line..=end_line {
             // Get current line content
@@ -4822,7 +4937,7 @@ impl Editor {
         let max_line = buffer.len_lines().saturating_sub(1);
         let end_line = end_line.min(max_line);
 
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
 
         for line_num in start_line..=end_line {
             // Get current line content
@@ -4944,7 +5059,7 @@ impl Editor {
             return;
         }
 
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
 
         // Record deletion of original text
         self.undo_stack.record_change(Change::delete(
@@ -4985,7 +5100,7 @@ impl Editor {
         let buffer = &self.buffers[self.current_buffer_idx];
         let end_line = (start_line + count.saturating_sub(1)).min(buffer.len_lines().saturating_sub(1));
 
-        self.undo_stack.begin_undo_group(self.cursor.line, self.cursor.col);
+        self.begin_change();
 
         for line_num in start_line..=end_line {
             if let Some(line) = self.buffers[self.current_buffer_idx].line(line_num) {

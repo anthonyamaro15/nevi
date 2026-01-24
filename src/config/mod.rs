@@ -713,8 +713,14 @@ fn default_config_template() -> &'static str {
 # ----------------------------------------------------------------------------
 # NORMAL MODE - Jump List
 # ----------------------------------------------------------------------------
-# Ctrl+o           - Jump to older position
-# Ctrl+i           - Jump to newer position
+# Ctrl+o           - Jump to older position in jump list
+# Ctrl+i           - Jump to newer position in jump list
+#
+# ----------------------------------------------------------------------------
+# NORMAL MODE - Change List
+# ----------------------------------------------------------------------------
+# g;               - Jump to older change position (where you edited)
+# g,               - Jump to newer change position
 #
 # ----------------------------------------------------------------------------
 # NORMAL MODE - Editing

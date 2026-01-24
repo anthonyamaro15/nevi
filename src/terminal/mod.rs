@@ -4589,18 +4589,21 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
     let leader_check_elapsed = t_leader_check.elapsed();
 
     // Check for normal mode custom mapping first
-    if let Some(mapping) = editor.keymap.get_normal_mapping(key) {
-        let mapping = mapping.clone();
-        let t_exec = std::time::Instant::now();
-        execute_leader_action(editor, &mapping);
-        let total = t_start.elapsed();
-        if total.as_micros() > 1000 {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("/tmp/nevi_debug.log") {
-                let _ = writeln!(f, "SLOW custom_mapping: total={:?} exec={:?} key={:?}", total, t_exec.elapsed(), key.code);
+    // But skip if we're in a partial sequence (like g; or g,) - let the input state handle it
+    if editor.input_state.partial_key.is_none() {
+        if let Some(mapping) = editor.keymap.get_normal_mapping(key) {
+            let mapping = mapping.clone();
+            let t_exec = std::time::Instant::now();
+            execute_leader_action(editor, &mapping);
+            let total = t_start.elapsed();
+            if total.as_micros() > 1000 {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("/tmp/nevi_debug.log") {
+                    let _ = writeln!(f, "SLOW custom_mapping: total={:?} exec={:?} key={:?}", total, t_exec.elapsed(), key.code);
+                }
             }
+            return;
         }
-        return;
     }
 
     let t_process = std::time::Instant::now();
@@ -4924,6 +4927,18 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         KeyAction::JumpForward => {
             if !editor.jump_forward() {
                 editor.set_status("Already at newest position");
+            }
+        }
+
+        KeyAction::ChangeListOlder => {
+            if !editor.change_list_older() {
+                editor.set_status("Already at oldest change");
+            }
+        }
+
+        KeyAction::ChangeListNewer => {
+            if !editor.change_list_newer() {
+                editor.set_status("Already at newest change");
             }
         }
 
