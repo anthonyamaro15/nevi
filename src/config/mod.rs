@@ -640,6 +640,14 @@ fn default_config_template() -> &'static str {
 # max_files = 10000          # Max files to scan
 # max_grep_results = 1000    # Max grep results
 #
+# Finder keybinds (when finder is open):
+#   Ctrl+t or p    - Toggle preview panel (50/50 split)
+#   Ctrl+j/k       - Navigate results (insert mode)
+#   j/k            - Navigate results (normal mode)
+#   Esc            - Switch to normal mode / close finder
+#   Enter          - Open selected file
+#   Ctrl+d/u       - Scroll preview down/up
+#
 # Add extra ignore patterns (these are ADDED to defaults, not replacing):
 # ignore_patterns = ["my-folder", "*.generated.ts"]
 #
@@ -871,6 +879,7 @@ fn default_config_template() -> &'static str {
 # <leader>e        - Toggle file explorer
 # <leader>ff       - Find files
 # <leader>fg       - Live grep
+# <leader>sw       - Search word under cursor (grep)
 # <leader>fb       - Find buffers
 # <leader>ft       - Theme picker
 # <leader>ca       - Code actions
