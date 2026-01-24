@@ -5595,6 +5595,13 @@ impl Editor {
         self.mode = Mode::Finder;
     }
 
+    /// Open the fuzzy finder in harpoon mode
+    pub fn open_finder_harpoon(&mut self) {
+        let files: Vec<_> = self.harpoon.files().to_vec();
+        self.finder.open_harpoon(files);
+        self.mode = Mode::Finder;
+    }
+
     /// Open the fuzzy finder in grep mode with word under cursor pre-filled
     pub fn open_finder_grep_word(&mut self) {
         if let Some(word) = self.get_word_under_cursor() {
@@ -5698,10 +5705,11 @@ impl Editor {
 
     /// Update the preview syntax highlighting for the currently selected finder item
     pub fn update_finder_preview(&mut self) {
-        // Only for Files and Grep modes with preview enabled
+        // Only for Files, Grep, and Harpoon modes with preview enabled
         if !self.finder.preview_enabled
             || (self.finder.mode != crate::finder::FinderMode::Files
-                && self.finder.mode != crate::finder::FinderMode::Grep)
+                && self.finder.mode != crate::finder::FinderMode::Grep
+                && self.finder.mode != crate::finder::FinderMode::Harpoon)
         {
             return;
         }

@@ -17,6 +17,7 @@ pub enum FinderMode {
     Grep,
     Buffers,
     Diagnostics,
+    Harpoon,
 }
 
 /// Input mode for the fuzzy finder (like vim modes)
@@ -223,6 +224,32 @@ impl FuzzyFinder {
             .map(|(idx, name, path)| {
                 let mut item = FinderItem::new(format!("{}: {}", idx + 1, name), path)
                     .with_buffer_idx(idx);
+                item.score = idx as u32;
+                item
+            })
+            .collect();
+        self.filtered = (0..self.items.len()).collect();
+        self.populated = true;
+    }
+
+    /// Open the finder in harpoon mode
+    pub fn open_harpoon(&mut self, files: Vec<PathBuf>) {
+        self.mode = FinderMode::Harpoon;
+        self.input_mode = FinderInputMode::Normal; // Start in normal mode for quick navigation
+        self.query.clear();
+        self.cursor = 0;
+        self.selected = 0;
+        self.scroll_offset = 0;
+
+        // Populate harpoon files with slot numbers
+        self.items = files
+            .into_iter()
+            .enumerate()
+            .map(|(idx, path)| {
+                let display = path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.to_string_lossy().to_string());
+                let mut item = FinderItem::new(format!("{:>2}  {}", idx + 1, display), path);
                 item.score = idx as u32;
                 item
             })
@@ -582,8 +609,8 @@ impl FuzzyFinder {
             return None;
         }
 
-        // Only show preview for Files and Grep modes
-        if self.mode != FinderMode::Files && self.mode != FinderMode::Grep {
+        // Only show preview for Files, Grep, and Harpoon modes
+        if self.mode != FinderMode::Files && self.mode != FinderMode::Grep && self.mode != FinderMode::Harpoon {
             return None;
         }
 

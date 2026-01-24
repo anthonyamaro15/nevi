@@ -306,11 +306,6 @@ impl Terminal {
             self.render_code_actions_picker(editor)?;
         }
 
-        // Render harpoon menu if active
-        if editor.harpoon.menu_open {
-            self.render_harpoon_menu(editor)?;
-        }
-
         // Render theme picker if active
         if editor.theme_picker.is_some() {
             self.render_theme_picker(editor)?;
@@ -1419,7 +1414,8 @@ impl Terminal {
                     // Must use same window calculation as render_finder
                     let preview_enabled = editor.finder.preview_enabled
                         && (editor.finder.mode == crate::finder::FinderMode::Files
-                            || editor.finder.mode == crate::finder::FinderMode::Grep);
+                            || editor.finder.mode == crate::finder::FinderMode::Grep
+                            || editor.finder.mode == crate::finder::FinderMode::Harpoon);
                     let win = crate::finder::FloatingWindow::centered_with_preview(
                         editor.term_width,
                         editor.term_height,
@@ -2905,109 +2901,6 @@ impl Terminal {
         Ok(())
     }
 
-    /// Render the harpoon menu floating window
-    fn render_harpoon_menu(&mut self, editor: &Editor) -> anyhow::Result<()> {
-        let files = editor.harpoon.files();
-        let selected = editor.harpoon.menu_selection;
-
-        // Calculate popup dimensions
-        let popup_width = 70u16.min(editor.term_width.saturating_sub(4));
-        let popup_height = (files.len() as u16 + 4).max(6).min(12);
-
-        // Center the popup
-        let popup_x = (editor.term_width.saturating_sub(popup_width)) / 2;
-        let popup_y = (editor.term_height.saturating_sub(popup_height)) / 2;
-
-        // Colors
-        let border_color = Color::Rgb { r: 100, g: 150, b: 200 };
-        let bg_color = Color::Rgb { r: 25, g: 25, b: 30 };
-        let selected_bg = Color::Rgb { r: 50, g: 80, b: 120 };
-        let text_color = Color::Rgb { r: 200, g: 200, b: 210 };
-        let slot_color = Color::Rgb { r: 150, g: 200, b: 150 };
-        let empty_color = Color::Rgb { r: 100, g: 100, b: 110 };
-
-        // Draw top border with title
-        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
-        let title = " Harpoon ";
-        let title_start = (popup_width as usize - title.len()) / 2;
-        print!("╭");
-        for i in 1..(popup_width - 1) {
-            if i as usize == title_start {
-                print!("{}", title);
-            } else if i as usize > title_start && (i as usize) < title_start + title.len() {
-                // Skip - title already printed
-            } else {
-                print!("─");
-            }
-        }
-        print!("╮");
-
-        // Draw file slots (always show 4 slots)
-        for slot in 0..4usize {
-            execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 1 + slot as u16))?;
-
-            let is_selected = slot == selected && slot < files.len();
-            let current_bg = if is_selected { selected_bg } else { bg_color };
-
-            // Left border
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
-            print!("│");
-
-            execute!(self.stdout, SetBackgroundColor(current_bg))?;
-
-            // Slot number
-            execute!(self.stdout, SetForegroundColor(slot_color))?;
-            print!(" {} ", slot + 1);
-
-            // File path or empty
-            let content_width = (popup_width - 5) as usize; // │ + " 1 " + content + │
-            if let Some(path) = files.get(slot) {
-                execute!(self.stdout, SetForegroundColor(text_color))?;
-                // Show just the filename, or relative path if possible
-                let display = path.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| path.to_string_lossy().to_string());
-                let truncated: String = if display.len() > content_width {
-                    format!("…{}", &display[display.len() - content_width + 1..])
-                } else {
-                    display
-                };
-                print!("{:<width$}", truncated, width = content_width);
-            } else {
-                execute!(self.stdout, SetForegroundColor(empty_color))?;
-                print!("{:<width$}", "(empty)", width = content_width);
-            }
-
-            // Right border
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
-            print!("│");
-        }
-
-        // Draw help line
-        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 5))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
-        print!("│");
-        execute!(self.stdout, SetForegroundColor(empty_color), SetBackgroundColor(bg_color))?;
-        let help = "[1-4] jump  [d] delete  [q] close";
-        let help_truncated: String = help.chars().take((popup_width - 2) as usize).collect();
-        print!("{:^width$}", help_truncated, width = (popup_width - 2) as usize);
-        execute!(self.stdout, SetForegroundColor(border_color))?;
-        print!("│");
-
-        // Draw bottom border
-        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 6))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
-        print!("╰");
-        for _ in 1..(popup_width - 1) {
-            print!("─");
-        }
-        print!("╯");
-
-        execute!(self.stdout, ResetColor)?;
-        Ok(())
-    }
-
     /// Render the theme picker floating window
     fn render_theme_picker(&mut self, editor: &Editor) -> anyhow::Result<()> {
         let picker = match &editor.theme_picker {
@@ -3312,7 +3205,8 @@ impl Terminal {
 
         let preview_enabled = editor.finder.preview_enabled
             && (editor.finder.mode == crate::finder::FinderMode::Files
-                || editor.finder.mode == crate::finder::FinderMode::Grep);
+                || editor.finder.mode == crate::finder::FinderMode::Grep
+                || editor.finder.mode == crate::finder::FinderMode::Harpoon);
         let win = crate::finder::FloatingWindow::centered_with_preview(
             editor.term_width,
             editor.term_height,
@@ -3357,6 +3251,7 @@ impl Terminal {
             crate::finder::FinderMode::Grep => " Live Grep ",
             crate::finder::FinderMode::Buffers => " Buffers ",
             crate::finder::FinderMode::Diagnostics => " Diagnostics ",
+            crate::finder::FinderMode::Harpoon => " Harpoon ",
         };
 
         if preview_enabled {
@@ -4129,82 +4024,6 @@ fn handle_code_actions_picker_key(editor: &mut Editor, key: KeyEvent) {
     }
 }
 
-/// Handle key input for the harpoon menu
-fn handle_harpoon_menu_key(editor: &mut Editor, key: KeyEvent) {
-    match (key.modifiers, key.code) {
-        // Close menu
-        (KeyModifiers::NONE, KeyCode::Esc) |
-        (KeyModifiers::CONTROL, KeyCode::Char('[')) |
-        (KeyModifiers::NONE, KeyCode::Char('q')) => {
-            editor.harpoon.close_menu();
-        }
-
-        // Navigate up
-        (KeyModifiers::NONE, KeyCode::Up) | (KeyModifiers::NONE, KeyCode::Char('k')) => {
-            editor.harpoon.menu_up();
-        }
-
-        // Navigate down
-        (KeyModifiers::NONE, KeyCode::Down) | (KeyModifiers::NONE, KeyCode::Char('j')) => {
-            editor.harpoon.menu_down();
-        }
-
-        // Jump to slot by number (1-4)
-        (KeyModifiers::NONE, KeyCode::Char('1')) => {
-            if let Some(path) = editor.harpoon.get_slot(1).cloned() {
-                editor.harpoon.close_menu();
-                let _ = editor.open_file(path);
-            }
-        }
-        (KeyModifiers::NONE, KeyCode::Char('2')) => {
-            if let Some(path) = editor.harpoon.get_slot(2).cloned() {
-                editor.harpoon.close_menu();
-                let _ = editor.open_file(path);
-            }
-        }
-        (KeyModifiers::NONE, KeyCode::Char('3')) => {
-            if let Some(path) = editor.harpoon.get_slot(3).cloned() {
-                editor.harpoon.close_menu();
-                let _ = editor.open_file(path);
-            }
-        }
-        (KeyModifiers::NONE, KeyCode::Char('4')) => {
-            if let Some(path) = editor.harpoon.get_slot(4).cloned() {
-                editor.harpoon.close_menu();
-                let _ = editor.open_file(path);
-            }
-        }
-
-        // Open selected file (Enter)
-        (KeyModifiers::NONE, KeyCode::Enter) => {
-            if let Some(path) = editor.harpoon.menu_selected_file().cloned() {
-                editor.harpoon.close_menu();
-                let _ = editor.open_file(path);
-            }
-        }
-
-        // Delete selected (d or x)
-        (KeyModifiers::NONE, KeyCode::Char('d')) |
-        (KeyModifiers::NONE, KeyCode::Char('x')) => {
-            if editor.harpoon.remove_selected() {
-                editor.set_status("Removed from harpoon");
-            }
-        }
-
-        // Move selected up (K)
-        (KeyModifiers::SHIFT, KeyCode::Char('K')) => {
-            editor.harpoon.move_up();
-        }
-
-        // Move selected down (J)
-        (KeyModifiers::SHIFT, KeyCode::Char('J')) => {
-            editor.harpoon.move_down();
-        }
-
-        _ => {}
-    }
-}
-
 /// Handle key input for the marks picker
 fn handle_marks_picker_key(editor: &mut Editor, key: KeyEvent) {
     match (key.modifiers, key.code) {
@@ -4453,11 +4272,6 @@ pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
     }
 
     // Handle harpoon menu if active
-    if editor.harpoon.menu_open {
-        handle_harpoon_menu_key(editor, key);
-        return;
-    }
-
     // Handle marks picker if active
     if editor.marks_picker.is_some() {
         handle_marks_picker_key(editor, key);
@@ -5048,7 +4862,7 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         }
 
         KeyAction::HarpoonMenu => {
-            editor.harpoon.toggle_menu();
+            editor.open_finder_harpoon();
         }
 
         KeyAction::HarpoonJump(slot) => {
@@ -5842,7 +5656,8 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
     let adjust_scroll = |editor: &mut Editor| {
         let preview_enabled = editor.finder.preview_enabled
             && (editor.finder.mode == crate::finder::FinderMode::Files
-                || editor.finder.mode == crate::finder::FinderMode::Grep);
+                || editor.finder.mode == crate::finder::FinderMode::Grep
+                || editor.finder.mode == crate::finder::FinderMode::Harpoon);
         let win = crate::finder::FloatingWindow::centered_with_preview(
             editor.term_width,
             editor.term_height,
@@ -5961,6 +5776,54 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
                 editor.finder.selected = editor.finder.filtered.len() - 1;
                 adjust_scroll(editor);
                 selection_changed = true;
+            }
+        }
+
+        // Harpoon mode: 'd' to delete selected item
+        (KeyModifiers::NONE, KeyCode::Char('d'))
+            if is_normal_mode && editor.finder.mode == crate::finder::FinderMode::Harpoon => {
+            if editor.finder.selected < editor.finder.filtered.len() {
+                let item_idx = editor.finder.filtered[editor.finder.selected];
+                editor.harpoon.remove(item_idx);
+                // Refresh the finder with updated harpoon files
+                let files: Vec<_> = editor.harpoon.files().to_vec();
+                editor.finder.open_harpoon(files);
+                adjust_scroll(editor);
+            }
+        }
+
+        // Harpoon mode: 'K' (shift+k) to move item up
+        (KeyModifiers::SHIFT, KeyCode::Char('K'))
+            if is_normal_mode && editor.finder.mode == crate::finder::FinderMode::Harpoon => {
+            if editor.finder.selected < editor.finder.filtered.len() {
+                let item_idx = editor.finder.filtered[editor.finder.selected];
+                if item_idx > 0 {
+                    editor.harpoon.swap(item_idx, item_idx - 1);
+                    // Refresh and adjust selection to follow the moved item
+                    let new_selected = editor.finder.selected.saturating_sub(1);
+                    let files: Vec<_> = editor.harpoon.files().to_vec();
+                    editor.finder.open_harpoon(files);
+                    editor.finder.selected = new_selected;
+                    adjust_scroll(editor);
+                }
+            }
+        }
+
+        // Harpoon mode: 'J' (shift+j) to move item down
+        (KeyModifiers::SHIFT, KeyCode::Char('J'))
+            if is_normal_mode && editor.finder.mode == crate::finder::FinderMode::Harpoon => {
+            if editor.finder.selected < editor.finder.filtered.len() {
+                let item_idx = editor.finder.filtered[editor.finder.selected];
+                let harpoon_len = editor.harpoon.len();
+                if item_idx + 1 < harpoon_len {
+                    editor.harpoon.swap(item_idx, item_idx + 1);
+                    // Refresh and adjust selection to follow the moved item
+                    let new_selected = (editor.finder.selected + 1).min(harpoon_len - 1);
+                    let files: Vec<_> = editor.harpoon.files().to_vec();
+                    editor.finder.open_harpoon(files);
+                    editor.finder.selected = new_selected;
+                    adjust_scroll(editor);
+                }
             }
         }
 
@@ -6934,7 +6797,7 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
         }
 
         Command::HarpoonMenu => {
-            editor.harpoon.toggle_menu();
+            editor.open_finder_harpoon();
             CommandResult::Ok
         }
 
