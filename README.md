@@ -157,7 +157,9 @@ See `~/.config/nevi/themes/_template.toml` for the complete reference with all a
 
 ## Keybindings
 
-Nevi aims for full vim/neovim keybind compatibility. Most common keybindings are already implemented:
+Nevi aims for full vim/neovim keybind compatibility. Most common keybindings are already implemented.
+
+> **Full reference:** See [KEYBINDINGS.md](KEYBINDINGS.md) for the complete keybind documentation with examples and tips.
 
 ### Movement
 `h/j/k/l`, `w/b/e/W/B/E`, `0/^/$`, `gg/G`, `{/}`, `f/F/t/T`, `;/,`, `%`, `H/M/L`
@@ -206,7 +208,7 @@ Nevi aims for full vim/neovim keybind compatibility. Most common keybindings are
 ### And More
 Visual mode (`v/V/Ctrl+v`), macros (`q{a-z}/@{a-z}`), marks (`m{a-z}/'`), registers (`"{a-z}/"+`), replace mode (`R`)
 
-> **Missing a keybind you use?** Open a [GitHub issue](https://github.com/anthonyamaro15/nevi/issues) and we'll prioritize adding it!
+> **Missing a keybind?** Check [KEYBINDINGS.md](KEYBINDINGS.md) for the full list, or [open an issue](https://github.com/anthonyamaro15/nevi/issues) to request one!
 
 ## Language Support
 
