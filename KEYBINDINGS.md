@@ -86,8 +86,8 @@ When specifying keys, use these formats:
 - [Comment](#comment)
 - [Window Management](#window-management)
 - [Leader Key Mappings](#leader-key-mappings)
-- [Finder/Picker](#finderpicker)
-- [Harpoon](#harpoon)
+- [Finder/Picker (Telescope-like)](#finderpicker-telescope-like)
+- [Harpoon-like Quick Files](#harpoon-like-quick-files)
 - [Commands](#commands)
 
 ---
@@ -519,13 +519,15 @@ Split and navigate between windows.
 | `Ctrl+w k` | Move to window above |
 | `Ctrl+w l` | Move to window on the right |
 
+> **Note:** Currently all splits share the same orientation (all vertical OR all horizontal). Mixed layouts like having one vertical split with a horizontal split inside it are not yet supported.
+
 ---
 
 ## Leader Key Mappings
 
 The leader key is `Space` by default. Press `Space` followed by these keys:
 
-### Files & Navigation
+### Files & Navigation (Telescope-like)
 
 | Key | Action |
 |-----|--------|
@@ -537,6 +539,8 @@ The leader key is `Space` by default. Press `Space` followed by these keys:
 | `<leader>sw` | Search word under cursor |
 | `<leader>fb` | Find buffers |
 | `<leader>ft` | Theme picker |
+
+> **Tip:** In the file finder or grep, press `Ctrl+t` to toggle a preview panel showing file contents.
 
 ### LSP
 
@@ -553,7 +557,7 @@ The leader key is `Space` by default. Press `Space` followed by these keys:
 |-----|--------|
 | `<leader>gg` | Open lazygit |
 
-### Harpoon
+### Harpoon-like Quick Files
 
 | Key | Action |
 |-----|--------|
@@ -566,7 +570,7 @@ The leader key is `Space` by default. Press `Space` followed by these keys:
 
 ---
 
-## Finder/Picker
+## Finder/Picker (Telescope-like)
 
 When a finder popup is open (file finder, grep, buffers, etc.):
 
@@ -596,9 +600,9 @@ When a finder popup is open (file finder, grep, buffers, etc.):
 
 ---
 
-## Harpoon
+## Harpoon-like Quick Files
 
-Quick file switching for frequently used files.
+Quick file switching for frequently used files (inspired by [harpoon.nvim](https://github.com/ThePrimeagen/harpoon)).
 
 | Key | Action |
 |-----|--------|
