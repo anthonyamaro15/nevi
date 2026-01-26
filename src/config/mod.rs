@@ -83,6 +83,9 @@ pub struct EditorSettings {
     pub autosave: AutosaveMode,
     /// Autosave delay in milliseconds (default: 1000)
     pub autosave_delay_ms: u64,
+    /// Use Nerd Font icons in explorer (default: true)
+    /// Set to false to use Unicode fallback icons
+    pub use_nerd_font_icons: bool,
 }
 
 impl Default for EditorSettings {
@@ -100,6 +103,7 @@ impl Default for EditorSettings {
             format_on_save: false,
             autosave: AutosaveMode::Off,
             autosave_delay_ms: 1000,
+            use_nerd_font_icons: true,
         }
     }
 }
@@ -626,6 +630,7 @@ fn default_config_template() -> &'static str {
 # format_on_save = false     # Format with LSP on save
 # autosave = "off"           # Options: "off", "after_delay", "on_focus_change"
 # autosave_delay_ms = 1000   # Delay for after_delay mode
+# use_nerd_font_icons = true # Use Nerd Font icons in explorer (set false for Unicode fallback)
 
 # ============================================================================
 # THEME
