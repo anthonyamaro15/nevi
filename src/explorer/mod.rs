@@ -390,40 +390,256 @@ impl FileExplorer {
     }
 
     /// Get the display icon for a node
-    pub fn get_icon(&self, node: &FlatNode) -> &'static str {
-        if node.is_dir {
-            if node.is_expanded {
-                ""  // Folder open icon
-            } else {
-                ""  // Folder closed icon
-            }
-        } else {
-            // File icon based on extension
-            let ext = node.path.extension()
+    /// If `use_nerd_fonts` is true, uses Nerd Font icons; otherwise uses Unicode fallback
+    pub fn get_icon(&self, node: &FlatNode, use_nerd_fonts: bool) -> &'static str {
+        get_file_icon(&node.name, node.is_dir, node.is_expanded, use_nerd_fonts)
+    }
+}
+
+/// RGB color for icons
+#[derive(Debug, Clone, Copy)]
+pub struct IconColor {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl IconColor {
+    pub const fn new(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b }
+    }
+}
+
+// Common icon colors
+const COLOR_FOLDER: IconColor = IconColor::new(86, 182, 194);    // Cyan
+const COLOR_RUST: IconColor = IconColor::new(222, 165, 132);     // Rust orange
+const COLOR_JS: IconColor = IconColor::new(241, 224, 90);        // JavaScript yellow
+const COLOR_TS: IconColor = IconColor::new(49, 120, 198);        // TypeScript blue
+const COLOR_REACT: IconColor = IconColor::new(97, 218, 251);     // React cyan
+const COLOR_PYTHON: IconColor = IconColor::new(55, 118, 171);    // Python blue
+const COLOR_GO: IconColor = IconColor::new(0, 173, 216);         // Go cyan
+const COLOR_HTML: IconColor = IconColor::new(228, 79, 38);       // HTML orange
+const COLOR_CSS: IconColor = IconColor::new(86, 61, 124);        // CSS purple
+const COLOR_JSON: IconColor = IconColor::new(241, 224, 90);      // JSON yellow
+const COLOR_MARKDOWN: IconColor = IconColor::new(66, 165, 245);  // Markdown blue
+const COLOR_GIT: IconColor = IconColor::new(240, 80, 50);        // Git orange-red
+const COLOR_CONFIG: IconColor = IconColor::new(140, 140, 140);   // Config gray
+const COLOR_LOCK: IconColor = IconColor::new(255, 213, 79);      // Lock yellow
+const COLOR_ENV: IconColor = IconColor::new(255, 213, 79);       // Env yellow
+const COLOR_DOCKER: IconColor = IconColor::new(33, 150, 243);    // Docker blue
+const COLOR_RUBY: IconColor = IconColor::new(204, 52, 45);       // Ruby red
+const COLOR_PHP: IconColor = IconColor::new(119, 123, 180);      // PHP purple
+const COLOR_JAVA: IconColor = IconColor::new(176, 114, 25);      // Java brown
+const COLOR_SWIFT: IconColor = IconColor::new(240, 81, 57);      // Swift orange
+const COLOR_C: IconColor = IconColor::new(85, 85, 255);          // C blue
+const COLOR_LUA: IconColor = IconColor::new(0, 0, 128);          // Lua dark blue
+const COLOR_SHELL: IconColor = IconColor::new(137, 224, 81);     // Shell green
+const COLOR_IMAGE: IconColor = IconColor::new(168, 128, 194);    // Image purple
+const COLOR_ARCHIVE: IconColor = IconColor::new(175, 180, 43);   // Archive olive
+const COLOR_LICENSE: IconColor = IconColor::new(203, 166, 93);   // License gold
+const COLOR_DEFAULT: IconColor = IconColor::new(165, 165, 165);  // Default gray
+
+/// Get the color for a file icon based on file type
+pub fn get_icon_color(name: &str, is_dir: bool) -> IconColor {
+    if is_dir {
+        return COLOR_FOLDER;
+    }
+
+    // Check exact filename first
+    match name {
+        "Cargo.toml" | "Cargo.lock" => COLOR_RUST,
+        "package.json" | "package-lock.json" => COLOR_JS,
+        "tsconfig.json" | "jsconfig.json" => COLOR_TS,
+        "webpack.config.js" | "vite.config.js" | "vite.config.ts" => COLOR_CONFIG,
+        "Makefile" | "CMakeLists.txt" => COLOR_CONFIG,
+        "Dockerfile" | "docker-compose.yml" | "docker-compose.yaml" => COLOR_DOCKER,
+        ".gitignore" | ".gitattributes" | ".gitmodules" => COLOR_GIT,
+        ".editorconfig" | ".prettierrc" | ".prettierrc.json" | ".prettierrc.js"
+        | ".eslintrc" | ".eslintrc.json" | ".eslintrc.js" => COLOR_CONFIG,
+        "README.md" | "README" | "readme.md" => COLOR_MARKDOWN,
+        "LICENSE" | "LICENSE.md" | "LICENSE.txt" => COLOR_LICENSE,
+        "CHANGELOG.md" | "CHANGELOG" => COLOR_MARKDOWN,
+        ".env" | ".env.local" | ".env.development" | ".env.production" => COLOR_ENV,
+        _ => {
+            // Fall back to extension matching
+            let ext = std::path::Path::new(name)
+                .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or("");
 
             match ext {
-                "rs" => "",      // Rust
-                "js" | "jsx" => "",  // JavaScript
-                "ts" | "tsx" => "",  // TypeScript
-                "py" => "",      // Python
-                "go" => "",      // Go
-                "md" => "",      // Markdown
-                "json" => "",    // JSON
-                "toml" => "",    // TOML
-                "yaml" | "yml" => "",
-                "html" => "",
-                "css" | "scss" => "",
-                "lua" => "",
-                "sh" | "bash" | "zsh" => "",
-                "git" => "",
-                "lock" => "",
-                _ => "",          // Default file icon
+                "rs" => COLOR_RUST,
+                "js" | "mjs" | "cjs" => COLOR_JS,
+                "jsx" | "tsx" => COLOR_REACT,
+                "ts" | "mts" | "cts" => COLOR_TS,
+                "html" | "htm" => COLOR_HTML,
+                "css" => COLOR_CSS,
+                "scss" | "sass" | "less" => COLOR_CSS,
+                "vue" => IconColor::new(65, 184, 131),  // Vue green
+                "svelte" => IconColor::new(255, 62, 0), // Svelte orange
+                "json" | "jsonc" => COLOR_JSON,
+                "toml" | "yaml" | "yml" | "xml" => COLOR_CONFIG,
+                "csv" => IconColor::new(77, 175, 80),   // CSV green
+                "md" | "markdown" => COLOR_MARKDOWN,
+                "txt" => COLOR_DEFAULT,
+                "pdf" => IconColor::new(244, 67, 54),   // PDF red
+                "py" | "pyi" => COLOR_PYTHON,
+                "go" => COLOR_GO,
+                "rb" => COLOR_RUBY,
+                "php" => COLOR_PHP,
+                "java" => COLOR_JAVA,
+                "kt" | "kts" => IconColor::new(169, 123, 255), // Kotlin purple
+                "swift" => COLOR_SWIFT,
+                "c" | "h" => COLOR_C,
+                "cpp" | "cc" | "cxx" | "hpp" => IconColor::new(0, 89, 156), // C++ darker blue
+                "cs" => IconColor::new(104, 33, 122),  // C# purple
+                "lua" => COLOR_LUA,
+                "zig" => IconColor::new(247, 164, 29), // Zig orange
+                "sh" | "bash" | "zsh" | "fish" => COLOR_SHELL,
+                "ps1" | "psm1" => IconColor::new(1, 36, 86), // PowerShell dark blue
+                "lock" => COLOR_LOCK,
+                "png" | "jpg" | "jpeg" | "gif" | "bmp" | "ico" | "webp" | "svg" => COLOR_IMAGE,
+                "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" => COLOR_ARCHIVE,
+                "exe" | "dll" | "so" | "dylib" => COLOR_CONFIG,
+                "wasm" => IconColor::new(101, 79, 240), // WASM purple
+                "ttf" | "otf" | "woff" | "woff2" => IconColor::new(245, 83, 83), // Font red
+                "git" => COLOR_GIT,
+                _ => COLOR_DEFAULT,
             }
         }
     }
+}
 
+/// Get the appropriate icon for a file or directory
+/// Checks exact filename first, then extension, with Nerd Font and Unicode variants
+pub fn get_file_icon(name: &str, is_dir: bool, is_expanded: bool, use_nerd_fonts: bool) -> &'static str {
+    if is_dir {
+        if use_nerd_fonts {
+            if is_expanded {
+                "\u{f07c}"  // nf-fa-folder_open
+            } else {
+                "\u{f07b}"  // nf-fa-folder
+            }
+        } else {
+            // Unicode fallback
+            if is_expanded {
+                "\u{1F4C2}"  // 📂 Open folder
+            } else {
+                "\u{1F4C1}"  // 📁 Closed folder
+            }
+        }
+    } else {
+        // Check exact filename first
+        let icon = match name {
+            // Config files
+            "Cargo.toml" | "Cargo.lock" => if use_nerd_fonts { "\u{e7a8}" } else { "\u{1F4E6}" },  // Rust icon / 📦
+            "package.json" | "package-lock.json" => if use_nerd_fonts { "\u{e74e}" } else { "\u{1F4E6}" },  // JS / 📦
+            "tsconfig.json" | "jsconfig.json" => if use_nerd_fonts { "\u{e628}" } else { "\u{2699}" },  // TS / ⚙
+            "webpack.config.js" | "vite.config.js" | "vite.config.ts" => if use_nerd_fonts { "\u{f0ad}" } else { "\u{2699}" },  // wrench / ⚙
+            "Makefile" | "CMakeLists.txt" => if use_nerd_fonts { "\u{f0ad}" } else { "\u{2699}" },  // wrench / ⚙
+            "Dockerfile" | "docker-compose.yml" | "docker-compose.yaml" => if use_nerd_fonts { "\u{f308}" } else { "\u{1F433}" },  // docker / 🐳
+
+            // Git files
+            ".gitignore" | ".gitattributes" | ".gitmodules" => if use_nerd_fonts { "\u{f1d3}" } else { "\u{E0A0}" },  // git / branch
+
+            // Editor/IDE config
+            ".editorconfig" => if use_nerd_fonts { "\u{e615}" } else { "\u{2699}" },  // config / ⚙
+            ".prettierrc" | ".prettierrc.json" | ".prettierrc.js" => if use_nerd_fonts { "\u{e615}" } else { "\u{2699}" },
+            ".eslintrc" | ".eslintrc.json" | ".eslintrc.js" => if use_nerd_fonts { "\u{e615}" } else { "\u{2699}" },
+
+            // Readme/docs
+            "README.md" | "README" | "readme.md" => if use_nerd_fonts { "\u{f48a}" } else { "\u{1F4D6}" },  // book / 📖
+            "LICENSE" | "LICENSE.md" | "LICENSE.txt" => if use_nerd_fonts { "\u{f0219}" } else { "\u{1F4DC}" },  // certificate / 📜
+            "CHANGELOG.md" | "CHANGELOG" => if use_nerd_fonts { "\u{f543}" } else { "\u{1F4CB}" },  // list / 📋
+
+            // Environment
+            ".env" | ".env.local" | ".env.development" | ".env.production" => if use_nerd_fonts { "\u{f023}" } else { "\u{1F510}" },  // lock / 🔐
+
+            _ => {
+                // Fall back to extension matching
+                let ext = std::path::Path::new(name)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+
+                match ext {
+                    // Rust
+                    "rs" => if use_nerd_fonts { "\u{e7a8}" } else { "\u{1F980}" },  // rust / 🦀
+
+                    // JavaScript/TypeScript
+                    "js" | "mjs" | "cjs" => if use_nerd_fonts { "\u{e74e}" } else { "\u{1F4DC}" },  // js / 📜
+                    "jsx" => if use_nerd_fonts { "\u{e7ba}" } else { "\u{269B}" },  // react / ⚛
+                    "ts" | "mts" | "cts" => if use_nerd_fonts { "\u{e628}" } else { "\u{1F4DC}" },  // ts / 📜
+                    "tsx" => if use_nerd_fonts { "\u{e7ba}" } else { "\u{269B}" },  // react / ⚛
+
+                    // Web
+                    "html" | "htm" => if use_nerd_fonts { "\u{e736}" } else { "\u{1F310}" },  // html5 / 🌐
+                    "css" => if use_nerd_fonts { "\u{e749}" } else { "\u{1F3A8}" },  // css3 / 🎨
+                    "scss" | "sass" | "less" => if use_nerd_fonts { "\u{e603}" } else { "\u{1F3A8}" },  // sass / 🎨
+                    "vue" => if use_nerd_fonts { "\u{e6a0}" } else { "\u{1F7E2}" },  // vue / 🟢
+                    "svelte" => if use_nerd_fonts { "\u{e697}" } else { "\u{1F525}" },  // svelte / 🔥
+
+                    // Data/Config
+                    "json" | "jsonc" => if use_nerd_fonts { "\u{e60b}" } else { "\u{1F4CB}" },  // json / 📋
+                    "toml" => if use_nerd_fonts { "\u{e6b2}" } else { "\u{2699}" },  // settings / ⚙
+                    "yaml" | "yml" => if use_nerd_fonts { "\u{e6a8}" } else { "\u{2699}" },  // yaml / ⚙
+                    "xml" => if use_nerd_fonts { "\u{e619}" } else { "\u{1F4CB}" },  // code / 📋
+                    "csv" => if use_nerd_fonts { "\u{f0ce}" } else { "\u{1F4CA}" },  // table / 📊
+
+                    // Documentation
+                    "md" | "markdown" => if use_nerd_fonts { "\u{e73e}" } else { "\u{1F4DD}" },  // markdown / 📝
+                    "txt" => if use_nerd_fonts { "\u{f15c}" } else { "\u{1F4C4}" },  // file-text / 📄
+                    "pdf" => if use_nerd_fonts { "\u{f1c1}" } else { "\u{1F4D5}" },  // file-pdf / 📕
+
+                    // Programming languages
+                    "py" | "pyi" => if use_nerd_fonts { "\u{e73c}" } else { "\u{1F40D}" },  // python / 🐍
+                    "go" => if use_nerd_fonts { "\u{e626}" } else { "\u{1F535}" },  // go / 🔵
+                    "rb" => if use_nerd_fonts { "\u{e791}" } else { "\u{1F48E}" },  // ruby / 💎
+                    "php" => if use_nerd_fonts { "\u{e73d}" } else { "\u{1F418}" },  // php / 🐘
+                    "java" => if use_nerd_fonts { "\u{e738}" } else { "\u{2615}" },  // java / ☕
+                    "kt" | "kts" => if use_nerd_fonts { "\u{e634}" } else { "\u{1F7E3}" },  // kotlin / 🟣
+                    "swift" => if use_nerd_fonts { "\u{e755}" } else { "\u{1F34E}" },  // swift / 🍎
+                    "c" => if use_nerd_fonts { "\u{e61e}" } else { "\u{00A9}" },  // c / ©
+                    "cpp" | "cc" | "cxx" => if use_nerd_fonts { "\u{e61d}" } else { "\u{00A9}" },  // c++ / ©
+                    "h" | "hpp" => if use_nerd_fonts { "\u{e61e}" } else { "\u{00A9}" },  // c / ©
+                    "cs" => if use_nerd_fonts { "\u{f031b}" } else { "#" },  // c# / #
+                    "lua" => if use_nerd_fonts { "\u{e620}" } else { "\u{1F319}" },  // lua / 🌙
+                    "zig" => if use_nerd_fonts { "\u{e6a9}" } else { "\u{26A1}" },  // zig / ⚡
+
+                    // Shell/Scripts
+                    "sh" | "bash" | "zsh" | "fish" => if use_nerd_fonts { "\u{f489}" } else { "\u{1F5A5}" },  // terminal / 🖥
+                    "ps1" | "psm1" => if use_nerd_fonts { "\u{e683}" } else { "\u{1F5A5}" },  // powershell / 🖥
+
+                    // Build/Lock files
+                    "lock" => if use_nerd_fonts { "\u{f023}" } else { "\u{1F512}" },  // lock / 🔒
+
+                    // Images
+                    "png" | "jpg" | "jpeg" | "gif" | "bmp" | "ico" | "webp" => if use_nerd_fonts { "\u{f1c5}" } else { "\u{1F5BC}" },  // file-image / 🖼
+                    "svg" => if use_nerd_fonts { "\u{f1c5}" } else { "\u{1F5BC}" },  // file-image / 🖼
+
+                    // Archives
+                    "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar" => if use_nerd_fonts { "\u{f1c6}" } else { "\u{1F4E6}" },  // file-archive / 📦
+
+                    // Binary/Executable
+                    "exe" | "dll" | "so" | "dylib" => if use_nerd_fonts { "\u{f013}" } else { "\u{2699}" },  // gear / ⚙
+                    "wasm" => if use_nerd_fonts { "\u{e6a1}" } else { "\u{1F527}" },  // wasm / 🔧
+
+                    // Fonts
+                    "ttf" | "otf" | "woff" | "woff2" => if use_nerd_fonts { "\u{f031}" } else { "\u{1F524}" },  // font / 🔤
+
+                    // Git
+                    "git" => if use_nerd_fonts { "\u{f1d3}" } else { "\u{E0A0}" },  // git / branch
+
+                    // Default
+                    _ => if use_nerd_fonts { "\u{f15b}" } else { "\u{1F4C4}" },  // file / 📄
+                }
+            }
+        };
+        icon
+    }
+}
+
+impl FileExplorer {
     // === File operation methods ===
 
     /// Start adding a new file/folder

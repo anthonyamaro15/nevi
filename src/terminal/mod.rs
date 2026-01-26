@@ -1194,8 +1194,17 @@ impl Terminal {
                 }
                 print!("{:>3} ", rel_line);
 
-                // Get icon
-                let icon = editor.explorer.get_icon(node);
+                // Get icon (use config for Nerd Font vs Unicode fallback)
+                let use_nerd_fonts = editor.settings.editor.use_nerd_font_icons;
+                let icon = editor.explorer.get_icon(node, use_nerd_fonts);
+
+                // Get icon color
+                let icon_color_rgb = crate::explorer::get_icon_color(&node.name, node.is_dir);
+                let icon_color = Color::Rgb {
+                    r: icon_color_rgb.r,
+                    g: icon_color_rgb.g,
+                    b: icon_color_rgb.b,
+                };
 
                 // Draw tree connector lines for each depth level
                 if node.depth > 1 {
@@ -1205,37 +1214,51 @@ impl Terminal {
                     }
                 }
 
-                // Set colors based on file type and hidden status
+                // Determine file name color based on file type and hidden status
                 let is_hidden = node.name.starts_with('.');
                 let is_match = editor.explorer.is_search_match(idx);
 
-                if is_match {
-                    execute!(self.stdout, SetForegroundColor(match_color))?;
+                let name_color = if is_match {
+                    match_color
                 } else if node.is_dir {
-                    if is_hidden {
-                        execute!(self.stdout, SetForegroundColor(hidden_dir_color))?;
-                    } else {
-                        execute!(self.stdout, SetForegroundColor(dir_color))?;
-                    }
+                    if is_hidden { hidden_dir_color } else { dir_color }
                 } else if is_hidden {
-                    execute!(self.stdout, SetForegroundColor(hidden_file_color))?;
+                    hidden_file_color
                 } else {
-                    execute!(self.stdout, SetForegroundColor(file_color))?;
-                }
+                    file_color
+                };
 
                 // Calculate remaining width for the content
                 let tree_indent_width = if node.depth > 1 { (node.depth - 1) * 2 } else { 0 };
                 let remaining_width = content_width.saturating_sub(tree_indent_width);
 
-                // Build the line (icon + name)
-                let line = format!("{} {}", icon, node.name);
-                let line = if line.len() > remaining_width {
-                    format!("{}…", &line[..remaining_width.saturating_sub(1)])
+                // Print icon with its color (icon takes ~2 display columns)
+                let dimmed_icon_color = if is_hidden {
+                    dim_color(icon_color)
                 } else {
-                    line
+                    icon_color
                 };
+                execute!(self.stdout, SetForegroundColor(dimmed_icon_color))?;
+                print!("{}", icon);
 
-                print!("{:width$}", line, width = remaining_width);
+                // Print name with its color
+                execute!(self.stdout, SetForegroundColor(name_color))?;
+
+                // Account for icon (2 cols) + space (1 col) = 3 cols
+                let name_width = remaining_width.saturating_sub(2);
+                let name_display = if node.name.len() >= name_width {
+                    let truncated: String = node.name.chars().take(name_width.saturating_sub(1)).collect();
+                    format!("{}…", truncated)
+                } else {
+                    node.name.clone()
+                };
+                // Pad with spaces to fill the remaining width
+                print!(" {}", name_display);
+                let chars_printed = 1 + name_display.chars().count(); // space + name
+                let padding = name_width.saturating_sub(chars_printed);
+                if padding > 0 {
+                    print!("{:width$}", "", width = padding);
+                }
             } else {
                 // Empty line - use explorer background
                 execute!(self.stdout, SetForegroundColor(explorer_fg), SetBackgroundColor(explorer_bg))?;
