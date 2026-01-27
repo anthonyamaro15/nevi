@@ -1232,32 +1232,40 @@ impl Terminal {
                 let tree_indent_width = if node.depth > 1 { (node.depth - 1) * 2 } else { 0 };
                 let remaining_width = content_width.saturating_sub(tree_indent_width);
 
-                // Print icon with its color (icon takes ~2 display columns)
+                // Build the full line content first, then pad to exact width
+                // Icon (assume 1 char) + space + name
                 let dimmed_icon_color = if is_hidden {
                     dim_color(icon_color)
                 } else {
                     icon_color
                 };
-                execute!(self.stdout, SetForegroundColor(dimmed_icon_color))?;
-                print!("{}", icon);
 
-                // Print name with its color
-                execute!(self.stdout, SetForegroundColor(name_color))?;
+                // Calculate available width for name (remaining - icon - space)
+                // Using 1 for icon since we'll handle padding separately
+                let name_max_width = remaining_width.saturating_sub(2); // 1 icon + 1 space
 
-                // Account for icon (2 cols) + space (1 col) = 3 cols
-                let name_width = remaining_width.saturating_sub(2);
-                let name_display = if node.name.len() >= name_width {
-                    let truncated: String = node.name.chars().take(name_width.saturating_sub(1)).collect();
+                // Truncate name if needed
+                let name_chars: Vec<char> = node.name.chars().collect();
+                let name_display = if name_chars.len() > name_max_width {
+                    let truncated: String = name_chars.iter().take(name_max_width.saturating_sub(1)).collect();
                     format!("{}…", truncated)
                 } else {
                     node.name.clone()
                 };
-                // Pad with spaces to fill the remaining width
-                print!(" {}", name_display);
-                let chars_printed = 1 + name_display.chars().count(); // space + name
-                let padding = name_width.saturating_sub(chars_printed);
-                if padding > 0 {
-                    print!("{:width$}", "", width = padding);
+
+                // Print icon with color
+                execute!(self.stdout, SetForegroundColor(dimmed_icon_color))?;
+                print!("{} ", icon);
+
+                // Print name with color, padded to fill remaining width
+                execute!(self.stdout, SetForegroundColor(name_color))?;
+                let name_display_len = name_display.chars().count();
+                print!("{}", name_display);
+
+                // Fill any remaining space with background
+                let used_width = 2 + name_display_len; // icon(1) + space(1) + name
+                if used_width < remaining_width {
+                    print!("{:width$}", "", width = remaining_width - used_width);
                 }
             } else {
                 // Empty line - use explorer background
@@ -4510,6 +4518,12 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         KeyAction::JumpForward => {
             if !editor.jump_forward() {
                 editor.set_status("Already at newest position");
+            }
+        }
+
+        KeyAction::JumpToPreviousPosition => {
+            if !editor.jump_to_previous_position() {
+                editor.set_status("No previous jump position");
             }
         }
 
