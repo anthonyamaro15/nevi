@@ -1247,8 +1247,23 @@ impl Editor {
 
         // Apply each edit
         for edit in sorted_edits {
-            // Get the text being replaced for undo (end_col - 1 because get_range_text uses inclusive end)
-            let deleted_text = if edit.end_col > 0 || edit.end_line > edit.start_line {
+            // Get the text being replaced for undo
+            // Note: get_range_text uses inclusive end, but LSP uses exclusive end
+            let deleted_text = if edit.end_line > edit.start_line && edit.end_col == 0 {
+                // Multi-line edit ending at column 0 means we delete up to (but not including)
+                // the start of end_line. Get text from start to end of the line before end_line,
+                // including the newline character.
+                let prev_line = edit.end_line - 1;
+                let prev_line_len_with_newline = self.buffers[self.current_buffer_idx]
+                    .line_len_including_newline(prev_line);
+                self.get_range_text(
+                    edit.start_line,
+                    edit.start_col,
+                    prev_line,
+                    prev_line_len_with_newline.saturating_sub(1),
+                )
+            } else if edit.end_col > 0 || edit.end_line > edit.start_line {
+                // Normal case: convert exclusive end_col to inclusive by subtracting 1
                 self.get_range_text(
                     edit.start_line,
                     edit.start_col,
@@ -4494,25 +4509,26 @@ impl Editor {
         // Begin undo group
         self.begin_change();
 
-        // Delete the newline at end of current line
-        if current_line_len > 0 {
-            // The newline is at position current_line_len - 1 if the line includes it
-            // Actually we need to delete at current_line_len (after last content char)
+        // Record deletion of the newline at end of current line (always happens)
+        self.undo_stack.record_change(Change::delete(
+            self.cursor.line,
+            current_line_len,
+            "\n".to_string(),
+        ));
+
+        // Record deletion of leading whitespace from next line (if any)
+        if leading_ws > 0 {
+            let ws: String = next_line.chars().take(leading_ws).collect();
             self.undo_stack.record_change(Change::delete(
                 self.cursor.line,
                 current_line_len,
-                "\n".to_string(),
+                ws,
             ));
-            // Also record deletion of leading whitespace
-            if leading_ws > 0 {
-                let ws: String = next_line.chars().take(leading_ws).collect();
-                self.undo_stack.record_change(Change::delete(
-                    self.cursor.line,
-                    current_line_len,
-                    ws,
-                ));
-            }
-            // Record insertion of single space
+        }
+
+        // Record insertion of single space ONLY if we will actually insert one
+        // (space is only inserted when current line is non-empty AND next line has content)
+        if current_line_len > 0 && !next_line.is_empty() && !next_line.chars().all(|c| c.is_whitespace()) {
             self.undo_stack.record_change(Change::insert(
                 self.cursor.line,
                 current_line_len,
