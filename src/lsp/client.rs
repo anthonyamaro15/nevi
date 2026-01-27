@@ -945,16 +945,48 @@ fn handle_notification(method: &str, params: Option<Value>) -> Option<LspNotific
                     let start = range.get("start")?;
                     let end = range.get("end")?;
 
-                    let severity = d
+                    // Extract diagnostic code for severity override
+                    let code = d.get("code").and_then(|c| {
+                        c.as_u64()
+                            .or_else(|| c.as_i64().map(|n| n as u64))
+                            .or_else(|| c.as_str().and_then(|s| s.parse().ok()))
+                    });
+
+                    // TypeScript codes that should be hints (unused vars/imports)
+                    let is_hint_code = matches!(
+                        code,
+                        Some(6133)  // Variable declared but never used
+                            | Some(6138)  // Property declared but never used
+                            | Some(6192)  // All destructured elements are unused
+                            | Some(6196)  // All imports in import declaration are unused
+                            | Some(6198)  // All variables are unused
+                            | Some(6199)  // All imports only used as types
+                            | Some(6205)  // All type parameters are unused
+                            | Some(80001) // Suggestion: requires await
+                            | Some(80005) // Suggestion: require -> import
+                    );
+
+                    let mut severity = d
                         .get("severity")
-                        .and_then(|s| s.as_u64())
+                        .and_then(|s| {
+                            s.as_u64()
+                                .or_else(|| s.as_i64().map(|n| n as u64))
+                                .or_else(|| s.as_f64().map(|n| n as u64))
+                        })
                         .map(|s| match s {
                             1 => DiagnosticSeverity::Error,
                             2 => DiagnosticSeverity::Warning,
                             3 => DiagnosticSeverity::Information,
+                            4 => DiagnosticSeverity::Hint,
                             _ => DiagnosticSeverity::Hint,
                         })
-                        .unwrap_or(DiagnosticSeverity::Error);
+                        .unwrap_or(DiagnosticSeverity::Warning);
+
+                    // Override: TypeScript sends hint-level diagnostics as errors
+                    // when noUnusedLocals/noUnusedParameters is enabled in tsconfig
+                    if is_hint_code {
+                        severity = DiagnosticSeverity::Hint;
+                    }
 
                     Some(Diagnostic {
                         line: start.get("line")?.as_u64()? as usize,

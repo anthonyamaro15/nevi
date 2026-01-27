@@ -443,12 +443,22 @@ impl Terminal {
                 Some(uri) => editor.diagnostics_for_line_cached(file_line, uri),
                 None => Vec::new(),
             };
-            let has_error = line_diagnostics.iter().any(|d| {
-                matches!(d.severity, DiagnosticSeverity::Error)
-            });
-            let has_warning = line_diagnostics.iter().any(|d| {
-                matches!(d.severity, DiagnosticSeverity::Warning)
-            });
+            // Compute severity flags in single pass for performance
+            let (has_error, has_warning, has_info, has_hint) = {
+                let mut e = false;
+                let mut w = false;
+                let mut i = false;
+                let mut h = false;
+                for d in &line_diagnostics {
+                    match d.severity {
+                        DiagnosticSeverity::Error => e = true,
+                        DiagnosticSeverity::Warning => w = true,
+                        DiagnosticSeverity::Information => i = true,
+                        DiagnosticSeverity::Hint => h = true,
+                    }
+                }
+                (e, w, i, h)
+            };
 
             // Render each segment
             for segment in &segments {
@@ -500,7 +510,7 @@ impl Terminal {
                         }
                     }
 
-                    // Diagnostic sign (second char)
+                    // Diagnostic sign (second char) - priority: error > warning > info > hint
                     if has_error {
                         execute!(self.stdout, SetForegroundColor(theme.diagnostic.error))?;
                         print!("●");
@@ -508,6 +518,14 @@ impl Terminal {
                     } else if has_warning {
                         execute!(self.stdout, SetForegroundColor(theme.diagnostic.warning))?;
                         print!("▲");
+                        execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                    } else if has_info {
+                        execute!(self.stdout, SetForegroundColor(theme.diagnostic.info))?;
+                        print!("■");
+                        execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                    } else if has_hint {
+                        execute!(self.stdout, SetForegroundColor(theme.diagnostic.hint))?;
+                        print!("○");
                         execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
                     } else {
                         print!(" ");
@@ -530,11 +548,15 @@ impl Terminal {
                             format!("{:>width$} ", file_line + 1, width = line_num_width)
                         };
 
-                        // Use theme colors for line numbers
+                        // Use theme colors for line numbers - priority: error > warning > info > hint
                         let line_num_color = if has_error {
                             theme.diagnostic.error
                         } else if has_warning {
                             theme.diagnostic.warning
+                        } else if has_info {
+                            theme.diagnostic.info
+                        } else if has_hint {
+                            theme.diagnostic.hint
                         } else if is_cursor_line {
                             theme.ui.line_number_active
                         } else {
@@ -704,12 +726,22 @@ impl Terminal {
                     Some(uri) => editor.diagnostics_for_line_cached(file_line, uri),
                     None => Vec::new(),
                 };
-                let has_error = line_diagnostics.iter().any(|d| {
-                    matches!(d.severity, DiagnosticSeverity::Error)
-                });
-                let has_warning = line_diagnostics.iter().any(|d| {
-                    matches!(d.severity, DiagnosticSeverity::Warning)
-                });
+                // Compute severity flags in single pass for performance
+                let (has_error, has_warning, has_info, has_hint) = {
+                    let mut e = false;
+                    let mut w = false;
+                    let mut i = false;
+                    let mut h = false;
+                    for d in &line_diagnostics {
+                        match d.severity {
+                            DiagnosticSeverity::Error => e = true,
+                            DiagnosticSeverity::Warning => w = true,
+                            DiagnosticSeverity::Information => i = true,
+                            DiagnosticSeverity::Hint => h = true,
+                        }
+                    }
+                    (e, w, i, h)
+                };
 
                 // Sign column (git signs + diagnostic icons)
                 // Layout: [Git Sign][Diagnostic] = 2 chars total
@@ -742,7 +774,7 @@ impl Terminal {
                     }
                 }
 
-                // Diagnostic sign (second char)
+                // Diagnostic sign (second char) - priority: error > warning > info > hint
                 if has_error {
                     execute!(self.stdout, SetForegroundColor(theme.diagnostic.error))?;
                     print!("●");
@@ -750,6 +782,14 @@ impl Terminal {
                 } else if has_warning {
                     execute!(self.stdout, SetForegroundColor(theme.diagnostic.warning))?;
                     print!("▲");
+                    execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                } else if has_info {
+                    execute!(self.stdout, SetForegroundColor(theme.diagnostic.info))?;
+                    print!("■");
+                    execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                } else if has_hint {
+                    execute!(self.stdout, SetForegroundColor(theme.diagnostic.hint))?;
+                    print!("○");
                     execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
                 } else {
                     print!(" ");
@@ -769,11 +809,15 @@ impl Terminal {
                         format!("{:>width$} ", file_line + 1, width = line_num_width)
                     };
 
-                    // Use theme colors for line numbers
+                    // Use theme colors for line numbers - priority: error > warning > info > hint
                     let line_num_color = if has_error {
                         theme.diagnostic.error
                     } else if has_warning {
                         theme.diagnostic.warning
+                    } else if has_info {
+                        theme.diagnostic.info
+                    } else if has_hint {
+                        theme.diagnostic.hint
                     } else if is_cursor_line {
                         theme.ui.line_number_active
                     } else {
@@ -986,9 +1030,30 @@ impl Terminal {
         };
 
         // Find diagnostic at this column (prioritize by severity: Error > Warning > Info > Hint)
+        // Handles multiline diagnostics correctly:
+        // - First line: from col_start to end of line
+        // - Middle lines: entire line
+        // - Last line: from start of line to col_end
         let get_diagnostic_at = |col: usize| -> Option<&Diagnostic> {
             diagnostics.iter()
-                .filter(|d| col >= d.col_start && col < d.col_end)
+                .filter(|d| {
+                    if line_num < d.line || line_num > d.end_line {
+                        return false; // Not within diagnostic line range
+                    }
+                    if d.line == d.end_line {
+                        // Single-line diagnostic
+                        col >= d.col_start && col < d.col_end
+                    } else if line_num == d.line {
+                        // First line of multiline: from col_start to end
+                        col >= d.col_start
+                    } else if line_num == d.end_line {
+                        // Last line of multiline: from start to col_end
+                        col < d.col_end
+                    } else {
+                        // Middle line: entire line is covered
+                        true
+                    }
+                })
                 .min_by_key(|d| match d.severity {
                     DiagnosticSeverity::Error => 0,
                     DiagnosticSeverity::Warning => 1,
@@ -3669,9 +3734,30 @@ impl Terminal {
         };
 
         // Find diagnostic at this column (prioritize by severity: Error > Warning > Info > Hint)
+        // Handles multiline diagnostics correctly:
+        // - First line: from col_start to end of line
+        // - Middle lines: entire line
+        // - Last line: from start of line to col_end
         let get_diagnostic_at = |col: usize| -> Option<&Diagnostic> {
             diagnostics.iter()
-                .filter(|d| col >= d.col_start && col < d.col_end)
+                .filter(|d| {
+                    if line_idx < d.line || line_idx > d.end_line {
+                        return false; // Not within diagnostic line range
+                    }
+                    if d.line == d.end_line {
+                        // Single-line diagnostic
+                        col >= d.col_start && col < d.col_end
+                    } else if line_idx == d.line {
+                        // First line of multiline: from col_start to end
+                        col >= d.col_start
+                    } else if line_idx == d.end_line {
+                        // Last line of multiline: from start to col_end
+                        col < d.col_end
+                    } else {
+                        // Middle line: entire line is covered
+                        true
+                    }
+                })
                 .min_by_key(|d| match d.severity {
                     DiagnosticSeverity::Error => 0,
                     DiagnosticSeverity::Warning => 1,
