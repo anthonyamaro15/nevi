@@ -199,6 +199,8 @@ pub enum KeyAction {
     JumpBack,
     /// Jump forward in jump list (Ctrl+i)
     JumpForward,
+    /// Jump to position before last jump ('')
+    JumpToPreviousPosition,
     /// Go to older change position (g;)
     ChangeListOlder,
     /// Go to newer change position (g,)
@@ -520,6 +522,11 @@ impl InputState {
 
         if self.pending_goto_mark_line {
             if let KeyCode::Char(c) = key.code {
+                if c == '\'' {
+                    // '' - jump to position before last jump
+                    self.reset();
+                    return KeyAction::JumpToPreviousPosition;
+                }
                 if c.is_ascii_alphabetic() {
                     self.reset();
                     return KeyAction::GotoMarkLine(c);

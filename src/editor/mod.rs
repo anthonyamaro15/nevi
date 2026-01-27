@@ -768,6 +768,9 @@ pub struct Editor {
     pub macros: MacroState,
     /// Last insert position for `gi` command (line, col)
     pub last_insert_position: Option<(usize, usize)>,
+    /// Previous jump position for `''` command (path, line, col)
+    /// This is the position from which the last jump was made
+    pub previous_jump_position: Option<(Option<std::path::PathBuf>, usize, usize)>,
     /// Language-specific configuration (formatters, tab_width overrides)
     pub languages_config: crate::config::LanguagesConfig,
     /// Startup errors/warnings to display to user (config parse errors, etc.)
@@ -1037,6 +1040,7 @@ impl Editor {
             last_visual_selection: None,
             macros: MacroState::new(),
             last_insert_position: None,
+            previous_jump_position: None,
             languages_config: crate::config::load_languages_config(),
             startup_errors,
         }
@@ -2963,6 +2967,8 @@ impl Editor {
     /// Record current position in jump list (call before jumping)
     pub fn record_jump(&mut self) {
         let path = self.buffer().path.clone();
+        // Save current position as "previous jump position" for '' command
+        self.previous_jump_position = Some((path.clone(), self.cursor.line, self.cursor.col));
         self.jump_list.record(path, self.cursor.line, self.cursor.col);
     }
 
@@ -3004,6 +3010,35 @@ impl Editor {
             }
             self.cursor.line = loc.line;
             self.cursor.col = loc.col;
+            self.clamp_cursor();
+            self.scroll_to_cursor();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Jump to previous position ('' command)
+    /// This jumps to the position before the last jump, and toggles back on repeated use
+    pub fn jump_to_previous_position(&mut self) -> bool {
+        if let Some((prev_path, prev_line, prev_col)) = self.previous_jump_position.take() {
+            // Save current position so we can toggle back
+            let current_path = self.buffer().path.clone();
+            let current_line = self.cursor.line;
+            let current_col = self.cursor.col;
+            self.previous_jump_position = Some((current_path.clone(), current_line, current_col));
+
+            // Check if we need to switch files
+            if prev_path != current_path {
+                if let Some(path) = prev_path {
+                    if self.open_file(path).is_err() {
+                        return false;
+                    }
+                }
+            }
+
+            self.cursor.line = prev_line;
+            self.cursor.col = prev_col;
             self.clamp_cursor();
             self.scroll_to_cursor();
             true
