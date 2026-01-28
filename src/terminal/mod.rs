@@ -2726,9 +2726,9 @@ impl Terminal {
             .max()
             .unwrap_or(20);
 
-        let max_width = 60u16;
+        let max_width = 80u16;
         let max_height = 12u16;
-        let popup_width = (max_title_len as u16 + 6).min(max_width).min(editor.term_width.saturating_sub(4));
+        let popup_width = (max_title_len as u16 + 4).min(max_width).min(editor.term_width.saturating_sub(4));
         let popup_height = (picker.items.len() as u16 + 2).min(max_height);
 
         // Position near cursor
@@ -2760,8 +2760,8 @@ impl Terminal {
         for i in 1..(popup_width - 1) {
             if i as usize == title_start {
                 print!("{}", title);
-            } else if i as usize > title_start && i as usize <= title_start + title.len() {
-                // Skip
+            } else if i as usize > title_start && (i as usize) < title_start + title.len() {
+                // Skip (title already printed)
             } else {
                 print!("─");
             }
@@ -2798,23 +2798,19 @@ impl Terminal {
             // Item content
             execute!(self.stdout, SetBackgroundColor(current_bg))?;
 
-            let content_width = (popup_width - 4) as usize;
+            let content_width = (popup_width - 2) as usize;
 
-            // Preferred marker
+            // Title (highlight preferred items with different color)
             if action.is_preferred {
                 execute!(self.stdout, SetForegroundColor(preferred_color))?;
-                print!("★ ");
             } else {
-                print!("  ");
+                execute!(self.stdout, SetForegroundColor(text_color))?;
             }
-
-            // Title
-            execute!(self.stdout, SetForegroundColor(text_color))?;
-            let title_display: String = action.title.chars().take(content_width - 2).collect();
+            let title_display: String = action.title.chars().take(content_width).collect();
             print!("{}", title_display);
 
             // Pad
-            let printed = title_display.len() + 2;
+            let printed = title_display.len();
             if printed < content_width {
                 print!("{:width$}", "", width = content_width - printed);
             }

@@ -190,6 +190,33 @@ impl LspClient {
                         related_information: Some(true),
                         ..Default::default()
                     }),
+                    code_action: Some(lsp_types::CodeActionClientCapabilities {
+                        code_action_literal_support: Some(lsp_types::CodeActionLiteralSupport {
+                            code_action_kind: lsp_types::CodeActionKindLiteralSupport {
+                                value_set: vec![
+                                    lsp_types::CodeActionKind::QUICKFIX.as_str().to_string(),
+                                    lsp_types::CodeActionKind::REFACTOR.as_str().to_string(),
+                                    lsp_types::CodeActionKind::REFACTOR_EXTRACT
+                                        .as_str()
+                                        .to_string(),
+                                    lsp_types::CodeActionKind::REFACTOR_INLINE
+                                        .as_str()
+                                        .to_string(),
+                                    lsp_types::CodeActionKind::REFACTOR_REWRITE
+                                        .as_str()
+                                        .to_string(),
+                                    lsp_types::CodeActionKind::SOURCE.as_str().to_string(),
+                                    lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS
+                                        .as_str()
+                                        .to_string(),
+                                    lsp_types::CodeActionKind::SOURCE_FIX_ALL
+                                        .as_str()
+                                        .to_string(),
+                                ],
+                            },
+                        }),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -436,6 +463,14 @@ impl LspClient {
                     super::types::DiagnosticSeverity::Warning => lsp_types::DiagnosticSeverity::WARNING,
                     super::types::DiagnosticSeverity::Information => lsp_types::DiagnosticSeverity::INFORMATION,
                     super::types::DiagnosticSeverity::Hint => lsp_types::DiagnosticSeverity::HINT,
+                }),
+                code: d.code.as_ref().map(|c| match c {
+                    super::types::DiagnosticCode::Number(n) => {
+                        lsp_types::NumberOrString::Number(*n as i32)
+                    }
+                    super::types::DiagnosticCode::String(s) => {
+                        lsp_types::NumberOrString::String(s.clone())
+                    }
                 }),
                 message: d.message.clone(),
                 source: d.source.clone(),
@@ -988,6 +1023,17 @@ fn handle_notification(method: &str, params: Option<Value>) -> Option<LspNotific
                         severity = DiagnosticSeverity::Hint;
                     }
 
+                    // Extract code as DiagnosticCode for code actions
+                    let diagnostic_code = d.get("code").and_then(|c| {
+                        if let Some(n) = c.as_i64() {
+                            Some(super::types::DiagnosticCode::Number(n))
+                        } else if let Some(s) = c.as_str() {
+                            Some(super::types::DiagnosticCode::String(s.to_string()))
+                        } else {
+                            None
+                        }
+                    });
+
                     Some(Diagnostic {
                         line: start.get("line")?.as_u64()? as usize,
                         end_line: end.get("line")?.as_u64()? as usize,
@@ -996,6 +1042,7 @@ fn handle_notification(method: &str, params: Option<Value>) -> Option<LspNotific
                         severity,
                         message: d.get("message")?.as_str()?.to_string(),
                         source: d.get("source").and_then(|s| s.as_str()).map(|s| s.to_string()),
+                        code: diagnostic_code,
                     })
                 })
                 .collect();
