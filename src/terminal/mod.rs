@@ -594,7 +594,7 @@ impl Terminal {
                     theme.diagnostic.error,
                     theme.diagnostic.warning,
                     theme.diagnostic.info,
-                    theme.diagnostic.hint,
+                    theme.ui.line_number, // Use grey color for unused code (hint diagnostics)
                 )?;
 
                 // Fill remaining space (sign column = 2)
@@ -864,7 +864,7 @@ impl Terminal {
                         theme.diagnostic.error,
                         theme.diagnostic.warning,
                         theme.diagnostic.info,
-                        theme.diagnostic.hint,
+                        theme.ui.line_number, // Use grey color for unused code (hint diagnostics)
                     )?;
 
                     // Track characters printed for fill calculation (sign column = 2)
@@ -1103,13 +1103,13 @@ impl Terminal {
             // Check if in search match
             let is_search = in_search_match(actual_col);
 
-            // Check for diagnostic underline
+            // Check for diagnostic underline (skip Hint - we grey out text instead)
             let diag_at_col = get_diagnostic_at(actual_col);
-            let diag_underline_color = diag_at_col.map(|d| match d.severity {
-                DiagnosticSeverity::Error => diagnostic_error_color,
-                DiagnosticSeverity::Warning => diagnostic_warning_color,
-                DiagnosticSeverity::Information => diagnostic_info_color,
-                DiagnosticSeverity::Hint => diagnostic_hint_color,
+            let diag_underline_color = diag_at_col.and_then(|d| match d.severity {
+                DiagnosticSeverity::Error => Some(diagnostic_error_color),
+                DiagnosticSeverity::Warning => Some(diagnostic_warning_color),
+                DiagnosticSeverity::Information => Some(diagnostic_info_color),
+                DiagnosticSeverity::Hint => None, // No underline for hints - text is greyed out instead
             });
 
             // Find syntax highlight for this position
@@ -1117,11 +1117,17 @@ impl Terminal {
                 .find(|h| actual_col >= h.start_col && actual_col < h.end_col)
                 .map(|h| h.fg);
 
-            // Priority: visual selection > search match > base (cursor line or editor bg)
+            // Check if within a hint diagnostic (unused variable/import) - grey out the text
+            let is_hint_diagnostic = diag_at_col.map_or(false, |d| d.severity == DiagnosticSeverity::Hint);
+
+            // Priority: visual selection > search match > hint (grey out) > base
             let (desired_bg, desired_fg) = if in_visual {
                 (selection_bg, syntax_color.unwrap_or(editor_fg))
             } else if is_search {
                 (search_match_bg, search_match_fg)
+            } else if is_hint_diagnostic {
+                // Grey out unused code (like Neovim does)
+                (base_bg, diagnostic_hint_color)
             } else {
                 (base_bg, syntax_color.unwrap_or(editor_fg))
             };
@@ -3778,20 +3784,26 @@ impl Terminal {
             // Check if in search match
             let is_search_match = in_search_match(col);
 
-            // Check for diagnostic underline
+            // Check for diagnostic underline (skip Hint - we grey out text instead)
             let diag_at_col = get_diagnostic_at(col);
-            let diag_underline_color = diag_at_col.map(|d| match d.severity {
-                DiagnosticSeverity::Error => diagnostic_error_color,
-                DiagnosticSeverity::Warning => diagnostic_warning_color,
-                DiagnosticSeverity::Information => diagnostic_info_color,
-                DiagnosticSeverity::Hint => diagnostic_hint_color,
+            let diag_underline_color = diag_at_col.and_then(|d| match d.severity {
+                DiagnosticSeverity::Error => Some(diagnostic_error_color),
+                DiagnosticSeverity::Warning => Some(diagnostic_warning_color),
+                DiagnosticSeverity::Information => Some(diagnostic_info_color),
+                DiagnosticSeverity::Hint => None, // No underline for hints - text is greyed out instead
             });
 
-            // Priority: visual selection > search match > base (cursor line or editor bg)
+            // Check if within a hint diagnostic (unused variable/import) - grey out the text
+            let is_hint_diagnostic = diag_at_col.map_or(false, |d| d.severity == DiagnosticSeverity::Hint);
+
+            // Priority: visual selection > search match > hint (grey out) > base
             let (desired_bg, desired_fg) = if is_selected {
                 (selection_bg, syntax_color.unwrap_or(editor_fg))
             } else if is_search_match {
                 (search_match_bg, search_match_fg)
+            } else if is_hint_diagnostic {
+                // Grey out unused code (like Neovim does)
+                (base_bg, diagnostic_hint_color)
             } else {
                 (base_bg, syntax_color.unwrap_or(editor_fg))
             };
