@@ -16,7 +16,7 @@ bg = "#1f2329"
 bg_dark = "#181b20"
 bg_lighter = "#282c34"
 bg_highlight = "#30363f"
-selection = "#323641"
+selection = "#4a5568"
 black = "#0e1013"
 
 [syntax]

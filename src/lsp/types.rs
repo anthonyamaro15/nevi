@@ -317,6 +317,15 @@ pub struct Diagnostic {
     pub severity: DiagnosticSeverity,
     pub message: String,
     pub source: Option<String>,
+    /// The diagnostic code (e.g., TypeScript error number) - needed for code actions
+    pub code: Option<DiagnosticCode>,
+}
+
+/// Diagnostic code can be either an integer or a string
+#[derive(Debug, Clone)]
+pub enum DiagnosticCode {
+    Number(i64),
+    String(String),
 }
 
 /// Severity level for diagnostics

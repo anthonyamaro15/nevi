@@ -335,12 +335,15 @@ fn main() -> anyhow::Result<()> {
                                         LspAction::CodeActions => {
                                             // Get diagnostics at cursor position
                                             let diagnostics = editor.all_diagnostics_at_cursor();
+                                            // Use full line range to get all code actions (import fixes, etc.)
+                                            let line_len =
+                                                editor.buffer().line_len(editor.cursor.line) as u32;
                                             let _ = mlsp.code_action(
                                                 &path,
                                                 line,
-                                                col,
+                                                0,        // start of line
                                                 line,
-                                                col,
+                                                line_len, // end of line
                                                 diagnostics,
                                             );
                                         }
