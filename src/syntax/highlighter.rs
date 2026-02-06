@@ -250,21 +250,50 @@ pub fn rust_highlight_query() -> &'static str {
 (string_literal) @string
 (raw_string_literal) @string
 (char_literal) @string
-(boolean_literal) @constant
 (integer_literal) @number
 (float_literal) @number
 
-; Function definitions and calls
-(function_item name: (identifier) @function)
-(call_expression function: (identifier) @function.call)
-(call_expression function: (field_expression field: (field_identifier) @function.call))
+; Boolean literals - distinct from other constants
+(boolean_literal) @boolean
+
+; Mutable specifier
+(mutable_specifier) @keyword
+
+; Visibility modifier (pub)
+(visibility_modifier) @keyword
+
+; Macro definition
+(macro_definition) @keyword
+
+; Macros - distinct from functions (cyan)
 (macro_invocation macro: (identifier) @function.macro)
+(macro_invocation macro: (scoped_identifier name: (identifier) @function.macro))
+
+; Function definitions
+(function_item name: (identifier) @function)
+
+; Function calls (regular function calls)
+(call_expression function: (identifier) @function.call)
+
+; Method calls - distinct from function calls
+(call_expression function: (field_expression field: (field_identifier) @function.method))
+
+; Enum constructors (Some, None, Ok, Err) - must come before general type matching
+((identifier) @constructor
+ (#match? @constructor "^(Some|None|Ok|Err)$"))
 
 ; Types
 (type_identifier) @type
 (primitive_type) @type
 (generic_type type: (type_identifier) @type)
 (scoped_type_identifier name: (type_identifier) @type)
+
+; Types in scoped paths (std::path::PathBuf) - match PascalCase identifiers in paths
+(scoped_identifier name: (identifier) @type
+ (#match? @type "^[A-Z]"))
+
+; Generic type arguments (Vec<String>, Result<T, E>)
+(type_arguments (type_identifier) @type)
 
 ; Struct/enum/trait definitions
 (struct_item name: (type_identifier) @type)
@@ -294,15 +323,16 @@ pub fn rust_highlight_query() -> &'static str {
 ; Self
 (self) @variable.builtin
 
-; Mutable specifier
-(mutable_specifier) @keyword
-
 ; Reference operator
 (reference_type) @operator
 (reference_expression) @operator
 
 ; Lifetime
 (lifetime) @label
+
+; Constants (SCREAMING_CASE) - lower priority, checked last
+((identifier) @constant
+ (#match? @constant "^[A-Z][A-Z0-9_]*$"))
 "##
 }
 

@@ -34,6 +34,8 @@ pub enum EditorEvent {
     Key(KeyEvent),
     /// Terminal gained focus (for autoread)
     FocusGained,
+    /// Terminal was resized
+    Resize(u16, u16),
 }
 
 /// Section types for hover content parsing
@@ -3878,6 +3880,7 @@ impl Terminal {
         match event::read()? {
             Event::Key(key_event) => Ok(Some(EditorEvent::Key(key_event))),
             Event::FocusGained => Ok(Some(EditorEvent::FocusGained)),
+            Event::Resize(cols, rows) => Ok(Some(EditorEvent::Resize(cols, rows))),
             _ => Ok(None),
         }
     }
