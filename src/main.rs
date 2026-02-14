@@ -231,6 +231,12 @@ fn main() -> anyhow::Result<()> {
                             }
                             continue 'main_loop; // No key to handle
                         }
+                        EditorEvent::Resize(cols, rows) => {
+                            editor.set_size(cols, rows);
+                            needs_redraw = true;
+                            redraw_from_input = true;
+                            continue 'main_loop;
+                        }
                         EditorEvent::Key(k) => k,
                     };
 

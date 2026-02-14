@@ -52,6 +52,12 @@ pub struct SyntaxToml {
     pub property: Option<StyleToml>,
     pub tag: Option<StyleToml>,
     pub embedded: Option<StyleToml>,
+    // New groups for improved Rust highlighting
+    #[serde(rename = "macro")]
+    pub macro_: Option<StyleToml>,
+    pub method: Option<StyleToml>,
+    pub constructor: Option<StyleToml>,
+    pub boolean: Option<StyleToml>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -248,6 +254,11 @@ fn load_theme_from_toml_inner(name: &str, toml: &ThemeToml) -> Theme {
         property: parse_style(&toml.syntax.property, palette, base.syntax.property),
         tag: parse_style(&toml.syntax.tag, palette, base.syntax.tag),
         embedded: parse_style(&toml.syntax.embedded, palette, base.syntax.embedded),
+        // New groups
+        macro_: parse_style(&toml.syntax.macro_, palette, base.syntax.macro_),
+        method: parse_style(&toml.syntax.method, palette, base.syntax.method),
+        constructor: parse_style(&toml.syntax.constructor, palette, base.syntax.constructor),
+        boolean: parse_style(&toml.syntax.boolean, palette, base.syntax.boolean),
     };
 
     // Parse UI colors
@@ -517,12 +528,17 @@ comment = { fg = "gray", italic = true } # // comments
 operator = { fg = "cyan" }               # +, -, *, /, =, etc.
 punctuation = { fg = "fg" }              # (), {}, [], ;
 variable = { fg = "red" }                # variable names
-constant = { fg = "orange" }             # CONSTANTS, true, false
+constant = { fg = "orange" }             # CONSTANTS
 attribute = { fg = "yellow" }            # #[derive], @decorator
 namespace = { fg = "blue" }              # module::path
 label = { fg = "red" }                   # 'lifetime, labels
 property = { fg = "red" }                # object.property
 tag = { fg = "red" }                     # HTML/XML tags
+# Rust-specific highlighting groups
+macro = { fg = "cyan" }                  # format!, println!
+method = { fg = "blue" }                 # .clone(), .ok()
+constructor = { fg = "cyan" }            # Some, None, Ok, Err
+boolean = { fg = "orange" }              # true, false
 
 # =============================================================================
 # UI COLORS

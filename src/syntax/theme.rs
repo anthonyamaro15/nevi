@@ -44,11 +44,25 @@ pub enum HighlightGroup {
     Property,
     Tag,
     Embedded, // For embedded expressions like ${} in template strings
+    // New groups for improved Rust highlighting
+    Macro,       // format!, println!
+    Method,      // .clone(), .ok()
+    Constructor, // Some, None, Ok, Err
+    Boolean,     // true, false
 }
 
 impl HighlightGroup {
     /// Parse a tree-sitter capture name to a highlight group
     pub fn from_capture_name(name: &str) -> Option<Self> {
+        // Check exact hierarchical matches first for specialized groups
+        match name {
+            "function.macro" => return Some(Self::Macro),
+            "function.method" => return Some(Self::Method),
+            "constructor" => return Some(Self::Constructor),
+            "boolean" => return Some(Self::Boolean),
+            _ => {}
+        }
+
         // Handle hierarchical names like "keyword.control" -> Keyword
         let base = name.split('.').next()?;
 
@@ -69,6 +83,8 @@ impl HighlightGroup {
             "property" => Some(Self::Property),
             "tag" => Some(Self::Tag),
             "embedded" => Some(Self::Embedded),
+            "constructor" => Some(Self::Constructor),
+            "boolean" => Some(Self::Boolean),
             _ => None,
         }
     }
@@ -103,6 +119,11 @@ impl Theme {
         styles.insert(HighlightGroup::Property, SyntaxStyle::new(Color::Rgb { r: 224, g: 108, b: 117 }));   // Red
         styles.insert(HighlightGroup::Tag, SyntaxStyle::new(Color::Rgb { r: 224, g: 108, b: 117 }));        // Red (JSX/HTML tags)
         styles.insert(HighlightGroup::Embedded, SyntaxStyle::new(Color::Rgb { r: 86, g: 182, b: 194 }));    // Cyan (template string interpolations)
+        // New groups for improved Rust highlighting
+        styles.insert(HighlightGroup::Macro, SyntaxStyle::new(Color::Rgb { r: 86, g: 182, b: 194 }));       // Cyan
+        styles.insert(HighlightGroup::Method, SyntaxStyle::new(Color::Rgb { r: 97, g: 175, b: 239 }));      // Blue
+        styles.insert(HighlightGroup::Constructor, SyntaxStyle::new(Color::Rgb { r: 86, g: 182, b: 194 })); // Cyan
+        styles.insert(HighlightGroup::Boolean, SyntaxStyle::new(Color::Rgb { r: 209, g: 154, b: 102 }));    // Orange
 
         Self {
             name: "default".to_string(),
@@ -167,6 +188,11 @@ impl Theme {
         styles.insert(HighlightGroup::Property, convert(&ui_theme.syntax.property));
         styles.insert(HighlightGroup::Tag, convert(&ui_theme.syntax.tag));
         styles.insert(HighlightGroup::Embedded, convert(&ui_theme.syntax.embedded));
+        // New groups
+        styles.insert(HighlightGroup::Macro, convert(&ui_theme.syntax.macro_));
+        styles.insert(HighlightGroup::Method, convert(&ui_theme.syntax.method));
+        styles.insert(HighlightGroup::Constructor, convert(&ui_theme.syntax.constructor));
+        styles.insert(HighlightGroup::Boolean, convert(&ui_theme.syntax.boolean));
 
         Self {
             name: ui_theme.name.clone(),

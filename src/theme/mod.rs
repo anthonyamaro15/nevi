@@ -49,7 +49,7 @@ impl StyleDef {
     }
 }
 
-/// Syntax highlighting colors (16 groups)
+/// Syntax highlighting colors (20 groups)
 #[derive(Debug, Clone)]
 pub struct SyntaxColors {
     pub keyword: StyleDef,
@@ -68,6 +68,11 @@ pub struct SyntaxColors {
     pub property: StyleDef,
     pub tag: StyleDef,
     pub embedded: StyleDef, // For embedded expressions like ${} in template strings
+    // New groups for improved Rust highlighting
+    pub macro_: StyleDef,       // format!, println!
+    pub method: StyleDef,       // .clone(), .ok()
+    pub constructor: StyleDef,  // Some, None, Ok, Err
+    pub boolean: StyleDef,      // true, false
 }
 
 /// UI element colors
@@ -186,6 +191,11 @@ impl Theme {
                 property: StyleDef::new(red),
                 tag: StyleDef::new(red),
                 embedded: StyleDef::new(cyan),
+                // New groups - defaults
+                macro_: StyleDef::new(cyan),
+                method: StyleDef::new(blue),
+                constructor: StyleDef::new(cyan),
+                boolean: StyleDef::new(orange),
             },
             ui: UiColors {
                 background: bg,
@@ -249,48 +259,72 @@ impl Theme {
 
     /// Get the syntax color for a highlight group by name
     pub fn get_syntax_color(&self, capture_name: &str) -> Option<Color> {
-        let base = capture_name.split('.').next()?;
-        let style = match base {
-            "keyword" => &self.syntax.keyword,
-            "function" => &self.syntax.function,
-            "type" => &self.syntax.type_,
-            "string" => &self.syntax.string,
-            "number" => &self.syntax.number,
-            "comment" => &self.syntax.comment,
-            "operator" => &self.syntax.operator,
-            "punctuation" => &self.syntax.punctuation,
-            "variable" => &self.syntax.variable,
-            "constant" => &self.syntax.constant,
-            "attribute" => &self.syntax.attribute,
-            "namespace" => &self.syntax.namespace,
-            "label" => &self.syntax.label,
-            "property" => &self.syntax.property,
-            "tag" => &self.syntax.tag,
-            _ => return None,
+        // Check exact hierarchical matches first for specialized groups
+        let style = match capture_name {
+            "function.macro" => &self.syntax.macro_,
+            "function.method" => &self.syntax.method,
+            "constructor" => &self.syntax.constructor,
+            "boolean" => &self.syntax.boolean,
+            _ => {
+                // Fall back to base name matching
+                let base = capture_name.split('.').next()?;
+                match base {
+                    "keyword" => &self.syntax.keyword,
+                    "function" => &self.syntax.function,
+                    "type" => &self.syntax.type_,
+                    "string" => &self.syntax.string,
+                    "number" => &self.syntax.number,
+                    "comment" => &self.syntax.comment,
+                    "operator" => &self.syntax.operator,
+                    "punctuation" => &self.syntax.punctuation,
+                    "variable" => &self.syntax.variable,
+                    "constant" => &self.syntax.constant,
+                    "attribute" => &self.syntax.attribute,
+                    "namespace" => &self.syntax.namespace,
+                    "label" => &self.syntax.label,
+                    "property" => &self.syntax.property,
+                    "tag" => &self.syntax.tag,
+                    "constructor" => &self.syntax.constructor,
+                    "boolean" => &self.syntax.boolean,
+                    _ => return None,
+                }
+            }
         };
         Some(style.fg)
     }
 
     /// Get the full style for a highlight group by name
     pub fn get_syntax_style(&self, capture_name: &str) -> Option<&StyleDef> {
-        let base = capture_name.split('.').next()?;
-        match base {
-            "keyword" => Some(&self.syntax.keyword),
-            "function" => Some(&self.syntax.function),
-            "type" => Some(&self.syntax.type_),
-            "string" => Some(&self.syntax.string),
-            "number" => Some(&self.syntax.number),
-            "comment" => Some(&self.syntax.comment),
-            "operator" => Some(&self.syntax.operator),
-            "punctuation" => Some(&self.syntax.punctuation),
-            "variable" => Some(&self.syntax.variable),
-            "constant" => Some(&self.syntax.constant),
-            "attribute" => Some(&self.syntax.attribute),
-            "namespace" => Some(&self.syntax.namespace),
-            "label" => Some(&self.syntax.label),
-            "property" => Some(&self.syntax.property),
-            "tag" => Some(&self.syntax.tag),
-            _ => None,
+        // Check exact hierarchical matches first for specialized groups
+        match capture_name {
+            "function.macro" => Some(&self.syntax.macro_),
+            "function.method" => Some(&self.syntax.method),
+            "constructor" => Some(&self.syntax.constructor),
+            "boolean" => Some(&self.syntax.boolean),
+            _ => {
+                // Fall back to base name matching
+                let base = capture_name.split('.').next()?;
+                match base {
+                    "keyword" => Some(&self.syntax.keyword),
+                    "function" => Some(&self.syntax.function),
+                    "type" => Some(&self.syntax.type_),
+                    "string" => Some(&self.syntax.string),
+                    "number" => Some(&self.syntax.number),
+                    "comment" => Some(&self.syntax.comment),
+                    "operator" => Some(&self.syntax.operator),
+                    "punctuation" => Some(&self.syntax.punctuation),
+                    "variable" => Some(&self.syntax.variable),
+                    "constant" => Some(&self.syntax.constant),
+                    "attribute" => Some(&self.syntax.attribute),
+                    "namespace" => Some(&self.syntax.namespace),
+                    "label" => Some(&self.syntax.label),
+                    "property" => Some(&self.syntax.property),
+                    "tag" => Some(&self.syntax.tag),
+                    "constructor" => Some(&self.syntax.constructor),
+                    "boolean" => Some(&self.syntax.boolean),
+                    _ => None,
+                }
+            }
         }
     }
 }

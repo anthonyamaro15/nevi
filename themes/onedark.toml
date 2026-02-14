@@ -33,6 +33,11 @@ label = { fg = "red" }
 property = { fg = "red" }
 tag = { fg = "red" }
 embedded = { fg = "cyan" }
+# New groups for improved Rust highlighting
+macro = { fg = "cyan" }           # format!, println!
+method = { fg = "blue" }          # .clone(), .ok()
+constructor = { fg = "cyan" }     # Some, None, Ok, Err
+boolean = { fg = "orange" }       # true, false
 
 [ui]
 background = "bg"
