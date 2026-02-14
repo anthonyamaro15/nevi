@@ -102,8 +102,10 @@ pub struct Pane {
     pub buffer_idx: usize,
     /// Cursor position in this pane
     pub cursor: Cursor,
-    /// Scroll offset for this pane
+    /// Vertical scroll offset for this pane
     pub viewport_offset: usize,
+    /// Horizontal scroll offset for this pane
+    pub h_offset: usize,
     /// Screen region for this pane
     pub rect: Rect,
 }
@@ -114,6 +116,7 @@ impl Pane {
             buffer_idx,
             cursor: Cursor::default(),
             viewport_offset: 0,
+            h_offset: 0,
             rect: Rect::default(),
         }
     }
@@ -661,8 +664,10 @@ pub struct Editor {
     pub cursor: Cursor,
     /// Current mode
     pub mode: Mode,
-    /// Viewport offset (for scrolling, active pane's viewport)
+    /// Vertical viewport offset (for scrolling, active pane's viewport)
     pub viewport_offset: usize,
+    /// Horizontal viewport offset (for scrolling, active pane's h_offset)
+    pub h_offset: usize,
     /// Terminal dimensions
     pub term_height: u16,
     pub term_width: u16,
@@ -987,6 +992,7 @@ impl Editor {
             cursor: Cursor::default(),
             mode: Mode::default(),
             viewport_offset: 0,
+            h_offset: 0,
             term_height: 24,
             term_width: 80,
             should_quit: false,
@@ -1566,6 +1572,7 @@ impl Editor {
             self.current_buffer_idx = (self.current_buffer_idx + 1) % self.buffers.len();
             self.cursor = Cursor::default();
             self.viewport_offset = 0;
+            self.h_offset = 0;
             // Re-parse syntax for new buffer
             let path = self.buffers[self.current_buffer_idx].path.clone();
             self.syntax.set_language_from_path_option(path.as_ref());
@@ -1583,6 +1590,7 @@ impl Editor {
             }
             self.cursor = Cursor::default();
             self.viewport_offset = 0;
+            self.h_offset = 0;
             // Re-parse syntax for new buffer
             let path = self.buffers[self.current_buffer_idx].path.clone();
             self.syntax.set_language_from_path_option(path.as_ref());
@@ -1609,6 +1617,7 @@ impl Editor {
         if self.active_pane < self.panes.len() {
             self.panes[self.active_pane].cursor = self.cursor;
             self.panes[self.active_pane].viewport_offset = self.viewport_offset;
+            self.panes[self.active_pane].h_offset = self.h_offset;
             self.panes[self.active_pane].buffer_idx = self.current_buffer_idx;
         }
     }
@@ -1618,6 +1627,7 @@ impl Editor {
         if self.active_pane < self.panes.len() {
             self.cursor = self.panes[self.active_pane].cursor;
             self.viewport_offset = self.panes[self.active_pane].viewport_offset;
+            self.h_offset = self.panes[self.active_pane].h_offset;
             self.current_buffer_idx = self.panes[self.active_pane].buffer_idx;
             // Re-parse syntax for the buffer
             let path = self.buffers[self.current_buffer_idx].path.clone();
@@ -1797,11 +1807,13 @@ impl Editor {
             self.current_buffer_idx = existing_idx;
             self.cursor = Cursor::default();
             self.viewport_offset = 0;
+            self.h_offset = 0;
             // Sync active pane state
             if self.active_pane < self.panes.len() {
                 self.panes[self.active_pane].buffer_idx = existing_idx;
                 self.panes[self.active_pane].cursor = self.cursor;
                 self.panes[self.active_pane].viewport_offset = self.viewport_offset;
+                self.panes[self.active_pane].h_offset = self.h_offset;
             }
             // Re-parse syntax for this buffer
             self.syntax.set_language_from_path(&path);
@@ -1833,12 +1845,14 @@ impl Editor {
 
         self.cursor = Cursor::default();
         self.viewport_offset = 0;
+        self.h_offset = 0;
         self.undo_stack.clear();
 
         // Sync active pane's cursor and viewport
         if self.active_pane < self.panes.len() {
             self.panes[self.active_pane].cursor = self.cursor;
             self.panes[self.active_pane].viewport_offset = self.viewport_offset;
+            self.panes[self.active_pane].h_offset = self.h_offset;
         }
 
         // Parse the buffer for syntax highlighting
@@ -1857,6 +1871,7 @@ impl Editor {
             self.buffers[0] = Buffer::new();
             self.cursor = Cursor::default();
             self.viewport_offset = 0;
+            self.h_offset = 0;
             self.undo_stack.clear();
         } else {
             // Remove the current buffer
@@ -1875,6 +1890,7 @@ impl Editor {
             // Reset cursor state
             self.cursor = Cursor::default();
             self.viewport_offset = 0;
+            self.h_offset = 0;
             self.undo_stack.clear();
         }
 
@@ -1882,6 +1898,7 @@ impl Editor {
         if self.active_pane < self.panes.len() {
             self.panes[self.active_pane].cursor = self.cursor;
             self.panes[self.active_pane].viewport_offset = self.viewport_offset;
+            self.panes[self.active_pane].h_offset = self.h_offset;
         }
     }
 
@@ -1999,10 +2016,42 @@ impl Editor {
             self.viewport_offset = self.cursor.line + scroll_off + 1 - text_rows;
         }
 
+        // Horizontal scrolling (only in non-wrap mode)
+        if !self.settings.editor.wrap {
+            let text_area_width = self.text_area_width();
+            if text_area_width > 0 {
+                // Scroll right if cursor is past visible area
+                if self.cursor.col >= self.h_offset + text_area_width {
+                    self.h_offset = self.cursor.col - text_area_width + 1;
+                }
+                // Scroll left if cursor is before visible area
+                if self.cursor.col < self.h_offset {
+                    self.h_offset = self.cursor.col;
+                }
+            }
+        }
+
         // Sync to active pane
         if self.active_pane < self.panes.len() {
             self.panes[self.active_pane].viewport_offset = self.viewport_offset;
+            self.panes[self.active_pane].h_offset = self.h_offset;
             self.panes[self.active_pane].cursor = self.cursor;
+        }
+    }
+
+    /// Calculate the text area width (columns available for text) for the active pane
+    fn text_area_width(&self) -> usize {
+        let pane_width = if self.active_pane < self.panes.len() {
+            self.panes[self.active_pane].rect.width as usize
+        } else {
+            self.term_width as usize
+        };
+        const SIGN_COLUMN_WIDTH: usize = 2;
+        let line_num_width = self.buffer().len_lines().to_string().len().max(3);
+        if self.settings.editor.line_numbers {
+            pane_width.saturating_sub(SIGN_COLUMN_WIDTH + line_num_width + 1)
+        } else {
+            pane_width.saturating_sub(SIGN_COLUMN_WIDTH)
         }
     }
 
@@ -3112,6 +3161,7 @@ impl Editor {
             self.buffers[self.current_buffer_idx] = Buffer::from_file(path)?;
             self.cursor = Cursor::default();
             self.viewport_offset = 0;
+            self.h_offset = 0;
             self.undo_stack.clear();
             self.parse_current_buffer();
             self.set_status("File reloaded");
@@ -5882,9 +5932,11 @@ impl Editor {
             self.panes[self.active_pane].buffer_idx = idx;
             self.panes[self.active_pane].cursor = Cursor::default();
             self.panes[self.active_pane].viewport_offset = 0;
+            self.panes[self.active_pane].h_offset = 0;
         }
         self.cursor = Cursor::default();
         self.viewport_offset = 0;
+        self.h_offset = 0;
         let path = self.buffers[self.current_buffer_idx].path.clone();
         self.syntax.set_language_from_path_option(path.as_ref());
         self.parse_current_buffer();

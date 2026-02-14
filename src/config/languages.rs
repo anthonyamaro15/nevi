@@ -91,6 +91,26 @@ fn default_languages_template() -> &'static str {
 # tab_width = 2
 
 # ============================================================================
+# TYPESCRIPT / JAVASCRIPT (Oxfmt - fastest, ~2x faster than Biome)
+# Install: npm install -g oxfmt
+# ============================================================================
+# [typescript]
+# formatter = { command = "oxfmt", args = ["--stdin-filepath={file}"] }
+# tab_width = 2
+#
+# [javascript]
+# formatter = { command = "oxfmt", args = ["--stdin-filepath={file}"] }
+# tab_width = 2
+#
+# [tsx]
+# formatter = { command = "oxfmt", args = ["--stdin-filepath={file}"] }
+# tab_width = 2
+#
+# [jsx]
+# formatter = { command = "oxfmt", args = ["--stdin-filepath={file}"] }
+# tab_width = 2
+
+# ============================================================================
 # TYPESCRIPT / JAVASCRIPT (Prettier - if you prefer)
 # ============================================================================
 # [typescript]
@@ -109,7 +129,18 @@ fn default_languages_template() -> &'static str {
 # tab_width = 4
 
 # ============================================================================
-# CSS / SCSS
+# CSS / SCSS (Oxfmt)
+# ============================================================================
+# [css]
+# formatter = { command = "oxfmt", args = ["--stdin-filepath={file}"] }
+# tab_width = 2
+#
+# [scss]
+# formatter = { command = "oxfmt", args = ["--stdin-filepath={file}"] }
+# tab_width = 2
+
+# ============================================================================
+# CSS / SCSS (Prettier)
 # ============================================================================
 # [css]
 # formatter = { command = "prettier", args = ["--stdin-filepath", "{file}"] }
@@ -120,7 +151,14 @@ fn default_languages_template() -> &'static str {
 # tab_width = 2
 
 # ============================================================================
-# JSON
+# JSON (Oxfmt)
+# ============================================================================
+# [json]
+# formatter = { command = "oxfmt", args = ["--stdin-filepath={file}"] }
+# tab_width = 2
+
+# ============================================================================
+# JSON (Prettier)
 # ============================================================================
 # [json]
 # formatter = { command = "prettier", args = ["--stdin-filepath", "{file}"] }

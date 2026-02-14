@@ -833,7 +833,9 @@ impl Terminal {
 
                 // Line content with syntax highlighting and visual selection
                 if let Some(line) = buffer.line(file_line) {
-                    let line_str: String = line.chars().take(effective_width).collect();
+                    let h_offset = pane.h_offset;
+                    let full_line_len = line.chars().filter(|c| *c != '\n').count();
+                    let line_str: String = line.chars().skip(h_offset).take(effective_width).collect();
                     let line_str = line_str.trim_end_matches('\n');
 
                     // Get syntax highlights for this line (only for active pane)
@@ -851,6 +853,7 @@ impl Terminal {
                     self.render_line_with_highlights(
                         line_str,
                         file_line,
+                        h_offset,
                         &highlights,
                         visual_range,
                         &editor.mode,
@@ -875,7 +878,7 @@ impl Terminal {
                     // Render ghost text on cursor line when completion is active
                     if is_cursor_line && is_active && editor.mode == Mode::Insert && editor.completion.active {
                         // Only show ghost text if cursor is at or near end of line
-                        let cursor_at_end = pane.cursor.col >= line_str.chars().count().saturating_sub(1);
+                        let cursor_at_end = pane.cursor.col >= full_line_len.saturating_sub(1);
                         if cursor_at_end {
                             if let Some(ghost) = editor.completion.ghost_text() {
                                 // Limit ghost text to remaining space
@@ -1640,11 +1643,12 @@ impl Terminal {
                 } else {
                     // Original non-wrapped calculation
                     let cursor_row = editor.cursor.line.saturating_sub(active_pane.viewport_offset);
-                    // Sign column (2) + line numbers + cursor position
+                    // Sign column (2) + line numbers + cursor position (adjusted for horizontal scroll)
+                    let display_col = editor.cursor.col.saturating_sub(active_pane.h_offset);
                     let cursor_col = 2 + if show_line_numbers {
-                        line_num_width + 1 + editor.cursor.col
+                        line_num_width + 1 + display_col
                     } else {
-                        editor.cursor.col
+                        display_col
                     };
                     (cursor_row, cursor_col)
                 };
@@ -3679,6 +3683,7 @@ impl Terminal {
         &mut self,
         line: &str,
         line_idx: usize,
+        col_offset: usize,
         highlights: &[HighlightSpan],
         visual_range: Option<(usize, usize, usize, usize)>,
         mode: &Mode,
@@ -3731,9 +3736,9 @@ impl Terminal {
         let base_bg = if is_cursor_line { cursor_line_bg } else { editor_bg };
 
         // Check if a column is within a search match for this line
-        let in_search_match = |col: usize| -> bool {
+        let in_search_match = |actual_col: usize| -> bool {
             search_matches.iter().any(|(l, start, end)| {
-                *l == line_idx && col >= *start && col < *end
+                *l == line_idx && actual_col >= *start && actual_col < *end
             })
         };
 
@@ -3742,7 +3747,7 @@ impl Terminal {
         // - First line: from col_start to end of line
         // - Middle lines: entire line
         // - Last line: from start of line to col_end
-        let get_diagnostic_at = |col: usize| -> Option<&Diagnostic> {
+        let get_diagnostic_at = |actual_col: usize| -> Option<&Diagnostic> {
             diagnostics.iter()
                 .filter(|d| {
                     if line_idx < d.line || line_idx > d.end_line {
@@ -3750,13 +3755,13 @@ impl Terminal {
                     }
                     if d.line == d.end_line {
                         // Single-line diagnostic
-                        col >= d.col_start && col < d.col_end
+                        actual_col >= d.col_start && actual_col < d.col_end
                     } else if line_idx == d.line {
                         // First line of multiline: from col_start to end
-                        col >= d.col_start
+                        actual_col >= d.col_start
                     } else if line_idx == d.end_line {
                         // Last line of multiline: from start to col_end
-                        col < d.col_end
+                        actual_col < d.col_end
                     } else {
                         // Middle line: entire line is covered
                         true
@@ -3776,18 +3781,21 @@ impl Terminal {
         let mut current_fg: Option<Color> = None;
         let mut current_bg: Option<Color> = None;
         let mut current_underline: Option<Color> = None;
-        for (col, ch) in chars.iter().enumerate() {
+        for (i, ch) in chars.iter().enumerate() {
+            // Map display column to actual buffer column
+            let actual_col = col_offset + i;
+
             // Find syntax color for this column
-            let syntax_color = Self::get_syntax_color_at(highlights, col, &mut highlight_idx);
+            let syntax_color = Self::get_syntax_color_at(highlights, actual_col, &mut highlight_idx);
 
             // Check if in visual selection
-            let is_selected = in_selection && col >= sel_start && col < sel_end;
+            let is_selected = in_selection && actual_col >= sel_start && actual_col < sel_end;
 
             // Check if in search match
-            let is_search_match = in_search_match(col);
+            let is_search_match = in_search_match(actual_col);
 
             // Check for diagnostic underline (skip Hint - we grey out text instead)
-            let diag_at_col = get_diagnostic_at(col);
+            let diag_at_col = get_diagnostic_at(actual_col);
             let diag_underline_color = diag_at_col.and_then(|d| match d.severity {
                 DiagnosticSeverity::Error => Some(diagnostic_error_color),
                 DiagnosticSeverity::Warning => Some(diagnostic_warning_color),
