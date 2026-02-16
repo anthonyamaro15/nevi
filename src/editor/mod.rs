@@ -12,14 +12,16 @@ pub use marks::{Mark, Marks};
 pub use register::{RegisterContent, Registers};
 pub use undo::{Change, UndoEntry, UndoStack};
 
-use crate::input::{InputState, Motion, apply_motion, TextObject, TextObjectModifier, TextObjectType, CaseOperator};
 use crate::commands::CommandLine;
-use crate::syntax::SyntaxManager;
-use crate::config::{Settings, KeymapLookup, LeaderAction};
+use crate::config::{KeymapLookup, LeaderAction, Settings};
 use crate::explorer::FileExplorer;
 use crate::finder::FuzzyFinder;
 use crate::frecency::FrecencyDb;
-use crate::lsp::types::{CodeActionItem, Diagnostic, CompletionItem, Location, TextEdit};
+use crate::input::{
+    apply_motion, CaseOperator, InputState, Motion, TextObject, TextObjectModifier, TextObjectType,
+};
+use crate::lsp::types::{CodeActionItem, CompletionItem, Diagnostic, Location, TextEdit};
+use crate::syntax::SyntaxManager;
 use crate::theme::ThemeManager;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -91,7 +93,12 @@ pub struct Rect {
 
 impl Rect {
     pub fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 }
 
@@ -187,7 +194,11 @@ impl VisualSelection {
 
     /// Get the block range for visual block mode
     /// Returns (top_line, left_col, bottom_line, right_col)
-    pub fn get_block_range(&self, cursor_line: usize, cursor_col: usize) -> (usize, usize, usize, usize) {
+    pub fn get_block_range(
+        &self,
+        cursor_line: usize,
+        cursor_col: usize,
+    ) -> (usize, usize, usize, usize) {
         let top = self.anchor_line.min(cursor_line);
         let bottom = self.anchor_line.max(cursor_line);
         let left = self.anchor_col.min(cursor_col);
@@ -351,7 +362,12 @@ impl JumpList {
 
     /// Go back in the jump list (Ctrl+o)
     /// Takes current location to save if we're starting to navigate
-    pub fn go_back(&mut self, current_path: Option<std::path::PathBuf>, current_line: usize, current_col: usize) -> Option<&JumpLocation> {
+    pub fn go_back(
+        &mut self,
+        current_path: Option<std::path::PathBuf>,
+        current_line: usize,
+        current_col: usize,
+    ) -> Option<&JumpLocation> {
         // If at end and we have history, save current position first
         if self.is_at_end() && !self.jumps.is_empty() {
             // Only save if different from last entry
@@ -500,7 +516,13 @@ impl Default for CompletionState {
 
 impl CompletionState {
     /// Show completion popup with items
-    pub fn show(&mut self, items: Vec<CompletionItem>, line: usize, col: usize, is_incomplete: bool) {
+    pub fn show(
+        &mut self,
+        items: Vec<CompletionItem>,
+        line: usize,
+        col: usize,
+        is_incomplete: bool,
+    ) {
         self.active = true;
         self.items = items;
         self.selected = 0;
@@ -537,12 +559,12 @@ impl CompletionState {
     pub fn refilter_with_frecency(&mut self, frecency: Option<&FrecencyDb>) {
         if self.filter_text.is_empty() {
             // No filter - show all items sorted by frecency (if available) then sortText
-            let mut indices: Vec<(usize, f64, &str)> = self.items.iter()
+            let mut indices: Vec<(usize, f64, &str)> = self
+                .items
+                .iter()
                 .enumerate()
                 .map(|(i, item)| {
-                    let frecency_score = frecency
-                        .map(|f| f.score(&item.label))
-                        .unwrap_or(1.0);
+                    let frecency_score = frecency.map(|f| f.score(&item.label)).unwrap_or(1.0);
                     let sort_key = item.sort_text.as_deref().unwrap_or(&item.label);
                     (i, frecency_score, sort_key)
                 })
@@ -557,18 +579,21 @@ impl CompletionState {
             self.filtered = indices.into_iter().map(|(i, _, _)| i).collect();
         } else {
             // Fuzzy filter using filterText (fallback to label), combined with frecency
-            let mut scored: Vec<(usize, f64)> = self.items.iter()
+            let mut scored: Vec<(usize, f64)> = self
+                .items
+                .iter()
                 .enumerate()
                 .filter_map(|(i, item)| {
                     let match_text = item.filter_text.as_deref().unwrap_or(&item.label);
-                    self.matcher.match_score(&self.filter_text, match_text).map(|fuzzy_score| {
-                        let frecency_score = frecency
-                            .map(|f| f.score(&item.label))
-                            .unwrap_or(1.0);
-                        // Combined score: fuzzy_score * frecency_boost
-                        let combined = fuzzy_score as f64 * frecency_score;
-                        (i, combined)
-                    })
+                    self.matcher
+                        .match_score(&self.filter_text, match_text)
+                        .map(|fuzzy_score| {
+                            let frecency_score =
+                                frecency.map(|f| f.score(&item.label)).unwrap_or(1.0);
+                            // Combined score: fuzzy_score * frecency_boost
+                            let combined = fuzzy_score as f64 * frecency_score;
+                            (i, combined)
+                        })
                 })
                 .collect();
             // Sort by combined score (higher is better)
@@ -598,15 +623,15 @@ impl CompletionState {
 
     /// Get currently selected item
     pub fn selected_item(&self) -> Option<&CompletionItem> {
-        self.filtered.get(self.selected)
+        self.filtered
+            .get(self.selected)
             .and_then(|&idx| self.items.get(idx))
     }
 
     /// Get the text to insert for the selected item
     pub fn selected_insert_text(&self) -> Option<&str> {
-        self.selected_item().map(|item| {
-            item.insert_text.as_deref().unwrap_or(&item.label)
-        })
+        self.selected_item()
+            .map(|item| item.insert_text.as_deref().unwrap_or(&item.label))
     }
 
     /// Get the number of visible (filtered) items
@@ -893,7 +918,8 @@ pub struct ThemePicker {
 
 impl ThemePicker {
     pub fn new(items: Vec<(&str, bool)>) -> Self {
-        let all_items: Vec<(String, bool)> = items.into_iter().map(|(s, b)| (s.to_string(), b)).collect();
+        let all_items: Vec<(String, bool)> =
+            items.into_iter().map(|(s, b)| (s.to_string(), b)).collect();
         let filtered: Vec<usize> = (0..all_items.len()).collect();
         Self {
             all_items,
@@ -917,14 +943,16 @@ impl ThemePicker {
 
     /// Get the currently selected theme name
     pub fn selected_name(&self) -> Option<&str> {
-        self.filtered.get(self.selected)
+        self.filtered
+            .get(self.selected)
             .and_then(|&idx| self.all_items.get(idx))
             .map(|(name, _)| name.as_str())
     }
 
     /// Get the items that should be displayed (filtered list)
     pub fn visible_items(&self) -> Vec<&(String, bool)> {
-        self.filtered.iter()
+        self.filtered
+            .iter()
             .filter_map(|&idx| self.all_items.get(idx))
             .collect()
     }
@@ -947,7 +975,9 @@ impl ThemePicker {
             self.filtered = (0..self.all_items.len()).collect();
         } else {
             let query_lower = self.query.to_lowercase();
-            self.filtered = self.all_items.iter()
+            self.filtered = self
+                .all_items
+                .iter()
                 .enumerate()
                 .filter(|(_, (name, _))| name.to_lowercase().contains(&query_lower))
                 .map(|(idx, _)| idx)
@@ -1110,7 +1140,10 @@ impl Editor {
     }
 
     /// Get the formatter config for a specific buffer by index (if any)
-    pub fn get_formatter_for_buffer(&self, buffer_idx: usize) -> Option<&crate::config::FormatterConfig> {
+    pub fn get_formatter_for_buffer(
+        &self,
+        buffer_idx: usize,
+    ) -> Option<&crate::config::FormatterConfig> {
         let buffer = self.buffers.get(buffer_idx)?;
         let path = buffer.path.as_ref()?;
         let ext = path.extension()?.to_str()?;
@@ -1189,7 +1222,13 @@ impl Editor {
     }
 
     /// Show completion popup with frecency-aware sorting
-    pub fn show_completions(&mut self, items: Vec<CompletionItem>, line: usize, col: usize, is_incomplete: bool) {
+    pub fn show_completions(
+        &mut self,
+        items: Vec<CompletionItem>,
+        line: usize,
+        col: usize,
+        is_incomplete: bool,
+    ) {
         self.completion.show(items, line, col, is_incomplete);
         self.completion.refilter_with_frecency(Some(&self.frecency));
     }
@@ -1260,8 +1299,8 @@ impl Editor {
                 // the start of end_line. Get text from start to end of the line before end_line,
                 // including the newline character.
                 let prev_line = edit.end_line - 1;
-                let prev_line_len_with_newline = self.buffers[self.current_buffer_idx]
-                    .line_len_including_newline(prev_line);
+                let prev_line_len_with_newline =
+                    self.buffers[self.current_buffer_idx].line_len_including_newline(prev_line);
                 self.get_range_text(
                     edit.start_line,
                     edit.start_col,
@@ -1321,7 +1360,8 @@ impl Editor {
         self.last_edit_at = Some(Instant::now());
 
         // End the undo group so LSP edits are a single undo operation
-        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
 
         // Ensure cursor is in valid position
         self.clamp_cursor();
@@ -1337,7 +1377,10 @@ impl Editor {
     pub fn current_diagnostics(&self) -> &[Diagnostic] {
         if let Some(path) = &self.buffer().path {
             let uri = crate::lsp::path_to_uri(path);
-            self.diagnostics.get(&uri).map(|v| v.as_slice()).unwrap_or(&[])
+            self.diagnostics
+                .get(&uri)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[])
         } else {
             &[]
         }
@@ -1345,7 +1388,10 @@ impl Editor {
 
     /// Get diagnostics for the current buffer using a pre-computed URI (avoids repeated allocations)
     pub fn current_diagnostics_cached(&self, uri: &str) -> &[Diagnostic] {
-        self.diagnostics.get(uri).map(|v| v.as_slice()).unwrap_or(&[])
+        self.diagnostics
+            .get(uri)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Get diagnostics for a specific line in the current buffer
@@ -1358,7 +1404,11 @@ impl Editor {
     }
 
     /// Get diagnostics for a line using a pre-computed URI (avoids repeated allocations during render)
-    pub fn diagnostics_for_line_cached<'a>(&'a self, line: usize, uri: &str) -> Vec<&'a Diagnostic> {
+    pub fn diagnostics_for_line_cached<'a>(
+        &'a self,
+        line: usize,
+        uri: &str,
+    ) -> Vec<&'a Diagnostic> {
         self.current_diagnostics_cached(uri)
             .iter()
             .filter(|d| line >= d.line && line <= d.end_line)
@@ -1367,7 +1417,9 @@ impl Editor {
 
     /// Get the first diagnostic message for the cursor line (for status display)
     pub fn diagnostic_at_cursor(&self) -> Option<&Diagnostic> {
-        self.diagnostics_for_line(self.cursor.line).into_iter().next()
+        self.diagnostics_for_line(self.cursor.line)
+            .into_iter()
+            .next()
     }
 
     /// Get all diagnostics at cursor position (for code actions)
@@ -1469,7 +1521,11 @@ impl Editor {
     }
 
     /// Get git status for a specific line given a file path
-    pub fn git_status_for_line_in_file(&self, path: &std::path::Path, line: usize) -> Option<crate::git::GitLineStatus> {
+    pub fn git_status_for_line_in_file(
+        &self,
+        path: &std::path::Path,
+        line: usize,
+    ) -> Option<crate::git::GitLineStatus> {
         let path_str = path.to_string_lossy().to_string();
         let diff = self.git_diffs.get(&path_str)?;
         diff.status_for_line(line)
@@ -1478,7 +1534,9 @@ impl Editor {
     /// Update git diff for the current buffer
     pub fn update_git_diff(&mut self) {
         let Some(repo) = &self.git_repo else { return };
-        let Some(path) = self.buffer().path.clone() else { return };
+        let Some(path) = self.buffer().path.clone() else {
+            return;
+        };
 
         let Some(head_content) = repo.head_content(&path) else {
             // File not tracked by git or new file - clear any existing diff
@@ -1646,7 +1704,11 @@ impl Editor {
         self.split_pane(file_path, SplitLayout::Horizontal)
     }
 
-    fn split_pane(&mut self, file_path: Option<std::path::PathBuf>, layout: SplitLayout) -> anyhow::Result<()> {
+    fn split_pane(
+        &mut self,
+        file_path: Option<std::path::PathBuf>,
+        layout: SplitLayout,
+    ) -> anyhow::Result<()> {
         // Save current pane state
         self.save_pane_state();
         self.split_layout = layout;
@@ -1674,7 +1736,11 @@ impl Editor {
         self.active_pane = new_pane_idx;
         self.load_pane_state();
 
-        self.set_status(format!("Pane {}/{}", self.active_pane + 1, self.panes.len()));
+        self.set_status(format!(
+            "Pane {}/{}",
+            self.active_pane + 1,
+            self.panes.len()
+        ));
         Ok(())
     }
 
@@ -1684,7 +1750,11 @@ impl Editor {
             self.save_pane_state();
             self.active_pane = (self.active_pane + 1) % self.panes.len();
             self.load_pane_state();
-            self.set_status(format!("Pane {}/{}", self.active_pane + 1, self.panes.len()));
+            self.set_status(format!(
+                "Pane {}/{}",
+                self.active_pane + 1,
+                self.panes.len()
+            ));
         }
     }
 
@@ -1698,7 +1768,11 @@ impl Editor {
                 self.active_pane -= 1;
             }
             self.load_pane_state();
-            self.set_status(format!("Pane {}/{}", self.active_pane + 1, self.panes.len()));
+            self.set_status(format!(
+                "Pane {}/{}",
+                self.active_pane + 1,
+                self.panes.len()
+            ));
         }
     }
 
@@ -1711,7 +1785,11 @@ impl Editor {
             }
             self.update_pane_rects();
             self.load_pane_state();
-            self.set_status(format!("Pane {}/{}", self.active_pane + 1, self.panes.len()));
+            self.set_status(format!(
+                "Pane {}/{}",
+                self.active_pane + 1,
+                self.panes.len()
+            ));
             true
         } else {
             // Only one pane, can't close
@@ -1771,12 +1849,8 @@ impl Editor {
 
             // Calculate distance (Manhattan distance in the direction)
             let distance = match direction {
-                PaneDirection::Left | PaneDirection::Right => {
-                    current_center_x.abs_diff(center_x)
-                }
-                PaneDirection::Up | PaneDirection::Down => {
-                    current_center_y.abs_diff(center_y)
-                }
+                PaneDirection::Left | PaneDirection::Right => current_center_x.abs_diff(center_x),
+                PaneDirection::Up | PaneDirection::Down => current_center_y.abs_diff(center_y),
             };
 
             if distance < best_distance {
@@ -1789,7 +1863,11 @@ impl Editor {
             self.save_pane_state();
             self.active_pane = new_pane;
             self.load_pane_state();
-            self.set_status(format!("Pane {}/{}", self.active_pane + 1, self.panes.len()));
+            self.set_status(format!(
+                "Pane {}/{}",
+                self.active_pane + 1,
+                self.panes.len()
+            ));
         } else if direction == PaneDirection::Left && self.explorer.visible {
             // If moving left and no pane found, focus the explorer
             self.focus_explorer();
@@ -1800,9 +1878,11 @@ impl Editor {
     pub fn open_file(&mut self, path: std::path::PathBuf) -> anyhow::Result<()> {
         // Check if file is already open in an existing buffer
         let canonical_path = path.canonicalize().ok();
-        if let Some(existing_idx) = self.buffers.iter().position(|b| {
-            b.path.as_ref().and_then(|p| p.canonicalize().ok()) == canonical_path
-        }) {
+        if let Some(existing_idx) = self
+            .buffers
+            .iter()
+            .position(|b| b.path.as_ref().and_then(|p| p.canonicalize().ok()) == canonical_path)
+        {
             // File already open, switch to that buffer
             self.current_buffer_idx = existing_idx;
             self.cursor = Cursor::default();
@@ -1981,7 +2061,9 @@ impl Editor {
     /// Clamp cursor to valid buffer positions
     pub fn clamp_cursor(&mut self) {
         // Clamp line
-        let max_line = self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1);
+        let max_line = self.buffers[self.current_buffer_idx]
+            .len_lines()
+            .saturating_sub(1);
         if self.cursor.line > max_line {
             self.cursor.line = max_line;
         }
@@ -2056,7 +2138,13 @@ impl Editor {
     }
 
     /// Get the text in a range (for yank/delete operations)
-    pub fn get_range_text(&self, start_line: usize, start_col: usize, end_line: usize, end_col: usize) -> String {
+    pub fn get_range_text(
+        &self,
+        start_line: usize,
+        start_col: usize,
+        end_line: usize,
+        end_col: usize,
+    ) -> String {
         let mut result = String::new();
 
         if start_line == end_line {
@@ -2108,11 +2196,22 @@ impl Editor {
     }
 
     /// Delete a range of text and return it
-    pub fn delete_range(&mut self, start_line: usize, start_col: usize, end_line: usize, end_col: usize) -> String {
+    pub fn delete_range(
+        &mut self,
+        start_line: usize,
+        start_col: usize,
+        end_line: usize,
+        end_col: usize,
+    ) -> String {
         let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
         // Delete from buffer (end to start to preserve positions)
-        self.buffers[self.current_buffer_idx].delete_range(start_line, start_col, end_line, end_col + 1);
+        self.buffers[self.current_buffer_idx].delete_range(
+            start_line,
+            start_col,
+            end_line,
+            end_col + 1,
+        );
 
         // Move cursor to start of deleted range
         self.cursor.line = start_line;
@@ -2125,7 +2224,11 @@ impl Editor {
 
     /// Delete lines and return them
     pub fn delete_lines(&mut self, start_line: usize, count: usize) -> String {
-        let end_line = (start_line + count - 1).min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+        let end_line = (start_line + count - 1).min(
+            self.buffers[self.current_buffer_idx]
+                .len_lines()
+                .saturating_sub(1),
+        );
         let text = self.get_lines_text(start_line, end_line);
 
         // Delete from start of first line to end of last line (including newline)
@@ -2133,7 +2236,11 @@ impl Editor {
         self.buffers[self.current_buffer_idx].delete_range(start_line, 0, end_line, end_col);
 
         // Position cursor
-        self.cursor.line = start_line.min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+        self.cursor.line = start_line.min(
+            self.buffers[self.current_buffer_idx]
+                .len_lines()
+                .saturating_sub(1),
+        );
         self.cursor.col = 0;
         self.clamp_cursor();
         self.scroll_to_cursor();
@@ -2148,40 +2255,42 @@ impl Editor {
 
             // Record for undo
             self.begin_change();
-            self.undo_stack.record_change(Change::delete(
-                start_line,
-                start_col,
-                text.clone(),
-            ));
+            self.undo_stack
+                .record_change(Change::delete(start_line, start_col, text.clone()));
 
             let deleted = self.delete_range(start_line, start_col, end_line, end_col);
 
-            self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+            self.undo_stack
+                .end_undo_group(self.cursor.line, self.cursor.col);
 
             let is_small = !deleted.contains('\n');
-            self.registers.delete(register, RegisterContent::Chars(deleted), is_small);
+            self.registers
+                .delete(register, RegisterContent::Chars(deleted), is_small);
         }
     }
 
     /// Delete count lines (dd operation)
     pub fn delete_line(&mut self, count: usize, register: Option<char>) {
         let start_line = self.cursor.line;
-        let end_line = (start_line + count - 1).min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+        let end_line = (start_line + count - 1).min(
+            self.buffers[self.current_buffer_idx]
+                .len_lines()
+                .saturating_sub(1),
+        );
         let text = self.get_lines_text(start_line, end_line);
 
         // Record for undo
         self.begin_change();
-        self.undo_stack.record_change(Change::delete(
-            start_line,
-            0,
-            text.clone(),
-        ));
+        self.undo_stack
+            .record_change(Change::delete(start_line, 0, text.clone()));
 
         let deleted = self.delete_lines(self.cursor.line, count);
 
-        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
 
-        self.registers.delete(register, RegisterContent::Lines(deleted), false);
+        self.registers
+            .delete(register, RegisterContent::Lines(deleted), false);
     }
 
     /// Yank from cursor to motion target
@@ -2195,7 +2304,11 @@ impl Editor {
 
     /// Yank count lines (yy operation)
     pub fn yank_line(&mut self, count: usize, register: Option<char>) {
-        let end_line = (self.cursor.line + count - 1).min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+        let end_line = (self.cursor.line + count - 1).min(
+            self.buffers[self.current_buffer_idx]
+                .len_lines()
+                .saturating_sub(1),
+        );
         let text = self.get_lines_text(self.cursor.line, end_line);
         self.registers.yank(register, RegisterContent::Lines(text));
 
@@ -2214,16 +2327,14 @@ impl Editor {
 
             // Begin undo group (will include the delete and subsequent inserts)
             self.begin_change();
-            self.undo_stack.record_change(Change::delete(
-                start_line,
-                start_col,
-                text.clone(),
-            ));
+            self.undo_stack
+                .record_change(Change::delete(start_line, start_col, text.clone()));
 
             let deleted = self.delete_range(start_line, start_col, end_line, end_col);
 
             let is_small = !deleted.contains('\n');
-            self.registers.delete(register, RegisterContent::Chars(deleted), is_small);
+            self.registers
+                .delete(register, RegisterContent::Chars(deleted), is_small);
 
             // Enter insert mode (don't start new undo group, reuse the one from change)
             self.mode = Mode::Insert;
@@ -2232,7 +2343,11 @@ impl Editor {
 
     /// Change count lines (cc operation)
     pub fn change_line(&mut self, count: usize, register: Option<char>) {
-        let end_line = (self.cursor.line + count - 1).min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+        let end_line = (self.cursor.line + count - 1).min(
+            self.buffers[self.current_buffer_idx]
+                .len_lines()
+                .saturating_sub(1),
+        );
 
         // For cc, we delete the content but keep the line structure
         // Get the text that will be deleted for undo
@@ -2240,13 +2355,11 @@ impl Editor {
 
         // Begin undo group (will include the delete and subsequent inserts)
         self.begin_change();
-        self.undo_stack.record_change(Change::delete(
-            self.cursor.line,
-            0,
-            text.clone(),
-        ));
+        self.undo_stack
+            .record_change(Change::delete(self.cursor.line, 0, text.clone()));
 
-        self.registers.delete(register, RegisterContent::Lines(text), false);
+        self.registers
+            .delete(register, RegisterContent::Lines(text), false);
 
         // Delete all lines except keep one empty line
         for _ in 0..count.saturating_sub(1) {
@@ -2258,7 +2371,12 @@ impl Editor {
         // Clear current line content (keep the newline)
         let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
         if line_len > 0 {
-            self.buffers[self.current_buffer_idx].delete_range(self.cursor.line, 0, self.cursor.line, line_len);
+            self.buffers[self.current_buffer_idx].delete_range(
+                self.cursor.line,
+                0,
+                self.cursor.line,
+                line_len,
+            );
         }
 
         self.cursor.col = 0;
@@ -2285,7 +2403,11 @@ impl Editor {
                         insert_text,
                     ));
 
-                    self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, line_len, '\n');
+                    self.buffers[self.current_buffer_idx].insert_char(
+                        self.cursor.line,
+                        line_len,
+                        '\n',
+                    );
                     self.cursor.line += 1;
                     self.cursor.col = 0;
 
@@ -2310,13 +2432,18 @@ impl Editor {
                         text.clone(),
                     ));
 
-                    self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, insert_col, &text);
+                    self.buffers[self.current_buffer_idx].insert_str(
+                        self.cursor.line,
+                        insert_col,
+                        &text,
+                    );
                     self.cursor.col = insert_col + text.len().saturating_sub(1);
                     self.clamp_cursor();
                 }
             }
 
-            self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+            self.undo_stack
+                .end_undo_group(self.cursor.line, self.cursor.col);
         }
         self.check_clipboard_error();
     }
@@ -2344,7 +2471,11 @@ impl Editor {
 
                     self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, 0, &text);
                     if !text.ends_with('\n') {
-                        self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, text.len(), '\n');
+                        self.buffers[self.current_buffer_idx].insert_char(
+                            self.cursor.line,
+                            text.len(),
+                            '\n',
+                        );
                     }
                     self.cursor.col = 0;
                     self.scroll_to_cursor();
@@ -2358,13 +2489,18 @@ impl Editor {
                     ));
 
                     // Paste before cursor
-                    self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, self.cursor.col, &text);
+                    self.buffers[self.current_buffer_idx].insert_str(
+                        self.cursor.line,
+                        self.cursor.col,
+                        &text,
+                    );
                     self.cursor.col = self.cursor.col + text.len().saturating_sub(1);
                     self.clamp_cursor();
                 }
             }
 
-            self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+            self.undo_stack
+                .end_undo_group(self.cursor.line, self.cursor.col);
         }
         self.check_clipboard_error();
     }
@@ -2504,7 +2640,8 @@ impl Editor {
     /// Exit to normal mode
     pub fn enter_normal_mode(&mut self) {
         // End any current undo group
-        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
 
         // Hide any active popups
         self.completion.hide();
@@ -2534,11 +2671,19 @@ impl Editor {
             ));
 
             if ch == '\n' {
-                self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, self.cursor.col, '\n');
+                self.buffers[self.current_buffer_idx].insert_char(
+                    self.cursor.line,
+                    self.cursor.col,
+                    '\n',
+                );
                 self.cursor.line += 1;
                 self.cursor.col = 0;
             } else {
-                self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, self.cursor.col, ch);
+                self.buffers[self.current_buffer_idx].insert_char(
+                    self.cursor.line,
+                    self.cursor.col,
+                    ch,
+                );
                 self.cursor.col += 1;
             }
         }
@@ -2554,17 +2699,25 @@ impl Editor {
         let between_brackets = self.is_cursor_between_brackets();
 
         // Try tree-sitter based indentation for supported languages
-        if matches!(language.as_deref(), Some("javascript" | "typescript" | "tsx" | "css" | "json" | "toml" | "html")) {
+        if matches!(
+            language.as_deref(),
+            Some("javascript" | "typescript" | "tsx" | "css" | "json" | "toml" | "html")
+        ) {
             if let Some((tree, source)) = self.syntax.get_tree_and_source() {
-                if let Some(cursor_byte) = self.syntax.position_to_byte(self.cursor.line, self.cursor.col) {
-                    let indent_spaces = crate::indent::calculate_indent(tree, source, cursor_byte, tab_width);
+                if let Some(cursor_byte) = self
+                    .syntax
+                    .position_to_byte(self.cursor.line, self.cursor.col)
+                {
+                    let indent_spaces =
+                        crate::indent::calculate_indent(tree, source, cursor_byte, tab_width);
                     let indent = " ".repeat(indent_spaces);
 
                     if between_brackets {
                         // Bracket expansion: insert two newlines
                         // First line: indented content line (where cursor goes)
                         // Second line: closing bracket at base indent
-                        let base_indent = self.buffers[self.current_buffer_idx].get_line_indent(self.cursor.line);
+                        let base_indent =
+                            self.buffers[self.current_buffer_idx].get_line_indent(self.cursor.line);
                         let insert_text = format!("\n{}\n{}", indent, base_indent);
 
                         self.undo_stack.record_change(Change::insert(
@@ -2573,7 +2726,11 @@ impl Editor {
                             insert_text.clone(),
                         ));
 
-                        self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, self.cursor.col, &insert_text);
+                        self.buffers[self.current_buffer_idx].insert_str(
+                            self.cursor.line,
+                            self.cursor.col,
+                            &insert_text,
+                        );
 
                         // Move cursor to the indented middle line
                         self.cursor.line += 1;
@@ -2587,7 +2744,11 @@ impl Editor {
                             insert_text.clone(),
                         ));
 
-                        self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, self.cursor.col, &insert_text);
+                        self.buffers[self.current_buffer_idx].insert_str(
+                            self.cursor.line,
+                            self.cursor.col,
+                            &insert_text,
+                        );
 
                         self.cursor.line += 1;
                         self.cursor.col = indent.len();
@@ -2648,7 +2809,11 @@ impl Editor {
                 insert_text.clone(),
             ));
 
-            self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, self.cursor.col, &insert_text);
+            self.buffers[self.current_buffer_idx].insert_str(
+                self.cursor.line,
+                self.cursor.col,
+                &insert_text,
+            );
 
             // Move cursor to the indented middle line
             self.cursor.line += 1;
@@ -2662,7 +2827,11 @@ impl Editor {
                 insert_text.clone(),
             ));
 
-            self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, self.cursor.col, &insert_text);
+            self.buffers[self.current_buffer_idx].insert_str(
+                self.cursor.line,
+                self.cursor.col,
+                &insert_text,
+            );
 
             self.cursor.line += 1;
             self.cursor.col = indent.len();
@@ -2677,10 +2846,22 @@ impl Editor {
         let language = self.syntax.language_name().map(|s| s.to_string());
 
         // Try tree-sitter based dedent for supported languages
-        if matches!(language.as_deref(), Some("javascript" | "typescript" | "tsx" | "css" | "json" | "toml" | "html")) {
+        if matches!(
+            language.as_deref(),
+            Some("javascript" | "typescript" | "tsx" | "css" | "json" | "toml" | "html")
+        ) {
             if let Some((tree, source)) = self.syntax.get_tree_and_source() {
-                if let Some(cursor_byte) = self.syntax.position_to_byte(self.cursor.line, self.cursor.col) {
-                    let dedent_amount = crate::indent::get_dedent_amount(tree, source, cursor_byte, bracket, tab_width);
+                if let Some(cursor_byte) = self
+                    .syntax
+                    .position_to_byte(self.cursor.line, self.cursor.col)
+                {
+                    let dedent_amount = crate::indent::get_dedent_amount(
+                        tree,
+                        source,
+                        cursor_byte,
+                        bracket,
+                        tab_width,
+                    );
 
                     if dedent_amount > 0 && self.cursor.col >= dedent_amount {
                         let delete_start = self.cursor.col - dedent_amount;
@@ -2696,7 +2877,8 @@ impl Editor {
                         // Delete the indent
                         for _ in 0..dedent_amount {
                             self.cursor.col -= 1;
-                            self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
+                            self.buffers[self.current_buffer_idx]
+                                .delete_char(self.cursor.line, self.cursor.col);
                         }
                     }
 
@@ -2706,7 +2888,11 @@ impl Editor {
                         self.cursor.col,
                         bracket.to_string(),
                     ));
-                    self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, self.cursor.col, bracket);
+                    self.buffers[self.current_buffer_idx].insert_char(
+                        self.cursor.line,
+                        self.cursor.col,
+                        bracket,
+                    );
                     self.cursor.col += 1;
                     return;
                 }
@@ -2732,7 +2918,8 @@ impl Editor {
                 // Delete the indent
                 for _ in 0..tab_width {
                     self.cursor.col -= 1;
-                    self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
+                    self.buffers[self.current_buffer_idx]
+                        .delete_char(self.cursor.line, self.cursor.col);
                 }
             }
         }
@@ -2743,7 +2930,11 @@ impl Editor {
             self.cursor.col,
             bracket.to_string(),
         ));
-        self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, self.cursor.col, bracket);
+        self.buffers[self.current_buffer_idx].insert_char(
+            self.cursor.line,
+            self.cursor.col,
+            bracket,
+        );
         self.cursor.col += 1;
     }
 
@@ -2771,7 +2962,8 @@ impl Editor {
         if self.cursor.col > 0 {
             self.cursor.col -= 1;
             // Record the deleted character for undo
-            let deleted = self.buffers[self.current_buffer_idx].get_char_str(self.cursor.line, self.cursor.col);
+            let deleted = self.buffers[self.current_buffer_idx]
+                .get_char_str(self.cursor.line, self.cursor.col);
             self.undo_stack.record_change(Change::delete(
                 self.cursor.line,
                 self.cursor.col,
@@ -2780,7 +2972,8 @@ impl Editor {
             self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
         } else if self.cursor.line > 0 {
             // Join with previous line
-            let prev_line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line - 1);
+            let prev_line_len =
+                self.buffers[self.current_buffer_idx].line_len(self.cursor.line - 1);
             self.cursor.line -= 1;
             self.cursor.col = prev_line_len;
             // Record the deleted newline for undo
@@ -2799,7 +2992,9 @@ impl Editor {
     pub fn delete_char_at(&mut self) {
         let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
         if line_len > 0 {
-            if let Some(ch) = self.buffers[self.current_buffer_idx].char_at(self.cursor.line, self.cursor.col) {
+            if let Some(ch) =
+                self.buffers[self.current_buffer_idx].char_at(self.cursor.line, self.cursor.col)
+            {
                 // Record for undo (single operation = single undo group)
                 self.begin_change();
                 self.undo_stack.record_change(Change::delete(
@@ -2807,9 +3002,11 @@ impl Editor {
                     self.cursor.col,
                     ch.to_string(),
                 ));
-                self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+                self.undo_stack
+                    .end_undo_group(self.cursor.line, self.cursor.col);
 
-                self.registers.delete(None, RegisterContent::Chars(ch.to_string()), true);
+                self.registers
+                    .delete(None, RegisterContent::Chars(ch.to_string()), true);
             }
             self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
             self.clamp_cursor();
@@ -2820,17 +3017,22 @@ impl Editor {
     pub fn delete_char_before_normal(&mut self) {
         if self.cursor.col > 0 {
             self.cursor.col -= 1;
-            if let Some(ch) = self.buffers[self.current_buffer_idx].char_at(self.cursor.line, self.cursor.col) {
+            if let Some(ch) =
+                self.buffers[self.current_buffer_idx].char_at(self.cursor.line, self.cursor.col)
+            {
                 // Record for undo
-                self.undo_stack.begin_undo_group(self.cursor.line + 1, self.cursor.col + 1);
+                self.undo_stack
+                    .begin_undo_group(self.cursor.line + 1, self.cursor.col + 1);
                 self.undo_stack.record_change(Change::delete(
                     self.cursor.line,
                     self.cursor.col,
                     ch.to_string(),
                 ));
-                self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+                self.undo_stack
+                    .end_undo_group(self.cursor.line, self.cursor.col);
 
-                self.registers.delete(None, RegisterContent::Chars(ch.to_string()), true);
+                self.registers
+                    .delete(None, RegisterContent::Chars(ch.to_string()), true);
             }
             self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
         }
@@ -2853,23 +3055,38 @@ impl Editor {
         let mut col = start_col;
 
         // Skip whitespace backwards
-        while col > 0 && chars.get(col - 1).map(|c| c.is_whitespace()).unwrap_or(false) {
+        while col > 0
+            && chars
+                .get(col - 1)
+                .map(|c| c.is_whitespace())
+                .unwrap_or(false)
+        {
             col -= 1;
         }
 
         // Skip word characters backwards (or non-whitespace non-word chars)
         if col > 0 {
-            let is_word_char = chars.get(col - 1).map(|c| c.is_alphanumeric() || *c == '_').unwrap_or(false);
+            let is_word_char = chars
+                .get(col - 1)
+                .map(|c| c.is_alphanumeric() || *c == '_')
+                .unwrap_or(false);
             if is_word_char {
                 // Delete word characters
-                while col > 0 && chars.get(col - 1).map(|c| c.is_alphanumeric() || *c == '_').unwrap_or(false) {
+                while col > 0
+                    && chars
+                        .get(col - 1)
+                        .map(|c| c.is_alphanumeric() || *c == '_')
+                        .unwrap_or(false)
+                {
                     col -= 1;
                 }
             } else {
                 // Delete non-word, non-whitespace characters
                 while col > 0 {
                     let c = chars.get(col - 1);
-                    if c.map(|c| c.is_whitespace() || c.is_alphanumeric() || *c == '_').unwrap_or(true) {
+                    if c.map(|c| c.is_whitespace() || c.is_alphanumeric() || *c == '_')
+                        .unwrap_or(true)
+                    {
                         break;
                     }
                     col -= 1;
@@ -2910,11 +3127,8 @@ impl Editor {
         let delete_col = self.cursor.col;
 
         // Record for undo
-        self.undo_stack.record_change(Change::delete(
-            self.cursor.line,
-            0,
-            deleted,
-        ));
+        self.undo_stack
+            .record_change(Change::delete(self.cursor.line, 0, deleted));
 
         // Delete from start to cursor
         for _ in 0..delete_col {
@@ -2974,11 +3188,8 @@ impl Editor {
         // Start undo group and record the insertion
         let insert_text = format!("{}\n", indent);
         self.begin_change();
-        self.undo_stack.record_change(Change::insert(
-            self.cursor.line,
-            0,
-            insert_text.clone(),
-        ));
+        self.undo_stack
+            .record_change(Change::insert(self.cursor.line, 0, insert_text.clone()));
 
         self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, 0, &insert_text);
         // Cursor stays on same line number (which is now the new line with indent)
@@ -2991,7 +3202,10 @@ impl Editor {
     /// Save the current buffer
     pub fn save(&mut self) -> anyhow::Result<()> {
         self.buffers[self.current_buffer_idx].save()?;
-        self.status_message = Some(format!("\"{}\" written", self.buffers[self.current_buffer_idx].display_name()));
+        self.status_message = Some(format!(
+            "\"{}\" written",
+            self.buffers[self.current_buffer_idx].display_name()
+        ));
         // Update git diff after save (file now matches HEAD if no other changes)
         self.update_git_diff();
         Ok(())
@@ -3010,7 +3224,7 @@ impl Editor {
     /// Enter command mode
     pub fn enter_command_mode(&mut self) {
         self.mode = Mode::Command;
-        self.command_line.clear();
+        self.command_line.begin_prompt();
     }
 
     /// Exit command mode back to normal
@@ -3021,7 +3235,11 @@ impl Editor {
 
     /// Go to a specific line number (1-indexed)
     pub fn goto_line(&mut self, line: usize) {
-        let target = line.saturating_sub(1).min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+        let target = line.saturating_sub(1).min(
+            self.buffers[self.current_buffer_idx]
+                .len_lines()
+                .saturating_sub(1),
+        );
         self.cursor.line = target;
         self.cursor.col = 0;
         self.clamp_cursor();
@@ -3033,7 +3251,8 @@ impl Editor {
         let path = self.buffer().path.clone();
         // Save current position as "previous jump position" for '' command
         self.previous_jump_position = Some((path.clone(), self.cursor.line, self.cursor.col));
-        self.jump_list.record(path, self.cursor.line, self.cursor.col);
+        self.jump_list
+            .record(path, self.cursor.line, self.cursor.col);
     }
 
     /// Go back in jump list (Ctrl+o)
@@ -3042,7 +3261,11 @@ impl Editor {
         let current_line = self.cursor.line;
         let current_col = self.cursor.col;
 
-        if let Some(loc) = self.jump_list.go_back(current_path, current_line, current_col).cloned() {
+        if let Some(loc) = self
+            .jump_list
+            .go_back(current_path, current_line, current_col)
+            .cloned()
+        {
             // Check if we need to switch files
             if loc.path != self.buffer().path {
                 if let Some(path) = loc.path {
@@ -3180,7 +3403,8 @@ impl Editor {
         for buffer in self.buffers.iter_mut() {
             if buffer.has_external_changes() {
                 if let Some(path) = &buffer.path {
-                    let name = path.file_name()
+                    let name = path
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("file")
                         .to_string();
@@ -3260,11 +3484,17 @@ impl Editor {
                 if format_on_save {
                     if let Some(formatter_config) = self.get_formatter_for_buffer(i).cloned() {
                         let content = self.buffers[i].content();
-                        let file_path = self.buffers[i].path.as_ref()
+                        let file_path = self.buffers[i]
+                            .path
+                            .as_ref()
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_default();
 
-                        match crate::formatter::format_with_external(&content, &file_path, &formatter_config) {
+                        match crate::formatter::format_with_external(
+                            &content,
+                            &file_path,
+                            &formatter_config,
+                        ) {
                             Ok(formatted) => {
                                 if formatted != content {
                                     self.buffers[i].set_content(&formatted);
@@ -3307,8 +3537,8 @@ impl Editor {
                 self.buffers[self.current_buffer_idx].apply_change(
                     change.start_line,
                     change.start_col,
-                    &change.new_text,  // Remove what was inserted
-                    &change.old_text,  // Restore what was deleted
+                    &change.new_text, // Remove what was inserted
+                    &change.old_text, // Restore what was deleted
                 );
             }
 
@@ -3334,8 +3564,8 @@ impl Editor {
                 self.buffers[self.current_buffer_idx].apply_change(
                     change.start_line,
                     change.start_col,
-                    &change.old_text,  // Remove old text
-                    &change.new_text,  // Insert new text
+                    &change.old_text, // Remove old text
+                    &change.new_text, // Insert new text
                 );
             }
 
@@ -3427,15 +3657,22 @@ impl Editor {
             let target = match self.search.direction {
                 SearchDirection::Forward => {
                     // Find first match at or after cursor
-                    self.search_matches.iter().find(|(line, col, _)| {
-                        *line > cursor_line || (*line == cursor_line && *col > cursor_col)
-                    }).or_else(|| self.search_matches.first())
+                    self.search_matches
+                        .iter()
+                        .find(|(line, col, _)| {
+                            *line > cursor_line || (*line == cursor_line && *col > cursor_col)
+                        })
+                        .or_else(|| self.search_matches.first())
                 }
                 SearchDirection::Backward => {
                     // Find last match before cursor
-                    self.search_matches.iter().rev().find(|(line, col, _)| {
-                        *line < cursor_line || (*line == cursor_line && *col < cursor_col)
-                    }).or_else(|| self.search_matches.last())
+                    self.search_matches
+                        .iter()
+                        .rev()
+                        .find(|(line, col, _)| {
+                            *line < cursor_line || (*line == cursor_line && *col < cursor_col)
+                        })
+                        .or_else(|| self.search_matches.last())
                 }
             };
 
@@ -3615,7 +3852,13 @@ impl Editor {
 
     /// Search and replace text
     /// Returns the number of replacements made
-    pub fn substitute(&mut self, pattern: &str, replacement: &str, entire_file: bool, global: bool) -> usize {
+    pub fn substitute(
+        &mut self,
+        pattern: &str,
+        replacement: &str,
+        entire_file: bool,
+        global: bool,
+    ) -> usize {
         if pattern.is_empty() {
             return 0;
         }
@@ -3672,11 +3915,12 @@ impl Editor {
                     new_line.push_str(&line_str[last_end..]);
 
                     // Record undo
-                    self.undo_stack.record_change(crate::editor::undo::Change::replace_line(
-                        line_idx,
-                        line_str.clone(),
-                        new_line.clone(),
-                    ));
+                    self.undo_stack
+                        .record_change(crate::editor::undo::Change::replace_line(
+                            line_idx,
+                            line_str.clone(),
+                            new_line.clone(),
+                        ));
 
                     // Replace the line in buffer
                     self.buffers[self.current_buffer_idx].replace_line(line_idx, &new_line);
@@ -3685,7 +3929,8 @@ impl Editor {
         }
 
         // End undo group
-        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
 
         // Mark buffer as modified if changes were made
         if total_replacements > 0 {
@@ -3745,7 +3990,9 @@ impl Editor {
                                 line_str.chars().count()
                             };
                             let end_byte = Self::char_to_byte_idx(&line_str, end_col);
-                            if let Some(pos) = line_str[..end_byte.min(line_str.len())].find(pattern) {
+                            if let Some(pos) =
+                                line_str[..end_byte.min(line_str.len())].find(pattern)
+                            {
                                 self.cursor.line = line_idx;
                                 self.cursor.col = Self::byte_to_char_idx(&line_str, pos);
                                 self.scroll_to_cursor();
@@ -3798,7 +4045,8 @@ impl Editor {
                             if start_byte < line_str.len() {
                                 if let Some(pos) = line_str[start_byte..].rfind(pattern) {
                                     self.cursor.line = line_idx;
-                                    self.cursor.col = Self::byte_to_char_idx(&line_str, start_byte + pos);
+                                    self.cursor.col =
+                                        Self::byte_to_char_idx(&line_str, start_byte + pos);
                                     self.scroll_to_cursor();
                                     self.set_status("search hit TOP, continuing at BOTTOM");
                                     return true;
@@ -3895,9 +4143,7 @@ impl Editor {
     /// Returns (start_line, start_col, end_line, end_col) inclusive
     pub fn get_visual_range(&self) -> (usize, usize, usize, usize) {
         match self.mode {
-            Mode::Visual => {
-                self.visual.get_range(self.cursor.line, self.cursor.col)
-            }
+            Mode::Visual => self.visual.get_range(self.cursor.line, self.cursor.col),
             Mode::VisualLine => {
                 let (start_line, end_line) = self.visual.get_line_range(self.cursor.line);
                 let end_col = self.buffers[self.current_buffer_idx].line_len(end_line);
@@ -3905,9 +4151,15 @@ impl Editor {
             }
             Mode::VisualBlock => {
                 // For block mode, return (top, left, bottom, right)
-                self.visual.get_block_range(self.cursor.line, self.cursor.col)
+                self.visual
+                    .get_block_range(self.cursor.line, self.cursor.col)
             }
-            _ => (self.cursor.line, self.cursor.col, self.cursor.line, self.cursor.col),
+            _ => (
+                self.cursor.line,
+                self.cursor.col,
+                self.cursor.line,
+                self.cursor.col,
+            ),
         }
     }
 
@@ -3922,7 +4174,8 @@ impl Editor {
                 self.cursor.line = start_line;
                 self.cursor.col = 0;
                 let text = self.delete_lines(start_line, count);
-                self.registers.delete(None, RegisterContent::Lines(text), false);
+                self.registers
+                    .delete(None, RegisterContent::Lines(text), false);
             }
             Mode::Visual => {
                 // Character-wise delete
@@ -3930,13 +4183,15 @@ impl Editor {
 
                 // Record for undo
                 self.begin_change();
-                self.undo_stack.record_change(Change::delete(
+                self.undo_stack
+                    .record_change(Change::delete(start_line, start_col, text.clone()));
+
+                self.buffers[self.current_buffer_idx].delete_range(
                     start_line,
                     start_col,
-                    text.clone(),
-                ));
-
-                self.buffers[self.current_buffer_idx].delete_range(start_line, start_col, end_line, end_col + 1);
+                    end_line,
+                    end_col + 1,
+                );
 
                 self.undo_stack.end_undo_group(start_line, start_col);
 
@@ -3945,11 +4200,14 @@ impl Editor {
                 self.clamp_cursor();
 
                 let is_small = !text.contains('\n');
-                self.registers.delete(None, RegisterContent::Chars(text), is_small);
+                self.registers
+                    .delete(None, RegisterContent::Chars(text), is_small);
             }
             Mode::VisualBlock => {
                 // Block-wise delete
-                let (top, left, bottom, right) = self.visual.get_block_range(self.cursor.line, self.cursor.col);
+                let (top, left, bottom, right) = self
+                    .visual
+                    .get_block_range(self.cursor.line, self.cursor.col);
 
                 self.undo_stack.begin_undo_group(top, left);
 
@@ -3964,19 +4222,23 @@ impl Editor {
                         if left <= actual_right {
                             // Get the text being deleted
                             let deleted: String = (left..=actual_right)
-                                .filter_map(|c| self.buffers[self.current_buffer_idx].char_at(line_idx, c))
+                                .filter_map(|c| {
+                                    self.buffers[self.current_buffer_idx].char_at(line_idx, c)
+                                })
                                 .collect();
                             deleted_lines.push(deleted.clone());
 
                             // Record the delete for undo
-                            self.undo_stack.record_change(Change::delete(
-                                line_idx,
-                                left,
-                                deleted,
-                            ));
+                            self.undo_stack
+                                .record_change(Change::delete(line_idx, left, deleted));
 
                             // Delete the range on this line
-                            self.buffers[self.current_buffer_idx].delete_range(line_idx, left, line_idx, actual_right + 1);
+                            self.buffers[self.current_buffer_idx].delete_range(
+                                line_idx,
+                                left,
+                                line_idx,
+                                actual_right + 1,
+                            );
                         }
                     }
                 }
@@ -3991,7 +4253,8 @@ impl Editor {
                 self.cursor.col = left;
                 self.clamp_cursor();
 
-                self.registers.delete(None, RegisterContent::Chars(block_text), false);
+                self.registers
+                    .delete(None, RegisterContent::Chars(block_text), false);
             }
             _ => {}
         }
@@ -4020,7 +4283,9 @@ impl Editor {
             }
             Mode::VisualBlock => {
                 // Block-wise yank
-                let (top, left, bottom, right) = self.visual.get_block_range(self.cursor.line, self.cursor.col);
+                let (top, left, bottom, right) = self
+                    .visual
+                    .get_block_range(self.cursor.line, self.cursor.col);
 
                 // Collect text from each line in the block
                 let mut yanked_lines: Vec<String> = Vec::new();
@@ -4030,7 +4295,9 @@ impl Editor {
                         let actual_right = right.min(line_len.saturating_sub(1));
                         if left <= actual_right {
                             let text: String = (left..=actual_right)
-                                .filter_map(|c| self.buffers[self.current_buffer_idx].char_at(line_idx, c))
+                                .filter_map(|c| {
+                                    self.buffers[self.current_buffer_idx].char_at(line_idx, c)
+                                })
                                 .collect();
                             yanked_lines.push(text);
                         } else {
@@ -4042,7 +4309,8 @@ impl Editor {
                 }
 
                 let block_text = yanked_lines.join("\n");
-                self.registers.yank(None, RegisterContent::Chars(block_text));
+                self.registers
+                    .yank(None, RegisterContent::Chars(block_text));
                 let count = bottom - top + 1;
                 self.set_status(format!("block of {} line(s) yanked", count));
 
@@ -4075,13 +4343,11 @@ impl Editor {
 
                 // Begin undo group
                 self.begin_change();
-                self.undo_stack.record_change(Change::delete(
-                    start_line,
-                    0,
-                    text.clone(),
-                ));
+                self.undo_stack
+                    .record_change(Change::delete(start_line, 0, text.clone()));
 
-                self.registers.delete(None, RegisterContent::Lines(text), false);
+                self.registers
+                    .delete(None, RegisterContent::Lines(text), false);
 
                 // Delete all lines in range
                 let count = end_line - start_line + 1;
@@ -4094,7 +4360,8 @@ impl Editor {
                 // Clear remaining line
                 let line_len = self.buffers[self.current_buffer_idx].line_len(start_line);
                 if line_len > 0 {
-                    self.buffers[self.current_buffer_idx].delete_range(start_line, 0, start_line, line_len);
+                    self.buffers[self.current_buffer_idx]
+                        .delete_range(start_line, 0, start_line, line_len);
                 }
 
                 self.cursor.line = start_line;
@@ -4107,25 +4374,30 @@ impl Editor {
 
                 // Begin undo group
                 self.begin_change();
-                self.undo_stack.record_change(Change::delete(
+                self.undo_stack
+                    .record_change(Change::delete(start_line, start_col, text.clone()));
+
+                self.buffers[self.current_buffer_idx].delete_range(
                     start_line,
                     start_col,
-                    text.clone(),
-                ));
-
-                self.buffers[self.current_buffer_idx].delete_range(start_line, start_col, end_line, end_col + 1);
+                    end_line,
+                    end_col + 1,
+                );
 
                 self.cursor.line = start_line;
                 self.cursor.col = start_col;
 
                 let is_small = !text.contains('\n');
-                self.registers.delete(None, RegisterContent::Chars(text), is_small);
+                self.registers
+                    .delete(None, RegisterContent::Chars(text), is_small);
 
                 self.mode = Mode::Insert;
             }
             Mode::VisualBlock => {
                 // Block-wise change: delete the block and enter insert mode
-                let (top, left, bottom, right) = self.visual.get_block_range(self.cursor.line, self.cursor.col);
+                let (top, left, bottom, right) = self
+                    .visual
+                    .get_block_range(self.cursor.line, self.cursor.col);
 
                 self.undo_stack.begin_undo_group(top, left);
 
@@ -4140,19 +4412,23 @@ impl Editor {
                         if left <= actual_right {
                             // Get the text being deleted
                             let deleted: String = (left..=actual_right)
-                                .filter_map(|c| self.buffers[self.current_buffer_idx].char_at(line_idx, c))
+                                .filter_map(|c| {
+                                    self.buffers[self.current_buffer_idx].char_at(line_idx, c)
+                                })
                                 .collect();
                             deleted_lines.push(deleted.clone());
 
                             // Record the delete for undo
-                            self.undo_stack.record_change(Change::delete(
-                                line_idx,
-                                left,
-                                deleted,
-                            ));
+                            self.undo_stack
+                                .record_change(Change::delete(line_idx, left, deleted));
 
                             // Delete the range on this line
-                            self.buffers[self.current_buffer_idx].delete_range(line_idx, left, line_idx, actual_right + 1);
+                            self.buffers[self.current_buffer_idx].delete_range(
+                                line_idx,
+                                left,
+                                line_idx,
+                                actual_right + 1,
+                            );
                         }
                     }
                 }
@@ -4166,7 +4442,8 @@ impl Editor {
                 self.cursor.col = left;
                 self.clamp_cursor();
 
-                self.registers.delete(None, RegisterContent::Chars(block_text), false);
+                self.registers
+                    .delete(None, RegisterContent::Chars(block_text), false);
 
                 self.mode = Mode::Insert;
             }
@@ -4182,7 +4459,10 @@ impl Editor {
 
     /// Find the range of a text object at the cursor position
     /// Returns Option<(start_line, start_col, end_line, end_col)>
-    pub fn find_text_object_range(&self, text_object: TextObject) -> Option<(usize, usize, usize, usize)> {
+    pub fn find_text_object_range(
+        &self,
+        text_object: TextObject,
+    ) -> Option<(usize, usize, usize, usize)> {
         match text_object.object_type {
             TextObjectType::Word => self.find_word_object(text_object.modifier, false),
             TextObjectType::BigWord => self.find_word_object(text_object.modifier, true),
@@ -4192,15 +4472,24 @@ impl Editor {
             TextObjectType::Paren => self.find_bracket_object(text_object.modifier, '(', ')'),
             TextObjectType::Brace => self.find_bracket_object(text_object.modifier, '{', '}'),
             TextObjectType::Bracket => self.find_bracket_object(text_object.modifier, '[', ']'),
-            TextObjectType::AngleBracket => self.find_bracket_object(text_object.modifier, '<', '>'),
+            TextObjectType::AngleBracket => {
+                self.find_bracket_object(text_object.modifier, '<', '>')
+            }
         }
     }
 
     /// Find word text object boundaries
-    fn find_word_object(&self, modifier: TextObjectModifier, big_word: bool) -> Option<(usize, usize, usize, usize)> {
+    fn find_word_object(
+        &self,
+        modifier: TextObjectModifier,
+        big_word: bool,
+    ) -> Option<(usize, usize, usize, usize)> {
         let line = self.cursor.line;
         let col = self.cursor.col;
-        let line_text: String = self.buffers[self.current_buffer_idx].line(line)?.chars().collect();
+        let line_text: String = self.buffers[self.current_buffer_idx]
+            .line(line)?
+            .chars()
+            .collect();
 
         if line_text.is_empty() {
             return None;
@@ -4231,7 +4520,8 @@ impl Editor {
             }
         } else if !in_whitespace {
             // In punctuation - find bounds of punctuation sequence
-            while start > 0 && !is_word_char(chars[start - 1]) && !chars[start - 1].is_whitespace() {
+            while start > 0 && !is_word_char(chars[start - 1]) && !chars[start - 1].is_whitespace()
+            {
                 start -= 1;
             }
         } else {
@@ -4249,7 +4539,10 @@ impl Editor {
                 end += 1;
             }
         } else if !in_whitespace {
-            while end < chars.len() - 1 && !is_word_char(chars[end + 1]) && !chars[end + 1].is_whitespace() {
+            while end < chars.len() - 1
+                && !is_word_char(chars[end + 1])
+                && !chars[end + 1].is_whitespace()
+            {
                 end += 1;
             }
         } else {
@@ -4283,10 +4576,17 @@ impl Editor {
     }
 
     /// Find quote text object boundaries
-    fn find_quote_object(&self, modifier: TextObjectModifier, quote: char) -> Option<(usize, usize, usize, usize)> {
+    fn find_quote_object(
+        &self,
+        modifier: TextObjectModifier,
+        quote: char,
+    ) -> Option<(usize, usize, usize, usize)> {
         let line = self.cursor.line;
         let col = self.cursor.col;
-        let line_text: String = self.buffers[self.current_buffer_idx].line(line)?.chars().collect();
+        let line_text: String = self.buffers[self.current_buffer_idx]
+            .line(line)?
+            .chars()
+            .collect();
 
         let chars: Vec<char> = line_text.chars().collect();
 
@@ -4335,7 +4635,12 @@ impl Editor {
     }
 
     /// Find bracket text object boundaries with nesting support
-    fn find_bracket_object(&self, modifier: TextObjectModifier, open_bracket: char, close_bracket: char) -> Option<(usize, usize, usize, usize)> {
+    fn find_bracket_object(
+        &self,
+        modifier: TextObjectModifier,
+        open_bracket: char,
+        close_bracket: char,
+    ) -> Option<(usize, usize, usize, usize)> {
         let cursor_line = self.cursor.line;
         let cursor_col = self.cursor.col;
 
@@ -4345,7 +4650,10 @@ impl Editor {
 
         // First, search backward from cursor
         'outer: for line_idx in (0..=cursor_line).rev() {
-            let line_text: String = self.buffers[self.current_buffer_idx].line(line_idx)?.chars().collect();
+            let line_text: String = self.buffers[self.current_buffer_idx]
+                .line(line_idx)?
+                .chars()
+                .collect();
             let chars: Vec<char> = line_text.chars().collect();
 
             let start_col = if line_idx == cursor_line {
@@ -4378,7 +4686,10 @@ impl Editor {
         depth = 0;
 
         'outer: for line_idx in open_line..self.buffers[self.current_buffer_idx].len_lines() {
-            let line_text: String = self.buffers[self.current_buffer_idx].line(line_idx)?.chars().collect();
+            let line_text: String = self.buffers[self.current_buffer_idx]
+                .line(line_idx)?
+                .chars()
+                .collect();
             let chars: Vec<char> = line_text.chars().collect();
 
             let start_col = if line_idx == open_line { open_col } else { 0 };
@@ -4408,7 +4719,12 @@ impl Editor {
                     Some((open_line, open_col + 1, close_line, close_col - 1))
                 } else {
                     // Multi-line
-                    Some((open_line, open_col + 1, close_line, close_col.saturating_sub(1)))
+                    Some((
+                        open_line,
+                        open_col + 1,
+                        close_line,
+                        close_col.saturating_sub(1),
+                    ))
                 }
             }
             TextObjectModifier::Around => Some((open_line, open_col, close_line, close_col)),
@@ -4417,22 +4733,31 @@ impl Editor {
 
     /// Delete text object
     pub fn delete_text_object(&mut self, text_object: TextObject, register: Option<char>) {
-        if let Some((start_line, start_col, end_line, end_col)) = self.find_text_object_range(text_object) {
+        if let Some((start_line, start_col, end_line, end_col)) =
+            self.find_text_object_range(text_object)
+        {
             // Get text for register
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
             // Record for undo
             self.begin_change();
-            self.undo_stack.record_change(Change::delete(start_line, start_col, text.clone()));
+            self.undo_stack
+                .record_change(Change::delete(start_line, start_col, text.clone()));
 
             // Delete the range (inclusive)
-            self.buffers[self.current_buffer_idx].delete_range(start_line, start_col, end_line, end_col + 1);
+            self.buffers[self.current_buffer_idx].delete_range(
+                start_line,
+                start_col,
+                end_line,
+                end_col + 1,
+            );
 
             self.undo_stack.end_undo_group(start_line, start_col);
 
             // Store in register
             let is_small = !text.contains('\n');
-            self.registers.delete(register, RegisterContent::Chars(text), is_small);
+            self.registers
+                .delete(register, RegisterContent::Chars(text), is_small);
 
             // Move cursor to start
             self.cursor.line = start_line;
@@ -4444,20 +4769,29 @@ impl Editor {
 
     /// Change text object (delete and enter insert mode)
     pub fn change_text_object(&mut self, text_object: TextObject, register: Option<char>) {
-        if let Some((start_line, start_col, end_line, end_col)) = self.find_text_object_range(text_object) {
+        if let Some((start_line, start_col, end_line, end_col)) =
+            self.find_text_object_range(text_object)
+        {
             // Get text for register
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
             // Record for undo (will be continued in insert mode)
             self.begin_change();
-            self.undo_stack.record_change(Change::delete(start_line, start_col, text.clone()));
+            self.undo_stack
+                .record_change(Change::delete(start_line, start_col, text.clone()));
 
             // Delete the range (inclusive)
-            self.buffers[self.current_buffer_idx].delete_range(start_line, start_col, end_line, end_col + 1);
+            self.buffers[self.current_buffer_idx].delete_range(
+                start_line,
+                start_col,
+                end_line,
+                end_col + 1,
+            );
 
             // Store in register
             let is_small = !text.contains('\n');
-            self.registers.delete(register, RegisterContent::Chars(text), is_small);
+            self.registers
+                .delete(register, RegisterContent::Chars(text), is_small);
 
             // Move cursor to start
             self.cursor.line = start_line;
@@ -4472,7 +4806,9 @@ impl Editor {
 
     /// Yank text object
     pub fn yank_text_object(&mut self, text_object: TextObject, register: Option<char>) {
-        if let Some((start_line, start_col, end_line, end_col)) = self.find_text_object_range(text_object) {
+        if let Some((start_line, start_col, end_line, end_col)) =
+            self.find_text_object_range(text_object)
+        {
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
             self.registers.yank(register, RegisterContent::Chars(text));
             self.set_status("Yanked");
@@ -4481,7 +4817,9 @@ impl Editor {
 
     /// Select text object in visual mode
     pub fn select_text_object(&mut self, text_object: TextObject) {
-        if let Some((start_line, start_col, end_line, end_col)) = self.find_text_object_range(text_object) {
+        if let Some((start_line, start_col, end_line, end_col)) =
+            self.find_text_object_range(text_object)
+        {
             // Set visual selection to cover the text object
             self.visual.anchor_line = start_line;
             self.visual.anchor_col = start_col;
@@ -4509,7 +4847,8 @@ impl Editor {
         }
 
         // Get the old character for undo
-        let old_char = self.buffers[self.current_buffer_idx].char_at(self.cursor.line, self.cursor.col);
+        let old_char =
+            self.buffers[self.current_buffer_idx].char_at(self.cursor.line, self.cursor.col);
         if old_char.is_none() {
             return;
         }
@@ -4527,7 +4866,8 @@ impl Editor {
             self.cursor.col,
             ch.to_string(),
         ));
-        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
 
         // Delete old char and insert new one
         self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
@@ -4549,12 +4889,16 @@ impl Editor {
         // We need to delete that newline and leading whitespace from next line
 
         // Get the next line's content
-        let next_line: String = self.buffers[self.current_buffer_idx].line(self.cursor.line + 1)
+        let next_line: String = self.buffers[self.current_buffer_idx]
+            .line(self.cursor.line + 1)
             .map(|l| l.chars().collect())
             .unwrap_or_default();
 
         // Count leading whitespace to strip
-        let leading_ws = next_line.chars().take_while(|c| c.is_whitespace() && *c != '\n').count();
+        let leading_ws = next_line
+            .chars()
+            .take_while(|c| c.is_whitespace() && *c != '\n')
+            .count();
 
         // Begin undo group
         self.begin_change();
@@ -4569,16 +4913,16 @@ impl Editor {
         // Record deletion of leading whitespace from next line (if any)
         if leading_ws > 0 {
             let ws: String = next_line.chars().take(leading_ws).collect();
-            self.undo_stack.record_change(Change::delete(
-                self.cursor.line,
-                current_line_len,
-                ws,
-            ));
+            self.undo_stack
+                .record_change(Change::delete(self.cursor.line, current_line_len, ws));
         }
 
         // Record insertion of single space ONLY if we will actually insert one
         // (space is only inserted when current line is non-empty AND next line has content)
-        if current_line_len > 0 && !next_line.is_empty() && !next_line.chars().all(|c| c.is_whitespace()) {
+        if current_line_len > 0
+            && !next_line.is_empty()
+            && !next_line.chars().all(|c| c.is_whitespace())
+        {
             self.undo_stack.record_change(Change::insert(
                 self.cursor.line,
                 current_line_len,
@@ -4594,13 +4938,21 @@ impl Editor {
         if leading_ws > 0 {
             // Delete leading whitespace
             for _ in 0..leading_ws {
-                self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, current_line_len);
+                self.buffers[self.current_buffer_idx]
+                    .delete_char(self.cursor.line, current_line_len);
             }
         }
 
         // Insert a single space if the current line didn't end at column 0
-        if current_line_len > 0 && !next_line.is_empty() && !next_line.chars().all(|c| c.is_whitespace()) {
-            self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, current_line_len, ' ');
+        if current_line_len > 0
+            && !next_line.is_empty()
+            && !next_line.chars().all(|c| c.is_whitespace())
+        {
+            self.buffers[self.current_buffer_idx].insert_char(
+                self.cursor.line,
+                current_line_len,
+                ' ',
+            );
             // Position cursor at the space
             self.cursor.col = current_line_len;
         } else if current_line_len > 0 {
@@ -4609,7 +4961,8 @@ impl Editor {
             self.cursor.col = 0;
         }
 
-        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
         self.clamp_cursor();
     }
 
@@ -4641,7 +4994,8 @@ impl Editor {
         // Position cursor at the join point
         self.cursor.col = current_line_len;
 
-        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
         self.clamp_cursor();
     }
 
@@ -4658,11 +5012,8 @@ impl Editor {
             self.begin_change();
 
             // Delete closing char first (so positions don't shift)
-            self.undo_stack.record_change(Change::delete(
-                end_pos.0,
-                end_pos.1,
-                close.to_string(),
-            ));
+            self.undo_stack
+                .record_change(Change::delete(end_pos.0, end_pos.1, close.to_string()));
             self.buffers[self.current_buffer_idx].delete_char(end_pos.0, end_pos.1);
 
             // Delete opening char
@@ -4678,7 +5029,8 @@ impl Editor {
                 self.cursor.col = self.cursor.col.saturating_sub(1);
             }
 
-            self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+            self.undo_stack
+                .end_undo_group(self.cursor.line, self.cursor.col);
             self.clamp_cursor();
         } else {
             self.set_status(format!("No surrounding {} found", surround_char));
@@ -4722,7 +5074,8 @@ impl Editor {
             ));
             self.buffers[self.current_buffer_idx].insert_char(start_pos.0, start_pos.1, new_open);
 
-            self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+            self.undo_stack
+                .end_undo_group(self.cursor.line, self.cursor.col);
         } else {
             self.set_status(format!("No surrounding {} found", old_char));
         }
@@ -4733,27 +5086,28 @@ impl Editor {
         let (open, close) = Self::get_surround_pair(surround_char);
 
         // Find the range of the text object
-        if let Some((start_line, start_col, end_line, end_col)) = self.find_text_object_range(text_object) {
+        if let Some((start_line, start_col, end_line, end_col)) =
+            self.find_text_object_range(text_object)
+        {
             self.begin_change();
 
             // Insert closing char first (so start position doesn't shift if on same line)
-            let close_col = if start_line == end_line { end_col + 1 } else { end_col + 1 };
-            self.undo_stack.record_change(Change::insert(
-                end_line,
-                close_col,
-                close.to_string(),
-            ));
+            let close_col = if start_line == end_line {
+                end_col + 1
+            } else {
+                end_col + 1
+            };
+            self.undo_stack
+                .record_change(Change::insert(end_line, close_col, close.to_string()));
             self.buffers[self.current_buffer_idx].insert_char(end_line, close_col, close);
 
             // Insert opening char
-            self.undo_stack.record_change(Change::insert(
-                start_line,
-                start_col,
-                open.to_string(),
-            ));
+            self.undo_stack
+                .record_change(Change::insert(start_line, start_col, open.to_string()));
             self.buffers[self.current_buffer_idx].insert_char(start_line, start_col, open);
 
-            self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+            self.undo_stack
+                .end_undo_group(self.cursor.line, self.cursor.col);
         } else {
             self.set_status("Could not find text object");
         }
@@ -4809,7 +5163,8 @@ impl Editor {
             }
         }
 
-        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
         self.buffers[self.current_buffer_idx].mark_modified();
     }
 
@@ -4845,11 +5200,8 @@ impl Editor {
             }
 
             // Record deletion of entire line content
-            self.undo_stack.record_change(Change::delete(
-                line_num,
-                0,
-                line_str.to_string(),
-            ));
+            self.undo_stack
+                .record_change(Change::delete(line_num, 0, line_str.to_string()));
 
             // Build new line with comment
             let indent = &line_str[..indent_len];
@@ -4866,11 +5218,8 @@ impl Editor {
                 self.buffers[self.current_buffer_idx].delete_char(line_num, 0);
             }
 
-            self.undo_stack.record_change(Change::insert(
-                line_num,
-                0,
-                new_line.clone(),
-            ));
+            self.undo_stack
+                .record_change(Change::insert(line_num, 0, new_line.clone()));
             self.buffers[self.current_buffer_idx].insert_str(line_num, 0, &new_line);
         }
     }
@@ -4911,11 +5260,8 @@ impl Editor {
             }
 
             // Record deletion of entire line content
-            self.undo_stack.record_change(Change::delete(
-                line_num,
-                0,
-                line_str.to_string(),
-            ));
+            self.undo_stack
+                .record_change(Change::delete(line_num, 0, line_str.to_string()));
 
             let new_line = format!("{}{}", indent, content);
 
@@ -4925,11 +5271,8 @@ impl Editor {
                 self.buffers[self.current_buffer_idx].delete_char(line_num, 0);
             }
 
-            self.undo_stack.record_change(Change::insert(
-                line_num,
-                0,
-                new_line.clone(),
-            ));
+            self.undo_stack
+                .record_change(Change::insert(line_num, 0, new_line.clone()));
             self.buffers[self.current_buffer_idx].insert_str(line_num, 0, &new_line);
         }
     }
@@ -4959,18 +5302,16 @@ impl Editor {
                 }
 
                 // Record insertion for undo
-                self.undo_stack.record_change(Change::insert(
-                    line_num,
-                    0,
-                    indent_str.clone(),
-                ));
+                self.undo_stack
+                    .record_change(Change::insert(line_num, 0, indent_str.clone()));
 
                 // Insert the indentation at the beginning
                 self.buffers[self.current_buffer_idx].insert_str(line_num, 0, &indent_str);
             }
         }
 
-        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
         self.buffers[self.current_buffer_idx].mark_modified();
 
         // Move cursor to first non-blank of first line
@@ -5013,11 +5354,8 @@ impl Editor {
 
                 // Record deletion for undo
                 let deleted_text: String = line_str.chars().take(spaces_to_remove).collect();
-                self.undo_stack.record_change(Change::delete(
-                    line_num,
-                    0,
-                    deleted_text,
-                ));
+                self.undo_stack
+                    .record_change(Change::delete(line_num, 0, deleted_text));
 
                 // Delete the leading whitespace
                 for _ in 0..spaces_to_remove {
@@ -5026,7 +5364,8 @@ impl Editor {
             }
         }
 
-        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
         self.buffers[self.current_buffer_idx].mark_modified();
 
         // Move cursor to first non-blank of first line
@@ -5084,7 +5423,14 @@ impl Editor {
     // ============================================
 
     /// Transform the case of text in a range
-    pub fn transform_case(&mut self, start_line: usize, start_col: usize, end_line: usize, end_col: usize, op: CaseOperator) {
+    pub fn transform_case(
+        &mut self,
+        start_line: usize,
+        start_col: usize,
+        end_line: usize,
+        end_col: usize,
+        op: CaseOperator,
+    ) {
         let text = self.get_range_text(start_line, start_col, end_line, end_col);
         if text.is_empty() {
             return;
@@ -5093,15 +5439,18 @@ impl Editor {
         let transformed: String = match op {
             CaseOperator::Lowercase => text.to_lowercase(),
             CaseOperator::Uppercase => text.to_uppercase(),
-            CaseOperator::ToggleCase => text.chars().map(|c| {
-                if c.is_lowercase() {
-                    c.to_uppercase().next().unwrap_or(c)
-                } else if c.is_uppercase() {
-                    c.to_lowercase().next().unwrap_or(c)
-                } else {
-                    c
-                }
-            }).collect(),
+            CaseOperator::ToggleCase => text
+                .chars()
+                .map(|c| {
+                    if c.is_lowercase() {
+                        c.to_uppercase().next().unwrap_or(c)
+                    } else if c.is_uppercase() {
+                        c.to_lowercase().next().unwrap_or(c)
+                    } else {
+                        c
+                    }
+                })
+                .collect(),
         };
 
         if text == transformed {
@@ -5111,24 +5460,24 @@ impl Editor {
         self.begin_change();
 
         // Record deletion of original text
-        self.undo_stack.record_change(Change::delete(
-            start_line,
-            start_col,
-            text.clone(),
-        ));
+        self.undo_stack
+            .record_change(Change::delete(start_line, start_col, text.clone()));
 
         // Delete the original text
-        self.buffers[self.current_buffer_idx].delete_range(start_line, start_col, end_line, end_col + 1);
-
-        // Record and insert the transformed text
-        self.undo_stack.record_change(Change::insert(
+        self.buffers[self.current_buffer_idx].delete_range(
             start_line,
             start_col,
-            transformed.clone(),
-        ));
+            end_line,
+            end_col + 1,
+        );
+
+        // Record and insert the transformed text
+        self.undo_stack
+            .record_change(Change::insert(start_line, start_col, transformed.clone()));
         self.buffers[self.current_buffer_idx].insert_str(start_line, start_col, &transformed);
 
-        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
         self.buffers[self.current_buffer_idx].mark_modified();
         self.clamp_cursor();
     }
@@ -5147,7 +5496,8 @@ impl Editor {
     pub fn case_line(&mut self, op: CaseOperator, count: usize) {
         let start_line = self.cursor.line;
         let buffer = &self.buffers[self.current_buffer_idx];
-        let end_line = (start_line + count.saturating_sub(1)).min(buffer.len_lines().saturating_sub(1));
+        let end_line =
+            (start_line + count.saturating_sub(1)).min(buffer.len_lines().saturating_sub(1));
 
         self.begin_change();
 
@@ -5162,15 +5512,18 @@ impl Editor {
                 let transformed: String = match op {
                     CaseOperator::Lowercase => line_str.to_lowercase(),
                     CaseOperator::Uppercase => line_str.to_uppercase(),
-                    CaseOperator::ToggleCase => line_str.chars().map(|c| {
-                        if c.is_lowercase() {
-                            c.to_uppercase().next().unwrap_or(c)
-                        } else if c.is_uppercase() {
-                            c.to_lowercase().next().unwrap_or(c)
-                        } else {
-                            c
-                        }
-                    }).collect(),
+                    CaseOperator::ToggleCase => line_str
+                        .chars()
+                        .map(|c| {
+                            if c.is_lowercase() {
+                                c.to_uppercase().next().unwrap_or(c)
+                            } else if c.is_uppercase() {
+                                c.to_lowercase().next().unwrap_or(c)
+                            } else {
+                                c
+                            }
+                        })
+                        .collect(),
                 };
 
                 if line_str != transformed {
@@ -5188,17 +5541,15 @@ impl Editor {
                     }
 
                     // Record and insert new content
-                    self.undo_stack.record_change(Change::insert(
-                        line_num,
-                        0,
-                        transformed.clone(),
-                    ));
+                    self.undo_stack
+                        .record_change(Change::insert(line_num, 0, transformed.clone()));
                     self.buffers[self.current_buffer_idx].insert_str(line_num, 0, &transformed);
                 }
             }
         }
 
-        self.undo_stack.end_undo_group(self.cursor.line, self.cursor.col);
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
         self.buffers[self.current_buffer_idx].mark_modified();
 
         // Move cursor to first non-blank of start line
@@ -5209,7 +5560,9 @@ impl Editor {
 
     /// Case transformation on text object (guiw, gUaw, etc.)
     pub fn case_text_object(&mut self, op: CaseOperator, text_object: TextObject) {
-        if let Some((start_line, start_col, end_line, end_col)) = self.find_text_object_range(text_object) {
+        if let Some((start_line, start_col, end_line, end_col)) =
+            self.find_text_object_range(text_object)
+        {
             self.transform_case(start_line, start_col, end_line, end_col, op);
             // Move cursor to start of text object
             self.cursor.line = start_line;
@@ -5246,7 +5599,8 @@ impl Editor {
         let buffer_key = self.buffer_key();
         let path = self.buffers[self.current_buffer_idx].path.clone();
 
-        self.marks.set(&buffer_key, path, name, self.cursor.line, self.cursor.col);
+        self.marks
+            .set(&buffer_key, path, name, self.cursor.line, self.cursor.col);
         self.set_status(format!("Mark '{}' set", name));
     }
 
@@ -5277,7 +5631,11 @@ impl Editor {
                         }
 
                         // Jump to the line
-                        self.cursor.line = target_line.min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+                        self.cursor.line = target_line.min(
+                            self.buffers[self.current_buffer_idx]
+                                .len_lines()
+                                .saturating_sub(1),
+                        );
                         self.cursor.col = self.find_first_non_blank(self.cursor.line);
                         self.clamp_cursor();
                         self.scroll_to_cursor();
@@ -5291,9 +5649,14 @@ impl Editor {
         if let Some(mark) = self.marks.get(&buffer_key, name) {
             // Record jump in jump list
             let current_path = self.buffers[self.current_buffer_idx].path.clone();
-            self.jump_list.record(current_path, self.cursor.line, self.cursor.col);
+            self.jump_list
+                .record(current_path, self.cursor.line, self.cursor.col);
 
-            self.cursor.line = mark.line.min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+            self.cursor.line = mark.line.min(
+                self.buffers[self.current_buffer_idx]
+                    .len_lines()
+                    .saturating_sub(1),
+            );
             self.cursor.col = self.find_first_non_blank(self.cursor.line);
             self.clamp_cursor();
             self.scroll_to_cursor();
@@ -5330,7 +5693,11 @@ impl Editor {
                         }
 
                         // Jump to the exact position
-                        self.cursor.line = target_line.min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+                        self.cursor.line = target_line.min(
+                            self.buffers[self.current_buffer_idx]
+                                .len_lines()
+                                .saturating_sub(1),
+                        );
                         self.cursor.col = target_col;
                         self.clamp_cursor();
                         self.scroll_to_cursor();
@@ -5344,9 +5711,14 @@ impl Editor {
         if let Some(mark) = self.marks.get(&buffer_key, name) {
             // Record jump in jump list
             let current_path = self.buffers[self.current_buffer_idx].path.clone();
-            self.jump_list.record(current_path, self.cursor.line, self.cursor.col);
+            self.jump_list
+                .record(current_path, self.cursor.line, self.cursor.col);
 
-            self.cursor.line = mark.line.min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+            self.cursor.line = mark.line.min(
+                self.buffers[self.current_buffer_idx]
+                    .len_lines()
+                    .saturating_sub(1),
+            );
             self.cursor.col = mark.col;
             self.clamp_cursor();
             self.scroll_to_cursor();
@@ -5371,7 +5743,11 @@ impl Editor {
 
     /// Find the positions of a surrounding pair around the cursor
     /// Returns (start_pos, end_pos) where pos is (line, col)
-    fn find_surrounding_pair(&self, open: char, close: char) -> Option<((usize, usize), (usize, usize))> {
+    fn find_surrounding_pair(
+        &self,
+        open: char,
+        close: char,
+    ) -> Option<((usize, usize), (usize, usize))> {
         let buffer = &self.buffers[self.current_buffer_idx];
         let line = self.cursor.line;
         let col = self.cursor.col;
@@ -5383,7 +5759,9 @@ impl Editor {
             let chars: Vec<char> = line_content.chars().collect();
 
             // Find all positions of the quote char
-            let positions: Vec<usize> = chars.iter().enumerate()
+            let positions: Vec<usize> = chars
+                .iter()
+                .enumerate()
                 .filter(|(_, c)| **c == open)
                 .map(|(i, _)| i)
                 .collect();
@@ -5457,7 +5835,11 @@ impl Editor {
         for l in start_search_line..buffer.len_lines() {
             let line_content: String = buffer.line(l)?.chars().collect();
             let chars: Vec<char> = line_content.chars().collect();
-            let start_col = if l == start_search_line { start_search_col } else { 0 };
+            let start_col = if l == start_search_line {
+                start_search_col
+            } else {
+                0
+            };
 
             for i in start_col..chars.len() {
                 if chars[i] == open {
@@ -5533,10 +5915,15 @@ impl Editor {
         // These are motions that should be tracked in the jump list for Ctrl+o/Ctrl+i
         let is_jump_motion = matches!(
             motion,
-            Motion::FileStart | Motion::FileEnd | Motion::GotoLine(_) |
-            Motion::ScreenTop | Motion::ScreenMiddle | Motion::ScreenBottom |
-            Motion::ParagraphForward | Motion::ParagraphBackward |
-            Motion::MatchingBracket
+            Motion::FileStart
+                | Motion::FileEnd
+                | Motion::GotoLine(_)
+                | Motion::ScreenTop
+                | Motion::ScreenMiddle
+                | Motion::ScreenBottom
+                | Motion::ParagraphForward
+                | Motion::ParagraphBackward
+                | Motion::MatchingBracket
         );
         if is_jump_motion {
             self.record_jump();
@@ -5547,7 +5934,11 @@ impl Editor {
             Motion::ScreenTop => {
                 // H - move to top of visible screen (+ count lines from top)
                 let target_line = self.viewport_offset + count.saturating_sub(1);
-                let target_line = target_line.min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+                let target_line = target_line.min(
+                    self.buffers[self.current_buffer_idx]
+                        .len_lines()
+                        .saturating_sub(1),
+                );
                 self.cursor.line = target_line;
                 // Move to first non-blank
                 self.cursor.col = self.find_first_non_blank(self.cursor.line);
@@ -5558,7 +5949,11 @@ impl Editor {
                 // M - move to middle of visible screen
                 let text_rows = self.text_rows();
                 let middle = text_rows / 2;
-                let target_line = (self.viewport_offset + middle).min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+                let target_line = (self.viewport_offset + middle).min(
+                    self.buffers[self.current_buffer_idx]
+                        .len_lines()
+                        .saturating_sub(1),
+                );
                 self.cursor.line = target_line;
                 // Move to first non-blank
                 self.cursor.col = self.find_first_non_blank(self.cursor.line);
@@ -5570,7 +5965,11 @@ impl Editor {
                 let text_rows = self.text_rows();
                 let bottom_screen_line = self.viewport_offset + text_rows.saturating_sub(1);
                 let target_line = bottom_screen_line.saturating_sub(count.saturating_sub(1));
-                let target_line = target_line.min(self.buffers[self.current_buffer_idx].len_lines().saturating_sub(1));
+                let target_line = target_line.min(
+                    self.buffers[self.current_buffer_idx]
+                        .len_lines()
+                        .saturating_sub(1),
+                );
                 self.cursor.line = target_line;
                 // Move to first non-blank
                 self.cursor.col = self.find_first_non_blank(self.cursor.line);
@@ -5624,7 +6023,8 @@ impl Editor {
 
     /// Open the fuzzy finder in buffer mode
     pub fn open_finder_buffers(&mut self) {
-        let buffer_info: Vec<(usize, String, std::path::PathBuf)> = self.buffers
+        let buffer_info: Vec<(usize, String, std::path::PathBuf)> = self
+            .buffers
             .iter()
             .enumerate()
             .map(|(idx, buf)| {
@@ -5660,7 +6060,8 @@ impl Editor {
         let current_file_path = self.buffer().path.clone();
 
         // Get buffer key for local marks
-        let buffer_key = self.buffer()
+        let buffer_key = self
+            .buffer()
             .path
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
@@ -5679,7 +6080,9 @@ impl Editor {
 
         // Collect global marks (A-Z)
         for (name, mark) in self.marks.get_global_marks() {
-            let file_name = mark.path.as_ref()
+            let file_name = mark
+                .path
+                .as_ref()
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "unknown".to_string());
@@ -5744,7 +6147,9 @@ impl Editor {
                 DiagnosticSeverity::Information => 2,
                 DiagnosticSeverity::Hint => 3,
             };
-            a_severity.cmp(&b_severity).then_with(|| a.line.cmp(&b.line))
+            a_severity
+                .cmp(&b_severity)
+                .then_with(|| a.line.cmp(&b.line))
         });
 
         for (uri, diag) in all_diags {
@@ -5755,10 +6160,7 @@ impl Editor {
                 std::path::PathBuf::from(uri)
             };
 
-            let rel_path = path
-                .strip_prefix(&cwd)
-                .unwrap_or(&path)
-                .to_string_lossy();
+            let rel_path = path.strip_prefix(&cwd).unwrap_or(&path).to_string_lossy();
 
             // Format: [E/W] line:col message | filepath
             let severity_indicator = match diag.severity {
@@ -5784,8 +6186,7 @@ impl Editor {
                 rel_path
             );
 
-            let item = FinderItem::new(display, path.clone())
-                .with_line(diag.line + 1); // 1-indexed for jumping
+            let item = FinderItem::new(display, path.clone()).with_line(diag.line + 1); // 1-indexed for jumping
 
             diagnostic_items.push(item);
         }
@@ -5968,18 +6369,20 @@ impl Editor {
         let forward = (target_line, target_col) >= (self.cursor.line, self.cursor.col);
         let inclusive = forward && Self::motion_is_inclusive(motion);
 
-        let (start_line, start_col, mut end_line, mut end_col) = if (target_line, target_col) < (self.cursor.line, self.cursor.col) {
-            (target_line, target_col, self.cursor.line, self.cursor.col)
-        } else {
-            (self.cursor.line, self.cursor.col, target_line, target_col)
-        };
+        let (start_line, start_col, mut end_line, mut end_col) =
+            if (target_line, target_col) < (self.cursor.line, self.cursor.col) {
+                (target_line, target_col, self.cursor.line, self.cursor.col)
+            } else {
+                (self.cursor.line, self.cursor.col, target_line, target_col)
+            };
 
         if !inclusive {
             if end_line == start_line {
                 end_col = end_col.saturating_sub(1).max(start_col);
             } else if end_col == 0 {
                 let prev_line = end_line.saturating_sub(1);
-                let prev_len = self.buffers[self.current_buffer_idx].line_len_including_newline(prev_line);
+                let prev_len =
+                    self.buffers[self.current_buffer_idx].line_len_including_newline(prev_line);
                 end_line = prev_line;
                 end_col = prev_len.saturating_sub(1);
             } else {
@@ -6039,7 +6442,10 @@ impl Editor {
     pub fn show_references_picker(&mut self, locations: Vec<Location>) {
         let count = locations.len();
         self.references_picker = Some(ReferencesPicker::new(locations));
-        self.set_status(format!("{} references - j/k to navigate, Enter to go, Esc to close", count));
+        self.set_status(format!(
+            "{} references - j/k to navigate, Enter to go, Esc to close",
+            count
+        ));
     }
 
     /// Hide the references picker
@@ -6051,7 +6457,10 @@ impl Editor {
     pub fn show_code_actions_picker(&mut self, actions: Vec<CodeActionItem>) {
         let count = actions.len();
         self.code_actions_picker = Some(CodeActionsPicker::new(actions));
-        self.set_status(format!("{} code actions - j/k to navigate, Enter to apply, Esc to close", count));
+        self.set_status(format!(
+            "{} code actions - j/k to navigate, Enter to apply, Esc to close",
+            count
+        ));
     }
 
     /// Hide the code actions picker
