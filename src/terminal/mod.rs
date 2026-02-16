@@ -2,12 +2,15 @@ use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute, queue,
+    style::{
+        Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
+        SetUnderlineColor,
+    },
     terminal::{self, ClearType},
-    style::{SetForegroundColor, SetBackgroundColor, ResetColor, Color, SetAttribute, Attribute, SetUnderlineColor},
 };
-use std::io::{self, Write, Stdout};
-use std::time::Instant;
+use std::io::{self, Stdout, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 /// Enable finder profiling (writes to /tmp/nevi_finder_profile.log)
 pub static FINDER_PROFILE_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -15,18 +18,24 @@ pub static FINDER_PROFILE_ENABLED: AtomicBool = AtomicBool::new(false);
 fn log_finder_profile(msg: &str) {
     if FINDER_PROFILE_ENABLED.load(Ordering::Relaxed) {
         use std::fs::OpenOptions;
-        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open("/tmp/nevi_finder_profile.log") {
+        if let Ok(mut f) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/nevi_finder_profile.log")
+        {
             let _ = writeln!(f, "{}", msg);
         }
     }
 }
 
-use crate::editor::{Editor, Mode, PaneDirection, Pane, SplitLayout, LspAction};
-use crate::input::{KeyAction, InsertPosition, Operator, TextObject, TextObjectModifier, TextObjectType};
-use crate::commands::{Command, CommandResult, parse_command};
-use crate::config::LeaderAction;
-use crate::syntax::HighlightSpan;
+use crate::commands::{parse_command, Command, CommandPopupMode, CommandResult};
+use crate::config::{CommandModeAction, LeaderAction};
+use crate::editor::{Editor, LspAction, Mode, Pane, PaneDirection, SplitLayout};
+use crate::input::{
+    InsertPosition, KeyAction, Operator, TextObject, TextObjectModifier, TextObjectType,
+};
 use crate::lsp::types::{CompletionKind, Diagnostic, DiagnosticSeverity};
+use crate::syntax::HighlightSpan;
 
 /// Events from the terminal that the editor cares about
 pub enum EditorEvent {
@@ -41,7 +50,10 @@ pub enum EditorEvent {
 /// Section types for hover content parsing
 enum HoverSection {
     #[allow(dead_code)]
-    Code { language: String, lines: Vec<String> },
+    Code {
+        language: String,
+        lines: Vec<String>,
+    },
     Text(String),
 }
 
@@ -79,7 +91,11 @@ fn dim_color(color: Color) -> Color {
 
 /// Calculate wrapped segments for a line
 /// Returns a vector of segments, each representing one visual row
-fn calculate_wrap_segments(line: &str, max_width: usize, preserve_indent: bool) -> Vec<WrapSegment> {
+fn calculate_wrap_segments(
+    line: &str,
+    max_width: usize,
+    preserve_indent: bool,
+) -> Vec<WrapSegment> {
     if max_width == 0 {
         return vec![WrapSegment {
             start_col: 0,
@@ -131,7 +147,9 @@ fn calculate_wrap_segments(line: &str, max_width: usize, preserve_indent: bool) 
         } else {
             let remaining = chars.len() - current_col;
             let take_count = remaining.min(available_width);
-            let text: String = chars[current_col..current_col + take_count].iter().collect();
+            let text: String = chars[current_col..current_col + take_count]
+                .iter()
+                .collect();
 
             segments.push(WrapSegment {
                 start_col: current_col,
@@ -191,11 +209,7 @@ impl Terminal {
     /// The terminal is restored before running and re-initialized after
     pub fn run_external_process(&mut self, command: &str) -> anyhow::Result<()> {
         // Leave alternate screen and show cursor
-        execute!(
-            self.stdout,
-            cursor::Show,
-            terminal::LeaveAlternateScreen
-        )?;
+        execute!(self.stdout, cursor::Show, terminal::LeaveAlternateScreen)?;
         self.stdout.flush()?;
 
         // Disable raw mode so the external process can use normal terminal
@@ -228,7 +242,11 @@ impl Terminal {
             }
             Err(e) => {
                 // If we can't run the command, return an error
-                Err(anyhow::anyhow!("Failed to run command '{}': {}", command, e))
+                Err(anyhow::anyhow!(
+                    "Failed to run command '{}': {}",
+                    command,
+                    e
+                ))
             }
         }
     }
@@ -368,19 +386,37 @@ impl Terminal {
         if wrap_enabled {
             // Wrap-aware rendering
             self.render_pane_wrapped(
-                editor, pane, buffer, rect, is_active,
-                line_num_width, visual_range, show_line_numbers,
-                show_relative, highlight_cursor_line,
-                pane_height, pane_width, effective_wrap_width,
+                editor,
+                pane,
+                buffer,
+                rect,
+                is_active,
+                line_num_width,
+                visual_range,
+                show_line_numbers,
+                show_relative,
+                highlight_cursor_line,
+                pane_height,
+                pane_width,
+                effective_wrap_width,
                 buffer_path.as_ref(),
             )?;
         } else {
             // Original non-wrapped rendering
             self.render_pane_nowrap(
-                editor, pane, buffer, rect, is_active,
-                line_num_width, visual_range, show_line_numbers,
-                show_relative, highlight_cursor_line,
-                pane_height, pane_width, text_area_width,
+                editor,
+                pane,
+                buffer,
+                rect,
+                is_active,
+                line_num_width,
+                visual_range,
+                show_line_numbers,
+                show_relative,
+                highlight_cursor_line,
+                pane_height,
+                pane_width,
+                text_area_width,
                 buffer_path.as_ref(),
             )?;
         }
@@ -417,7 +453,11 @@ impl Terminal {
         let search_fg = theme.ui.search_match_fg;
 
         // Pre-compute URI for diagnostic lookups (avoids repeated string allocations)
-        let cached_uri = if is_active { editor.current_buffer_uri() } else { None };
+        let cached_uri = if is_active {
+            editor.current_buffer_uri()
+        } else {
+            None
+        };
 
         let mut current_row = 0;
         let mut file_line = pane.viewport_offset;
@@ -426,7 +466,8 @@ impl Terminal {
             let is_cursor_line = is_active && file_line == pane.cursor.line;
 
             // Get line content
-            let line_content = buffer.line(file_line)
+            let line_content = buffer
+                .line(file_line)
                 .map(|l| l.to_string())
                 .unwrap_or_default();
 
@@ -479,7 +520,11 @@ impl Terminal {
                 };
 
                 // Set background and foreground for this row
-                execute!(self.stdout, SetBackgroundColor(row_bg), SetForegroundColor(editor_fg))?;
+                execute!(
+                    self.stdout,
+                    SetBackgroundColor(row_bg),
+                    SetForegroundColor(editor_fg)
+                )?;
 
                 // Sign column (git signs + diagnostic icons) - only on first segment
                 // Layout: [Git Sign][Diagnostic] = 2 chars total
@@ -495,17 +540,29 @@ impl Terminal {
                         Some(crate::git::GitLineStatus::Added) => {
                             execute!(self.stdout, SetForegroundColor(theme.git.added))?;
                             print!("▎");
-                            execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                            execute!(
+                                self.stdout,
+                                SetForegroundColor(editor_fg),
+                                SetBackgroundColor(row_bg)
+                            )?;
                         }
                         Some(crate::git::GitLineStatus::Modified) => {
                             execute!(self.stdout, SetForegroundColor(theme.git.modified))?;
                             print!("▎");
-                            execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                            execute!(
+                                self.stdout,
+                                SetForegroundColor(editor_fg),
+                                SetBackgroundColor(row_bg)
+                            )?;
                         }
                         Some(crate::git::GitLineStatus::Deleted) => {
                             execute!(self.stdout, SetForegroundColor(theme.git.deleted))?;
                             print!("▁");
-                            execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                            execute!(
+                                self.stdout,
+                                SetForegroundColor(editor_fg),
+                                SetBackgroundColor(row_bg)
+                            )?;
                         }
                         None => {
                             print!(" ");
@@ -516,19 +573,35 @@ impl Terminal {
                     if has_error {
                         execute!(self.stdout, SetForegroundColor(theme.diagnostic.error))?;
                         print!("●");
-                        execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                        execute!(
+                            self.stdout,
+                            SetForegroundColor(editor_fg),
+                            SetBackgroundColor(row_bg)
+                        )?;
                     } else if has_warning {
                         execute!(self.stdout, SetForegroundColor(theme.diagnostic.warning))?;
                         print!("▲");
-                        execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                        execute!(
+                            self.stdout,
+                            SetForegroundColor(editor_fg),
+                            SetBackgroundColor(row_bg)
+                        )?;
                     } else if has_info {
                         execute!(self.stdout, SetForegroundColor(theme.diagnostic.info))?;
                         print!("■");
-                        execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                        execute!(
+                            self.stdout,
+                            SetForegroundColor(editor_fg),
+                            SetBackgroundColor(row_bg)
+                        )?;
                     } else if has_hint {
                         execute!(self.stdout, SetForegroundColor(theme.diagnostic.hint))?;
                         print!("○");
-                        execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                        execute!(
+                            self.stdout,
+                            SetForegroundColor(editor_fg),
+                            SetBackgroundColor(row_bg)
+                        )?;
                     } else {
                         print!(" ");
                     }
@@ -540,7 +613,8 @@ impl Terminal {
                 if show_line_numbers {
                     if segment.is_first {
                         let line_num = if show_relative && is_active {
-                            let distance = (file_line as isize - pane.cursor.line as isize).abs() as usize;
+                            let distance =
+                                (file_line as isize - pane.cursor.line as isize).abs() as usize;
                             if distance == 0 {
                                 format!("{:>width$} ", file_line + 1, width = line_num_width)
                             } else {
@@ -567,7 +641,11 @@ impl Terminal {
 
                         execute!(self.stdout, SetForegroundColor(line_num_color))?;
                         print!("{}", line_num);
-                        execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                        execute!(
+                            self.stdout,
+                            SetForegroundColor(editor_fg),
+                            SetBackgroundColor(row_bg)
+                        )?;
                     } else {
                         // Continuation line - empty line number gutter
                         print!("{:>width$} ", "", width = line_num_width);
@@ -600,8 +678,12 @@ impl Terminal {
                 )?;
 
                 // Fill remaining space (sign column = 2)
-                let mut chars_printed = 2 + if show_line_numbers { line_num_width + 1 } else { 0 }
-                    + segment_text.chars().count();
+                let mut chars_printed =
+                    2 + if show_line_numbers {
+                        line_num_width + 1
+                    } else {
+                        0
+                    } + segment_text.chars().count();
 
                 // Render inline diagnostic on first segment only
                 if segment.is_first && is_active {
@@ -615,7 +697,8 @@ impl Terminal {
                                 DiagnosticSeverity::Hint => (Color::Cyan, "○"),
                             };
 
-                            let msg: String = diag.message
+                            let msg: String = diag
+                                .message
                                 .lines()
                                 .next()
                                 .unwrap_or(&diag.message)
@@ -630,7 +713,11 @@ impl Terminal {
                             print!("{}", icon);
                             execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
                             print!(" {}", msg);
-                            execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                            execute!(
+                                self.stdout,
+                                SetForegroundColor(editor_fg),
+                                SetBackgroundColor(row_bg)
+                            )?;
 
                             chars_printed += 3 + msg.chars().count();
                         }
@@ -653,7 +740,11 @@ impl Terminal {
             execute!(self.stdout, cursor::MoveTo(rect.x, screen_y))?;
 
             // Set editor background for empty rows
-            execute!(self.stdout, SetBackgroundColor(editor_bg), SetForegroundColor(editor_fg))?;
+            execute!(
+                self.stdout,
+                SetBackgroundColor(editor_bg),
+                SetForegroundColor(editor_fg)
+            )?;
 
             print!("  "); // Empty sign column
 
@@ -666,7 +757,11 @@ impl Terminal {
             execute!(self.stdout, SetForegroundColor(editor_fg))?;
 
             // Fill remaining space (sign column = 2)
-            let chars_printed = 2 + if show_line_numbers { line_num_width + 2 } else { 1 };
+            let chars_printed = 2 + if show_line_numbers {
+                line_num_width + 2
+            } else {
+                1
+            };
             for _ in chars_printed..pane_width {
                 print!(" ");
             }
@@ -703,7 +798,11 @@ impl Terminal {
         let editor_fg = theme.ui.foreground;
 
         // Pre-compute URI for diagnostic lookups (avoids repeated string allocations)
-        let cached_uri = if is_active { editor.current_buffer_uri() } else { None };
+        let cached_uri = if is_active {
+            editor.current_buffer_uri()
+        } else {
+            None
+        };
 
         // Render each row in this pane
         for row in 0..pane_height {
@@ -715,12 +814,17 @@ impl Terminal {
             execute!(self.stdout, cursor::MoveTo(rect.x, screen_y))?;
 
             // Set background color for this row (cursor line or normal)
-            let row_bg = if highlight_cursor_line && is_cursor_line && file_line < buffer.len_lines() {
-                cursor_line_bg
-            } else {
-                editor_bg
-            };
-            execute!(self.stdout, SetBackgroundColor(row_bg), SetForegroundColor(editor_fg))?;
+            let row_bg =
+                if highlight_cursor_line && is_cursor_line && file_line < buffer.len_lines() {
+                    cursor_line_bg
+                } else {
+                    editor_bg
+                };
+            execute!(
+                self.stdout,
+                SetBackgroundColor(row_bg),
+                SetForegroundColor(editor_fg)
+            )?;
 
             if file_line < buffer.len_lines() {
                 // Check for diagnostics on this line (only for active pane)
@@ -759,17 +863,29 @@ impl Terminal {
                     Some(crate::git::GitLineStatus::Added) => {
                         execute!(self.stdout, SetForegroundColor(theme.git.added))?;
                         print!("▎");
-                        execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                        execute!(
+                            self.stdout,
+                            SetForegroundColor(editor_fg),
+                            SetBackgroundColor(row_bg)
+                        )?;
                     }
                     Some(crate::git::GitLineStatus::Modified) => {
                         execute!(self.stdout, SetForegroundColor(theme.git.modified))?;
                         print!("▎");
-                        execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                        execute!(
+                            self.stdout,
+                            SetForegroundColor(editor_fg),
+                            SetBackgroundColor(row_bg)
+                        )?;
                     }
                     Some(crate::git::GitLineStatus::Deleted) => {
                         execute!(self.stdout, SetForegroundColor(theme.git.deleted))?;
                         print!("▁");
-                        execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                        execute!(
+                            self.stdout,
+                            SetForegroundColor(editor_fg),
+                            SetBackgroundColor(row_bg)
+                        )?;
                     }
                     None => {
                         print!(" ");
@@ -780,19 +896,35 @@ impl Terminal {
                 if has_error {
                     execute!(self.stdout, SetForegroundColor(theme.diagnostic.error))?;
                     print!("●");
-                    execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                    execute!(
+                        self.stdout,
+                        SetForegroundColor(editor_fg),
+                        SetBackgroundColor(row_bg)
+                    )?;
                 } else if has_warning {
                     execute!(self.stdout, SetForegroundColor(theme.diagnostic.warning))?;
                     print!("▲");
-                    execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                    execute!(
+                        self.stdout,
+                        SetForegroundColor(editor_fg),
+                        SetBackgroundColor(row_bg)
+                    )?;
                 } else if has_info {
                     execute!(self.stdout, SetForegroundColor(theme.diagnostic.info))?;
                     print!("■");
-                    execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                    execute!(
+                        self.stdout,
+                        SetForegroundColor(editor_fg),
+                        SetBackgroundColor(row_bg)
+                    )?;
                 } else if has_hint {
                     execute!(self.stdout, SetForegroundColor(theme.diagnostic.hint))?;
                     print!("○");
-                    execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                    execute!(
+                        self.stdout,
+                        SetForegroundColor(editor_fg),
+                        SetBackgroundColor(row_bg)
+                    )?;
                 } else {
                     print!(" ");
                 }
@@ -801,7 +933,8 @@ impl Terminal {
                 if show_line_numbers {
                     let line_num = if show_relative && is_active {
                         // Relative line numbers: show distance from cursor, current line shows absolute
-                        let distance = (file_line as isize - pane.cursor.line as isize).abs() as usize;
+                        let distance =
+                            (file_line as isize - pane.cursor.line as isize).abs() as usize;
                         if distance == 0 {
                             format!("{:>width$} ", file_line + 1, width = line_num_width)
                         } else {
@@ -828,14 +961,19 @@ impl Terminal {
 
                     execute!(self.stdout, SetForegroundColor(line_num_color))?;
                     print!("{}", line_num);
-                    execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                    execute!(
+                        self.stdout,
+                        SetForegroundColor(editor_fg),
+                        SetBackgroundColor(row_bg)
+                    )?;
                 }
 
                 // Line content with syntax highlighting and visual selection
                 if let Some(line) = buffer.line(file_line) {
                     let h_offset = pane.h_offset;
                     let full_line_len = line.chars().filter(|c| *c != '\n').count();
-                    let line_str: String = line.chars().skip(h_offset).take(effective_width).collect();
+                    let line_str: String =
+                        line.chars().skip(h_offset).take(effective_width).collect();
                     let line_str = line_str.trim_end_matches('\n');
 
                     // Get syntax highlights for this line (only for active pane)
@@ -873,10 +1011,19 @@ impl Terminal {
                     )?;
 
                     // Track characters printed for fill calculation (sign column = 2)
-                    let mut chars_printed = 2 + if show_line_numbers { line_num_width + 1 } else { 0 } + line_str.chars().count();
+                    let mut chars_printed =
+                        2 + if show_line_numbers {
+                            line_num_width + 1
+                        } else {
+                            0
+                        } + line_str.chars().count();
 
                     // Render ghost text on cursor line when completion is active
-                    if is_cursor_line && is_active && editor.mode == Mode::Insert && editor.completion.active {
+                    if is_cursor_line
+                        && is_active
+                        && editor.mode == Mode::Insert
+                        && editor.completion.active
+                    {
                         // Only show ghost text if cursor is at or near end of line
                         let cursor_at_end = pane.cursor.col >= full_line_len.saturating_sub(1);
                         if cursor_at_end {
@@ -886,9 +1033,17 @@ impl Terminal {
                                 let ghost_chars: String = ghost.chars().take(remaining).collect();
 
                                 // Render ghost text in dim gray
-                                execute!(self.stdout, SetForegroundColor(Color::DarkGrey), SetBackgroundColor(row_bg))?;
+                                execute!(
+                                    self.stdout,
+                                    SetForegroundColor(Color::DarkGrey),
+                                    SetBackgroundColor(row_bg)
+                                )?;
                                 print!("{}", ghost_chars);
-                                execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                                execute!(
+                                    self.stdout,
+                                    SetForegroundColor(editor_fg),
+                                    SetBackgroundColor(row_bg)
+                                )?;
 
                                 chars_printed += ghost_chars.chars().count();
                             }
@@ -898,31 +1053,55 @@ impl Terminal {
                     // Render Copilot ghost text on cursor line
                     // Note: Copilot ghost text can coexist with LSP completion popup
                     // (the popup shows as a dropdown, ghost text shows inline after cursor)
-                    if is_cursor_line && is_active && editor.mode == Mode::Insert
+                    if is_cursor_line
+                        && is_active
+                        && editor.mode == Mode::Insert
                         && editor.copilot_ghost.is_some()
                     {
                         if let Some(ref ghost) = editor.copilot_ghost {
                             // Only show if trigger position matches cursor
-                            if ghost.trigger_line == file_line && ghost.trigger_col <= pane.cursor.col {
+                            if ghost.trigger_line == file_line
+                                && ghost.trigger_col <= pane.cursor.col
+                            {
                                 let remaining = pane_width.saturating_sub(chars_printed);
-                                let ghost_chars: String = ghost.inline_text.chars().take(remaining).collect();
+                                let ghost_chars: String =
+                                    ghost.inline_text.chars().take(remaining).collect();
                                 let ghost_len = ghost_chars.chars().count();
 
                                 // Render Copilot ghost text in a slightly different gray
-                                execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 100, g: 100, b: 110 }), SetBackgroundColor(row_bg))?;
+                                execute!(
+                                    self.stdout,
+                                    SetForegroundColor(Color::Rgb {
+                                        r: 100,
+                                        g: 100,
+                                        b: 110
+                                    }),
+                                    SetBackgroundColor(row_bg)
+                                )?;
                                 print!("{}", ghost_chars);
 
                                 // Show count if multiple completions
                                 if !ghost.count_display.is_empty() {
                                     let count_remaining = remaining.saturating_sub(ghost_len + 1);
                                     if count_remaining >= ghost.count_display.len() {
-                                        execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 80, g: 80, b: 90 }))?;
+                                        execute!(
+                                            self.stdout,
+                                            SetForegroundColor(Color::Rgb {
+                                                r: 80,
+                                                g: 80,
+                                                b: 90
+                                            })
+                                        )?;
                                         print!(" {}", ghost.count_display);
                                         chars_printed += 1 + ghost.count_display.len();
                                     }
                                 }
 
-                                execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                                execute!(
+                                    self.stdout,
+                                    SetForegroundColor(editor_fg),
+                                    SetBackgroundColor(row_bg)
+                                )?;
 
                                 chars_printed += ghost_len;
                             }
@@ -945,7 +1124,8 @@ impl Terminal {
                                 };
 
                                 // Truncate message to fit
-                                let msg: String = diag.message
+                                let msg: String = diag
+                                    .message
                                     .lines()
                                     .next()
                                     .unwrap_or(&diag.message)
@@ -954,13 +1134,21 @@ impl Terminal {
                                     .collect();
 
                                 // Render: space, icon, space, message
-                                execute!(self.stdout, SetForegroundColor(Color::DarkGrey), SetBackgroundColor(row_bg))?;
+                                execute!(
+                                    self.stdout,
+                                    SetForegroundColor(Color::DarkGrey),
+                                    SetBackgroundColor(row_bg)
+                                )?;
                                 print!(" ");
                                 execute!(self.stdout, SetForegroundColor(color))?;
                                 print!("{}", icon);
                                 execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
                                 print!(" {}", msg);
-                                execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                                execute!(
+                                    self.stdout,
+                                    SetForegroundColor(editor_fg),
+                                    SetBackgroundColor(row_bg)
+                                )?;
 
                                 chars_printed += 3 + msg.chars().count();
                             }
@@ -968,7 +1156,11 @@ impl Terminal {
                     }
 
                     // Fill remaining space in pane with theme background
-                    execute!(self.stdout, SetBackgroundColor(row_bg), SetForegroundColor(editor_fg))?;
+                    execute!(
+                        self.stdout,
+                        SetBackgroundColor(row_bg),
+                        SetForegroundColor(editor_fg)
+                    )?;
                     for _ in chars_printed..pane_width {
                         print!(" ");
                     }
@@ -983,10 +1175,18 @@ impl Terminal {
                 } else {
                     print!("~");
                 }
-                execute!(self.stdout, SetForegroundColor(editor_fg), SetBackgroundColor(row_bg))?;
+                execute!(
+                    self.stdout,
+                    SetForegroundColor(editor_fg),
+                    SetBackgroundColor(row_bg)
+                )?;
 
                 // Fill remaining space (sign column = 2)
-                let chars_printed = 2 + if show_line_numbers { line_num_width + 2 } else { 1 };
+                let chars_printed = 2 + if show_line_numbers {
+                    line_num_width + 2
+                } else {
+                    1
+                };
                 for _ in chars_printed..pane_width {
                     print!(" ");
                 }
@@ -1025,13 +1225,17 @@ impl Terminal {
         let chars: Vec<char> = text.chars().collect();
 
         // Determine the base background for this line
-        let base_bg = if is_cursor_line { cursor_line_bg } else { editor_bg };
+        let base_bg = if is_cursor_line {
+            cursor_line_bg
+        } else {
+            editor_bg
+        };
 
         // Check if a column is within a search match for this line
         let in_search_match = |col: usize| -> bool {
-            search_matches.iter().any(|(l, start, end)| {
-                *l == line_num && col >= *start && col < *end
-            })
+            search_matches
+                .iter()
+                .any(|(l, start, end)| *l == line_num && col >= *start && col < *end)
         };
 
         // Find diagnostic at this column (prioritize by severity: Error > Warning > Info > Hint)
@@ -1040,7 +1244,8 @@ impl Terminal {
         // - Middle lines: entire line
         // - Last line: from start of line to col_end
         let get_diagnostic_at = |col: usize| -> Option<&Diagnostic> {
-            diagnostics.iter()
+            diagnostics
+                .iter()
                 .filter(|d| {
                     if line_num < d.line || line_num > d.end_line {
                         return false; // Not within diagnostic line range
@@ -1092,14 +1297,14 @@ impl Terminal {
                             false
                         }
                     }
-                    Mode::VisualLine => {
-                        line_num >= start_line && line_num <= end_line
-                    }
+                    Mode::VisualLine => line_num >= start_line && line_num <= end_line,
                     Mode::VisualBlock => {
-                        line_num >= start_line && line_num <= end_line &&
-                        actual_col >= start_col && actual_col <= end_col
+                        line_num >= start_line
+                            && line_num <= end_line
+                            && actual_col >= start_col
+                            && actual_col <= end_col
                     }
-                    _ => false
+                    _ => false,
                 }
             } else {
                 false
@@ -1118,12 +1323,14 @@ impl Terminal {
             });
 
             // Find syntax highlight for this position
-            let syntax_color = highlights.iter()
+            let syntax_color = highlights
+                .iter()
                 .find(|h| actual_col >= h.start_col && actual_col < h.end_col)
                 .map(|h| h.fg);
 
             // Check if within a hint diagnostic (unused variable/import) - grey out the text
-            let is_hint_diagnostic = diag_at_col.map_or(false, |d| d.severity == DiagnosticSeverity::Hint);
+            let is_hint_diagnostic =
+                diag_at_col.map_or(false, |d| d.severity == DiagnosticSeverity::Hint);
 
             // Priority: visual selection > search match > hint (grey out) > base
             let (desired_bg, desired_fg) = if in_visual {
@@ -1202,9 +1409,14 @@ impl Terminal {
         let line_num_width = 4;
 
         // Render header with project name
-        execute!(self.stdout, cursor::MoveTo(0, 0), SetBackgroundColor(explorer_bg))?;
+        execute!(
+            self.stdout,
+            cursor::MoveTo(0, 0),
+            SetBackgroundColor(explorer_bg)
+        )?;
 
-        let project_name = editor.project_root
+        let project_name = editor
+            .project_root
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().to_string())
@@ -1220,7 +1432,11 @@ impl Terminal {
         execute!(self.stdout, SetForegroundColor(explorer_fg))?;
         execute!(self.stdout, SetAttribute(Attribute::Bold))?;
         print!("{:width$}", header, width = width);
-        execute!(self.stdout, SetAttribute(Attribute::Reset), SetBackgroundColor(explorer_bg))?;
+        execute!(
+            self.stdout,
+            SetAttribute(Attribute::Reset),
+            SetBackgroundColor(explorer_bg)
+        )?;
 
         // Calculate scrolling
         let flat_view = &editor.explorer.flat_view;
@@ -1242,7 +1458,11 @@ impl Terminal {
         // Render file tree
         for row in 0..list_height {
             let y = (row + 1) as u16; // +1 for header
-            execute!(self.stdout, cursor::MoveTo(0, y), SetBackgroundColor(explorer_bg))?;
+            execute!(
+                self.stdout,
+                cursor::MoveTo(0, y),
+                SetBackgroundColor(explorer_bg)
+            )?;
 
             let idx = scroll_offset + row;
             if idx < flat_view.len() {
@@ -1297,7 +1517,11 @@ impl Terminal {
                 let name_color = if is_match {
                     match_color
                 } else if node.is_dir {
-                    if is_hidden { hidden_dir_color } else { dir_color }
+                    if is_hidden {
+                        hidden_dir_color
+                    } else {
+                        dir_color
+                    }
                 } else if is_hidden {
                     hidden_file_color
                 } else {
@@ -1305,7 +1529,11 @@ impl Terminal {
                 };
 
                 // Calculate remaining width for the content
-                let tree_indent_width = if node.depth > 1 { (node.depth - 1) * 2 } else { 0 };
+                let tree_indent_width = if node.depth > 1 {
+                    (node.depth - 1) * 2
+                } else {
+                    0
+                };
                 let remaining_width = content_width.saturating_sub(tree_indent_width);
 
                 // Build the full line content first, then pad to exact width
@@ -1323,7 +1551,10 @@ impl Terminal {
                 // Truncate name if needed
                 let name_chars: Vec<char> = node.name.chars().collect();
                 let name_display = if name_chars.len() > name_max_width {
-                    let truncated: String = name_chars.iter().take(name_max_width.saturating_sub(1)).collect();
+                    let truncated: String = name_chars
+                        .iter()
+                        .take(name_max_width.saturating_sub(1))
+                        .collect();
                     format!("{}…", truncated)
                 } else {
                     node.name.clone()
@@ -1345,7 +1576,11 @@ impl Terminal {
                 }
             } else {
                 // Empty line - use explorer background
-                execute!(self.stdout, SetForegroundColor(explorer_fg), SetBackgroundColor(explorer_bg))?;
+                execute!(
+                    self.stdout,
+                    SetForegroundColor(explorer_fg),
+                    SetBackgroundColor(explorer_bg)
+                )?;
                 print!("{:width$}", "", width = width);
             }
         }
@@ -1402,7 +1637,10 @@ impl Terminal {
             execute!(self.stdout, SetBackgroundColor(prompt_bg))?;
 
             // Search icon
-            execute!(self.stdout, SetForegroundColor(theme.ui.statusline_mode_insert))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(theme.ui.statusline_mode_insert)
+            )?;
             print!("/");
 
             // Search buffer
@@ -1413,7 +1651,9 @@ impl Terminal {
             if search.len() <= available {
                 print!("{}", search);
                 let match_info = editor.explorer.search_match_info();
-                let padding = available.saturating_sub(search.len()).saturating_sub(match_info.len());
+                let padding = available
+                    .saturating_sub(search.len())
+                    .saturating_sub(match_info.len());
                 print!("{:padding$}", "", padding = padding);
                 execute!(self.stdout, SetForegroundColor(line_num_color))?;
                 print!("{}", match_info);
@@ -1430,7 +1670,11 @@ impl Terminal {
             execute!(self.stdout, cursor::MoveTo(width as u16, y as u16))?;
             print!("\u{2502}"); // │
         }
-        execute!(self.stdout, SetForegroundColor(explorer_fg), SetBackgroundColor(explorer_bg))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(explorer_fg),
+            SetBackgroundColor(explorer_bg)
+        )?;
 
         Ok(())
     }
@@ -1586,19 +1830,23 @@ impl Terminal {
                     let mut visual_row = 0;
                     for line_idx in active_pane.viewport_offset..editor.cursor.line {
                         if line_idx < buffer.len_lines() {
-                            let line_content = buffer.line(line_idx)
+                            let line_content = buffer
+                                .line(line_idx)
                                 .map(|l| l.to_string())
                                 .unwrap_or_default();
-                            let segments = calculate_wrap_segments(&line_content, effective_wrap_width, true);
+                            let segments =
+                                calculate_wrap_segments(&line_content, effective_wrap_width, true);
                             visual_row += segments.len();
                         }
                     }
 
                     // Now find which segment of the cursor line contains the cursor column
-                    let cursor_line_content = buffer.line(editor.cursor.line)
+                    let cursor_line_content = buffer
+                        .line(editor.cursor.line)
                         .map(|l| l.to_string())
                         .unwrap_or_default();
-                    let segments = calculate_wrap_segments(&cursor_line_content, effective_wrap_width, true);
+                    let segments =
+                        calculate_wrap_segments(&cursor_line_content, effective_wrap_width, true);
 
                     let mut cursor_visual_row = visual_row;
                     let mut cursor_visual_col = editor.cursor.col;
@@ -1610,12 +1858,14 @@ impl Terminal {
                             cursor_line_content.chars().count()
                         };
 
-                        if editor.cursor.col >= segment.start_col && editor.cursor.col < segment_end {
+                        if editor.cursor.col >= segment.start_col && editor.cursor.col < segment_end
+                        {
                             // Cursor is in this segment
                             cursor_visual_col = editor.cursor.col - segment.start_col;
                             // Add indentation offset for wrapped lines
                             if !segment.is_first {
-                                let indent_len = cursor_line_content.chars()
+                                let indent_len = cursor_line_content
+                                    .chars()
                                     .take_while(|c| c.is_whitespace())
                                     .count();
                                 cursor_visual_col += indent_len;
@@ -1626,10 +1876,13 @@ impl Terminal {
                     }
 
                     // Handle cursor at end of line
-                    if editor.cursor.col >= cursor_line_content.trim_end_matches('\n').chars().count() {
+                    if editor.cursor.col
+                        >= cursor_line_content.trim_end_matches('\n').chars().count()
+                    {
                         cursor_visual_row = visual_row + segments.len().saturating_sub(1);
                         let last_segment = segments.last().unwrap();
-                        cursor_visual_col = last_segment.text.trim_end_matches('\n').chars().count();
+                        cursor_visual_col =
+                            last_segment.text.trim_end_matches('\n').chars().count();
                     }
 
                     // Sign column (2) + line numbers + cursor position
@@ -1642,7 +1895,10 @@ impl Terminal {
                     (cursor_visual_row, col)
                 } else {
                     // Original non-wrapped calculation
-                    let cursor_row = editor.cursor.line.saturating_sub(active_pane.viewport_offset);
+                    let cursor_row = editor
+                        .cursor
+                        .line
+                        .saturating_sub(active_pane.viewport_offset);
                     // Sign column (2) + line numbers + cursor position (adjusted for horizontal scroll)
                     let display_col = editor.cursor.col.saturating_sub(active_pane.h_offset);
                     let cursor_col = 2 + if show_line_numbers {
@@ -1666,8 +1922,14 @@ impl Terminal {
                 // Set cursor shape based on mode
                 match editor.mode {
                     Mode::Insert => execute!(self.stdout, cursor::SetCursorStyle::BlinkingBar)?,
-                    Mode::Replace => execute!(self.stdout, cursor::SetCursorStyle::BlinkingUnderScore)?,
-                    Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock | Mode::Explorer => {
+                    Mode::Replace => {
+                        execute!(self.stdout, cursor::SetCursorStyle::BlinkingUnderScore)?
+                    }
+                    Mode::Normal
+                    | Mode::Visual
+                    | Mode::VisualLine
+                    | Mode::VisualBlock
+                    | Mode::Explorer => {
                         execute!(self.stdout, cursor::SetCursorStyle::BlinkingBlock)?
                     }
                     Mode::Command | Mode::Search | Mode::Finder | Mode::RenamePrompt => {} // Handled above/separately
@@ -1678,7 +1940,11 @@ impl Terminal {
         Ok(())
     }
 
-    fn render_status_line(&mut self, editor: &Editor, _line_num_width: usize) -> anyhow::Result<()> {
+    fn render_status_line(
+        &mut self,
+        editor: &Editor,
+        _line_num_width: usize,
+    ) -> anyhow::Result<()> {
         // Position at the status line row (second to last row)
         let status_row = editor.term_height.saturating_sub(2);
         execute!(self.stdout, cursor::MoveTo(0, status_row))?;
@@ -1703,7 +1969,9 @@ impl Terminal {
         };
 
         // Show pending operator if any
-        let pending = if editor.input_state.pending_operator.is_some() || editor.input_state.count.is_some() {
+        let pending = if editor.input_state.pending_operator.is_some()
+            || editor.input_state.count.is_some()
+        {
             let mut s = String::new();
             if let Some(count) = editor.input_state.count {
                 s.push_str(&count.to_string());
@@ -1737,22 +2005,38 @@ impl Terminal {
         };
 
         // Get project name (last component of project_root)
-        let project_name = editor.project_root.as_ref()
+        let project_name = editor
+            .project_root
+            .as_ref()
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
             .map(|s| format!("[{}] ", s))
             .unwrap_or_default();
 
         let mode_display = format!(" {} ", mode_str);
-        let rest_left = format!("{}{} | {}{}{} ", pending, recording, project_name, filename, modified);
+        let rest_left = format!(
+            "{}{} | {}{}{} ",
+            pending, recording, project_name, filename, modified
+        );
 
         // Right side: LSP status, language and position
         let lsp_status = editor.lsp_status.as_deref().unwrap_or("");
         let lang = editor.syntax.language_name().unwrap_or("plain");
         let right = if lsp_status.is_empty() {
-            format!(" {} | {}:{} ", lang, editor.cursor.line + 1, editor.cursor.col + 1)
+            format!(
+                " {} | {}:{} ",
+                lang,
+                editor.cursor.line + 1,
+                editor.cursor.col + 1
+            )
         } else {
-            format!(" {} | {} | {}:{} ", lsp_status, lang, editor.cursor.line + 1, editor.cursor.col + 1)
+            format!(
+                " {} | {} | {}:{} ",
+                lsp_status,
+                lang,
+                editor.cursor.line + 1,
+                editor.cursor.col + 1
+            )
         };
 
         // Calculate padding
@@ -1761,18 +2045,202 @@ impl Terminal {
 
         // Render status line: mode badge (colored) + rest (status bar colors)
         // Mode badge with mode-specific color
-        execute!(self.stdout, SetBackgroundColor(mode_color), SetForegroundColor(theme.ui.statusline_bg))?;
+        execute!(
+            self.stdout,
+            SetBackgroundColor(mode_color),
+            SetForegroundColor(theme.ui.statusline_bg)
+        )?;
         print!("{}", mode_display);
 
         // Rest of status line with standard colors
-        execute!(self.stdout, SetBackgroundColor(theme.ui.statusline_bg), SetForegroundColor(theme.ui.statusline_fg))?;
+        execute!(
+            self.stdout,
+            SetBackgroundColor(theme.ui.statusline_bg),
+            SetForegroundColor(theme.ui.statusline_fg)
+        )?;
         print!("{}{:padding$}{}", rest_left, "", right, padding = padding);
         execute!(self.stdout, ResetColor)?;
 
         Ok(())
     }
 
+    fn truncate_inline(text: &str, max_chars: usize) -> String {
+        if max_chars == 0 {
+            return String::new();
+        }
+
+        let total_chars = text.chars().count();
+        if total_chars <= max_chars {
+            return text.to_string();
+        }
+
+        if max_chars <= 3 {
+            return text.chars().take(max_chars).collect();
+        }
+
+        let mut out: String = text.chars().take(max_chars - 3).collect();
+        out.push_str("...");
+        out
+    }
+
+    /// Render command suggestions/history window above the status line.
+    fn render_command_popup(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        if editor.mode != Mode::Command {
+            return Ok(());
+        }
+
+        let command_line = &editor.command_line;
+        let (total_items, selected) = match command_line.popup_mode {
+            CommandPopupMode::Completion => (
+                command_line.suggestions.len(),
+                command_line.suggestion_index,
+            ),
+            CommandPopupMode::History => (
+                command_line.history_popup_items.len(),
+                command_line.history_popup_index,
+            ),
+            CommandPopupMode::None => (0, 0),
+        };
+
+        if total_items == 0 {
+            return Ok(());
+        }
+
+        let status_row = editor.term_height.saturating_sub(2);
+        if status_row == 0 {
+            return Ok(());
+        }
+
+        let term_width = editor.term_width as usize;
+        if term_width < 8 {
+            return Ok(());
+        }
+
+        // Reserve one row for a mode label/header.
+        let available_rows = status_row as usize;
+        if available_rows < 2 {
+            return Ok(());
+        }
+        let item_rows = total_items.min(8).min(available_rows.saturating_sub(1));
+        if item_rows == 0 {
+            return Ok(());
+        }
+
+        let header_text = match command_line.popup_mode {
+            CommandPopupMode::Completion => "[COMMANDS] Tab:accept  Shift+Tab:prev  Ctrl+r:history",
+            CommandPopupMode::History => "[HISTORY] Enter/Tab:use  Ctrl+n/p:move  Ctrl+r:close",
+            CommandPopupMode::None => "",
+        };
+
+        let mut first_visible = selected.saturating_sub(item_rows.saturating_sub(1));
+        if first_visible + item_rows > total_items {
+            first_visible = total_items.saturating_sub(item_rows);
+        }
+        let popup_top_row = status_row.saturating_sub((item_rows + 1) as u16);
+
+        let left_col_width = ((term_width * 2) / 5)
+            .max(12)
+            .min(30)
+            .min(term_width.saturating_sub(4));
+        let right_col_width = term_width.saturating_sub(left_col_width + 3);
+
+        let theme = editor.theme();
+        let popup_fg = theme.ui.foreground;
+        let popup_bg = theme.ui.popup_bg;
+        let header_fg = theme.ui.statusline_mode_command;
+        let header_bg = theme.ui.statusline_bg;
+        let selected_fg = theme.ui.foreground;
+        let selected_bg = theme.ui.popup_selection;
+
+        execute!(
+            self.stdout,
+            cursor::MoveTo(0, popup_top_row),
+            terminal::Clear(ClearType::CurrentLine),
+            SetForegroundColor(header_fg),
+            SetBackgroundColor(header_bg)
+        )?;
+        let mut header_line = Self::truncate_inline(header_text, term_width);
+        let header_len = header_line.chars().count();
+        if header_len < term_width {
+            header_line.push_str(&" ".repeat(term_width - header_len));
+        }
+        print!("{}", header_line);
+        execute!(self.stdout, ResetColor)?;
+
+        for row_offset in 0..item_rows {
+            let item_idx = first_visible + row_offset;
+            let row = popup_top_row + row_offset as u16 + 1;
+            let is_selected = item_idx == selected;
+
+            execute!(
+                self.stdout,
+                cursor::MoveTo(0, row),
+                terminal::Clear(ClearType::CurrentLine)
+            )?;
+
+            if is_selected {
+                execute!(
+                    self.stdout,
+                    SetForegroundColor(selected_fg),
+                    SetBackgroundColor(selected_bg)
+                )?;
+            } else {
+                execute!(
+                    self.stdout,
+                    SetForegroundColor(popup_fg),
+                    SetBackgroundColor(popup_bg)
+                )?;
+            }
+
+            let (left_raw, right_raw) = match command_line.popup_mode {
+                CommandPopupMode::Completion => {
+                    let suggestion = &command_line.suggestions[item_idx];
+                    let left = if suggestion
+                        .matched_alias
+                        .eq_ignore_ascii_case(suggestion.command)
+                    {
+                        format!(":{}", suggestion.command)
+                    } else {
+                        format!(":{} [{}]", suggestion.command, suggestion.matched_alias)
+                    };
+                    (left, suggestion.description.to_string())
+                }
+                CommandPopupMode::History => {
+                    let history_item = &command_line.history_popup_items[item_idx];
+                    (format!(":{}", history_item), "history".to_string())
+                }
+                CommandPopupMode::None => (String::new(), String::new()),
+            };
+
+            let marker = if is_selected { ">" } else { " " };
+            let left_text = Self::truncate_inline(&left_raw, left_col_width);
+            let right_text = Self::truncate_inline(&right_raw, right_col_width);
+            let mut line = format!(
+                "{} {:left_width$} {}",
+                marker,
+                left_text,
+                right_text,
+                left_width = left_col_width
+            );
+
+            let printed = line.chars().count();
+            if printed < term_width {
+                line.push_str(&" ".repeat(term_width - printed));
+            } else if printed > term_width {
+                line = line.chars().take(term_width).collect();
+            }
+            print!("{}", line);
+            execute!(self.stdout, ResetColor)?;
+        }
+
+        Ok(())
+    }
+
     fn render_command_line(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        if editor.mode == Mode::Command {
+            self.render_command_popup(editor)?;
+        }
+
         // Position at the command line row (last row)
         let cmd_row = editor.term_height.saturating_sub(1);
         execute!(self.stdout, cursor::MoveTo(0, cmd_row))?;
@@ -1840,20 +2308,27 @@ impl Terminal {
 
         let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
         let cursor_in_pane_col = (line_num_width + 1 + completion.trigger_col) as u16;
-        let cursor_in_pane_row = (editor.cursor.line.saturating_sub(active_pane.viewport_offset)) as u16;
+        let cursor_in_pane_row = (editor
+            .cursor
+            .line
+            .saturating_sub(active_pane.viewport_offset)) as u16;
 
         // Convert to screen coordinates
         let popup_screen_col = pane_x + cursor_in_pane_col;
         let cursor_screen_row = pane_y + cursor_in_pane_row;
 
         // Calculate widths for label and detail columns (only from filtered items)
-        let max_label_len = completion.filtered.iter()
+        let max_label_len = completion
+            .filtered
+            .iter()
             .filter_map(|&idx| completion.items.get(idx))
             .map(|item| item.label.len())
             .max()
             .unwrap_or(10)
             .min(30);
-        let max_detail_len = completion.filtered.iter()
+        let max_detail_len = completion
+            .filtered
+            .iter()
             .filter_map(|&idx| completion.items.get(idx))
             .filter_map(|item| item.detail.as_ref())
             .map(|d| d.len())
@@ -1865,29 +2340,57 @@ impl Terminal {
         let max_items = 10.min(completion.filtered.len());
         let popup_height = max_items as u16 + 2; // +2 for border
         let label_col_width = max_label_len + 5; // +5 for kind and padding
-        let detail_col_width = if max_detail_len > 0 { max_detail_len + 2 } else { 0 };
+        let detail_col_width = if max_detail_len > 0 {
+            max_detail_len + 2
+        } else {
+            0
+        };
         let popup_width = (label_col_width + detail_col_width + 3) as u16; // +3 for borders
         let popup_width = popup_width.min(editor.term_width - 4);
 
         // Position popup below cursor with 1 row gap, or above if no room
         let available_below = editor.term_height.saturating_sub(cursor_screen_row + 4);
         let popup_y = if available_below >= popup_height {
-            cursor_screen_row + 2  // 1 row gap below cursor line
+            cursor_screen_row + 2 // 1 row gap below cursor line
         } else {
-            cursor_screen_row.saturating_sub(popup_height + 1)  // 1 row gap above
+            cursor_screen_row.saturating_sub(popup_height + 1) // 1 row gap above
         };
         let popup_x = popup_screen_col.min(editor.term_width.saturating_sub(popup_width + 2));
 
         // Colors (Zed-inspired dark theme)
-        let border_color = Color::Rgb { r: 55, g: 55, b: 65 };
-        let bg_color = Color::Rgb { r: 30, g: 30, b: 36 };
-        let selected_bg = Color::Rgb { r: 55, g: 65, b: 95 };
-        let detail_color = Color::Rgb { r: 100, g: 100, b: 115 };
-        let doc_bg = Color::Rgb { r: 35, g: 35, b: 42 };
+        let border_color = Color::Rgb {
+            r: 55,
+            g: 55,
+            b: 65,
+        };
+        let bg_color = Color::Rgb {
+            r: 30,
+            g: 30,
+            b: 36,
+        };
+        let selected_bg = Color::Rgb {
+            r: 55,
+            g: 65,
+            b: 95,
+        };
+        let detail_color = Color::Rgb {
+            r: 100,
+            g: 100,
+            b: 115,
+        };
+        let doc_bg = Color::Rgb {
+            r: 35,
+            g: 35,
+            b: 42,
+        };
 
         // Draw top border (rounded corners for Zed-style)
         execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         print!("╭");
         for _ in 0..(popup_width - 2) {
             print!("─");
@@ -1901,7 +2404,13 @@ impl Terminal {
             0
         };
 
-        for (display_idx, &item_idx) in completion.filtered.iter().enumerate().skip(scroll_offset).take(max_items) {
+        for (display_idx, &item_idx) in completion
+            .filtered
+            .iter()
+            .enumerate()
+            .skip(scroll_offset)
+            .take(max_items)
+        {
             let item = match completion.items.get(item_idx) {
                 Some(item) => item,
                 None => continue,
@@ -1912,7 +2421,11 @@ impl Terminal {
             let is_selected = display_idx == completion.selected;
             let item_bg = if is_selected { selected_bg } else { bg_color };
 
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(border_color),
+                SetBackgroundColor(bg_color)
+            )?;
             print!("│");
 
             execute!(self.stdout, SetBackgroundColor(item_bg))?;
@@ -1927,12 +2440,19 @@ impl Terminal {
             let label_color = if is_selected {
                 Color::White
             } else {
-                Color::Rgb { r: 220, g: 220, b: 225 }
+                Color::Rgb {
+                    r: 220,
+                    g: 220,
+                    b: 225,
+                }
             };
             execute!(self.stdout, SetForegroundColor(label_color))?;
             let available_label_width = (popup_width as usize).saturating_sub(detail_col_width + 7);
             let label = if item.label.len() > available_label_width {
-                format!("{}…", &item.label[..available_label_width.saturating_sub(1)])
+                format!(
+                    "{}…",
+                    &item.label[..available_label_width.saturating_sub(1)]
+                )
             } else {
                 format!("{:width$}", item.label, width = available_label_width)
             };
@@ -1952,14 +2472,22 @@ impl Terminal {
                 print!("{:width$}", "", width = detail_col_width + 1);
             }
 
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(border_color),
+                SetBackgroundColor(bg_color)
+            )?;
             print!("│");
         }
 
         // Draw bottom border (rounded corners for Zed-style)
         let bottom_row = popup_y + 1 + max_items as u16;
         execute!(self.stdout, cursor::MoveTo(popup_x, bottom_row))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         print!("╰");
         for _ in 0..(popup_width - 2) {
             print!("─");
@@ -2021,7 +2549,14 @@ impl Terminal {
                             }
                             // Wrap long lines
                             if line.len() <= content_width {
-                                doc_lines.push((line.to_string(), Color::Rgb { r: 180, g: 180, b: 180 }));
+                                doc_lines.push((
+                                    line.to_string(),
+                                    Color::Rgb {
+                                        r: 180,
+                                        g: 180,
+                                        b: 180,
+                                    },
+                                ));
                             } else {
                                 // Simple word wrap
                                 let words: Vec<&str> = line.split_whitespace().collect();
@@ -2033,12 +2568,26 @@ impl Terminal {
                                         current_line.push(' ');
                                         current_line.push_str(word);
                                     } else {
-                                        doc_lines.push((current_line, Color::Rgb { r: 180, g: 180, b: 180 }));
+                                        doc_lines.push((
+                                            current_line,
+                                            Color::Rgb {
+                                                r: 180,
+                                                g: 180,
+                                                b: 180,
+                                            },
+                                        ));
                                         current_line = word.to_string();
                                     }
                                 }
                                 if !current_line.is_empty() {
-                                    doc_lines.push((current_line, Color::Rgb { r: 180, g: 180, b: 180 }));
+                                    doc_lines.push((
+                                        current_line,
+                                        Color::Rgb {
+                                            r: 180,
+                                            g: 180,
+                                            b: 180,
+                                        },
+                                    ));
                                 }
                             }
                         }
@@ -2047,21 +2596,29 @@ impl Terminal {
                     if !doc_lines.is_empty() {
                         // Calculate separator position (after signature lines, before doc lines)
                         let sig_line_count = if item.detail.is_some() {
-                            doc_lines.iter().take_while(|(_, c)| *c == Color::Cyan).count()
+                            doc_lines
+                                .iter()
+                                .take_while(|(_, c)| *c == Color::Cyan)
+                                .count()
                         } else {
                             0
                         };
 
                         // Doc panel height: content + 2 for borders + 1 for separator if needed
                         let separator_height = if has_separator { 1 } else { 0 };
-                        let doc_height = (doc_lines.len() as u16 + 2 + separator_height).min(popup_height + 4);
+                        let doc_height =
+                            (doc_lines.len() as u16 + 2 + separator_height).min(popup_height + 4);
                         let available_height = editor.term_height.saturating_sub(popup_y + 2);
                         let doc_height = doc_height.min(available_height);
 
                         // Draw doc panel with rounded corners
                         // Top border
                         execute!(self.stdout, cursor::MoveTo(doc_panel_x, popup_y))?;
-                        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
+                        execute!(
+                            self.stdout,
+                            SetForegroundColor(border_color),
+                            SetBackgroundColor(doc_bg)
+                        )?;
                         print!("╭");
                         for _ in 0..(doc_width - 2) {
                             print!("─");
@@ -2073,11 +2630,23 @@ impl Terminal {
                         let max_content_lines = doc_height.saturating_sub(2) as usize;
                         let mut lines_drawn = 0;
 
-                        for (idx, (line, color)) in doc_lines.iter().enumerate().take(max_content_lines) {
+                        for (idx, (line, color)) in
+                            doc_lines.iter().enumerate().take(max_content_lines)
+                        {
                             // Insert separator after signature lines
-                            if has_separator && idx == sig_line_count && lines_drawn < max_content_lines {
-                                execute!(self.stdout, cursor::MoveTo(doc_panel_x, popup_y + row_offset))?;
-                                execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
+                            if has_separator
+                                && idx == sig_line_count
+                                && lines_drawn < max_content_lines
+                            {
+                                execute!(
+                                    self.stdout,
+                                    cursor::MoveTo(doc_panel_x, popup_y + row_offset)
+                                )?;
+                                execute!(
+                                    self.stdout,
+                                    SetForegroundColor(border_color),
+                                    SetBackgroundColor(doc_bg)
+                                )?;
                                 print!("├");
                                 for _ in 0..(doc_width - 2) {
                                     print!("─");
@@ -2090,8 +2659,15 @@ impl Terminal {
                                 }
                             }
 
-                            execute!(self.stdout, cursor::MoveTo(doc_panel_x, popup_y + row_offset))?;
-                            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
+                            execute!(
+                                self.stdout,
+                                cursor::MoveTo(doc_panel_x, popup_y + row_offset)
+                            )?;
+                            execute!(
+                                self.stdout,
+                                SetForegroundColor(border_color),
+                                SetBackgroundColor(doc_bg)
+                            )?;
                             print!("│");
                             execute!(self.stdout, SetForegroundColor(*color))?;
                             let padded = format!(" {:width$}", line, width = content_width);
@@ -2103,8 +2679,15 @@ impl Terminal {
                         }
 
                         // Bottom border
-                        execute!(self.stdout, cursor::MoveTo(doc_panel_x, popup_y + row_offset))?;
-                        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(doc_bg))?;
+                        execute!(
+                            self.stdout,
+                            cursor::MoveTo(doc_panel_x, popup_y + row_offset)
+                        )?;
+                        execute!(
+                            self.stdout,
+                            SetForegroundColor(border_color),
+                            SetBackgroundColor(doc_bg)
+                        )?;
                         print!("╰");
                         for _ in 0..(doc_width - 2) {
                             print!("─");
@@ -2240,21 +2823,59 @@ impl Terminal {
         } else {
             (cursor_screen_row + 1).min(editor.term_height.saturating_sub(popup_height + 1))
         };
-        let popup_x = cursor_screen_col.saturating_sub(2).min(editor.term_width.saturating_sub(popup_width + 1));
+        let popup_x = cursor_screen_col
+            .saturating_sub(2)
+            .min(editor.term_width.saturating_sub(popup_width + 1));
 
         // Colors (Neovim-inspired)
-        let border_color = Color::Rgb { r: 90, g: 90, b: 120 };
-        let bg_color = Color::Rgb { r: 25, g: 25, b: 35 };
-        let code_bg = Color::Rgb { r: 35, g: 35, b: 50 };
-        let text_color = Color::Rgb { r: 200, g: 200, b: 210 };
-        let code_color = Color::Rgb { r: 150, g: 200, b: 255 }; // Blue for signatures
-        let keyword_color = Color::Rgb { r: 255, g: 150, b: 150 }; // Red/pink for keywords
-        let type_color = Color::Rgb { r: 180, g: 220, b: 180 }; // Green for types
-        let separator_color = Color::Rgb { r: 70, g: 70, b: 90 };
+        let border_color = Color::Rgb {
+            r: 90,
+            g: 90,
+            b: 120,
+        };
+        let bg_color = Color::Rgb {
+            r: 25,
+            g: 25,
+            b: 35,
+        };
+        let code_bg = Color::Rgb {
+            r: 35,
+            g: 35,
+            b: 50,
+        };
+        let text_color = Color::Rgb {
+            r: 200,
+            g: 200,
+            b: 210,
+        };
+        let code_color = Color::Rgb {
+            r: 150,
+            g: 200,
+            b: 255,
+        }; // Blue for signatures
+        let keyword_color = Color::Rgb {
+            r: 255,
+            g: 150,
+            b: 150,
+        }; // Red/pink for keywords
+        let type_color = Color::Rgb {
+            r: 180,
+            g: 220,
+            b: 180,
+        }; // Green for types
+        let separator_color = Color::Rgb {
+            r: 70,
+            g: 70,
+            b: 90,
+        };
 
         // Draw top border (rounded corners)
         execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         print!("╭");
         for _ in 1..(popup_width - 1) {
             print!("─");
@@ -2271,19 +2892,43 @@ impl Terminal {
 
             match line_type {
                 HoverLineType::Code => {
-                    execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(code_bg))?;
+                    execute!(
+                        self.stdout,
+                        SetForegroundColor(border_color),
+                        SetBackgroundColor(code_bg)
+                    )?;
                     print!("│ ");
                     // Simple syntax highlighting for Rust
-                    self.render_hover_code_line(line, content_width, code_color, keyword_color, type_color, code_bg)?;
-                    execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(code_bg))?;
+                    self.render_hover_code_line(
+                        line,
+                        content_width,
+                        code_color,
+                        keyword_color,
+                        type_color,
+                        code_bg,
+                    )?;
+                    execute!(
+                        self.stdout,
+                        SetForegroundColor(border_color),
+                        SetBackgroundColor(code_bg)
+                    )?;
                     print!(" │");
                 }
                 HoverLineType::Text => {
-                    execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+                    execute!(
+                        self.stdout,
+                        SetForegroundColor(border_color),
+                        SetBackgroundColor(bg_color)
+                    )?;
                     print!("│ ");
                     execute!(self.stdout, SetForegroundColor(text_color))?;
                     let display = if line.chars().count() > content_width {
-                        format!("{}…", line.chars().take(content_width.saturating_sub(1)).collect::<String>())
+                        format!(
+                            "{}…",
+                            line.chars()
+                                .take(content_width.saturating_sub(1))
+                                .collect::<String>()
+                        )
                     } else {
                         format!("{:width$}", line, width = content_width)
                     };
@@ -2292,7 +2937,11 @@ impl Terminal {
                     print!(" │");
                 }
                 HoverLineType::Separator => {
-                    execute!(self.stdout, SetForegroundColor(separator_color), SetBackgroundColor(bg_color))?;
+                    execute!(
+                        self.stdout,
+                        SetForegroundColor(separator_color),
+                        SetBackgroundColor(bg_color)
+                    )?;
                     print!("├");
                     for _ in 1..(popup_width - 1) {
                         print!("─");
@@ -2306,14 +2955,22 @@ impl Terminal {
         for i in display_lines.len()..max_lines {
             let row = popup_y + 1 + i as u16;
             execute!(self.stdout, cursor::MoveTo(popup_x, row))?;
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(border_color),
+                SetBackgroundColor(bg_color)
+            )?;
             print!("│ {:width$} │", "", width = content_width);
         }
 
         // Draw bottom border (rounded corners)
         let bottom_row = popup_y + popup_height - 1;
         execute!(self.stdout, cursor::MoveTo(popup_x, bottom_row))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         print!("╰");
         for _ in 1..(popup_width - 1) {
             print!("─");
@@ -2335,10 +2992,10 @@ impl Terminal {
         bg_color: Color,
     ) -> anyhow::Result<()> {
         let rust_keywords = [
-            "fn", "pub", "let", "mut", "const", "static", "struct", "enum", "impl",
-            "trait", "where", "for", "loop", "while", "if", "else", "match", "return",
-            "async", "await", "unsafe", "mod", "use", "crate", "self", "Self", "super",
-            "dyn", "ref", "move", "type", "as", "in",
+            "fn", "pub", "let", "mut", "const", "static", "struct", "enum", "impl", "trait",
+            "where", "for", "loop", "while", "if", "else", "match", "return", "async", "await",
+            "unsafe", "mod", "use", "crate", "self", "Self", "super", "dyn", "ref", "move", "type",
+            "as", "in",
         ];
 
         let mut chars_printed = 0;
@@ -2357,13 +3014,22 @@ impl Terminal {
                 // Determine color based on word type
                 let color = if rust_keywords.contains(&word.as_str()) {
                     keyword_color
-                } else if word.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                } else if word
+                    .chars()
+                    .next()
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false)
+                {
                     type_color // Types typically start with uppercase
                 } else {
                     default_color
                 };
 
-                execute!(self.stdout, SetForegroundColor(color), SetBackgroundColor(bg_color))?;
+                execute!(
+                    self.stdout,
+                    SetForegroundColor(color),
+                    SetBackgroundColor(bg_color)
+                )?;
                 let remaining = width - chars_printed;
                 if word.len() <= remaining {
                     print!("{}", word);
@@ -2374,7 +3040,11 @@ impl Terminal {
                 }
             } else {
                 // Print punctuation/symbols in default color
-                execute!(self.stdout, SetForegroundColor(default_color), SetBackgroundColor(bg_color))?;
+                execute!(
+                    self.stdout,
+                    SetForegroundColor(default_color),
+                    SetBackgroundColor(bg_color)
+                )?;
                 print!("{}", chars[i]);
                 chars_printed += 1;
                 i += 1;
@@ -2383,7 +3053,11 @@ impl Terminal {
 
         // Pad remaining space
         if chars_printed < width {
-            execute!(self.stdout, SetForegroundColor(default_color), SetBackgroundColor(bg_color))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(default_color),
+                SetBackgroundColor(bg_color)
+            )?;
             print!("{:width$}", "", width = width - chars_printed);
         }
 
@@ -2420,17 +3094,39 @@ impl Terminal {
         } else {
             cursor_screen_row + 1
         };
-        let popup_x = cursor_screen_col.saturating_sub(2).min(editor.term_width.saturating_sub(popup_width + 1));
+        let popup_x = cursor_screen_col
+            .saturating_sub(2)
+            .min(editor.term_width.saturating_sub(popup_width + 1));
 
         // Colors
-        let border_color = Color::Rgb { r: 100, g: 100, b: 140 };
-        let bg_color = Color::Rgb { r: 30, g: 30, b: 45 };
-        let text_color = Color::Rgb { r: 200, g: 200, b: 210 };
-        let highlight_color = Color::Rgb { r: 255, g: 200, b: 100 }; // Yellow for active param
+        let border_color = Color::Rgb {
+            r: 100,
+            g: 100,
+            b: 140,
+        };
+        let bg_color = Color::Rgb {
+            r: 30,
+            g: 30,
+            b: 45,
+        };
+        let text_color = Color::Rgb {
+            r: 200,
+            g: 200,
+            b: 210,
+        };
+        let highlight_color = Color::Rgb {
+            r: 255,
+            g: 200,
+            b: 100,
+        }; // Yellow for active param
 
         // Draw top border
         execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         print!("╭");
         for _ in 1..(popup_width - 1) {
             print!("─");
@@ -2440,7 +3136,11 @@ impl Terminal {
         // Draw signature with highlighted parameter
         let content_width = (popup_width - 4) as usize;
         execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 1))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         print!("│ ");
 
         // Render the signature with active parameter highlighted
@@ -2448,9 +3148,8 @@ impl Terminal {
         let active_param = help.active_parameter;
 
         // Find the active parameter offsets
-        let highlight_range = active_param.and_then(|idx| {
-            signature.parameters.get(idx).and_then(|p| p.label_offsets)
-        });
+        let highlight_range = active_param
+            .and_then(|idx| signature.parameters.get(idx).and_then(|p| p.label_offsets));
 
         let mut chars_printed = 0;
         let label_chars: Vec<char> = label.chars().collect();
@@ -2462,9 +3161,17 @@ impl Terminal {
                 .unwrap_or(false);
 
             if in_highlight {
-                execute!(self.stdout, SetForegroundColor(highlight_color), SetBackgroundColor(bg_color))?;
+                execute!(
+                    self.stdout,
+                    SetForegroundColor(highlight_color),
+                    SetBackgroundColor(bg_color)
+                )?;
             } else {
-                execute!(self.stdout, SetForegroundColor(text_color), SetBackgroundColor(bg_color))?;
+                execute!(
+                    self.stdout,
+                    SetForegroundColor(text_color),
+                    SetBackgroundColor(bg_color)
+                )?;
             }
 
             print!("{}", label_chars[i]);
@@ -2474,7 +3181,11 @@ impl Terminal {
 
         // Pad remaining space
         if chars_printed < content_width {
-            execute!(self.stdout, SetForegroundColor(text_color), SetBackgroundColor(bg_color))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(text_color),
+                SetBackgroundColor(bg_color)
+            )?;
             print!("{:width$}", "", width = content_width - chars_printed);
         }
 
@@ -2483,7 +3194,11 @@ impl Terminal {
 
         // Draw bottom border
         execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 2))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         print!("╰");
         for _ in 1..(popup_width - 1) {
             print!("─");
@@ -2525,14 +3240,21 @@ impl Terminal {
         }
 
         // Calculate popup dimensions
-        let max_line_width = lines.iter().map(|(_, l)| l.chars().count()).max().unwrap_or(20);
+        let max_line_width = lines
+            .iter()
+            .map(|(_, l)| l.chars().count())
+            .max()
+            .unwrap_or(20);
         let popup_width = (max_line_width + 4).min(editor.term_width as usize - 4) as u16;
         let popup_height = (lines.len() + 2).min(editor.term_height as usize - 4) as u16;
         let content_width = (popup_width - 4) as usize;
 
         // Position popup below the cursor line
         let active_pane = &editor.panes()[editor.active_pane_idx()];
-        let cursor_row = (editor.cursor.line.saturating_sub(active_pane.viewport_offset)) as u16;
+        let cursor_row = (editor
+            .cursor
+            .line
+            .saturating_sub(active_pane.viewport_offset)) as u16;
         let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
 
         // Try to position below cursor, or above if not enough space
@@ -2548,13 +3270,29 @@ impl Terminal {
         let popup_x = (2 + line_num_width) as u16;
 
         // Colors
-        let border_color = Color::Rgb { r: 100, g: 100, b: 140 };
-        let bg_color = Color::Rgb { r: 30, g: 30, b: 45 };
-        let title_color = Color::Rgb { r: 180, g: 180, b: 200 };
+        let border_color = Color::Rgb {
+            r: 100,
+            g: 100,
+            b: 140,
+        };
+        let bg_color = Color::Rgb {
+            r: 30,
+            g: 30,
+            b: 45,
+        };
+        let title_color = Color::Rgb {
+            r: 180,
+            g: 180,
+            b: 200,
+        };
 
         // Draw top border with title
         execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         print!("╭");
         for _ in 1..(popup_width - 1) {
             print!("─");
@@ -2565,7 +3303,11 @@ impl Terminal {
         let visible_lines = (popup_height - 2) as usize;
         for (i, (color, line)) in lines.iter().take(visible_lines).enumerate() {
             execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 1 + i as u16))?;
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(border_color),
+                SetBackgroundColor(bg_color)
+            )?;
             print!("│ ");
 
             // Determine text color based on line type
@@ -2589,13 +3331,24 @@ impl Terminal {
         // Fill remaining rows if content is shorter than popup
         for i in lines.len()..visible_lines {
             execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 1 + i as u16))?;
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(border_color),
+                SetBackgroundColor(bg_color)
+            )?;
             print!("│ {:width$} │", "", width = content_width);
         }
 
         // Draw bottom border
-        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + popup_height - 1))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            cursor::MoveTo(popup_x, popup_y + popup_height - 1)
+        )?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         print!("╰");
         for _ in 1..(popup_width - 1) {
             print!("─");
@@ -2628,16 +3381,44 @@ impl Terminal {
         let popup_y = (editor.term_height.saturating_sub(popup_height)) / 2;
 
         // Colors
-        let border_color = Color::Rgb { r: 100, g: 140, b: 180 };
-        let bg_color = Color::Rgb { r: 25, g: 25, b: 30 };
-        let selected_bg = Color::Rgb { r: 50, g: 70, b: 100 };
-        let text_color = Color::Rgb { r: 200, g: 200, b: 210 };
-        let file_color = Color::Rgb { r: 130, g: 180, b: 250 };
-        let _line_num_color = Color::Rgb { r: 180, g: 180, b: 100 };
+        let border_color = Color::Rgb {
+            r: 100,
+            g: 140,
+            b: 180,
+        };
+        let bg_color = Color::Rgb {
+            r: 25,
+            g: 25,
+            b: 30,
+        };
+        let selected_bg = Color::Rgb {
+            r: 50,
+            g: 70,
+            b: 100,
+        };
+        let text_color = Color::Rgb {
+            r: 200,
+            g: 200,
+            b: 210,
+        };
+        let file_color = Color::Rgb {
+            r: 130,
+            g: 180,
+            b: 250,
+        };
+        let _line_num_color = Color::Rgb {
+            r: 180,
+            g: 180,
+            b: 100,
+        };
 
         // Draw top border
         execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         let title = " References ";
         let title_start = (popup_width as usize - title.len()) / 2;
         print!("╭");
@@ -2666,7 +3447,11 @@ impl Terminal {
 
             if idx >= picker.items.len() {
                 // Empty line
-                execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+                execute!(
+                    self.stdout,
+                    SetForegroundColor(border_color),
+                    SetBackgroundColor(bg_color)
+                )?;
                 print!("│{:width$}│", "", width = (popup_width - 2) as usize);
                 continue;
             }
@@ -2677,7 +3462,11 @@ impl Terminal {
             let current_bg = if is_selected { selected_bg } else { bg_color };
 
             // Border
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(border_color),
+                SetBackgroundColor(bg_color)
+            )?;
             print!("│");
 
             // Item content
@@ -2685,7 +3474,12 @@ impl Terminal {
 
             // Format: filename:line:col
             let path_str = crate::lsp::uri_to_path(&loc.uri)
-                .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
+                .map(|p| {
+                    p.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string()
+                })
                 .unwrap_or_else(|| loc.uri.clone());
 
             let content = format!("{}:{}:{}", path_str, loc.line + 1, loc.col + 1);
@@ -2704,13 +3498,24 @@ impl Terminal {
             }
 
             // Closing border
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(border_color),
+                SetBackgroundColor(bg_color)
+            )?;
             print!("│");
         }
 
         // Draw bottom border
-        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + popup_height - 1))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            cursor::MoveTo(popup_x, popup_y + popup_height - 1)
+        )?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         print!("╰");
         for _ in 1..(popup_width - 1) {
             print!("─");
@@ -2733,14 +3538,18 @@ impl Terminal {
         }
 
         // Calculate popup dimensions based on content
-        let max_title_len = picker.items.iter()
+        let max_title_len = picker
+            .items
+            .iter()
             .map(|a| a.title.len())
             .max()
             .unwrap_or(20);
 
         let max_width = 80u16;
         let max_height = 12u16;
-        let popup_width = (max_title_len as u16 + 4).min(max_width).min(editor.term_width.saturating_sub(4));
+        let popup_width = (max_title_len as u16 + 4)
+            .min(max_width)
+            .min(editor.term_width.saturating_sub(4));
         let popup_height = (picker.items.len() as u16 + 2).min(max_height);
 
         // Position near cursor
@@ -2756,16 +3565,44 @@ impl Terminal {
         };
 
         // Colors
-        let border_color = Color::Rgb { r: 140, g: 100, b: 180 };
-        let bg_color = Color::Rgb { r: 25, g: 25, b: 30 };
-        let selected_bg = Color::Rgb { r: 70, g: 50, b: 100 };
-        let text_color = Color::Rgb { r: 200, g: 200, b: 210 };
-        let _kind_color = Color::Rgb { r: 130, g: 180, b: 130 };
-        let preferred_color = Color::Rgb { r: 255, g: 200, b: 100 };
+        let border_color = Color::Rgb {
+            r: 140,
+            g: 100,
+            b: 180,
+        };
+        let bg_color = Color::Rgb {
+            r: 25,
+            g: 25,
+            b: 30,
+        };
+        let selected_bg = Color::Rgb {
+            r: 70,
+            g: 50,
+            b: 100,
+        };
+        let text_color = Color::Rgb {
+            r: 200,
+            g: 200,
+            b: 210,
+        };
+        let _kind_color = Color::Rgb {
+            r: 130,
+            g: 180,
+            b: 130,
+        };
+        let preferred_color = Color::Rgb {
+            r: 255,
+            g: 200,
+            b: 100,
+        };
 
         // Draw top border
         execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         let title = " Code Actions ";
         let title_start = (popup_width as usize - title.len()) / 2;
         print!("╭");
@@ -2793,7 +3630,11 @@ impl Terminal {
             execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 1 + i as u16))?;
 
             if idx >= picker.items.len() {
-                execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+                execute!(
+                    self.stdout,
+                    SetForegroundColor(border_color),
+                    SetBackgroundColor(bg_color)
+                )?;
                 print!("│{:width$}│", "", width = (popup_width - 2) as usize);
                 continue;
             }
@@ -2804,7 +3645,11 @@ impl Terminal {
             let current_bg = if is_selected { selected_bg } else { bg_color };
 
             // Border
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(border_color),
+                SetBackgroundColor(bg_color)
+            )?;
             print!("│");
 
             // Item content
@@ -2828,13 +3673,24 @@ impl Terminal {
             }
 
             // Closing border
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(border_color),
+                SetBackgroundColor(bg_color)
+            )?;
             print!("│");
         }
 
         // Draw bottom border
-        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + popup_height - 1))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            cursor::MoveTo(popup_x, popup_y + popup_height - 1)
+        )?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         print!("╰");
         for _ in 1..(popup_width - 1) {
             print!("─");
@@ -2880,7 +3736,11 @@ impl Terminal {
 
         // Draw top border with title
         execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         let title = " Themes ";
         let title_start = (popup_width as usize - title.len()) / 2;
         print!("╭");
@@ -2897,7 +3757,11 @@ impl Terminal {
 
         // Draw search input line
         execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 1))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         print!("│");
         execute!(self.stdout, SetForegroundColor(prompt_color))?;
         print!(" > ");
@@ -2920,10 +3784,17 @@ impl Terminal {
 
         for row in 0..visible_count {
             let list_idx = scroll_offset + row;
-            execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 2 + row as u16))?;
+            execute!(
+                self.stdout,
+                cursor::MoveTo(popup_x, popup_y + 2 + row as u16)
+            )?;
 
             // Left border
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(border_color),
+                SetBackgroundColor(bg_color)
+            )?;
             print!("│");
 
             if list_idx < filtered_count {
@@ -2941,7 +3812,10 @@ impl Terminal {
                 // Available space for name
                 let name_max = inner_width.saturating_sub(prefix.len() + suffix.len() + 1); // +1 for trailing space
                 let display_name: String = if name.len() > name_max {
-                    name.chars().take(name_max.saturating_sub(1)).collect::<String>() + "…"
+                    name.chars()
+                        .take(name_max.saturating_sub(1))
+                        .collect::<String>()
+                        + "…"
                 } else {
                     name.clone()
                 };
@@ -2964,7 +3838,10 @@ impl Terminal {
                         print!("{}", &display_name[..match_start]);
                         // Match
                         execute!(self.stdout, SetForegroundColor(match_color))?;
-                        print!("{}", &display_name[match_start..match_start + picker.query.len()]);
+                        print!(
+                            "{}",
+                            &display_name[match_start..match_start + picker.query.len()]
+                        );
                         // After match
                         execute!(self.stdout, SetForegroundColor(text_color))?;
                         print!("{}", &display_name[match_start + picker.query.len()..]);
@@ -2980,7 +3857,8 @@ impl Terminal {
                 // User indicator or padding
                 if !*is_bundled {
                     execute!(self.stdout, SetForegroundColor(user_color))?;
-                    let padding = inner_width.saturating_sub(prefix.len() + display_name.len() + suffix.len());
+                    let padding = inner_width
+                        .saturating_sub(prefix.len() + display_name.len() + suffix.len());
                     print!("{:width$}{}", "", suffix, width = padding);
                 } else {
                     let padding = inner_width.saturating_sub(prefix.len() + display_name.len());
@@ -2993,14 +3871,22 @@ impl Terminal {
             }
 
             // Right border
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(border_color),
+                SetBackgroundColor(bg_color)
+            )?;
             print!("│");
         }
 
         // Draw separator line (immediately after items)
         let separator_y = popup_y + 2 + visible_count as u16;
         execute!(self.stdout, cursor::MoveTo(popup_x, separator_y))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         print!("├");
         for _ in 1..(popup_width - 1) {
             print!("─");
@@ -3009,9 +3895,17 @@ impl Terminal {
 
         // Draw help line with count
         execute!(self.stdout, cursor::MoveTo(popup_x, separator_y + 1))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         print!("│");
-        execute!(self.stdout, SetForegroundColor(user_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(user_color),
+            SetBackgroundColor(bg_color)
+        )?;
         let count_str = format!("{}/{}", filtered_count, picker.all_items.len());
         let help = "Type to filter • j/k nav • Enter";
         let combined = format!("{} {}", help, count_str);
@@ -3021,14 +3915,22 @@ impl Terminal {
 
         // Draw bottom border
         execute!(self.stdout, cursor::MoveTo(popup_x, separator_y + 2))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         print!("╰");
         for _ in 1..(popup_width - 1) {
             print!("─");
         }
         print!("╯");
 
-        execute!(self.stdout, SetForegroundColor(text_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(text_color),
+            SetBackgroundColor(bg_color)
+        )?;
         Ok(())
     }
 
@@ -3047,14 +3949,34 @@ impl Terminal {
         let term_y = (editor.term_height.saturating_sub(term_height)) / 2;
 
         // Colors
-        let border_color = Color::Rgb { r: 100, g: 180, b: 100 };
-        let bg_color = Color::Rgb { r: 20, g: 20, b: 25 };
-        let text_color = Color::Rgb { r: 200, g: 200, b: 200 };
-        let title_color = Color::Rgb { r: 150, g: 220, b: 150 };
+        let border_color = Color::Rgb {
+            r: 100,
+            g: 180,
+            b: 100,
+        };
+        let bg_color = Color::Rgb {
+            r: 20,
+            g: 20,
+            b: 25,
+        };
+        let text_color = Color::Rgb {
+            r: 200,
+            g: 200,
+            b: 200,
+        };
+        let title_color = Color::Rgb {
+            r: 150,
+            g: 220,
+            b: 150,
+        };
 
         // Draw top border with title
         execute!(self.stdout, cursor::MoveTo(term_x, term_y))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         let title = " Terminal ";
         let close_hint = " [<C-\\>] ";
         let title_start = 2usize;
@@ -3070,7 +3992,14 @@ impl Terminal {
             } else if i > title_start && i < title_start + title.len() {
                 // Skip - title already printed
             } else if i == close_start {
-                execute!(self.stdout, SetForegroundColor(Color::Rgb { r: 100, g: 100, b: 110 }))?;
+                execute!(
+                    self.stdout,
+                    SetForegroundColor(Color::Rgb {
+                        r: 100,
+                        g: 100,
+                        b: 110
+                    })
+                )?;
                 print!("{}", close_hint);
                 execute!(self.stdout, SetForegroundColor(border_color))?;
             } else if i > close_start && i < close_start + close_hint.len() {
@@ -3084,16 +4013,26 @@ impl Terminal {
         // Get terminal content
         let content_height = (term_height - 2) as usize;
         let content_width = (term_width - 2) as usize;
-        let lines = editor.floating_terminal.get_visible_lines(content_height, content_width);
+        let lines = editor
+            .floating_terminal
+            .get_visible_lines(content_height, content_width);
         let (cursor_row, cursor_col) = editor.floating_terminal.get_cursor_pos();
 
         // Draw terminal content
         for (row, line) in lines.iter().enumerate() {
             execute!(self.stdout, cursor::MoveTo(term_x, term_y + 1 + row as u16))?;
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(border_color),
+                SetBackgroundColor(bg_color)
+            )?;
             print!("│");
 
-            execute!(self.stdout, SetForegroundColor(text_color), SetBackgroundColor(bg_color))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(text_color),
+                SetBackgroundColor(bg_color)
+            )?;
 
             // Print line content, padding to fill width
             let display: String = line.chars().take(content_width).collect();
@@ -3106,7 +4045,11 @@ impl Terminal {
         // Fill remaining rows if content is shorter
         for row in lines.len()..content_height {
             execute!(self.stdout, cursor::MoveTo(term_x, term_y + 1 + row as u16))?;
-            execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+            execute!(
+                self.stdout,
+                SetForegroundColor(border_color),
+                SetBackgroundColor(bg_color)
+            )?;
             print!("│");
             execute!(self.stdout, SetForegroundColor(text_color))?;
             print!("{:<width$}", "", width = content_width);
@@ -3115,8 +4058,15 @@ impl Terminal {
         }
 
         // Draw bottom border
-        execute!(self.stdout, cursor::MoveTo(term_x, term_y + term_height - 1))?;
-        execute!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(bg_color))?;
+        execute!(
+            self.stdout,
+            cursor::MoveTo(term_x, term_y + term_height - 1)
+        )?;
+        execute!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(bg_color)
+        )?;
         print!("╰");
         for _ in 1..(term_width - 1) {
             print!("─");
@@ -3155,7 +4105,7 @@ impl Terminal {
         let win = crate::finder::FloatingWindow::centered_with_preview(
             editor.term_width,
             editor.term_height,
-            preview_enabled
+            preview_enabled,
         );
 
         // No clearing needed - window size is constant, rows fully overwrite their content
@@ -3189,7 +4139,11 @@ impl Terminal {
         };
 
         // Draw top border with title
-        queue!(self.stdout, cursor::MoveTo(win.x, win.y), SetForegroundColor(border_color))?;
+        queue!(
+            self.stdout,
+            cursor::MoveTo(win.x, win.y),
+            SetForegroundColor(border_color)
+        )?;
         write!(self.stdout, "\u{250c}")?; // ┌
         let title = match editor.finder.mode {
             crate::finder::FinderMode::Files => " Find Files ",
@@ -3219,7 +4173,9 @@ impl Terminal {
 
             // Preview header with filename
             let preview_title = if let Some(item) = editor.finder.selected_item() {
-                let filename = item.path.file_name()
+                let filename = item
+                    .path
+                    .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("Preview");
                 format!(" {} ", filename)
@@ -3271,7 +4227,12 @@ impl Terminal {
 
         for row in 0..list_height {
             let y = win.y + 1 + row as u16;
-            queue!(self.stdout, cursor::MoveTo(win.x, y), SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
+            queue!(
+                self.stdout,
+                cursor::MoveTo(win.x, y),
+                SetForegroundColor(border_color),
+                SetBackgroundColor(finder_bg)
+            )?;
             write!(self.stdout, "\u{2502}")?; // │
 
             // Reverse display: row 0 = least relevant, bottom row = best match
@@ -3294,20 +4255,76 @@ impl Terminal {
                 // Get file type indicator (2 chars + space)
                 let icon = FuzzyFinder::get_file_icon(&item.path);
                 let icon_color = match icon {
-                    "RS" => Color::Rgb { r: 255, g: 100, b: 50 },   // Rust - orange
-                    "TS" | "TX" => Color::Rgb { r: 50, g: 150, b: 255 }, // TypeScript - blue
-                    "JS" | "JX" => Color::Rgb { r: 255, g: 220, b: 50 }, // JavaScript - yellow
-                    "PY" => Color::Rgb { r: 80, g: 180, b: 80 },    // Python - green
-                    "GO" => Color::Rgb { r: 100, g: 200, b: 220 },  // Go - cyan
-                    "RB" => Color::Rgb { r: 220, g: 50, b: 50 },    // Ruby - red
-                    "HT" => Color::Rgb { r: 230, g: 100, b: 50 },   // HTML - orange
-                    "CS" | "SC" => Color::Rgb { r: 100, g: 150, b: 255 }, // CSS - blue
-                    "MD" => Color::Rgb { r: 150, g: 150, b: 150 },  // Markdown - gray
-                    "YM" | "TM" | "CF" => Color::Rgb { r: 180, g: 140, b: 100 }, // Config - tan
-                    "GT" => Color::Rgb { r: 240, g: 80, b: 50 },    // Git - red-orange
-                    "EN" => Color::Rgb { r: 255, g: 200, b: 50 },   // Env - yellow
-                    "SH" | "ZS" | "FS" => Color::Rgb { r: 100, g: 200, b: 100 }, // Shell - green
-                    _ => Color::Rgb { r: 120, g: 120, b: 120 },     // Default - gray
+                    "RS" => Color::Rgb {
+                        r: 255,
+                        g: 100,
+                        b: 50,
+                    }, // Rust - orange
+                    "TS" | "TX" => Color::Rgb {
+                        r: 50,
+                        g: 150,
+                        b: 255,
+                    }, // TypeScript - blue
+                    "JS" | "JX" => Color::Rgb {
+                        r: 255,
+                        g: 220,
+                        b: 50,
+                    }, // JavaScript - yellow
+                    "PY" => Color::Rgb {
+                        r: 80,
+                        g: 180,
+                        b: 80,
+                    }, // Python - green
+                    "GO" => Color::Rgb {
+                        r: 100,
+                        g: 200,
+                        b: 220,
+                    }, // Go - cyan
+                    "RB" => Color::Rgb {
+                        r: 220,
+                        g: 50,
+                        b: 50,
+                    }, // Ruby - red
+                    "HT" => Color::Rgb {
+                        r: 230,
+                        g: 100,
+                        b: 50,
+                    }, // HTML - orange
+                    "CS" | "SC" => Color::Rgb {
+                        r: 100,
+                        g: 150,
+                        b: 255,
+                    }, // CSS - blue
+                    "MD" => Color::Rgb {
+                        r: 150,
+                        g: 150,
+                        b: 150,
+                    }, // Markdown - gray
+                    "YM" | "TM" | "CF" => Color::Rgb {
+                        r: 180,
+                        g: 140,
+                        b: 100,
+                    }, // Config - tan
+                    "GT" => Color::Rgb {
+                        r: 240,
+                        g: 80,
+                        b: 50,
+                    }, // Git - red-orange
+                    "EN" => Color::Rgb {
+                        r: 255,
+                        g: 200,
+                        b: 50,
+                    }, // Env - yellow
+                    "SH" | "ZS" | "FS" => Color::Rgb {
+                        r: 100,
+                        g: 200,
+                        b: 100,
+                    }, // Shell - green
+                    _ => Color::Rgb {
+                        r: 120,
+                        g: 120,
+                        b: 120,
+                    }, // Default - gray
                 };
                 queue!(self.stdout, SetForegroundColor(icon_color))?;
                 write!(self.stdout, "{} ", icon)?;
@@ -3327,21 +4344,42 @@ impl Terminal {
                 if is_selected {
                     queue!(self.stdout, SetForegroundColor(finder_fg))?;
                 } else {
-                    queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+                    queue!(
+                        self.stdout,
+                        SetForegroundColor(finder_fg),
+                        SetBackgroundColor(finder_bg)
+                    )?;
                 }
 
                 // For diagnostics mode, color the severity indicator
-                let is_diagnostics_mode = editor.finder.mode == crate::finder::FinderMode::Diagnostics;
+                let is_diagnostics_mode =
+                    editor.finder.mode == crate::finder::FinderMode::Diagnostics;
                 let mut skip_severity_coloring = 0;
 
                 // Check for severity prefix and render it with color
                 if is_diagnostics_mode && display_chars.len() >= 3 {
                     let prefix: String = display_chars[0..3].iter().collect();
                     let severity_color = match prefix.as_str() {
-                        "[E]" => Some(Color::Rgb { r: 255, g: 80, b: 80 }),   // Red for errors
-                        "[W]" => Some(Color::Rgb { r: 255, g: 200, b: 50 }),  // Yellow for warnings
-                        "[I]" => Some(Color::Rgb { r: 100, g: 180, b: 255 }), // Blue for info
-                        "[H]" => Some(Color::Rgb { r: 150, g: 150, b: 150 }), // Gray for hints
+                        "[E]" => Some(Color::Rgb {
+                            r: 255,
+                            g: 80,
+                            b: 80,
+                        }), // Red for errors
+                        "[W]" => Some(Color::Rgb {
+                            r: 255,
+                            g: 200,
+                            b: 50,
+                        }), // Yellow for warnings
+                        "[I]" => Some(Color::Rgb {
+                            r: 100,
+                            g: 180,
+                            b: 255,
+                        }), // Blue for info
+                        "[H]" => Some(Color::Rgb {
+                            r: 150,
+                            g: 150,
+                            b: 150,
+                        }), // Gray for hints
                         _ => None,
                     };
 
@@ -3352,9 +4390,17 @@ impl Terminal {
 
                         // Reset to normal text color
                         if is_selected {
-                            queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(selected_bg))?;
+                            queue!(
+                                self.stdout,
+                                SetForegroundColor(finder_fg),
+                                SetBackgroundColor(selected_bg)
+                            )?;
                         } else {
-                            queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+                            queue!(
+                                self.stdout,
+                                SetForegroundColor(finder_fg),
+                                SetBackgroundColor(finder_bg)
+                            )?;
                         }
                     }
                 }
@@ -3380,9 +4426,17 @@ impl Terminal {
                             write!(self.stdout, "{}", current_span)?;
                             if in_highlight {
                                 if is_selected {
-                                    queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(selected_bg))?;
+                                    queue!(
+                                        self.stdout,
+                                        SetForegroundColor(finder_fg),
+                                        SetBackgroundColor(selected_bg)
+                                    )?;
                                 } else {
-                                    queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+                                    queue!(
+                                        self.stdout,
+                                        SetForegroundColor(finder_fg),
+                                        SetBackgroundColor(finder_bg)
+                                    )?;
                                 }
                             }
                             current_span.clear();
@@ -3400,9 +4454,17 @@ impl Terminal {
                     write!(self.stdout, "{}", current_span)?;
                     if in_highlight {
                         if is_selected {
-                            queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(selected_bg))?;
+                            queue!(
+                                self.stdout,
+                                SetForegroundColor(finder_fg),
+                                SetBackgroundColor(selected_bg)
+                            )?;
                         } else {
-                            queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+                            queue!(
+                                self.stdout,
+                                SetForegroundColor(finder_fg),
+                                SetBackgroundColor(finder_bg)
+                            )?;
                         }
                     }
                 }
@@ -3417,7 +4479,11 @@ impl Terminal {
 
                 // Reset after selected item
                 if is_selected {
-                    queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+                    queue!(
+                        self.stdout,
+                        SetForegroundColor(finder_fg),
+                        SetBackgroundColor(finder_bg)
+                    )?;
                 }
             } else {
                 // Empty row - set finder background (batched padding)
@@ -3443,7 +4509,10 @@ impl Terminal {
                 let selected_in_range = scroll_bar_pos <= editor.finder.selected
                     && editor.finder.selected < scroll_bar_pos + (total_items / list_height).max(1);
 
-                if selected_in_range || (row == 0 && scroll_offset == 0) || (row == list_height - 1 && scroll_offset + list_height >= total_items) {
+                if selected_in_range
+                    || (row == 0 && scroll_offset == 0)
+                    || (row == list_height - 1 && scroll_offset + list_height >= total_items)
+                {
                     queue!(self.stdout, SetForegroundColor(title_color))?;
                     write!(self.stdout, "\u{2588}")?; // █ (full block for thumb)
                 } else if scroll_offset > 0 || scroll_offset + list_height < total_items {
@@ -3456,20 +4525,32 @@ impl Terminal {
 
             // Draw separator and preview panel if enabled
             if preview_enabled {
-                queue!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
+                queue!(
+                    self.stdout,
+                    SetForegroundColor(border_color),
+                    SetBackgroundColor(finder_bg)
+                )?;
                 write!(self.stdout, "\u{2502}")?; // │ vertical separator
 
                 // Render preview content for this row
                 self.render_finder_preview_row(editor, row, list_height, preview_width)?;
             }
 
-            queue!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
+            queue!(
+                self.stdout,
+                SetForegroundColor(border_color),
+                SetBackgroundColor(finder_bg)
+            )?;
             write!(self.stdout, "\u{2502}")?; // │ right border
         }
 
         // Draw separator above input
         let sep_y = win.y + 1 + list_height as u16;
-        queue!(self.stdout, cursor::MoveTo(win.x, sep_y), SetForegroundColor(border_color))?;
+        queue!(
+            self.stdout,
+            cursor::MoveTo(win.x, sep_y),
+            SetForegroundColor(border_color)
+        )?;
         write!(self.stdout, "\u{251c}")?; // ├
         if preview_enabled {
             for _ in 0..results_width {
@@ -3488,12 +4569,21 @@ impl Terminal {
 
         // Draw input line (above bottom border)
         let input_y = sep_y + 1;
-        queue!(self.stdout, cursor::MoveTo(win.x, input_y), SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
+        queue!(
+            self.stdout,
+            cursor::MoveTo(win.x, input_y),
+            SetForegroundColor(border_color),
+            SetBackgroundColor(finder_bg)
+        )?;
         write!(self.stdout, "\u{2502}")?; // │
         queue!(self.stdout, SetBackgroundColor(input_bg))?;
 
         // Mode indicator
-        let mode_str = if editor.finder.is_normal_mode() { "N" } else { "I" };
+        let mode_str = if editor.finder.is_normal_mode() {
+            "N"
+        } else {
+            "I"
+        };
         queue!(self.stdout, SetForegroundColor(mode_color))?;
         write!(self.stdout, "[{}]", mode_str)?;
         queue!(self.stdout, SetForegroundColor(finder_fg))?;
@@ -3501,7 +4591,12 @@ impl Terminal {
 
         // Query text
         let prefix_len = 6; // "[N] > " or "[I] > "
-        let query_display: String = editor.finder.query.chars().take((win.width - prefix_len as u16 - 3) as usize).collect();
+        let query_display: String = editor
+            .finder
+            .query
+            .chars()
+            .take((win.width - prefix_len as u16 - 3) as usize)
+            .collect();
         write!(self.stdout, "{}", query_display)?;
 
         // Pad to fill line (terminal cursor will be positioned separately)
@@ -3509,12 +4604,24 @@ impl Terminal {
         for _ in used..(win.width - 2) as usize {
             write!(self.stdout, " ")?;
         }
-        queue!(self.stdout, SetForegroundColor(border_color), SetBackgroundColor(finder_bg))?;
+        queue!(
+            self.stdout,
+            SetForegroundColor(border_color),
+            SetBackgroundColor(finder_bg)
+        )?;
         write!(self.stdout, "\u{2502}")?; // │
 
         // Draw bottom border with count indicator
-        let status = format!(" {}/{} ", editor.finder.filtered.len(), editor.finder.items.len());
-        queue!(self.stdout, cursor::MoveTo(win.x, win.y + win.height - 1), SetForegroundColor(border_color))?;
+        let status = format!(
+            " {}/{} ",
+            editor.finder.filtered.len(),
+            editor.finder.items.len()
+        );
+        queue!(
+            self.stdout,
+            cursor::MoveTo(win.x, win.y + win.height - 1),
+            SetForegroundColor(border_color)
+        )?;
         write!(self.stdout, "\u{2514}")?; // └
 
         if preview_enabled {
@@ -3561,7 +4668,11 @@ impl Terminal {
         }
         write!(self.stdout, "\u{2518}")?; // ┘
 
-        queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+        queue!(
+            self.stdout,
+            SetForegroundColor(finder_fg),
+            SetBackgroundColor(finder_bg)
+        )?;
 
         // Flush all queued commands at once to prevent flicker
         self.stdout.flush()?;
@@ -3589,7 +4700,11 @@ impl Terminal {
         let finder_fg = theme.ui.foreground;
         let line_num_color = theme.ui.line_number;
 
-        queue!(self.stdout, SetBackgroundColor(finder_bg), SetForegroundColor(finder_fg))?;
+        queue!(
+            self.stdout,
+            SetBackgroundColor(finder_bg),
+            SetForegroundColor(finder_fg)
+        )?;
 
         // Get preview content
         let preview_content = &editor.finder.preview_content;
@@ -3624,7 +4739,12 @@ impl Terminal {
             // Line number (4 chars + separator)
             let line_num_width = 4;
             queue!(self.stdout, SetForegroundColor(line_num_color))?;
-            write!(self.stdout, "{:>width$}\u{2502}", line_idx + 1, width = line_num_width)?;
+            write!(
+                self.stdout,
+                "{:>width$}\u{2502}",
+                line_idx + 1,
+                width = line_num_width
+            )?;
 
             // Get syntax highlights if available
             let highlights = self.get_preview_highlights(editor, line_idx);
@@ -3667,7 +4787,11 @@ impl Terminal {
             }
         }
 
-        queue!(self.stdout, SetForegroundColor(finder_fg), SetBackgroundColor(finder_bg))?;
+        queue!(
+            self.stdout,
+            SetForegroundColor(finder_fg),
+            SetBackgroundColor(finder_bg)
+        )?;
         Ok(())
     }
 
@@ -3705,41 +4829,56 @@ impl Terminal {
         let line_len = chars.len();
 
         // Determine selection range for this line based on visual mode
-        let (in_selection, sel_start, sel_end) = if let Some((range_start_line, range_start_col, range_end_line, range_end_col)) = visual_range {
-            if line_idx < range_start_line || line_idx > range_end_line {
-                (false, 0, 0)
-            } else {
-                match mode {
-                    Mode::VisualLine => {
-                        // Line-wise: entire line is selected
-                        (true, 0, line_len)
+        let (in_selection, sel_start, sel_end) =
+            if let Some((range_start_line, range_start_col, range_end_line, range_end_col)) =
+                visual_range
+            {
+                if line_idx < range_start_line || line_idx > range_end_line {
+                    (false, 0, 0)
+                } else {
+                    match mode {
+                        Mode::VisualLine => {
+                            // Line-wise: entire line is selected
+                            (true, 0, line_len)
+                        }
+                        Mode::VisualBlock => {
+                            // Block-wise: select columns range_start_col to range_end_col (inclusive)
+                            // range returns (top, left, bottom, right)
+                            (true, range_start_col, range_end_col + 1)
+                        }
+                        Mode::Visual => {
+                            // Character-wise: depends on line position
+                            let start = if line_idx == range_start_line {
+                                range_start_col
+                            } else {
+                                0
+                            };
+                            let end = if line_idx == range_end_line {
+                                range_end_col + 1
+                            } else {
+                                line_len
+                            };
+                            (true, start, end)
+                        }
+                        _ => (false, 0, 0),
                     }
-                    Mode::VisualBlock => {
-                        // Block-wise: select columns range_start_col to range_end_col (inclusive)
-                        // range returns (top, left, bottom, right)
-                        (true, range_start_col, range_end_col + 1)
-                    }
-                    Mode::Visual => {
-                        // Character-wise: depends on line position
-                        let start = if line_idx == range_start_line { range_start_col } else { 0 };
-                        let end = if line_idx == range_end_line { range_end_col + 1 } else { line_len };
-                        (true, start, end)
-                    }
-                    _ => (false, 0, 0)
                 }
-            }
-        } else {
-            (false, 0, 0)
-        };
+            } else {
+                (false, 0, 0)
+            };
 
         // Determine the base background for this line (cursor line or editor background)
-        let base_bg = if is_cursor_line { cursor_line_bg } else { editor_bg };
+        let base_bg = if is_cursor_line {
+            cursor_line_bg
+        } else {
+            editor_bg
+        };
 
         // Check if a column is within a search match for this line
         let in_search_match = |actual_col: usize| -> bool {
-            search_matches.iter().any(|(l, start, end)| {
-                *l == line_idx && actual_col >= *start && actual_col < *end
-            })
+            search_matches
+                .iter()
+                .any(|(l, start, end)| *l == line_idx && actual_col >= *start && actual_col < *end)
         };
 
         // Find diagnostic at this column (prioritize by severity: Error > Warning > Info > Hint)
@@ -3748,7 +4887,8 @@ impl Terminal {
         // - Middle lines: entire line
         // - Last line: from start of line to col_end
         let get_diagnostic_at = |actual_col: usize| -> Option<&Diagnostic> {
-            diagnostics.iter()
+            diagnostics
+                .iter()
                 .filter(|d| {
                     if line_idx < d.line || line_idx > d.end_line {
                         return false; // Not within diagnostic line range
@@ -3786,7 +4926,8 @@ impl Terminal {
             let actual_col = col_offset + i;
 
             // Find syntax color for this column
-            let syntax_color = Self::get_syntax_color_at(highlights, actual_col, &mut highlight_idx);
+            let syntax_color =
+                Self::get_syntax_color_at(highlights, actual_col, &mut highlight_idx);
 
             // Check if in visual selection
             let is_selected = in_selection && actual_col >= sel_start && actual_col < sel_end;
@@ -3804,7 +4945,8 @@ impl Terminal {
             });
 
             // Check if within a hint diagnostic (unused variable/import) - grey out the text
-            let is_hint_diagnostic = diag_at_col.map_or(false, |d| d.severity == DiagnosticSeverity::Hint);
+            let is_hint_diagnostic =
+                diag_at_col.map_or(false, |d| d.severity == DiagnosticSeverity::Hint);
 
             // Priority: visual selection > search match > hint (grey out) > base
             let (desired_bg, desired_fg) = if is_selected {
@@ -3864,7 +5006,11 @@ impl Terminal {
     }
 
     /// Get the syntax color at a given column position
-    fn get_syntax_color_at(highlights: &[HighlightSpan], col: usize, hint_idx: &mut usize) -> Option<Color> {
+    fn get_syntax_color_at(
+        highlights: &[HighlightSpan],
+        col: usize,
+        hint_idx: &mut usize,
+    ) -> Option<Color> {
         // Start searching from hint_idx for efficiency
         while *hint_idx < highlights.len() {
             let span = &highlights[*hint_idx];
@@ -4006,15 +5152,14 @@ fn handle_code_actions_picker_key(editor: &mut Editor, key: KeyEvent) {
 fn handle_theme_picker_key(editor: &mut Editor, key: KeyEvent) {
     match (key.modifiers, key.code) {
         // Close picker (cancel)
-        (KeyModifiers::NONE, KeyCode::Esc) |
-        (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
+        (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
             editor.close_theme_picker(false); // Cancel
         }
 
         // Navigate up (Ctrl-k or Ctrl-p, since j/k are now for typing)
-        (KeyModifiers::NONE, KeyCode::Up) |
-        (KeyModifiers::CONTROL, KeyCode::Char('k')) |
-        (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
+        (KeyModifiers::NONE, KeyCode::Up)
+        | (KeyModifiers::CONTROL, KeyCode::Char('k'))
+        | (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
             if let Some(picker) = &mut editor.theme_picker {
                 picker.move_up();
                 // Preview the theme
@@ -4026,9 +5171,9 @@ fn handle_theme_picker_key(editor: &mut Editor, key: KeyEvent) {
         }
 
         // Navigate down (Ctrl-j or Ctrl-n, since j/k are now for typing)
-        (KeyModifiers::NONE, KeyCode::Down) |
-        (KeyModifiers::CONTROL, KeyCode::Char('j')) |
-        (KeyModifiers::CONTROL, KeyCode::Char('n')) => {
+        (KeyModifiers::NONE, KeyCode::Down)
+        | (KeyModifiers::CONTROL, KeyCode::Char('j'))
+        | (KeyModifiers::CONTROL, KeyCode::Char('n')) => {
             if let Some(picker) = &mut editor.theme_picker {
                 picker.move_down();
                 // Preview the theme
@@ -4052,7 +5197,8 @@ fn handle_theme_picker_key(editor: &mut Editor, key: KeyEvent) {
                     // Save theme to config
                     match crate::config::save_theme(&name) {
                         Ok(()) => editor.set_status(format!("Theme set to '{}' (saved)", name)),
-                        Err(e) => editor.set_status(format!("Theme set to '{}' (save failed: {})", name, e)),
+                        Err(e) => editor
+                            .set_status(format!("Theme set to '{}' (save failed: {})", name, e)),
                     }
                 }
             }
@@ -4072,8 +5218,7 @@ fn handle_theme_picker_key(editor: &mut Editor, key: KeyEvent) {
         }
 
         // Type character - add to query
-        (KeyModifiers::NONE, KeyCode::Char(c)) |
-        (KeyModifiers::SHIFT, KeyCode::Char(c)) => {
+        (KeyModifiers::NONE, KeyCode::Char(c)) | (KeyModifiers::SHIFT, KeyCode::Char(c)) => {
             if let Some(picker) = &mut editor.theme_picker {
                 picker.add_char(c);
                 // Preview first matching theme
@@ -4105,7 +5250,9 @@ fn play_macro(editor: &mut Editor, register: char, count: usize) {
     editor.macros.set_last_executed(register);
 
     // Wrap the entire playback in an undo group
-    editor.undo_stack.begin_undo_group(editor.cursor.line, editor.cursor.col);
+    editor
+        .undo_stack
+        .begin_undo_group(editor.cursor.line, editor.cursor.col);
 
     // Play the macro `count` times
     for _ in 0..count {
@@ -4116,7 +5263,9 @@ fn play_macro(editor: &mut Editor, register: char, count: usize) {
         }
     }
 
-    editor.undo_stack.end_undo_group(editor.cursor.line, editor.cursor.col);
+    editor
+        .undo_stack
+        .end_undo_group(editor.cursor.line, editor.cursor.col);
 }
 
 /// Handle a key event and update editor state
@@ -4126,8 +5275,8 @@ pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
     // We check for both the character and the raw control code
     let is_ctrl_backslash = match (key.modifiers, key.code) {
         (KeyModifiers::CONTROL, KeyCode::Char('\\')) => true,
-        (KeyModifiers::CONTROL, KeyCode::Char('4')) => true,  // Ctrl-4 = Ctrl-\ on some terminals
-        (_, KeyCode::Char('\x1c')) => true,  // ASCII 28 = File Separator (Ctrl-\)
+        (KeyModifiers::CONTROL, KeyCode::Char('4')) => true, // Ctrl-4 = Ctrl-\ on some terminals
+        (_, KeyCode::Char('\x1c')) => true,                  // ASCII 28 = File Separator (Ctrl-\)
         _ => false,
     };
     if is_ctrl_backslash {
@@ -4294,8 +5443,18 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             let total = t_start.elapsed();
             if total.as_micros() > 1000 {
                 use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("/tmp/nevi_debug.log") {
-                    let _ = writeln!(f, "SLOW custom_mapping: total={:?} exec={:?} key={:?}", total, t_exec.elapsed(), key.code);
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open("/tmp/nevi_debug.log")
+                {
+                    let _ = writeln!(
+                        f,
+                        "SLOW custom_mapping: total={:?} exec={:?} key={:?}",
+                        total,
+                        t_exec.elapsed(),
+                        key.code
+                    );
                 }
             }
             return;
@@ -4431,8 +5590,16 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             let total = t_start.elapsed();
             if total.as_micros() > 1000 {
                 use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("/tmp/nevi_debug.log") {
-                    let _ = writeln!(f, "SLOW EnterInsert: total={:?} leader_check={:?} process={:?} action={:?}", total, leader_check_elapsed, process_elapsed, action_elapsed);
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open("/tmp/nevi_debug.log")
+                {
+                    let _ = writeln!(
+                        f,
+                        "SLOW EnterInsert: total={:?} leader_check={:?} process={:?} action={:?}",
+                        total, leader_check_elapsed, process_elapsed, action_elapsed
+                    );
                 }
             }
         }
@@ -4718,7 +5885,8 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
                 editor.cursor.col,
                 count,
                 editor.text_rows(),
-            ).unwrap_or((start_line, 0));
+            )
+            .unwrap_or((start_line, 0));
 
             let (first, last) = if start_line <= end_line {
                 (start_line, end_line)
@@ -4827,19 +5995,26 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
             // Accept completion
             (KeyModifiers::NONE, KeyCode::Enter) | (KeyModifiers::NONE, KeyCode::Tab) => {
                 // Get completion info before modifying state
-                let completion_info = editor.completion.selected_item()
-                    .map(|item| (
-                        item.insert_text.as_deref().unwrap_or(&item.label).to_string(),
+                let completion_info = editor.completion.selected_item().map(|item| {
+                    (
+                        item.insert_text
+                            .as_deref()
+                            .unwrap_or(&item.label)
+                            .to_string(),
                         item.label.clone(),
                         item.kind,
-                    ));
+                    )
+                });
 
                 if let Some((text, label, kind)) = completion_info {
                     // Record frecency usage
                     editor.record_completion_use(&label);
 
                     // Delete back to trigger position and insert completion
-                    let chars_to_delete = editor.cursor.col.saturating_sub(editor.completion.trigger_col);
+                    let chars_to_delete = editor
+                        .cursor
+                        .col
+                        .saturating_sub(editor.completion.trigger_col);
                     for _ in 0..chars_to_delete {
                         editor.delete_char_before();
                     }
@@ -4848,10 +6023,11 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
                     }
 
                     // Auto-brackets: add () for functions/methods and position cursor inside
-                    let needs_brackets = matches!(kind,
-                        CompletionKind::Function |
-                        CompletionKind::Method |
-                        CompletionKind::Constructor
+                    let needs_brackets = matches!(
+                        kind,
+                        CompletionKind::Function
+                            | CompletionKind::Method
+                            | CompletionKind::Constructor
                     );
                     // Only add brackets if the text doesn't already end with ()
                     if needs_brackets && !text.ends_with("()") && !text.ends_with('(') {
@@ -4876,7 +6052,9 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
                 // Continue to normal handling below
             }
             // Word-ending characters - hide completion and continue
-            (_, KeyCode::Char(c)) if matches!(c, ' ' | ';' | '(' | ')' | '{' | '}' | '[' | ']' | ',' | ':') => {
+            (_, KeyCode::Char(c))
+                if matches!(c, ' ' | ';' | '(' | ')' | '{' | '}' | '[' | ']' | ',' | ':') =>
+            {
                 editor.completion.hide();
                 // Continue to normal handling below
             }
@@ -4974,8 +6152,12 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
                     if let (Some(prev), Some(next)) = (prev_char, next_char) {
                         let is_matching_pair = matches!(
                             (prev, next),
-                            ('(', ')') | ('[', ']') | ('{', '}') |
-                            ('"', '"') | ('\'', '\'') | ('`', '`')
+                            ('(', ')')
+                                | ('[', ']')
+                                | ('{', '}')
+                                | ('"', '"')
+                                | ('\'', '\'')
+                                | ('`', '`')
                         );
                         if is_matching_pair {
                             // Delete both characters
@@ -5006,7 +6188,9 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
         (_, KeyCode::Char(c)) if !c.is_control() => {
             if editor.settings.editor.auto_pairs {
                 // Auto-pairs: skip over closing pair if next char is the same
-                let next_char = editor.buffer().char_at(editor.cursor.line, editor.cursor.col);
+                let next_char = editor
+                    .buffer()
+                    .char_at(editor.cursor.line, editor.cursor.col);
                 let is_closing = matches!(c, ')' | ']' | '}' | '"' | '\'' | '`');
                 if is_closing && next_char == Some(c) {
                     // Skip over the closing character
@@ -5079,7 +6263,11 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
                 // Get the prefix from the current line
                 if let Some(line) = editor.buffer().line(editor.cursor.line) {
                     let line_str: String = line.chars().collect();
-                    let prefix: String = line_str.chars().skip(trigger_col).take(col - trigger_col).collect();
+                    let prefix: String = line_str
+                        .chars()
+                        .skip(trigger_col)
+                        .take(col - trigger_col)
+                        .collect();
 
                     // If isIncomplete and filter text changed, request new completions
                     if editor.completion.is_incomplete && prefix != editor.completion.filter_text {
@@ -5108,8 +6296,16 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
     let insert_elapsed = t_insert_start.elapsed();
     if insert_elapsed.as_micros() > 500 {
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open("/tmp/nevi_debug.log") {
-            let _ = writeln!(f, "SLOW insert_mode: {:?} key={:?}", insert_elapsed, key.code);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open("/tmp/nevi_debug.log")
+        {
+            let _ = writeln!(
+                f,
+                "SLOW insert_mode: {:?} key={:?}",
+                insert_elapsed, key.code
+            );
         }
     }
 }
@@ -5117,8 +6313,7 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
 fn handle_replace_mode(editor: &mut Editor, key: KeyEvent) {
     match (key.modifiers, key.code) {
         // Exit replace mode
-        (KeyModifiers::NONE, KeyCode::Esc) |
-        (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
+        (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
             editor.enter_normal_mode();
         }
 
@@ -5168,9 +6363,9 @@ fn handle_replace_mode(editor: &mut Editor, key: KeyEvent) {
 fn handle_rename_prompt_mode(editor: &mut Editor, key: KeyEvent) {
     match (key.modifiers, key.code) {
         // Cancel rename
-        (KeyModifiers::NONE, KeyCode::Esc) |
-        (KeyModifiers::CONTROL, KeyCode::Char('[')) |
-        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+        (KeyModifiers::NONE, KeyCode::Esc)
+        | (KeyModifiers::CONTROL, KeyCode::Char('['))
+        | (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
             editor.cancel_rename();
         }
 
@@ -5198,26 +6393,68 @@ fn handle_rename_prompt_mode(editor: &mut Editor, key: KeyEvent) {
     }
 }
 
+fn execute_command_mode_action(editor: &mut Editor, action: CommandModeAction) {
+    match action {
+        CommandModeAction::HistoryToggle => {
+            editor.command_line.toggle_history_popup();
+        }
+        CommandModeAction::Complete => {
+            if editor.command_line.popup_mode == CommandPopupMode::History {
+                editor.command_line.accept_history_popup_selection();
+            } else {
+                editor.command_line.accept_completion_selection();
+            }
+        }
+        CommandModeAction::CompletePrev => {
+            if editor.command_line.popup_mode == CommandPopupMode::History {
+                editor.command_line.popup_prev();
+            } else {
+                editor.command_line.popup_prev();
+                editor.command_line.accept_completion_selection();
+            }
+        }
+        CommandModeAction::PopupNext => {
+            editor.command_line.popup_next();
+        }
+        CommandModeAction::PopupPrev => {
+            editor.command_line.popup_prev();
+        }
+    }
+}
+
 fn handle_command_mode(editor: &mut Editor, key: KeyEvent) {
+    if let Some(action) = editor.keymap.get_command_action(key) {
+        execute_command_mode_action(editor, action);
+        return;
+    }
+
     match (key.modifiers, key.code) {
         // Cancel command
-        (KeyModifiers::NONE, KeyCode::Esc) |
-        (KeyModifiers::CONTROL, KeyCode::Char('[')) |
-        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+        (KeyModifiers::NONE, KeyCode::Esc)
+        | (KeyModifiers::CONTROL, KeyCode::Char('['))
+        | (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
             editor.exit_command_mode();
         }
 
-        // Execute command
+        // Execute command (or accept history selection when history window is open)
         (KeyModifiers::NONE, KeyCode::Enter) => {
-            let cmd = editor.command_line.execute();
-            editor.mode = Mode::Normal;
-            execute_command(editor, cmd);
+            if editor.command_line.popup_mode == CommandPopupMode::History {
+                editor.command_line.accept_history_popup_selection();
+            } else {
+                let cmd = editor.command_line.execute();
+                editor.mode = Mode::Normal;
+                execute_command(editor, cmd);
+            }
         }
 
         // Backspace
         (KeyModifiers::NONE, KeyCode::Backspace) => {
             if editor.command_line.input.is_empty() {
-                editor.exit_command_mode();
+                if editor.command_line.popup_mode == CommandPopupMode::History {
+                    editor.command_line.toggle_history_popup();
+                } else {
+                    editor.exit_command_mode();
+                }
             } else {
                 editor.command_line.delete_char_before();
             }
@@ -5235,26 +6472,32 @@ fn handle_command_mode(editor: &mut Editor, key: KeyEvent) {
         (KeyModifiers::NONE, KeyCode::Right) => {
             editor.command_line.move_right();
         }
-        (KeyModifiers::CONTROL, KeyCode::Char('a')) |
-        (KeyModifiers::NONE, KeyCode::Home) => {
+        (KeyModifiers::CONTROL, KeyCode::Char('a')) | (KeyModifiers::NONE, KeyCode::Home) => {
             editor.command_line.move_to_start();
         }
-        (KeyModifiers::CONTROL, KeyCode::Char('e')) |
-        (KeyModifiers::NONE, KeyCode::End) => {
+        (KeyModifiers::CONTROL, KeyCode::Char('e')) | (KeyModifiers::NONE, KeyCode::End) => {
             editor.command_line.move_to_end();
         }
 
         // History navigation
         (KeyModifiers::NONE, KeyCode::Up) => {
-            editor.command_line.history_prev();
+            if editor.command_line.popup_mode == CommandPopupMode::History {
+                editor.command_line.popup_prev();
+            } else {
+                editor.command_line.history_prev();
+            }
         }
         (KeyModifiers::NONE, KeyCode::Down) => {
-            editor.command_line.history_next();
+            if editor.command_line.popup_mode == CommandPopupMode::History {
+                editor.command_line.popup_next();
+            } else {
+                editor.command_line.history_next();
+            }
         }
 
         // Clear line
         (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-            editor.command_line.clear();
+            editor.command_line.begin_prompt();
         }
 
         // Regular character - accept any modifier for printable chars
@@ -5269,9 +6512,9 @@ fn handle_command_mode(editor: &mut Editor, key: KeyEvent) {
 fn handle_search_mode(editor: &mut Editor, key: KeyEvent) {
     match (key.modifiers, key.code) {
         // Cancel search
-        (KeyModifiers::NONE, KeyCode::Esc) |
-        (KeyModifiers::CONTROL, KeyCode::Char('[')) |
-        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+        (KeyModifiers::NONE, KeyCode::Esc)
+        | (KeyModifiers::CONTROL, KeyCode::Char('['))
+        | (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
             editor.exit_search_mode();
         }
 
@@ -5364,9 +6607,9 @@ fn handle_visual_mode(editor: &mut Editor, key: KeyEvent) {
 
     match (key.modifiers, key.code) {
         // Exit visual mode
-        (KeyModifiers::NONE, KeyCode::Esc) |
-        (KeyModifiers::CONTROL, KeyCode::Char('[')) |
-        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+        (KeyModifiers::NONE, KeyCode::Esc)
+        | (KeyModifiers::CONTROL, KeyCode::Char('['))
+        | (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
             editor.exit_visual_mode();
         }
 
@@ -5394,12 +6637,10 @@ fn handle_visual_mode(editor: &mut Editor, key: KeyEvent) {
         }
 
         // Operators
-        (KeyModifiers::NONE, KeyCode::Char('d')) |
-        (KeyModifiers::NONE, KeyCode::Char('x')) => {
+        (KeyModifiers::NONE, KeyCode::Char('d')) | (KeyModifiers::NONE, KeyCode::Char('x')) => {
             editor.visual_delete();
         }
-        (KeyModifiers::NONE, KeyCode::Char('c')) |
-        (KeyModifiers::NONE, KeyCode::Char('s')) => {
+        (KeyModifiers::NONE, KeyCode::Char('c')) | (KeyModifiers::NONE, KeyCode::Char('s')) => {
             editor.visual_change();
         }
         (KeyModifiers::NONE, KeyCode::Char('y')) => {
@@ -5572,8 +6813,7 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
         }
 
         // Esc behavior depends on mode
-        (KeyModifiers::NONE, KeyCode::Esc) |
-        (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
+        (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
             if is_normal_mode {
                 // In normal mode, Esc closes the finder
                 editor.close_finder();
@@ -5607,20 +6847,20 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
         // Navigate up - works in both modes
         // Note: List is rendered Telescope-style (best match at bottom)
         // Visual UP means going toward higher indices (at visual top)
-        (KeyModifiers::NONE, KeyCode::Up) |
-        (KeyModifiers::CONTROL, KeyCode::Char('k')) |
-        (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
-            editor.finder.select_next();  // Visually goes UP
+        (KeyModifiers::NONE, KeyCode::Up)
+        | (KeyModifiers::CONTROL, KeyCode::Char('k'))
+        | (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
+            editor.finder.select_next(); // Visually goes UP
             adjust_scroll(editor);
             selection_changed = true;
         }
 
         // Navigate down - works in both modes
         // Visual DOWN means going toward lower indices (at visual bottom)
-        (KeyModifiers::NONE, KeyCode::Down) |
-        (KeyModifiers::CONTROL, KeyCode::Char('j')) |
-        (KeyModifiers::CONTROL, KeyCode::Char('n')) => {
-            editor.finder.select_prev();  // Visually goes DOWN
+        (KeyModifiers::NONE, KeyCode::Down)
+        | (KeyModifiers::CONTROL, KeyCode::Char('j'))
+        | (KeyModifiers::CONTROL, KeyCode::Char('n')) => {
+            editor.finder.select_prev(); // Visually goes DOWN
             adjust_scroll(editor);
             selection_changed = true;
         }
@@ -5629,12 +6869,12 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
         // Note: List is rendered Telescope-style (best match at bottom, index 0)
         // So j (down visually) = decrement index, k (up visually) = increment index
         (KeyModifiers::NONE, KeyCode::Char('j')) if is_normal_mode => {
-            editor.finder.select_prev();  // Visually goes DOWN (toward index 0 at bottom)
+            editor.finder.select_prev(); // Visually goes DOWN (toward index 0 at bottom)
             adjust_scroll(editor);
             selection_changed = true;
         }
         (KeyModifiers::NONE, KeyCode::Char('k')) if is_normal_mode => {
-            editor.finder.select_next();  // Visually goes UP (toward higher indices at top)
+            editor.finder.select_next(); // Visually goes UP (toward higher indices at top)
             adjust_scroll(editor);
             selection_changed = true;
         }
@@ -5670,7 +6910,8 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
 
         // Harpoon mode: 'd' to delete selected item
         (KeyModifiers::NONE, KeyCode::Char('d'))
-            if is_normal_mode && editor.finder.mode == crate::finder::FinderMode::Harpoon => {
+            if is_normal_mode && editor.finder.mode == crate::finder::FinderMode::Harpoon =>
+        {
             if editor.finder.selected < editor.finder.filtered.len() {
                 let item_idx = editor.finder.filtered[editor.finder.selected];
                 editor.harpoon.remove(item_idx);
@@ -5689,7 +6930,8 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
 
         // Harpoon mode: 'K' (shift+k) to move item up
         (KeyModifiers::SHIFT, KeyCode::Char('K'))
-            if is_normal_mode && editor.finder.mode == crate::finder::FinderMode::Harpoon => {
+            if is_normal_mode && editor.finder.mode == crate::finder::FinderMode::Harpoon =>
+        {
             if editor.finder.selected < editor.finder.filtered.len() {
                 let item_idx = editor.finder.filtered[editor.finder.selected];
                 if item_idx > 0 {
@@ -5706,7 +6948,8 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
 
         // Harpoon mode: 'J' (shift+j) to move item down
         (KeyModifiers::SHIFT, KeyCode::Char('J'))
-            if is_normal_mode && editor.finder.mode == crate::finder::FinderMode::Harpoon => {
+            if is_normal_mode && editor.finder.mode == crate::finder::FinderMode::Harpoon =>
+        {
             if editor.finder.selected < editor.finder.filtered.len() {
                 let item_idx = editor.finder.filtered[editor.finder.selected];
                 let harpoon_len = editor.harpoon.len();
@@ -5724,7 +6967,8 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
 
         // Marks mode: 'd' to delete selected mark
         (KeyModifiers::NONE, KeyCode::Char('d'))
-            if is_normal_mode && editor.finder.mode == crate::finder::FinderMode::Marks => {
+            if is_normal_mode && editor.finder.mode == crate::finder::FinderMode::Marks =>
+        {
             if editor.finder.selected < editor.finder.filtered.len() {
                 let item_idx = editor.finder.filtered[editor.finder.selected];
                 if let Some(item) = editor.finder.items.get(item_idx) {
@@ -5732,7 +6976,8 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
                     let mark_name = item.display.chars().nth(1);
                     if let Some(name) = mark_name {
                         // Get buffer key for deletion
-                        let buffer_key = editor.buffer()
+                        let buffer_key = editor
+                            .buffer()
                             .path
                             .as_ref()
                             .map(|p| p.to_string_lossy().to_string())
@@ -5791,8 +7036,7 @@ fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
     if editor.explorer.is_searching {
         match (key.modifiers, key.code) {
             // Cancel search
-            (KeyModifiers::NONE, KeyCode::Esc) |
-            (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
+            (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
                 editor.explorer.cancel_search();
             }
             // Confirm search
@@ -5800,13 +7044,12 @@ fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
                 editor.explorer.confirm_search();
             }
             // Next match (Ctrl+n or Tab)
-            (KeyModifiers::CONTROL, KeyCode::Char('n')) |
-            (KeyModifiers::NONE, KeyCode::Tab) => {
+            (KeyModifiers::CONTROL, KeyCode::Char('n')) | (KeyModifiers::NONE, KeyCode::Tab) => {
                 editor.explorer.next_match();
             }
             // Previous match (Ctrl+p or Shift+Tab)
-            (KeyModifiers::CONTROL, KeyCode::Char('p')) |
-            (KeyModifiers::SHIFT, KeyCode::BackTab) => {
+            (KeyModifiers::CONTROL, KeyCode::Char('p'))
+            | (KeyModifiers::SHIFT, KeyCode::BackTab) => {
                 editor.explorer.prev_match();
             }
             // Backspace
@@ -5834,8 +7077,7 @@ fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
     if editor.explorer.has_pending_action() {
         match (key.modifiers, key.code) {
             // Cancel action
-            (KeyModifiers::NONE, KeyCode::Esc) |
-            (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
+            (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
                 editor.explorer.cancel_action();
             }
             // Confirm action
@@ -5857,12 +7099,10 @@ fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
             (KeyModifiers::NONE, KeyCode::Right) => {
                 editor.explorer.input_cursor_right();
             }
-            (KeyModifiers::CONTROL, KeyCode::Char('a')) |
-            (KeyModifiers::NONE, KeyCode::Home) => {
+            (KeyModifiers::CONTROL, KeyCode::Char('a')) | (KeyModifiers::NONE, KeyCode::Home) => {
                 editor.explorer.input_cursor_home();
             }
-            (KeyModifiers::CONTROL, KeyCode::Char('e')) |
-            (KeyModifiers::NONE, KeyCode::End) => {
+            (KeyModifiers::CONTROL, KeyCode::Char('e')) | (KeyModifiers::NONE, KeyCode::End) => {
                 editor.explorer.input_cursor_end();
             }
             // Type character
@@ -5918,21 +7158,19 @@ fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
 
     match (key.modifiers, key.code) {
         // Close explorer
-        (KeyModifiers::NONE, KeyCode::Esc) |
-        (KeyModifiers::CONTROL, KeyCode::Char('[')) |
-        (KeyModifiers::NONE, KeyCode::Char('q')) => {
+        (KeyModifiers::NONE, KeyCode::Esc)
+        | (KeyModifiers::CONTROL, KeyCode::Char('['))
+        | (KeyModifiers::NONE, KeyCode::Char('q')) => {
             editor.close_explorer();
         }
 
         // Move down
-        (KeyModifiers::NONE, KeyCode::Char('j')) |
-        (KeyModifiers::NONE, KeyCode::Down) => {
+        (KeyModifiers::NONE, KeyCode::Char('j')) | (KeyModifiers::NONE, KeyCode::Down) => {
             editor.explorer.move_down();
         }
 
         // Move up
-        (KeyModifiers::NONE, KeyCode::Char('k')) |
-        (KeyModifiers::NONE, KeyCode::Up) => {
+        (KeyModifiers::NONE, KeyCode::Char('k')) | (KeyModifiers::NONE, KeyCode::Up) => {
             editor.explorer.move_up();
         }
 
@@ -5955,8 +7193,7 @@ fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
         }
 
         // l/Right - expand directory or open file
-        (KeyModifiers::NONE, KeyCode::Char('l')) |
-        (KeyModifiers::NONE, KeyCode::Right) => {
+        (KeyModifiers::NONE, KeyCode::Char('l')) | (KeyModifiers::NONE, KeyCode::Right) => {
             if let Some(path) = editor.explorer_selected_path() {
                 if path.is_dir() {
                     editor.explorer.expand();
@@ -5972,8 +7209,7 @@ fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
         }
 
         // Collapse directory or go to parent
-        (KeyModifiers::NONE, KeyCode::Char('h')) |
-        (KeyModifiers::NONE, KeyCode::Left) => {
+        (KeyModifiers::NONE, KeyCode::Char('h')) | (KeyModifiers::NONE, KeyCode::Left) => {
             editor.explorer.collapse();
         }
 
@@ -5983,8 +7219,7 @@ fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
         }
 
         // Collapse all
-        (KeyModifiers::SHIFT, KeyCode::Char('W')) |
-        (KeyModifiers::NONE, KeyCode::Char('W')) => {
+        (KeyModifiers::SHIFT, KeyCode::Char('W')) | (KeyModifiers::NONE, KeyCode::Char('W')) => {
             editor.explorer.collapse_all();
         }
 
@@ -6070,7 +7305,9 @@ fn execute_explorer_action(editor: &mut Editor) {
                 if path.is_dir() {
                     path.clone()
                 } else {
-                    path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| path.clone())
+                    path.parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| path.clone())
                 }
             } else if let Some(root) = &editor.project_root {
                 root.clone()
@@ -6182,7 +7419,9 @@ fn execute_explorer_paste(editor: &mut Editor) {
         if path.is_dir() {
             path.clone()
         } else {
-            path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| path.clone())
+            path.parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| path.clone())
         }
     } else if let Some(root) = &editor.project_root {
         root.clone()
@@ -6191,7 +7430,9 @@ fn execute_explorer_paste(editor: &mut Editor) {
         return;
     };
 
-    let file_name = clipboard.path.file_name()
+    let file_name = clipboard
+        .path
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
     let dest_path = dest_dir.join(&file_name);
@@ -6210,9 +7451,7 @@ fn execute_explorer_paste(editor: &mut Editor) {
                 std::fs::copy(&clipboard.path, &dest_path).map(|_| ())
             }
         }
-        ClipboardOp::Cut => {
-            std::fs::rename(&clipboard.path, &dest_path)
-        }
+        ClipboardOp::Cut => std::fs::rename(&clipboard.path, &dest_path),
     };
 
     match result {
@@ -6264,7 +7503,11 @@ fn create_and_open_file(editor: &mut Editor, path: std::path::PathBuf) -> Comman
 }
 
 /// Helper to rename a file
-fn rename_file_impl(editor: &mut Editor, old_path: std::path::PathBuf, new_path: std::path::PathBuf) -> CommandResult {
+fn rename_file_impl(
+    editor: &mut Editor,
+    old_path: std::path::PathBuf,
+    new_path: std::path::PathBuf,
+) -> CommandResult {
     // Create parent directories if needed
     if let Some(parent) = new_path.parent() {
         if !parent.exists() {
@@ -6302,11 +7545,18 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
                         // Use external formatter (blocking)
                         let formatter_name = &formatter_config.command;
                         let content = editor.buffer().content();
-                        let file_path = editor.buffer().path.as_ref()
+                        let file_path = editor
+                            .buffer()
+                            .path
+                            .as_ref()
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_default();
 
-                        match crate::formatter::format_with_external(&content, &file_path, &formatter_config) {
+                        match crate::formatter::format_with_external(
+                            &content,
+                            &file_path,
+                            &formatter_config,
+                        ) {
                             Ok(formatted) => {
                                 if formatted != content {
                                     // Replace buffer content with formatted version
@@ -6316,9 +7566,15 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
                                 match editor.save() {
                                     Ok(()) => {
                                         if formatted != content {
-                                            CommandResult::Message(format!("Formatted with {} and saved", formatter_name))
+                                            CommandResult::Message(format!(
+                                                "Formatted with {} and saved",
+                                                formatter_name
+                                            ))
                                         } else {
-                                            CommandResult::Message(format!("Saved (formatted with {})", formatter_name))
+                                            CommandResult::Message(format!(
+                                                "Saved (formatted with {})",
+                                                formatter_name
+                                            ))
                                         }
                                     }
                                     Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
@@ -6328,8 +7584,13 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
                                 // Formatter failed - show error but still save
                                 editor.set_status(format!("{} error: {}", formatter_name, e));
                                 match editor.save() {
-                                    Ok(()) => CommandResult::Message(format!("Saved ({} failed: {})", formatter_name, e)),
-                                    Err(save_err) => CommandResult::Error(format!("Error saving: {}", save_err)),
+                                    Ok(()) => CommandResult::Message(format!(
+                                        "Saved ({} failed: {})",
+                                        formatter_name, e
+                                    )),
+                                    Err(save_err) => {
+                                        CommandResult::Error(format!("Error saving: {}", save_err))
+                                    }
                                 }
                             }
                         }
@@ -6403,27 +7664,29 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             }
         }
 
-        Command::WriteAll => {
-            match editor.format_and_save_all() {
-                Ok((saved_count, formatted_count, formatter_name)) => {
-                    if saved_count == 0 {
-                        CommandResult::Message("No modified buffers to save".to_string())
+        Command::WriteAll => match editor.format_and_save_all() {
+            Ok((saved_count, formatted_count, formatter_name)) => {
+                if saved_count == 0 {
+                    CommandResult::Message("No modified buffers to save".to_string())
+                } else {
+                    let buffer_word = if saved_count == 1 {
+                        "buffer"
                     } else {
-                        let buffer_word = if saved_count == 1 { "buffer" } else { "buffers" };
-                        if formatted_count > 0 {
-                            let formatter = formatter_name.unwrap_or_else(|| "formatter".to_string());
-                            CommandResult::Message(format!(
-                                "Formatted with {} and saved {} {}",
-                                formatter, saved_count, buffer_word
-                            ))
-                        } else {
-                            CommandResult::Message(format!("Saved {} {}", saved_count, buffer_word))
-                        }
+                        "buffers"
+                    };
+                    if formatted_count > 0 {
+                        let formatter = formatter_name.unwrap_or_else(|| "formatter".to_string());
+                        CommandResult::Message(format!(
+                            "Formatted with {} and saved {} {}",
+                            formatter, saved_count, buffer_word
+                        ))
+                    } else {
+                        CommandResult::Message(format!("Saved {} {}", saved_count, buffer_word))
                     }
                 }
-                Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
             }
-        }
+            Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
+        },
 
         Command::QuitAll => {
             if editor.has_any_unsaved_changes() {
@@ -6437,16 +7700,12 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             }
         }
 
-        Command::ForceQuitAll => {
-            CommandResult::Quit
-        }
+        Command::ForceQuitAll => CommandResult::Quit,
 
-        Command::WriteQuitAll => {
-            match editor.save_all() {
-                Ok(_) => CommandResult::Quit,
-                Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
-            }
-        }
+        Command::WriteQuitAll => match editor.save_all() {
+            Ok(_) => CommandResult::Quit,
+            Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
+        },
 
         Command::WriteQuitAllIfModified => {
             if editor.has_any_unsaved_changes() {
@@ -6462,12 +7721,16 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
         Command::Edit(path) => {
             if let Some(p) = path {
                 match editor.open_file(p) {
-                    Ok(()) => CommandResult::Message(format!("\"{}\"", editor.buffer().display_name())),
+                    Ok(()) => {
+                        CommandResult::Message(format!("\"{}\"", editor.buffer().display_name()))
+                    }
                     Err(e) => CommandResult::Error(format!("Error opening file: {}", e)),
                 }
             } else if editor.buffer().path.is_some() {
                 if editor.has_unsaved_changes() {
-                    CommandResult::Error("No write since last change (add ! to override)".to_string())
+                    CommandResult::Error(
+                        "No write since last change (add ! to override)".to_string(),
+                    )
                 } else {
                     match editor.reload() {
                         Ok(()) => CommandResult::Ok,
@@ -6479,12 +7742,10 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             }
         }
 
-        Command::Reload => {
-            match editor.reload() {
-                Ok(()) => CommandResult::Ok,
-                Err(e) => CommandResult::Error(format!("Error reloading: {}", e)),
-            }
-        }
+        Command::Reload => match editor.reload() {
+            Ok(()) => CommandResult::Ok,
+            Err(e) => CommandResult::Error(format!("Error reloading: {}", e)),
+        },
 
         Command::GotoLine(line) => {
             editor.goto_line(line);
@@ -6517,13 +7778,9 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             }
         }
 
-        Command::Set(option, _value) => {
-            CommandResult::Error(format!("Unknown option: {}", option))
-        }
+        Command::Set(option, _value) => CommandResult::Error(format!("Unknown option: {}", option)),
 
-        Command::LazyGit => {
-            CommandResult::RunExternal("lazygit".to_string())
-        }
+        Command::LazyGit => CommandResult::RunExternal("lazygit".to_string()),
 
         Command::Shell(shell_cmd) => {
             if shell_cmd.is_empty() {
@@ -6533,19 +7790,15 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             }
         }
 
-        Command::VSplit(path) => {
-            match editor.vsplit(path) {
-                Ok(()) => CommandResult::Ok,
-                Err(e) => CommandResult::Error(format!("Error: {}", e)),
-            }
-        }
+        Command::VSplit(path) => match editor.vsplit(path) {
+            Ok(()) => CommandResult::Ok,
+            Err(e) => CommandResult::Error(format!("Error: {}", e)),
+        },
 
-        Command::HSplit(path) => {
-            match editor.hsplit(path) {
-                Ok(()) => CommandResult::Ok,
-                Err(e) => CommandResult::Error(format!("Error: {}", e)),
-            }
-        }
+        Command::HSplit(path) => match editor.hsplit(path) {
+            Ok(()) => CommandResult::Ok,
+            Err(e) => CommandResult::Error(format!("Error: {}", e)),
+        },
 
         Command::Only => {
             editor.close_other_panes();
@@ -6592,7 +7845,12 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             CommandResult::Ok
         }
 
-        Command::Substitute { entire_file, pattern, replacement, global } => {
+        Command::Substitute {
+            entire_file,
+            pattern,
+            replacement,
+            global,
+        } => {
             let count = editor.substitute(&pattern, &replacement, entire_file, global);
             if count > 0 {
                 CommandResult::Message(format!("{} substitution(s)", count))
@@ -6657,7 +7915,10 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
                     new_name
                 } else if new_name.components().count() == 1 {
                     // Just a filename, keep in same directory
-                    old_path.parent().unwrap_or(std::path::Path::new(".")).join(&new_name)
+                    old_path
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join(&new_name)
                 } else {
                     // Relative path, resolve from project root
                     editor.working_directory().join(&new_name)
@@ -6678,7 +7939,9 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             };
 
             match std::fs::create_dir_all(&full_path) {
-                Ok(_) => CommandResult::Message(format!("Created directory: {}", full_path.display())),
+                Ok(_) => {
+                    CommandResult::Message(format!("Created directory: {}", full_path.display()))
+                }
                 Err(e) => CommandResult::Error(format!("Failed to create directory: {}", e)),
             }
         }
@@ -6859,7 +8122,10 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             editor.pending_external_command = Some(cmd);
         }
         CommandResult::ConfirmDelete(path) => {
-            editor.set_status(format!("Delete {}? Use :delete! to confirm", path.display()));
+            editor.set_status(format!(
+                "Delete {}? Use :delete! to confirm",
+                path.display()
+            ));
         }
     }
 }

@@ -14,6 +14,21 @@ pub enum LeaderAction {
     Keys(Vec<KeyEvent>),
 }
 
+/// Action for command mode (`:` prompt) keybindings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandModeAction {
+    /// Toggle history popup window
+    HistoryToggle,
+    /// Accept current completion/history selection
+    Complete,
+    /// Move selection backward and accept completion
+    CompletePrev,
+    /// Move popup selection to next item
+    PopupNext,
+    /// Move popup selection to previous item
+    PopupPrev,
+}
+
 /// Lookup table for custom key remappings
 #[derive(Debug, Clone)]
 pub struct KeymapLookup {
@@ -21,6 +36,8 @@ pub struct KeymapLookup {
     normal: HashMap<KeyEvent, LeaderAction>,
     /// Insert mode remappings: from -> to (single key only)
     insert: HashMap<KeyEvent, KeyEvent>,
+    /// Command mode mappings: key -> command-line UX action
+    command: HashMap<KeyEvent, CommandModeAction>,
     /// Leader key (None if not configured)
     leader_key: Option<KeyEvent>,
     /// Leader mappings: key sequence -> action
@@ -32,6 +49,7 @@ impl Default for KeymapLookup {
         Self {
             normal: HashMap::new(),
             insert: HashMap::new(),
+            command: HashMap::new(),
             leader_key: None,
             leader_mappings: HashMap::new(),
         }
@@ -43,6 +61,7 @@ impl KeymapLookup {
     pub fn from_settings(settings: &KeymapSettings) -> (Self, Vec<String>) {
         let mut normal = HashMap::new();
         let mut insert = HashMap::new();
+        let mut command = HashMap::new();
         let mut errors = Vec::new();
 
         for entry in &settings.normal {
@@ -51,10 +70,7 @@ impl KeymapLookup {
                 let action = parse_action(&entry.to);
                 normal.insert(from, action);
             } else {
-                errors.push(format!(
-                    "Keymap: invalid normal mode key '{}'",
-                    entry.from
-                ));
+                errors.push(format!("Keymap: invalid normal mode key '{}'", entry.from));
             }
         }
 
@@ -81,13 +97,46 @@ impl KeymapLookup {
             }
         }
 
+        for mapping in &settings.command_mappings {
+            match (
+                parse_key_notation(&mapping.key),
+                parse_command_mode_action(&mapping.action),
+            ) {
+                (Some(key), Some(action)) => {
+                    command.insert(key, action);
+                }
+                (None, _) => {
+                    errors.push(format!(
+                        "Keymap: invalid command mode key '{}'",
+                        mapping.key
+                    ));
+                }
+                (_, None) => {
+                    errors.push(format!(
+                        "Keymap: invalid command mode action '{}'",
+                        mapping.action
+                    ));
+                }
+            }
+        }
+
+        // Ensure every command mode action has a fallback default binding.
+        // This prevents accidental loss when a user provides an invalid override key.
+        for mapping in KeymapSettings::default().command_mappings {
+            if let (Some(key), Some(action)) = (
+                parse_key_notation(&mapping.key),
+                parse_command_mode_action(&mapping.action),
+            ) {
+                if !command.values().any(|existing| *existing == action) {
+                    command.insert(key, action);
+                }
+            }
+        }
+
         // Parse leader key
         let leader_key = parse_key_notation(&settings.leader);
         if leader_key.is_none() && !settings.leader.is_empty() {
-            errors.push(format!(
-                "Keymap: invalid leader key '{}'",
-                settings.leader
-            ));
+            errors.push(format!("Keymap: invalid leader key '{}'", settings.leader));
         }
 
         // Parse leader mappings
@@ -101,6 +150,7 @@ impl KeymapLookup {
             Self {
                 normal,
                 insert,
+                command,
                 leader_key,
                 leader_mappings,
             },
@@ -116,6 +166,11 @@ impl KeymapLookup {
     /// Remap a key in insert mode, returning the original if no mapping exists
     pub fn remap_insert(&self, key: KeyEvent) -> KeyEvent {
         self.insert.get(&key).copied().unwrap_or(key)
+    }
+
+    /// Look up a command-mode mapping for command-line UX actions.
+    pub fn get_command_action(&self, key: KeyEvent) -> Option<CommandModeAction> {
+        self.command.get(&key).copied()
     }
 
     /// Check if there are any normal mode mappings
@@ -149,7 +204,9 @@ impl KeymapLookup {
     /// Check if a sequence could be a prefix for a leader mapping
     /// Returns true if there's any mapping that starts with this sequence
     pub fn is_leader_prefix(&self, sequence: &str) -> bool {
-        self.leader_mappings.keys().any(|k| k.starts_with(sequence) && k != sequence)
+        self.leader_mappings
+            .keys()
+            .any(|k| k.starts_with(sequence) && k != sequence)
     }
 }
 
@@ -196,12 +253,23 @@ fn parse_action(action: &str) -> LeaderAction {
     }
 }
 
+fn parse_command_mode_action(action: &str) -> Option<CommandModeAction> {
+    match action.trim().to_lowercase().as_str() {
+        "history_toggle" => Some(CommandModeAction::HistoryToggle),
+        "complete" => Some(CommandModeAction::Complete),
+        "complete_prev" => Some(CommandModeAction::CompletePrev),
+        "popup_next" => Some(CommandModeAction::PopupNext),
+        "popup_prev" => Some(CommandModeAction::PopupPrev),
+        _ => None,
+    }
+}
+
 /// Parse a key notation string into a KeyEvent
 ///
 /// Supported formats:
 /// - Single characters: "a", "H", ";", "0"
 /// - Control keys: "<C-r>", "<C-s>"
-/// - Special keys: "<CR>", "<Esc>", "<Tab>", "<BS>", "<Space>"
+/// - Special keys: "<CR>", "<Esc>", "<Tab>", "<BackTab>", "<BS>", "<Space>"
 /// - Function keys: "<F1>" through "<F12>"
 pub fn parse_key_notation(s: &str) -> Option<KeyEvent> {
     // Handle single space character before trimming (since space is a valid leader key)
@@ -275,6 +343,7 @@ fn parse_special_notation(inner: &str) -> Option<KeyEvent> {
         "cr" | "enter" | "return" => Some(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         "esc" | "escape" => Some(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
         "tab" => Some(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+        "backtab" => Some(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
         "bs" | "backspace" => Some(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
         "del" | "delete" => Some(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE)),
         "space" => Some(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
@@ -338,6 +407,9 @@ mod tests {
         let key = parse_key_notation("<Tab>").unwrap();
         assert_eq!(key.code, KeyCode::Tab);
 
+        let key = parse_key_notation("<BackTab>").unwrap();
+        assert_eq!(key.code, KeyCode::BackTab);
+
         let key = parse_key_notation("<Space>").unwrap();
         assert_eq!(key.code, KeyCode::Char(' '));
         assert_eq!(key.modifiers, KeyModifiers::NONE);
@@ -357,17 +429,16 @@ mod tests {
         use super::super::KeymapSettings;
 
         let settings = KeymapSettings {
-            leader: " ".to_string(),  // Literal space, as used in default config
+            leader: " ".to_string(), // Literal space, as used in default config
             timeoutlen: 1000,
             normal: vec![],
             insert: vec![],
-            leader_mappings: vec![
-                super::super::LeaderMapping {
-                    key: "m".to_string(),
-                    action: ":HarpoonAdd".to_string(),
-                    desc: Some("Add to harpoon".to_string()),
-                },
-            ],
+            command_mappings: vec![],
+            leader_mappings: vec![super::super::LeaderMapping {
+                key: "m".to_string(),
+                action: ":HarpoonAdd".to_string(),
+                desc: Some("Add to harpoon".to_string()),
+            }],
         };
 
         let (lookup, errors) = KeymapLookup::from_settings(&settings);
@@ -375,7 +446,10 @@ mod tests {
         let space_key = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
 
         assert!(lookup.has_leader_mappings(), "Should have leader mappings");
-        assert!(lookup.is_leader_key(space_key), "Literal space should be recognized as leader key");
+        assert!(
+            lookup.is_leader_key(space_key),
+            "Literal space should be recognized as leader key"
+        );
 
         // Check we can look up the mapping
         let action = lookup.get_leader_action("m");
@@ -391,13 +465,12 @@ mod tests {
             timeoutlen: 1000,
             normal: vec![],
             insert: vec![],
-            leader_mappings: vec![
-                super::super::LeaderMapping {
-                    key: "w".to_string(),
-                    action: ":w<CR>".to_string(),
-                    desc: Some("Save".to_string()),
-                },
-            ],
+            command_mappings: vec![],
+            leader_mappings: vec![super::super::LeaderMapping {
+                key: "w".to_string(),
+                action: ":w<CR>".to_string(),
+                desc: Some("Save".to_string()),
+            }],
         };
 
         let (lookup, errors) = KeymapLookup::from_settings(&settings);
@@ -407,7 +480,10 @@ mod tests {
         let space_key = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
 
         assert!(lookup.has_leader_mappings(), "Should have leader mappings");
-        assert!(lookup.is_leader_key(space_key), "Space should be recognized as leader key");
+        assert!(
+            lookup.is_leader_key(space_key),
+            "Space should be recognized as leader key"
+        );
 
         // Check we can look up the mapping
         let action = lookup.get_leader_action("w");

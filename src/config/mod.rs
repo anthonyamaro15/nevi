@@ -9,7 +9,7 @@ pub mod languages;
 use serde::Deserialize;
 use std::path::PathBuf;
 
-pub use keymap::{KeymapLookup, LeaderAction};
+pub use keymap::{CommandModeAction, KeymapLookup, LeaderAction};
 pub use languages::{load_languages_config, FormatterConfig, LanguageConfig, LanguagesConfig};
 
 /// Main settings structure
@@ -165,6 +165,8 @@ pub struct KeymapSettings {
     pub normal: Vec<KeymapEntry>,
     /// Insert mode key remappings
     pub insert: Vec<KeymapEntry>,
+    /// Command mode mappings for command-line UX actions
+    pub command_mappings: Vec<CommandModeMapping>,
     /// Leader key mappings (e.g., <leader>w -> :w<CR>)
     pub leader_mappings: Vec<LeaderMapping>,
 }
@@ -173,9 +175,36 @@ impl Default for KeymapSettings {
     fn default() -> Self {
         Self {
             leader: " ".to_string(), // Space as leader (common in Neovim)
-            timeoutlen: 1000, // 1 second (matches Vim default)
+            timeoutlen: 1000,        // 1 second (matches Vim default)
             normal: Vec::new(),
             insert: Vec::new(),
+            command_mappings: vec![
+                CommandModeMapping {
+                    key: "<C-r>".to_string(),
+                    action: "history_toggle".to_string(),
+                    desc: Some("Toggle command history window".to_string()),
+                },
+                CommandModeMapping {
+                    key: "<Tab>".to_string(),
+                    action: "complete".to_string(),
+                    desc: Some("Accept selected command completion".to_string()),
+                },
+                CommandModeMapping {
+                    key: "<BackTab>".to_string(),
+                    action: "complete_prev".to_string(),
+                    desc: Some("Select previous completion and accept".to_string()),
+                },
+                CommandModeMapping {
+                    key: "<C-n>".to_string(),
+                    action: "popup_next".to_string(),
+                    desc: Some("Select next popup item".to_string()),
+                },
+                CommandModeMapping {
+                    key: "<C-p>".to_string(),
+                    action: "popup_prev".to_string(),
+                    desc: Some("Select previous popup item".to_string()),
+                },
+            ],
             leader_mappings: vec![
                 // LSP actions
                 LeaderMapping {
@@ -312,6 +341,18 @@ pub struct LeaderMapping {
     pub desc: Option<String>,
 }
 
+/// A command-mode mapping for command-line UX actions
+#[derive(Debug, Clone, Deserialize)]
+pub struct CommandModeMapping {
+    /// Key notation (e.g., "<C-r>", "<Tab>", "<BackTab>")
+    pub key: String,
+    /// Action name (history_toggle, complete, complete_prev, popup_next, popup_prev)
+    pub action: String,
+    /// Optional description for docs/which-key style UIs
+    #[serde(default)]
+    pub desc: Option<String>,
+}
+
 /// LSP (Language Server Protocol) settings
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -366,7 +407,12 @@ impl Default for LspServers {
                 command: "typescript-language-server".to_string(),
                 args: vec!["--stdio".to_string()],
                 root_patterns: vec!["tsconfig.json".to_string(), "package.json".to_string()],
-                file_extensions: vec!["ts".to_string(), "tsx".to_string(), "mts".to_string(), "cts".to_string()],
+                file_extensions: vec![
+                    "ts".to_string(),
+                    "tsx".to_string(),
+                    "mts".to_string(),
+                    "cts".to_string(),
+                ],
             },
             javascript: LspServerConfig {
                 enabled: true,
@@ -374,7 +420,12 @@ impl Default for LspServers {
                 command: "typescript-language-server".to_string(),
                 args: vec!["--stdio".to_string()],
                 root_patterns: vec!["jsconfig.json".to_string(), "package.json".to_string()],
-                file_extensions: vec!["js".to_string(), "jsx".to_string(), "mjs".to_string(), "cjs".to_string()],
+                file_extensions: vec![
+                    "js".to_string(),
+                    "jsx".to_string(),
+                    "mjs".to_string(),
+                    "cjs".to_string(),
+                ],
             },
             css: LspServerConfig {
                 enabled: true,
@@ -382,7 +433,12 @@ impl Default for LspServers {
                 command: "vscode-css-language-server".to_string(),
                 args: vec!["--stdio".to_string()],
                 root_patterns: vec!["package.json".to_string()],
-                file_extensions: vec!["css".to_string(), "scss".to_string(), "sass".to_string(), "less".to_string()],
+                file_extensions: vec![
+                    "css".to_string(),
+                    "scss".to_string(),
+                    "sass".to_string(),
+                    "less".to_string(),
+                ],
             },
             json: LspServerConfig {
                 enabled: true,
@@ -465,30 +521,18 @@ impl LspPreset {
                 "typescript-language-server".to_string(),
                 vec!["--stdio".to_string()],
             )),
-            LspPreset::Biome => Some((
-                "biome".to_string(),
-                vec!["lsp-proxy".to_string()],
-            )),
-            LspPreset::Deno => Some((
-                "deno".to_string(),
-                vec!["lsp".to_string()],
-            )),
+            LspPreset::Biome => Some(("biome".to_string(), vec!["lsp-proxy".to_string()])),
+            LspPreset::Deno => Some(("deno".to_string(), vec!["lsp".to_string()])),
             LspPreset::Eslint => Some((
                 "vscode-eslint-language-server".to_string(),
                 vec!["--stdio".to_string()],
             )),
-            LspPreset::RustAnalyzer => Some((
-                "rust-analyzer".to_string(),
-                Vec::new(),
-            )),
+            LspPreset::RustAnalyzer => Some(("rust-analyzer".to_string(), Vec::new())),
             LspPreset::Pyright => Some((
                 "pyright-langserver".to_string(),
                 vec!["--stdio".to_string()],
             )),
-            LspPreset::Pylsp => Some((
-                "pylsp".to_string(),
-                Vec::new(),
-            )),
+            LspPreset::Pylsp => Some(("pylsp".to_string(), Vec::new())),
             LspPreset::Custom => None, // Use explicit command/args
         }
     }
@@ -904,6 +948,14 @@ fn default_config_template() -> &'static str {
 # <leader>h        - Harpoon menu
 # <leader>1-4      - Jump to harpoon slot 1-4
 #
+# ----------------------------------------------------------------------------
+# COMMAND MODE (while typing `:`)
+# ----------------------------------------------------------------------------
+# Ctrl+r           - Toggle command history window
+# Tab              - Accept selected command completion
+# Shift+Tab        - Accept previous completion
+# Ctrl+n / Ctrl+p  - Next / previous popup item
+#
 # ============================================================================
 # CUSTOM KEYBIND EXAMPLES
 # ============================================================================
@@ -921,6 +973,16 @@ fn default_config_template() -> &'static str {
 # key = "w"
 # action = ":w"
 # desc = "Save file"
+#
+# To override command-mode command-line UX bindings:
+# [[keymap.command_mappings]]
+# key = "<A-r>"
+# action = "history_toggle"
+# desc = "Open command history with Alt+r"
+#
+# [[keymap.command_mappings]]
+# key = "<C-j>"
+# action = "popup_next"
 
 # ============================================================================
 # LSP (Language Server Protocol)
@@ -1018,6 +1080,9 @@ pub fn load_config() -> Settings {
                 // Merge leader mappings: defaults + user overrides
                 user_settings.keymap.leader_mappings =
                     merge_leader_mappings(&user_settings.keymap.leader_mappings);
+                // Merge command mode mappings: defaults + user overrides by action
+                user_settings.keymap.command_mappings =
+                    merge_command_mappings(&user_settings.keymap.command_mappings);
                 user_settings
             }
             Err(e) => {
@@ -1053,6 +1118,27 @@ fn merge_leader_mappings(user_mappings: &[LeaderMapping]) -> Vec<LeaderMapping> 
     merged
 }
 
+/// Merge user command-mode mappings with defaults.
+/// User mappings take precedence for the same action.
+fn merge_command_mappings(user_mappings: &[CommandModeMapping]) -> Vec<CommandModeMapping> {
+    let defaults = KeymapSettings::default().command_mappings;
+
+    // Collect user-defined action ids for quick lookup
+    let user_actions: std::collections::HashSet<&str> =
+        user_mappings.iter().map(|m| m.action.as_str()).collect();
+
+    // Start with defaults that aren't overridden by user action
+    let mut merged: Vec<CommandModeMapping> = defaults
+        .into_iter()
+        .filter(|m| !user_actions.contains(m.action.as_str()))
+        .collect();
+
+    // Add all user mappings
+    merged.extend(user_mappings.iter().cloned());
+
+    merged
+}
+
 /// Save the theme setting to config.toml
 /// Uses toml_edit to preserve formatting and comments
 pub fn save_theme(theme_name: &str) -> Result<(), String> {
@@ -1064,11 +1150,12 @@ pub fn save_theme(theme_name: &str) -> Result<(), String> {
     ensure_config_exists();
 
     // Read existing config
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read config: {}", e))?;
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {}", e))?;
 
     // Parse as editable TOML document
-    let mut doc = content.parse::<toml_edit::DocumentMut>()
+    let mut doc = content
+        .parse::<toml_edit::DocumentMut>()
         .map_err(|e| format!("Failed to parse config: {}", e))?;
 
     // Ensure [theme] table exists
@@ -1080,8 +1167,7 @@ pub fn save_theme(theme_name: &str) -> Result<(), String> {
     doc["theme"]["colorscheme"] = toml_edit::value(theme_name);
 
     // Write back
-    std::fs::write(&path, doc.to_string())
-        .map_err(|e| format!("Failed to write config: {}", e))?;
+    std::fs::write(&path, doc.to_string()).map_err(|e| format!("Failed to write config: {}", e))?;
 
     Ok(())
 }
