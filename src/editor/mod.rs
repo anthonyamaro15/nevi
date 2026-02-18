@@ -368,6 +368,8 @@ impl JumpList {
         current_line: usize,
         current_col: usize,
     ) -> Option<&JumpLocation> {
+        let mut inserted_current_snapshot = false;
+
         // If at end and we have history, save current position first
         if self.is_at_end() && !self.jumps.is_empty() {
             // Only save if different from last entry
@@ -379,15 +381,24 @@ impl JumpList {
                         col: current_col,
                     });
                     self.position = self.jumps.len();
+                    inserted_current_snapshot = true;
                 }
             }
         }
 
-        if self.position > 0 {
-            self.position -= 1;
-            self.jumps.get(self.position)
-        } else {
+        if self.position == 0 {
             None
+        } else {
+            // Move to the previous jump.
+            self.position -= 1;
+
+            // If we just inserted the current location snapshot, skip over it so
+            // the first Ctrl+o actually goes to an older position.
+            if inserted_current_snapshot && self.position > 0 {
+                self.position -= 1;
+            }
+
+            self.jumps.get(self.position)
         }
     }
 
@@ -6497,5 +6508,44 @@ impl Editor {
 impl Default for Editor {
     fn default() -> Self {
         Self::new(Settings::default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::JumpList;
+    use std::path::PathBuf;
+
+    #[test]
+    fn jump_list_back_skips_current_snapshot_on_first_press() {
+        let path = Some(PathBuf::from("/tmp/file.rs"));
+        let mut jumps = JumpList::default();
+
+        jumps.record(path.clone(), 10, 0);
+        jumps.record(path.clone(), 20, 0);
+
+        // Simulate cursor currently at a new location not yet in jump list.
+        let first = jumps.go_back(path.clone(), 30, 0).expect("first back");
+        assert_eq!(first.line, 20, "first Ctrl+o should go to previous jump");
+
+        // Ctrl+i should return to the current snapshot we saved (line 30).
+        let forward = jumps.go_forward().expect("forward after back");
+        assert_eq!(forward.line, 30, "Ctrl+i should return to current position");
+    }
+
+    #[test]
+    fn jump_list_back_then_back_reaches_older_entries() {
+        let path = Some(PathBuf::from("/tmp/file.rs"));
+        let mut jumps = JumpList::default();
+
+        jumps.record(path.clone(), 10, 0);
+        jumps.record(path.clone(), 20, 0);
+        jumps.record(path.clone(), 40, 0);
+
+        let first = jumps.go_back(path.clone(), 50, 0).expect("first back");
+        assert_eq!(first.line, 40);
+
+        let second = jumps.go_back(path.clone(), 40, 0).expect("second back");
+        assert_eq!(second.line, 20);
     }
 }
