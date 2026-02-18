@@ -239,8 +239,7 @@ fn byte_offset_to_char_index(byte_to_char: &[usize], byte_offset: usize) -> usiz
 
 /// Get the highlight query for Rust
 pub fn rust_highlight_query() -> &'static str {
-    // Query using named node types from tree-sitter-rust
-    // Avoid anonymous string tokens that may not exist in grammar
+    // Query using tree-sitter-rust node types and core keyword tokens.
     r##"
 ; Comments (highest priority)
 (line_comment) @comment
@@ -255,6 +254,36 @@ pub fn rust_highlight_query() -> &'static str {
 
 ; Boolean literals - distinct from other constants
 (boolean_literal) @boolean
+
+; Core Rust keywords
+[
+  "fn"
+  "let"
+  "impl"
+  "trait"
+  "struct"
+  "enum"
+  "type"
+  "const"
+  "static"
+  "match"
+  "if"
+  "else"
+  "for"
+  "while"
+  "loop"
+  "in"
+  "return"
+  "break"
+  "continue"
+  "use"
+  "mod"
+  "where"
+  "as"
+  "unsafe"
+  "async"
+  "await"
+] @keyword
 
 ; Mutable specifier
 (mutable_specifier) @keyword
@@ -797,4 +826,72 @@ pub fn python_highlight_query() -> &'static str {
 ; Attribute access
 (attribute attribute: (identifier) @property)
 "##
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tree_sitter::Parser;
+
+    #[test]
+    fn rust_highlight_query_compiles() {
+        let language = tree_sitter_rust::LANGUAGE;
+        let query = Query::new(&language.into(), rust_highlight_query());
+        assert!(query.is_ok(), "Rust query failed to compile: {:?}", query.err());
+    }
+
+    #[test]
+    fn javascript_highlight_query_compiles() {
+        let language = tree_sitter_javascript::LANGUAGE;
+        let query = Query::new(&language.into(), javascript_highlight_query());
+        assert!(
+            query.is_ok(),
+            "JavaScript query failed to compile: {:?}",
+            query.err()
+        );
+    }
+
+    #[test]
+    fn typescript_highlight_query_compiles() {
+        let language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT;
+        let query = Query::new(&language.into(), typescript_highlight_query());
+        assert!(
+            query.is_ok(),
+            "TypeScript query failed to compile: {:?}",
+            query.err()
+        );
+    }
+
+    #[test]
+    fn rust_query_captures_core_keywords() {
+        let language = tree_sitter_rust::LANGUAGE;
+        let query = Query::new(&language.into(), rust_highlight_query())
+            .expect("rust query should compile");
+
+        let mut parser = Parser::new();
+        parser
+            .set_language(&language.into())
+            .expect("rust parser should initialize");
+        let source = "impl Foo { fn bar() {} }\nfn main() { let x = match 1 { _ => 1 }; }\n";
+        let tree = parser.parse(source, None).expect("parse rust source");
+
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+        let mut keyword_count = 0usize;
+
+        while let Some(m) = matches.next() {
+            for capture in m.captures {
+                let capture_name = query.capture_names()[capture.index as usize];
+                if capture_name == "keyword" {
+                    keyword_count += 1;
+                }
+            }
+        }
+
+        assert!(
+            keyword_count >= 5,
+            "Expected core keyword captures (fn/let/impl/match), got {}",
+            keyword_count
+        );
+    }
 }

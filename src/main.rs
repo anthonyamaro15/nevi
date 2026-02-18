@@ -1,5 +1,5 @@
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use std::io::Write;
 
@@ -122,11 +122,37 @@ fn main() -> anyhow::Result<()> {
     let mut lsp_current_file: Option<PathBuf> = None; // Track which file LSP knows about
 
     if lsp_enabled {
+        // Collect configured root markers so workspace detection is not Cargo-only.
+        let mut root_markers: Vec<String> = Vec::new();
+        for cfg in [
+            &lsp_servers.rust,
+            &lsp_servers.typescript,
+            &lsp_servers.javascript,
+            &lsp_servers.css,
+            &lsp_servers.json,
+            &lsp_servers.toml,
+            &lsp_servers.markdown,
+            &lsp_servers.html,
+            &lsp_servers.python,
+        ] {
+            for marker in &cfg.root_patterns {
+                if marker.trim().is_empty() {
+                    continue;
+                }
+                if !root_markers.iter().any(|existing| existing == marker) {
+                    root_markers.push(marker.clone());
+                }
+            }
+        }
+        if root_markers.is_empty() {
+            root_markers.push("Cargo.toml".to_string());
+        }
+
         // Determine workspace root - prefer project root, fall back to file's workspace
         let workspace_root = if let Some(ref project_root) = editor.project_root {
-            find_workspace_root(project_root)
+            find_workspace_root(project_root.as_path(), &root_markers)
         } else if let Some(ref path) = initial_file {
-            find_workspace_root(path)
+            find_workspace_root(path.as_path(), &root_markers)
         } else {
             env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
         };
@@ -1748,22 +1774,29 @@ fn apply_copilot_completion(editor: &mut Editor, completion: &CopilotCompletion)
         .end_undo_group(editor.cursor.line, editor.cursor.col);
 }
 
-/// Find the workspace root by looking for Cargo.toml
-fn find_workspace_root(file_path: &PathBuf) -> PathBuf {
+/// Find workspace root by walking up the tree and checking root markers.
+fn find_workspace_root(file_path: &Path, root_markers: &[String]) -> PathBuf {
     let mut current = if file_path.is_dir() {
-        Some(file_path.clone())
+        Some(file_path.to_path_buf())
     } else {
         file_path.parent().map(|p| p.to_path_buf())
     };
+    let markers: Vec<&str> = root_markers
+        .iter()
+        .map(|m| m.as_str())
+        .filter(|m| !m.trim().is_empty())
+        .collect();
+
     while let Some(dir) = current {
-        if dir.join("Cargo.toml").exists() {
+        if markers.iter().any(|marker| dir.join(marker).exists()) {
             return dir;
         }
         current = dir.parent().map(|p| p.to_path_buf());
     }
-    // Fallback to file's directory
+
+    // Fallback to file's directory/current directory.
     if file_path.is_dir() {
-        file_path.clone()
+        file_path.to_path_buf()
     } else {
         file_path
             .parent()

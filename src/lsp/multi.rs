@@ -82,6 +82,51 @@ pub struct MultiLspManager {
 }
 
 impl MultiLspManager {
+    fn resolve_server_root(&self, lang: LanguageId, file_path: Option<&Path>) -> PathBuf {
+        let Some(path) = file_path else {
+            return self.workspace_root.clone();
+        };
+
+        let Some(config) = self.configs.get(&lang) else {
+            return self.workspace_root.clone();
+        };
+
+        if config.root_patterns.is_empty() {
+            return self.workspace_root.clone();
+        }
+
+        let mut current = if path.is_dir() {
+            Some(path.to_path_buf())
+        } else {
+            path.parent().map(Path::to_path_buf)
+        };
+
+        while let Some(dir) = current {
+            let is_root = config
+                .root_patterns
+                .iter()
+                .filter(|marker| !marker.trim().is_empty())
+                .any(|marker| dir.join(marker).exists());
+            if is_root {
+                return dir;
+            }
+            current = dir.parent().map(Path::to_path_buf);
+        }
+
+        self.workspace_root.clone()
+    }
+
+    fn is_fatal_error(message: &str) -> bool {
+        let msg = message.to_ascii_lowercase();
+        msg.contains("failed to start lsp server")
+            || msg.contains("failed to get lsp server stdout")
+            || msg.contains("failed to initialize lsp")
+            || msg.contains("broken pipe")
+            || msg.contains("connection reset")
+            || msg.contains("transport is closing")
+            || msg.contains("channel closed")
+    }
+
     /// Create a new multi-LSP manager with the given configurations
     pub fn new(
         workspace_root: PathBuf,
@@ -115,25 +160,40 @@ impl MultiLspManager {
 
     /// Start a language server for the given language (if not already running)
     pub fn ensure_server_for_language(&mut self, lang: LanguageId) -> anyhow::Result<bool> {
+        self.ensure_server_for_language_with_file(lang, None)
+    }
+
+    fn ensure_server_for_language_with_file(
+        &mut self,
+        lang: LanguageId,
+        file_path: Option<&Path>,
+    ) -> anyhow::Result<bool> {
         // Already running?
         if self.instances.contains_key(&lang) {
             return Ok(false);
         }
 
-        // Get config
-        let config = self.configs.get(&lang).ok_or_else(|| {
-            anyhow::anyhow!("No config for language {:?}", lang)
-        })?;
+        // Get config data without holding the borrow across server startup.
+        let (enabled, command, args) = {
+            let config = self.configs.get(&lang).ok_or_else(|| {
+                anyhow::anyhow!("No config for language {:?}", lang)
+            })?;
+            (
+                config.enabled,
+                config.effective_command().to_string(),
+                config.effective_args(),
+            )
+        };
 
         // Check if enabled
-        if !config.enabled {
+        if !enabled {
             return Ok(false);
         }
 
+        let root_path = self.resolve_server_root(lang, file_path);
+
         // Try to start the server (using effective command/args which resolve presets)
-        let command = config.effective_command();
-        let args = config.effective_args();
-        match LspManager::start(command, &args, self.workspace_root.clone()) {
+        match LspManager::start(&command, &args, root_path) {
             Ok(manager) => {
                 self.instances.insert(lang, LspInstance {
                     manager,
@@ -150,7 +210,7 @@ impl MultiLspManager {
     /// Start a server for a file if needed
     pub fn ensure_server_for_file(&mut self, path: &Path) -> anyhow::Result<Option<LanguageId>> {
         if let Some(lang) = LanguageId::from_path(path) {
-            self.ensure_server_for_language(lang)?;
+            self.ensure_server_for_language_with_file(lang, Some(path))?;
             Ok(Some(lang))
         } else {
             Ok(None)
@@ -183,8 +243,12 @@ impl MultiLspManager {
                 if let LspNotification::Initialized = &notification {
                     instance.ready = true;
                 }
-                if let LspNotification::Error { .. } = &notification {
-                    instance.ready = false;
+                if let LspNotification::Error { message } = &notification {
+                    // Not all LSP "error" notifications are fatal (for example stderr logs).
+                    // Keep the server ready unless we detect a transport/startup failure.
+                    if Self::is_fatal_error(message) {
+                        instance.ready = false;
+                    }
                 }
                 notifications.push((lang, notification));
             }
@@ -420,5 +484,85 @@ impl MultiLspManager {
 impl Drop for MultiLspManager {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn make_manager(workspace_root: PathBuf) -> MultiLspManager {
+        let servers = crate::config::LspServers::default();
+        MultiLspManager::new(
+            workspace_root,
+            servers.rust,
+            servers.typescript,
+            servers.javascript,
+            servers.css,
+            servers.json,
+            servers.toml,
+            servers.markdown,
+            servers.html,
+            servers.python,
+        )
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos))
+    }
+
+    #[test]
+    fn resolve_server_root_uses_language_root_markers() {
+        let tmp = unique_temp_dir("nevi_lsp_root");
+        let workspace_root = tmp.join("workspace");
+        let project_root = workspace_root.join("project");
+        let nested = project_root.join("src/bin");
+        fs::create_dir_all(&nested).expect("create nested tree");
+        fs::write(
+            project_root.join("Cargo.toml"),
+            "[package]\nname=\"x\"\nversion=\"0.1.0\"\n",
+        )
+        .expect("write cargo marker");
+
+        let manager = make_manager(workspace_root.clone());
+        let file_path = nested.join("main.rs");
+        let resolved = manager.resolve_server_root(LanguageId::Rust, Some(file_path.as_path()));
+        assert_eq!(resolved, project_root);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_server_root_falls_back_to_workspace_root() {
+        let tmp = unique_temp_dir("nevi_lsp_root_fallback");
+        let workspace_root = tmp.join("workspace");
+        let nested = workspace_root.join("scratch/src");
+        fs::create_dir_all(&nested).expect("create nested tree");
+
+        let manager = make_manager(workspace_root.clone());
+        let file_path = nested.join("main.rs");
+        let resolved = manager.resolve_server_root(LanguageId::Rust, Some(file_path.as_path()));
+        assert_eq!(resolved, workspace_root);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn fatal_error_detection_is_not_triggered_by_stderr_logs() {
+        assert!(MultiLspManager::is_fatal_error(
+            "Failed to start LSP server: No such file or directory"
+        ));
+        assert!(MultiLspManager::is_fatal_error(
+            "Failed to send didChange: Broken pipe (os error 32)"
+        ));
+        assert!(!MultiLspManager::is_fatal_error(
+            "LSP stderr: rust-analyzer: using proc-macro server"
+        ));
     }
 }
