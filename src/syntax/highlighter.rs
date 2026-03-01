@@ -125,6 +125,364 @@ pub fn get_line_highlights(
     resolve_overlapping_spans_with_priority(spans)
 }
 
+/// Get highlights for a YAML line using lightweight tokenization.
+/// This is used when tree-sitter YAML grammar is not available.
+pub fn get_line_highlights_yaml(
+    source: &str,
+    line_start_bytes: &[usize],
+    line: usize,
+    theme: &Theme,
+) -> Vec<HighlightSpan> {
+    if line >= line_start_bytes.len() {
+        return Vec::new();
+    }
+
+    let line_start_byte = line_start_bytes[line];
+    let mut line_end_byte = if line + 1 < line_start_bytes.len() {
+        line_start_bytes[line + 1].saturating_sub(1)
+    } else {
+        source.len()
+    };
+    if line_end_byte < line_start_byte {
+        line_end_byte = line_start_byte;
+    }
+    if line_end_byte > source.len() {
+        line_end_byte = source.len();
+    }
+
+    let line_content = &source[line_start_byte..line_end_byte];
+    if line_content.is_empty() {
+        return Vec::new();
+    }
+
+    let byte_to_char = build_byte_to_char_map(line_content);
+    let comment_start = yaml_comment_start(line_content);
+    let parse_end = comment_start.unwrap_or(line_content.len());
+    let mut spans: Vec<PrioritySpan> = Vec::new();
+
+    let mut push_span = |start_byte: usize, end_byte: usize, capture: &str, priority: u32| {
+        if start_byte >= end_byte || end_byte > line_content.len() {
+            return;
+        }
+        if let Some(color) = theme.get_color_for_capture(capture) {
+            let start_col = byte_offset_to_char_index(&byte_to_char, start_byte);
+            let end_col = byte_offset_to_char_index(&byte_to_char, end_byte);
+            if start_col < end_col {
+                spans.push(PrioritySpan {
+                    start_col,
+                    end_col,
+                    fg: color,
+                    priority,
+                });
+            }
+        }
+    };
+
+    if let Some((start, end)) = yaml_key_range(line_content, parse_end) {
+        push_span(start, end, "property", 10);
+    }
+
+    for (start, end) in yaml_quoted_spans(line_content, parse_end) {
+        push_span(start, end, "string", 30);
+    }
+
+    for (start, end, kind) in yaml_scalar_spans(line_content, parse_end) {
+        match kind {
+            YamlScalarKind::Boolean => push_span(start, end, "boolean", 20),
+            YamlScalarKind::Null => push_span(start, end, "constant", 20),
+            YamlScalarKind::Number => push_span(start, end, "number", 20),
+        }
+    }
+
+    if let Some(start) = comment_start {
+        push_span(start, line_content.len(), "comment", 40);
+    }
+
+    resolve_overlapping_spans_with_priority(spans)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum YamlScalarKind {
+    Boolean,
+    Null,
+    Number,
+}
+
+fn yaml_comment_start(line: &str) -> Option<usize> {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
+    for (idx, ch) in line.char_indices() {
+        if in_double && escaped {
+            escaped = false;
+            continue;
+        }
+        if in_double && ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if !in_double && ch == '\'' {
+            in_single = !in_single;
+            continue;
+        }
+        if !in_single && ch == '"' {
+            in_double = !in_double;
+            continue;
+        }
+        if ch == '#' && !in_single && !in_double {
+            return Some(idx);
+        }
+    }
+
+    None
+}
+
+fn yaml_key_range(line: &str, parse_end: usize) -> Option<(usize, usize)> {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut colon_idx = None;
+
+    for (idx, ch) in line.char_indices() {
+        if idx >= parse_end {
+            break;
+        }
+        if in_double && escaped {
+            escaped = false;
+            continue;
+        }
+        if in_double && ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if !in_double && ch == '\'' {
+            in_single = !in_single;
+            continue;
+        }
+        if !in_single && ch == '"' {
+            in_double = !in_double;
+            continue;
+        }
+        if ch == ':' && !in_single && !in_double {
+            colon_idx = Some(idx);
+            break;
+        }
+    }
+
+    let colon = colon_idx?;
+    let mut start = 0usize;
+    while start < colon {
+        let ch = line[start..].chars().next()?;
+        if ch.is_whitespace() {
+            start += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    // Handle list-item maps: "- name: value"
+    if start < colon {
+        let ch = line[start..].chars().next()?;
+        if ch == '-' {
+            start += ch.len_utf8();
+            while start < colon {
+                let ch = line[start..].chars().next()?;
+                if ch.is_whitespace() {
+                    start += ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut end = colon;
+    while end > start {
+        let (prev_idx, ch) = line[..end].char_indices().last()?;
+        if ch.is_whitespace() {
+            end = prev_idx;
+        } else {
+            break;
+        }
+    }
+
+    if start >= end {
+        return None;
+    }
+
+    let candidate = &line[start..end];
+    if !candidate.starts_with('"')
+        && !candidate.starts_with('\'')
+        && candidate.chars().any(|c| c.is_whitespace())
+    {
+        return None;
+    }
+
+    Some((start, end))
+}
+
+fn yaml_quoted_spans(line: &str, parse_end: usize) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut in_single: Option<usize> = None;
+    let mut in_double: Option<usize> = None;
+    let mut escaped = false;
+
+    for (idx, ch) in line.char_indices() {
+        if idx >= parse_end {
+            break;
+        }
+        if let Some(start) = in_double {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                spans.push((start, idx + ch.len_utf8()));
+                in_double = None;
+            }
+            continue;
+        }
+        if let Some(start) = in_single {
+            if ch == '\'' {
+                spans.push((start, idx + ch.len_utf8()));
+                in_single = None;
+            }
+            continue;
+        }
+        if ch == '"' {
+            in_double = Some(idx);
+        } else if ch == '\'' {
+            in_single = Some(idx);
+        }
+    }
+
+    if let Some(start) = in_double {
+        spans.push((start, parse_end));
+    }
+    if let Some(start) = in_single {
+        spans.push((start, parse_end));
+    }
+
+    spans
+}
+
+fn yaml_scalar_spans(line: &str, parse_end: usize) -> Vec<(usize, usize, YamlScalarKind)> {
+    let mut spans = Vec::new();
+    let mut idx = 0usize;
+
+    while idx < parse_end {
+        let ch = match line[idx..].chars().next() {
+            Some(ch) => ch,
+            None => break,
+        };
+
+        if ch == '"' {
+            idx += ch.len_utf8();
+            let mut escaped = false;
+            while idx < parse_end {
+                let q = match line[idx..].chars().next() {
+                    Some(q) => q,
+                    None => break,
+                };
+                idx += q.len_utf8();
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                if q == '\\' {
+                    escaped = true;
+                    continue;
+                }
+                if q == '"' {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        if ch == '\'' {
+            idx += ch.len_utf8();
+            while idx < parse_end {
+                let q = match line[idx..].chars().next() {
+                    Some(q) => q,
+                    None => break,
+                };
+                idx += q.len_utf8();
+                if q == '\'' {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        if ch == '~' {
+            let start = idx;
+            idx += ch.len_utf8();
+            spans.push((start, idx, YamlScalarKind::Null));
+            continue;
+        }
+
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+            let start = idx;
+            idx += ch.len_utf8();
+            while idx < parse_end {
+                let next = match line[idx..].chars().next() {
+                    Some(next) => next,
+                    None => break,
+                };
+                if next.is_ascii_alphanumeric() || next == '-' || next == '_' || next == '.' {
+                    idx += next.len_utf8();
+                } else {
+                    break;
+                }
+            }
+
+            let token = &line[start..idx];
+            let lower = token.to_ascii_lowercase();
+            if matches!(lower.as_str(), "true" | "false" | "yes" | "no" | "on" | "off") {
+                spans.push((start, idx, YamlScalarKind::Boolean));
+            } else if lower == "null" {
+                spans.push((start, idx, YamlScalarKind::Null));
+            } else if yaml_token_is_number(token) {
+                spans.push((start, idx, YamlScalarKind::Number));
+            }
+            continue;
+        }
+
+        idx += ch.len_utf8();
+    }
+
+    spans
+}
+
+fn yaml_token_is_number(token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+
+    let normalized = token.replace('_', "");
+    if normalized.is_empty() || normalized == "-" {
+        return false;
+    }
+
+    if let Some(hex) = normalized.strip_prefix("0x").or_else(|| normalized.strip_prefix("0X")) {
+        return !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit());
+    }
+    if let Some(bin) = normalized.strip_prefix("0b").or_else(|| normalized.strip_prefix("0B")) {
+        return !bin.is_empty() && bin.chars().all(|c| matches!(c, '0' | '1'));
+    }
+    if let Some(oct) = normalized.strip_prefix("0o").or_else(|| normalized.strip_prefix("0O")) {
+        return !oct.is_empty() && oct.chars().all(|c| ('0'..='7').contains(&c));
+    }
+
+    normalized.parse::<f64>().is_ok()
+}
+
 /// Resolve overlapping spans using priority (capture index)
 /// Higher priority captures override lower priority ones in overlapping regions
 fn resolve_overlapping_spans_with_priority(spans: Vec<PrioritySpan>) -> Vec<HighlightSpan> {
@@ -893,5 +1251,42 @@ mod tests {
             "Expected core keyword captures (fn/let/impl/match), got {}",
             keyword_count
         );
+    }
+
+    #[test]
+    fn yaml_line_highlights_key_string_and_comment() {
+        let source = "name: \"nevi\" # app name";
+        let line_starts = vec![0];
+        let theme = Theme::default();
+        let spans = get_line_highlights_yaml(source, &line_starts, 0, &theme);
+
+        let property = theme
+            .get_color_for_capture("property")
+            .expect("property color");
+        let string = theme.get_color_for_capture("string").expect("string color");
+        let comment = theme
+            .get_color_for_capture("comment")
+            .expect("comment color");
+
+        assert!(spans.iter().any(|s| s.fg == property && s.start_col <= 0 && s.end_col >= 4));
+        assert!(spans.iter().any(|s| s.fg == string && s.start_col <= 7 && s.end_col >= 10));
+        assert!(spans.iter().any(|s| s.fg == comment && s.start_col <= 13 && s.end_col >= 15));
+    }
+
+    #[test]
+    fn yaml_line_highlights_boolean_and_number_scalars() {
+        let theme = Theme::default();
+
+        let bool_source = "enabled: true";
+        let bool_spans = get_line_highlights_yaml(bool_source, &[0], 0, &theme);
+        let boolean = theme
+            .get_color_for_capture("boolean")
+            .expect("boolean color");
+        assert!(bool_spans.iter().any(|s| s.fg == boolean && s.start_col <= 9 && s.end_col >= 12));
+
+        let num_source = "port: 8080";
+        let num_spans = get_line_highlights_yaml(num_source, &[0], 0, &theme);
+        let number = theme.get_color_for_capture("number").expect("number color");
+        assert!(num_spans.iter().any(|s| s.fg == number && s.start_col <= 6 && s.end_col >= 9));
     }
 }

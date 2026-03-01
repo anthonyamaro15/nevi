@@ -66,6 +66,7 @@ impl SyntaxManager {
             Some("json") => self.set_json_language(),
             Some("md") | Some("markdown") => self.set_markdown_language(),
             Some("toml") => self.set_toml_language(),
+            Some("yaml") | Some("yml") => self.set_yaml_language(),
             Some("html") | Some("htm") => self.set_html_language(),
             Some("py") | Some("pyi") | Some("pyw") => self.set_python_language(),
             _ => {
@@ -291,6 +292,14 @@ impl SyntaxManager {
         }
     }
 
+    /// Set up YAML language highlighting.
+    /// Uses lightweight tokenization instead of tree-sitter grammar.
+    fn set_yaml_language(&mut self) {
+        self.language = Some("yaml".to_string());
+        self.query = None;
+        self.tree = None;
+    }
+
     /// Set up HTML language parser
     fn set_html_language(&mut self) {
         let language = tree_sitter_html::LANGUAGE;
@@ -345,6 +354,23 @@ impl SyntaxManager {
             return;
         }
 
+        if self.language.as_deref() == Some("yaml") {
+            self.source_cache = buffer_to_string(buffer);
+            self.line_start_bytes.clear();
+            self.line_start_bytes.push(0);
+            for (idx, b) in self.source_cache.bytes().enumerate() {
+                if b == b'\n' {
+                    self.line_start_bytes.push(idx + 1);
+                }
+            }
+            self.tree = None;
+            self.query = None;
+            self.parse_version = buffer.version();
+            self.cache_version.set(self.parse_version);
+            self.highlight_cache.replace(vec![None; self.line_start_bytes.len()]);
+            return;
+        }
+
         const MAX_HIGHLIGHT_LINES: usize = 200_000;
         const MAX_HIGHLIGHT_CHARS: usize = 2_000_000;
 
@@ -383,6 +409,23 @@ impl SyntaxManager {
             return;
         }
 
+        if self.language.as_deref() == Some("yaml") {
+            self.source_cache = content.to_string();
+            self.line_start_bytes.clear();
+            self.line_start_bytes.push(0);
+            for (idx, b) in self.source_cache.bytes().enumerate() {
+                if b == b'\n' {
+                    self.line_start_bytes.push(idx + 1);
+                }
+            }
+            self.tree = None;
+            self.query = None;
+            self.parse_version = self.parse_version.wrapping_add(1);
+            self.cache_version.set(self.parse_version);
+            self.highlight_cache.replace(vec![None; self.line_start_bytes.len()]);
+            return;
+        }
+
         // Safety limits - preview content is already capped at ~150 lines
         // These are just failsafes in case of unexpected input
         const MAX_HIGHLIGHT_LINES: usize = 200;
@@ -416,11 +459,41 @@ impl SyntaxManager {
 
     /// Check if syntax highlighting is available
     pub fn has_highlighting(&self) -> bool {
-        self.tree.is_some() && self.query.is_some()
+        self.language.as_deref() == Some("yaml") || (self.tree.is_some() && self.query.is_some())
     }
 
     /// Get highlights for a specific line
     pub fn get_line_highlights(&self, line: usize) -> Vec<HighlightSpan> {
+        if self.language.as_deref() == Some("yaml") {
+            if self.cache_version.get() != self.parse_version {
+                self.highlight_cache.replace(vec![None; self.line_start_bytes.len()]);
+                self.cache_version.set(self.parse_version);
+            } else if self.highlight_cache.borrow().len() != self.line_start_bytes.len() {
+                self.highlight_cache.replace(vec![None; self.line_start_bytes.len()]);
+                self.cache_version.set(self.parse_version);
+            }
+
+            if let Some(cached) = self
+                .highlight_cache
+                .borrow()
+                .get(line)
+                .and_then(|entry| entry.as_ref())
+            {
+                return cached.clone();
+            }
+
+            let spans = highlighter::get_line_highlights_yaml(
+                &self.source_cache,
+                &self.line_start_bytes,
+                line,
+                &self.theme,
+            );
+            if let Some(entry) = self.highlight_cache.borrow_mut().get_mut(line) {
+                *entry = Some(spans.clone());
+            }
+            return spans;
+        }
+
         match (&self.tree, &self.query) {
             (Some(tree), Some(query)) => {
                 if self.cache_version.get() != self.parse_version {
