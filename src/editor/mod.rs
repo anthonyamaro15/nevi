@@ -1638,32 +1638,20 @@ impl Editor {
     /// Switch to the next buffer
     pub fn next_buffer(&mut self) {
         if self.buffers.len() > 1 {
-            self.current_buffer_idx = (self.current_buffer_idx + 1) % self.buffers.len();
-            self.cursor = Cursor::default();
-            self.viewport_offset = 0;
-            self.h_offset = 0;
-            // Re-parse syntax for new buffer
-            let path = self.buffers[self.current_buffer_idx].path.clone();
-            self.syntax.set_language_from_path_option(path.as_ref());
-            self.parse_current_buffer();
+            let next_idx = (self.current_buffer_idx + 1) % self.buffers.len();
+            self.switch_to_buffer(next_idx);
         }
     }
 
     /// Switch to the previous buffer
     pub fn prev_buffer(&mut self) {
         if self.buffers.len() > 1 {
-            if self.current_buffer_idx == 0 {
-                self.current_buffer_idx = self.buffers.len() - 1;
+            let prev_idx = if self.current_buffer_idx == 0 {
+                self.buffers.len() - 1
             } else {
-                self.current_buffer_idx -= 1;
-            }
-            self.cursor = Cursor::default();
-            self.viewport_offset = 0;
-            self.h_offset = 0;
-            // Re-parse syntax for new buffer
-            let path = self.buffers[self.current_buffer_idx].path.clone();
-            self.syntax.set_language_from_path_option(path.as_ref());
-            self.parse_current_buffer();
+                self.current_buffer_idx - 1
+            };
+            self.switch_to_buffer(prev_idx);
         }
     }
 
@@ -1957,25 +1945,41 @@ impl Editor {
 
     /// Close the current buffer
     pub fn close_current_buffer(&mut self) {
+        let removed_idx = self.current_buffer_idx;
+
         if self.buffers.len() <= 1 {
             // If it's the last buffer, just create a new empty one
             self.buffers[0] = Buffer::new();
+            self.current_buffer_idx = 0;
             self.cursor = Cursor::default();
             self.viewport_offset = 0;
             self.h_offset = 0;
             self.undo_stack.clear();
+            for pane in &mut self.panes {
+                pane.buffer_idx = 0;
+                pane.cursor = Cursor::default();
+                pane.viewport_offset = 0;
+                pane.h_offset = 0;
+            }
         } else {
             // Remove the current buffer
-            self.buffers.remove(self.current_buffer_idx);
+            self.buffers.remove(removed_idx);
 
             // Adjust current_buffer_idx if needed
             if self.current_buffer_idx >= self.buffers.len() {
                 self.current_buffer_idx = self.buffers.len() - 1;
             }
 
-            // Update pane to point to valid buffer
-            if self.active_pane < self.panes.len() {
-                self.panes[self.active_pane].buffer_idx = self.current_buffer_idx;
+            // Keep every pane pointing at a valid buffer after the Vec index shift.
+            for pane in &mut self.panes {
+                if pane.buffer_idx == removed_idx {
+                    pane.buffer_idx = self.current_buffer_idx;
+                    pane.cursor = Cursor::default();
+                    pane.viewport_offset = 0;
+                    pane.h_offset = 0;
+                } else if pane.buffer_idx > removed_idx {
+                    pane.buffer_idx -= 1;
+                }
             }
 
             // Reset cursor state
@@ -6513,8 +6517,17 @@ impl Default for Editor {
 
 #[cfg(test)]
 mod tests {
-    use super::JumpList;
+    use super::{Editor, JumpList};
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos))
+    }
 
     #[test]
     fn jump_list_back_skips_current_snapshot_on_first_press() {
@@ -6547,5 +6560,54 @@ mod tests {
 
         let second = jumps.go_back(path.clone(), 40, 0).expect("second back");
         assert_eq!(second.line, 20);
+    }
+
+    #[test]
+    fn buffer_navigation_keeps_active_pane_on_selected_buffer() {
+        let tmp = unique_temp_dir("nevi_buffer_nav");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let first = tmp.join("first.rs");
+        let second = tmp.join("second.rs");
+        std::fs::write(&first, "fn first() {}\n").expect("write first");
+        std::fs::write(&second, "fn second() {}\n").expect("write second");
+
+        let mut editor = Editor::default();
+        editor.open_file(first).expect("open first");
+        editor.open_file(second).expect("open second");
+
+        editor.prev_buffer();
+
+        let active_pane = &editor.panes()[editor.active_pane_idx()];
+        assert_eq!(active_pane.buffer_idx, editor.current_buffer_index());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn closing_buffer_remaps_all_panes_to_valid_buffer_indices() {
+        let tmp = unique_temp_dir("nevi_close_buffer");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let first = tmp.join("first.rs");
+        let second = tmp.join("second.rs");
+        let third = tmp.join("third.rs");
+        std::fs::write(&first, "fn first() {}\n").expect("write first");
+        std::fs::write(&second, "fn second() {}\n").expect("write second");
+        std::fs::write(&third, "fn third() {}\n").expect("write third");
+
+        let mut editor = Editor::default();
+        editor.open_file(first).expect("open first");
+        editor.open_file(second).expect("open second");
+        editor.open_file(third).expect("open third");
+
+        editor.vsplit(None).expect("split");
+        editor.switch_to_buffer(1);
+        editor.close_current_buffer();
+
+        assert!(editor
+            .panes()
+            .iter()
+            .all(|pane| pane.buffer_idx < editor.buffer_count()));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
