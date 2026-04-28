@@ -1,6 +1,9 @@
 use ropey::Rope;
-use std::path::PathBuf;
-use std::time::SystemTime;
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A text buffer backed by a rope data structure.
 /// Ropes provide O(log n) insertions and deletions, making them
@@ -57,8 +60,10 @@ impl Buffer {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No file path set"))?;
 
-        let file = std::fs::File::create(path)?;
-        self.text.write_to(std::io::BufWriter::new(file))?;
+        write_file_atomically(path, |writer| {
+            self.text.write_to(writer)?;
+            Ok(())
+        })?;
         self.dirty = false;
 
         // Update mtime after save
@@ -339,5 +344,138 @@ impl Buffer {
 impl Default for Buffer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn write_file_atomically(
+    path: &Path,
+    write_contents: impl FnOnce(&mut dyn Write) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Invalid file path: {}", path.display()))?;
+    let target_permissions = fs::metadata(path).ok().map(|metadata| metadata.permissions());
+    let (temp_path, temp_file) = create_save_temp_file(parent, file_name)?;
+    let mut writer = io::BufWriter::new(temp_file);
+
+    let write_result = (|| -> anyhow::Result<()> {
+        write_contents(&mut writer)?;
+        writer.flush()?;
+        let temp_file = writer.get_ref();
+        if let Some(permissions) = target_permissions {
+            temp_file.set_permissions(permissions)?;
+        }
+        temp_file.sync_all()?;
+        Ok(())
+    })();
+
+    drop(writer);
+
+    if let Err(err) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err);
+    }
+
+    if let Err(err) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err.into());
+    }
+
+    sync_parent_dir(parent);
+    Ok(())
+}
+
+fn create_save_temp_file(parent: &Path, file_name: &OsStr) -> io::Result<(PathBuf, File)> {
+    for attempt in 0..100 {
+        let temp_path = parent.join(save_temp_file_name(file_name, attempt));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => return Ok((temp_path, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not create unique save temp file",
+    ))
+}
+
+fn save_temp_file_name(file_name: &OsStr, attempt: u32) -> OsString {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let mut temp_name = OsString::from(".");
+    temp_name.push(file_name);
+    temp_name.push(format!(
+        ".nevi-save-{}-{}-{}",
+        std::process::id(),
+        nanos,
+        attempt
+    ));
+    temp_name
+}
+
+#[cfg(unix)]
+fn sync_parent_dir(parent: &Path) {
+    if let Ok(dir) = File::open(parent) {
+        let _ = dir.sync_all();
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_parent: &Path) {}
+
+#[cfg(test)]
+mod tests {
+    use super::write_file_atomically;
+    use std::io;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos))
+    }
+
+    #[test]
+    fn atomic_write_preserves_existing_file_when_writer_fails() {
+        let tmp = unique_temp_dir("nevi_atomic_save");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("file.txt");
+        std::fs::write(&path, "original").expect("write original");
+
+        let result = write_file_atomically(&path, |writer| {
+            writer.write_all(b"partial replacement")?;
+            Err(io::Error::other("simulated write failure").into())
+        });
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read original"),
+            "original"
+        );
+        assert_eq!(
+            std::fs::read_dir(&tmp)
+                .expect("read temp dir")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".nevi-save-"))
+                .count(),
+            0
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

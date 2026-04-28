@@ -7615,16 +7615,26 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
         }
 
         Command::Quit => {
-            if editor.has_unsaved_changes() {
-                CommandResult::Error("No write since last change (add ! to override)".to_string())
-            } else {
-                // If multiple panes, close just the active pane
-                if editor.panes().len() > 1 {
+            // If multiple panes, :q closes just the active pane after checking
+            // the active buffer. If this is the last pane, quitting exits the
+            // editor, so all dirty buffers must be accounted for.
+            if editor.panes().len() > 1 {
+                if editor.has_unsaved_changes() {
+                    CommandResult::Error(
+                        "No write since last change (add ! to override)".to_string(),
+                    )
+                } else {
                     editor.close_pane();
                     CommandResult::Ok
-                } else {
-                    CommandResult::Quit
                 }
+            } else if editor.has_any_unsaved_changes() {
+                let names = editor.unsaved_buffer_names();
+                CommandResult::Error(format!(
+                    "No write since last change in: {} (add ! to override)",
+                    names.join(", ")
+                ))
+            } else {
+                CommandResult::Quit
             }
         }
 
@@ -8144,5 +8154,48 @@ pub fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
                 handle_normal_mode(editor, *key);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::execute_command;
+    use crate::commands::Command;
+    use crate::editor::Editor;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos))
+    }
+
+    #[test]
+    fn quit_last_pane_refuses_when_hidden_buffer_is_dirty() {
+        let tmp = unique_temp_dir("nevi_quit_dirty_hidden");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let dirty = tmp.join("dirty.rs");
+        let clean = tmp.join("clean.rs");
+        std::fs::write(&dirty, "fn dirty() {}\n").expect("write dirty");
+        std::fs::write(&clean, "fn clean() {}\n").expect("write clean");
+
+        let mut editor = Editor::default();
+        editor.open_file(dirty).expect("open dirty");
+        editor.buffer_mut().insert_char(0, 0, 'x');
+        editor.open_file(clean).expect("open clean");
+
+        execute_command(&mut editor, Command::Quit);
+
+        assert!(!editor.should_quit);
+        assert!(editor
+            .status_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("No write since last change"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

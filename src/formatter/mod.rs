@@ -4,7 +4,7 @@
 
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::config::FormatterConfig;
 
@@ -110,8 +110,20 @@ impl ExternalFormatter {
             // stdin is dropped here, closing it so the formatter knows input is complete
         }
 
-        // Wait for output (blocking)
-        // TODO: Add timeout support in v2 if needed
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(FormatterError::Timeout);
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+                Err(e) => return Err(FormatterError::SpawnFailed(e)),
+            }
+        }
+
         let output = child
             .wait_with_output()
             .map_err(FormatterError::SpawnFailed)?;
@@ -160,5 +172,18 @@ mod tests {
             .collect();
 
         assert_eq!(args, vec!["--file", "/path/to/file.ts"]);
+    }
+
+    #[test]
+    fn formatter_returns_timeout_when_process_exceeds_limit() {
+        let formatter = ExternalFormatter {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), "sleep 2; cat".to_string()],
+            timeout: Duration::from_secs(1),
+        };
+
+        let result = formatter.format("input", "/tmp/input.txt");
+
+        assert!(matches!(result, Err(FormatterError::Timeout)));
     }
 }
