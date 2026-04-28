@@ -1,15 +1,12 @@
 use std::env;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use std::io::Write;
-
-// Set to true to enable profiling output to /tmp/nevi_profile.log
-const PROFILE_ENABLED: bool = true;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use nevi::copilot::{
-    utf16_to_utf8_col, AuthStatus, CopilotCompletion, CopilotManager, CopilotNotification,
-    CopilotStatus,
+    utf16_to_utf8_col, utf8_to_utf16_col, AuthStatus, CopilotCompletion, CopilotManager,
+    CopilotNotification, CopilotStatus,
 };
 use nevi::editor::{CopilotAction, CopilotGhostText, LspAction};
 use nevi::lsp;
@@ -18,9 +15,54 @@ use nevi::{
     load_config, AutosaveMode, Editor, LanguageId, LspNotification, Mode, MultiLspManager, Terminal,
 };
 
+fn profile_enabled_from_env() -> bool {
+    profile_enabled_from_value(env::var("NEVI_PROFILE").ok().as_deref())
+}
+
+fn profile_enabled_from_value(value: Option<&str>) -> bool {
+    let Some(value) = value.map(str::trim) else {
+        return false;
+    };
+
+    value == "1"
+        || value.eq_ignore_ascii_case("true")
+        || value.eq_ignore_ascii_case("yes")
+        || value.eq_ignore_ascii_case("on")
+}
+
+fn editor_lsp_cursor_col(editor: &Editor) -> u32 {
+    editor_lsp_col(editor, editor.cursor.line, editor.cursor.col)
+}
+
+fn editor_lsp_line_len(editor: &Editor, line: usize) -> u32 {
+    let Some(line_text) = editor.buffer().line(line).map(|line| line.to_string()) else {
+        return 0;
+    };
+    let line_text = line_text.trim_end_matches('\n');
+    utf8_to_utf16_col(line_text, line_text.chars().count())
+}
+
+fn editor_lsp_col(editor: &Editor, line: usize, col: usize) -> u32 {
+    let Some(line_text) = editor.buffer().line(line).map(|line| line.to_string()) else {
+        return 0;
+    };
+    let line_text = line_text.trim_end_matches('\n');
+    utf8_to_utf16_col(line_text, col.min(line_text.chars().count()))
+}
+
+fn diagnostic_to_lsp_offsets(
+    editor: &Editor,
+    mut diagnostic: lsp::types::Diagnostic,
+) -> lsp::types::Diagnostic {
+    diagnostic.col_start = editor_lsp_col(editor, diagnostic.line, diagnostic.col_start) as usize;
+    diagnostic.col_end = editor_lsp_col(editor, diagnostic.end_line, diagnostic.col_end) as usize;
+    diagnostic
+}
+
 fn main() -> anyhow::Result<()> {
-    // Profiling file (only created if PROFILE_ENABLED)
-    let mut profile_file = if PROFILE_ENABLED {
+    // Profiling is opt-in with NEVI_PROFILE=1/true/yes/on.
+    let profile_enabled = profile_enabled_from_env();
+    let mut profile_file = if profile_enabled {
         Some(std::fs::File::create("/tmp/nevi_profile.log").ok())
     } else {
         None
@@ -29,7 +71,7 @@ fn main() -> anyhow::Result<()> {
     // Helper macro for profiling
     macro_rules! profile {
         ($file:expr, $($arg:tt)*) => {
-            if PROFILE_ENABLED {
+            if profile_enabled {
                 if let Some(Some(ref mut f)) = $file {
                     let _ = writeln!(f, $($arg)*);
                 }
@@ -51,8 +93,8 @@ fn main() -> anyhow::Result<()> {
     // Initialize editor with settings
     let mut editor = Editor::new(settings);
 
-    // Enable finder profiling when PROFILE_ENABLED is true
-    if PROFILE_ENABLED {
+    // Enable finder profiling when profiling is enabled.
+    if profile_enabled {
         nevi::terminal::FINDER_PROFILE_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
         // Clear the finder profile log
         let _ = std::fs::write("/tmp/nevi_finder_profile.log", "");
@@ -284,7 +326,7 @@ fn main() -> anyhow::Result<()> {
                                     let _ = mlsp.completion(
                                         &path,
                                         editor.cursor.line as u32,
-                                        editor.cursor.col as u32,
+                                        editor_lsp_cursor_col(&editor),
                                     );
                                 }
                             }
@@ -346,7 +388,7 @@ fn main() -> anyhow::Result<()> {
                                     }
                                 } else {
                                     let line = editor.cursor.line as u32;
-                                    let col = editor.cursor.col as u32;
+                                    let col = editor_lsp_cursor_col(&editor);
                                     match action {
                                         LspAction::GotoDefinition => {
                                             let _ = mlsp.goto_definition(&path, line, col);
@@ -366,10 +408,16 @@ fn main() -> anyhow::Result<()> {
                                         }
                                         LspAction::CodeActions => {
                                             // Get diagnostics at cursor position
-                                            let diagnostics = editor.all_diagnostics_at_cursor();
+                                            let diagnostics = editor
+                                                .all_diagnostics_at_cursor()
+                                                .into_iter()
+                                                .map(|diagnostic| {
+                                                    diagnostic_to_lsp_offsets(&editor, diagnostic)
+                                                })
+                                                .collect::<Vec<_>>();
                                             // Use full line range to get all code actions (import fixes, etc.)
                                             let line_len =
-                                                editor.buffer().line_len(editor.cursor.line) as u32;
+                                                editor_lsp_line_len(&editor, editor.cursor.line);
                                             let _ = mlsp.code_action(
                                                 &path,
                                                 line,
@@ -571,7 +619,7 @@ fn main() -> anyhow::Result<()> {
                                             Instant::now(),
                                             path.clone(),
                                             editor.cursor.line as u32,
-                                            editor.cursor.col as u32,
+                                            editor_lsp_cursor_col(&editor),
                                         ));
                                     }
 
@@ -582,7 +630,7 @@ fn main() -> anyhow::Result<()> {
                                         let _ = mlsp.signature_help(
                                             &path,
                                             editor.cursor.line as u32,
-                                            editor.cursor.col as u32,
+                                            editor_lsp_cursor_col(&editor),
                                         );
                                     }
                                 }
@@ -700,7 +748,7 @@ fn main() -> anyhow::Result<()> {
                                     let _ = mlsp.completion(
                                         &path,
                                         editor.cursor.line as u32,
-                                        editor.cursor.col as u32,
+                                        editor_lsp_cursor_col(&editor),
                                     );
                                 }
                             }
@@ -899,7 +947,7 @@ fn main() -> anyhow::Result<()> {
                         // Validate cursor position hasn't moved too far
                         // Allow some tolerance (user might have moved slightly while waiting)
                         let cursor_line = editor.cursor.line as u32;
-                        let cursor_col = editor.cursor.col as u32;
+                        let cursor_col = editor_lsp_cursor_col(&editor);
                         let line_diff = (cursor_line as i32 - request_line as i32).abs();
                         let col_diff = (cursor_col as i32 - request_character as i32).abs();
 
@@ -1254,7 +1302,8 @@ fn main() -> anyhow::Result<()> {
                     if let Some(ref mut mlsp) = multi_lsp {
                         if mlsp.is_ready_for_file(path) {
                             // Verify cursor position matches (user might have moved)
-                            if editor.cursor.line as u32 == line && editor.cursor.col as u32 == col
+                            if editor.cursor.line as u32 == line
+                                && editor_lsp_cursor_col(&editor) == col
                             {
                                 let _ = mlsp.completion(path, line, col);
                             }
@@ -1476,14 +1525,8 @@ fn apply_edits_to_file(
 ) -> anyhow::Result<usize> {
     use std::fs;
 
-    // Read the file content
     let content = fs::read_to_string(path)?;
-    let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-
-    // Handle files that end with newline (lines() strips the trailing newline)
-    if content.ends_with('\n') && !lines.is_empty() {
-        // Add empty string to represent the trailing newline
-    }
+    let mut text = ropey::Rope::from_str(&content);
 
     // Sort edits by position (reverse order) so we can apply from end to start
     let mut sorted_edits: Vec<&lsp::types::TextEdit> = edits.iter().collect();
@@ -1494,62 +1537,36 @@ fn apply_edits_to_file(
 
     // Apply each edit
     for edit in &sorted_edits {
-        // Delete the range
-        if edit.start_line < lines.len() {
-            if edit.start_line == edit.end_line {
-                // Single line edit
-                let line = &mut lines[edit.start_line];
-                let start = edit.start_col.min(line.len());
-                let end = edit.end_col.min(line.len());
-                line.replace_range(start..end, &edit.new_text);
-            } else {
-                // Multi-line edit
-                let start_line_content = if edit.start_line < lines.len() {
-                    lines[edit.start_line]
-                        .chars()
-                        .take(edit.start_col)
-                        .collect::<String>()
-                } else {
-                    String::new()
-                };
-                let end_line_content = if edit.end_line < lines.len() {
-                    lines[edit.end_line]
-                        .chars()
-                        .skip(edit.end_col)
-                        .collect::<String>()
-                } else {
-                    String::new()
-                };
+        let start = utf16_position_to_rope_char(&text, edit.start_line, edit.start_col);
+        let end = utf16_position_to_rope_char(&text, edit.end_line, edit.end_col);
 
-                // Remove the affected lines
-                let remove_start = edit.start_line;
-                let remove_end = (edit.end_line + 1).min(lines.len());
-                lines.drain(remove_start..remove_end);
-
-                // Insert the new content
-                let new_content = format!(
-                    "{}{}{}",
-                    start_line_content, edit.new_text, end_line_content
-                );
-                let new_lines: Vec<String> = new_content.lines().map(|s| s.to_string()).collect();
-                for (i, line) in new_lines.into_iter().enumerate() {
-                    lines.insert(edit.start_line + i, line);
-                }
+        if start <= end && end <= text.len_chars() {
+            if start < end {
+                text.remove(start..end);
+            }
+            if !edit.new_text.is_empty() {
+                text.insert(start, &edit.new_text);
             }
         }
     }
 
-    // Write back to file
-    let new_content = lines.join("\n");
-    // Preserve trailing newline if original had one
-    let final_content = if content.ends_with('\n') && !new_content.ends_with('\n') {
-        format!("{}\n", new_content)
-    } else {
-        new_content
-    };
-    fs::write(path, final_content)?;
+    fs::write(path, text.to_string())?;
 
     Ok(sorted_edits.len())
+}
+
+fn utf16_position_to_rope_char(text: &ropey::Rope, line: usize, utf16_col: usize) -> usize {
+    if line >= text.len_lines() {
+        return text.len_chars();
+    }
+
+    let line_start = text.line_to_char(line);
+    let line_text = text.line(line).to_string();
+    let line_text = line_text.trim_end_matches('\n');
+    let line_len = line_text.chars().count();
+    let col = utf16_to_utf8_col(line_text, utf16_col as u32).min(line_len);
+
+    line_start + col
 }
 
 /// Check if we should auto-trigger signature help based on the character just typed
@@ -1628,7 +1645,7 @@ fn copilot_inline_completion(
     completion: &CopilotCompletion,
 ) -> Option<(String, Vec<String>)> {
     let start_line = completion.range.start.line as usize;
-    let end_line = completion.range.end.line as usize;
+    let _end_line = completion.range.end.line as usize;
     if start_line != editor.cursor.line {
         return None;
     }
@@ -1802,5 +1819,97 @@ fn find_workspace_root(file_path: &Path, root_markers: &[String]) -> PathBuf {
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        apply_edits_to_file, diagnostic_to_lsp_offsets, editor_lsp_cursor_col, editor_lsp_line_len,
+        profile_enabled_from_value,
+    };
+    use nevi::Editor;
+    use nevi::lsp::types::{Diagnostic, DiagnosticSeverity, TextEdit};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos))
+    }
+
+    #[test]
+    fn apply_edits_to_file_treats_columns_as_utf16_offsets() {
+        let tmp = unique_temp_dir("nevi_disk_lsp_edit");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("unicode.txt");
+        std::fs::write(&path, "a😀b\n").expect("write file");
+
+        let count = apply_edits_to_file(
+            &path,
+            &[TextEdit {
+                start_line: 0,
+                start_col: 3,
+                end_line: 0,
+                end_col: 4,
+                new_text: "X".to_string(),
+            }],
+        )
+        .expect("apply edits");
+
+        assert_eq!(count, 1);
+        assert_eq!(std::fs::read_to_string(&path).expect("read file"), "a😀X\n");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn profiling_is_disabled_unless_env_value_opts_in() {
+        assert!(!profile_enabled_from_value(None));
+        assert!(!profile_enabled_from_value(Some("")));
+        assert!(!profile_enabled_from_value(Some("0")));
+        assert!(!profile_enabled_from_value(Some("false")));
+
+        assert!(profile_enabled_from_value(Some("1")));
+        assert!(profile_enabled_from_value(Some("true")));
+        assert!(profile_enabled_from_value(Some("YES")));
+        assert!(profile_enabled_from_value(Some("on")));
+    }
+
+    #[test]
+    fn lsp_request_columns_use_utf16_offsets() {
+        let mut editor = Editor::default();
+        editor.buffer_mut().insert_str(0, 0, "a😀b\n");
+        editor.cursor.line = 0;
+        editor.cursor.col = 2;
+
+        assert_eq!(editor_lsp_cursor_col(&editor), 3);
+        assert_eq!(editor_lsp_line_len(&editor, 0), 4);
+    }
+
+    #[test]
+    fn code_action_diagnostics_are_converted_back_to_utf16_offsets() {
+        let mut editor = Editor::default();
+        editor.buffer_mut().insert_str(0, 0, "a😀b\n");
+
+        let diagnostic = diagnostic_to_lsp_offsets(
+            &editor,
+            Diagnostic {
+                line: 0,
+                end_line: 0,
+                col_start: 2,
+                col_end: 3,
+                severity: DiagnosticSeverity::Error,
+                message: "problem".to_string(),
+                source: None,
+                code: None,
+            },
+        );
+
+        assert_eq!(diagnostic.col_start, 3);
+        assert_eq!(diagnostic.col_end, 4);
     }
 }

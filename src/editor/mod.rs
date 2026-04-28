@@ -1278,6 +1278,22 @@ impl Editor {
 
     /// Update diagnostics for a file URI
     pub fn set_diagnostics(&mut self, uri: String, diags: Vec<Diagnostic>) {
+        let diags = if let Some(buffer) = self.buffers.iter().find(|buffer| {
+            buffer
+                .path
+                .as_ref()
+                .map(crate::lsp::path_to_uri)
+                .as_deref()
+                == Some(uri.as_str())
+        }) {
+            diags
+                .into_iter()
+                .map(|diag| Self::diagnostic_lsp_to_buffer_cols(buffer, diag))
+                .collect()
+        } else {
+            diags
+        };
+
         self.diagnostics.insert(uri, diags);
     }
 
@@ -1303,9 +1319,12 @@ impl Editor {
 
         // Apply each edit
         for edit in sorted_edits {
+            let start_col = self.lsp_utf16_col_to_buffer_col(edit.start_line, edit.start_col);
+            let end_col = self.lsp_utf16_col_to_buffer_col(edit.end_line, edit.end_col);
+
             // Get the text being replaced for undo
             // Note: get_range_text uses inclusive end, but LSP uses exclusive end
-            let deleted_text = if edit.end_line > edit.start_line && edit.end_col == 0 {
+            let deleted_text = if edit.end_line > edit.start_line && end_col == 0 {
                 // Multi-line edit ending at column 0 means we delete up to (but not including)
                 // the start of end_line. Get text from start to end of the line before end_line,
                 // including the newline character.
@@ -1314,17 +1333,17 @@ impl Editor {
                     self.buffers[self.current_buffer_idx].line_len_including_newline(prev_line);
                 self.get_range_text(
                     edit.start_line,
-                    edit.start_col,
+                    start_col,
                     prev_line,
                     prev_line_len_with_newline.saturating_sub(1),
                 )
-            } else if edit.end_col > 0 || edit.end_line > edit.start_line {
+            } else if end_col > 0 || edit.end_line > edit.start_line {
                 // Normal case: convert exclusive end_col to inclusive by subtracting 1
                 self.get_range_text(
                     edit.start_line,
-                    edit.start_col,
+                    start_col,
                     edit.end_line,
-                    edit.end_col.saturating_sub(1),
+                    end_col.saturating_sub(1),
                 )
             } else {
                 String::new()
@@ -1334,18 +1353,18 @@ impl Editor {
             if !deleted_text.is_empty() {
                 self.undo_stack.record_change(Change::delete(
                     edit.start_line,
-                    edit.start_col,
+                    start_col,
                     deleted_text,
                 ));
             }
 
             // Delete the range from the buffer (LSP end_col is exclusive)
-            if edit.end_col > 0 || edit.end_line > edit.start_line {
+            if end_col > 0 || edit.end_line > edit.start_line {
                 self.buffers[self.current_buffer_idx].delete_range(
                     edit.start_line,
-                    edit.start_col,
+                    start_col,
                     edit.end_line,
-                    edit.end_col,
+                    end_col,
                 );
             }
 
@@ -1353,14 +1372,14 @@ impl Editor {
             if !edit.new_text.is_empty() {
                 self.undo_stack.record_change(Change::insert(
                     edit.start_line,
-                    edit.start_col,
+                    start_col,
                     edit.new_text.clone(),
                 ));
 
                 // Insert the text using insert_str method
                 self.buffers[self.current_buffer_idx].insert_str(
                     edit.start_line,
-                    edit.start_col,
+                    start_col,
                     &edit.new_text,
                 );
             }
@@ -1376,6 +1395,35 @@ impl Editor {
 
         // Ensure cursor is in valid position
         self.clamp_cursor();
+    }
+
+    fn lsp_utf16_col_to_buffer_col(&self, line: usize, utf16_col: usize) -> usize {
+        Self::lsp_utf16_col_to_buffer_col_in_buffer(
+            &self.buffers[self.current_buffer_idx],
+            line,
+            utf16_col,
+        )
+    }
+
+    fn diagnostic_lsp_to_buffer_cols(buffer: &Buffer, mut diag: Diagnostic) -> Diagnostic {
+        diag.col_start =
+            Self::lsp_utf16_col_to_buffer_col_in_buffer(buffer, diag.line, diag.col_start);
+        diag.col_end =
+            Self::lsp_utf16_col_to_buffer_col_in_buffer(buffer, diag.end_line, diag.col_end);
+        diag
+    }
+
+    fn lsp_utf16_col_to_buffer_col_in_buffer(
+        buffer: &Buffer,
+        line: usize,
+        utf16_col: usize,
+    ) -> usize {
+        let Some(line) = buffer.line(line) else {
+            return 0;
+        };
+        let line_text = line.to_string();
+        let line_text = line_text.trim_end_matches('\n');
+        crate::copilot::utf16_to_utf8_col(line_text, utf16_col as u32)
     }
 
     /// Get the URI for the current buffer (cached for performance during render)
@@ -6490,17 +6538,26 @@ impl Editor {
 
         let title = action.title.clone();
         let mut total_edits = 0;
+        let mut skipped_file_edits = 0;
+        let current_uri = self.current_buffer_uri();
 
         // Apply edits from the selected action
-        for (_uri, edits) in &action.edits {
-            // For now, only apply edits to current file
-            // TODO: Handle cross-file edits
-            self.apply_text_edits(edits);
-            total_edits += edits.len();
+        for (uri, edits) in &action.edits {
+            if current_uri.as_ref() == Some(uri) {
+                self.apply_text_edits(edits);
+                total_edits += edits.len();
+            } else {
+                skipped_file_edits += edits.len();
+            }
         }
 
         if total_edits > 0 {
             Some(format!("Applied '{}' ({} edits)", title, total_edits))
+        } else if skipped_file_edits > 0 {
+            Some(format!(
+                "Action '{}' edits another file ({} edits skipped)",
+                title, skipped_file_edits
+            ))
         } else if action.command.is_some() {
             Some(format!("Action '{}' requires server-side command", title))
         } else {
@@ -6518,6 +6575,7 @@ impl Default for Editor {
 #[cfg(test)]
 mod tests {
     use super::{Editor, JumpList};
+    use crate::lsp::types::{CodeActionItem, Diagnostic, DiagnosticSeverity, TextEdit};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -6607,6 +6665,94 @@ mod tests {
             .panes()
             .iter()
             .all(|pane| pane.buffer_idx < editor.buffer_count()));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn lsp_text_edits_treat_columns_as_utf16_offsets() {
+        let mut editor = Editor::default();
+        editor.buffer_mut().insert_str(0, 0, "a😀b\n");
+
+        // LSP columns are UTF-16 code units: a=1, 😀=2, b starts at 3.
+        editor.apply_text_edits(&[TextEdit {
+            start_line: 0,
+            start_col: 3,
+            end_line: 0,
+            end_col: 4,
+            new_text: "X".to_string(),
+        }]);
+
+        assert_eq!(editor.buffer().content(), "a😀X\n");
+    }
+
+    #[test]
+    fn code_action_does_not_apply_other_file_edits_to_current_buffer() {
+        let tmp = unique_temp_dir("nevi_code_action_uri");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let current = tmp.join("current.rs");
+        let other = tmp.join("other.rs");
+        std::fs::write(&current, "abc\n").expect("write current");
+        std::fs::write(&other, "xyz\n").expect("write other");
+
+        let mut editor = Editor::default();
+        editor.open_file(current).expect("open current");
+        let other_uri = crate::lsp::path_to_uri(&other);
+
+        editor.show_code_actions_picker(vec![CodeActionItem {
+            title: "Edit other file".to_string(),
+            kind: None,
+            is_preferred: false,
+            edits: vec![(
+                other_uri,
+                vec![TextEdit {
+                    start_line: 0,
+                    start_col: 0,
+                    end_line: 0,
+                    end_col: 1,
+                    new_text: "Q".to_string(),
+                }],
+            )],
+            command: None,
+        }]);
+
+        let _ = editor.apply_selected_code_action();
+
+        assert_eq!(editor.buffer().content(), "abc\n");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn diagnostics_treat_columns_as_utf16_offsets() {
+        let tmp = unique_temp_dir("nevi_diagnostic_utf16");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("unicode.rs");
+        std::fs::write(&path, "a😀b\n").expect("write file");
+
+        let mut editor = Editor::default();
+        editor.open_file(path.clone()).expect("open file");
+        let uri = crate::lsp::path_to_uri(&path);
+
+        editor.set_diagnostics(
+            uri,
+            vec![Diagnostic {
+                line: 0,
+                end_line: 0,
+                col_start: 3,
+                col_end: 4,
+                severity: DiagnosticSeverity::Error,
+                message: "problem".to_string(),
+                source: None,
+                code: None,
+            }],
+        );
+        editor.cursor.line = 0;
+        editor.cursor.col = 2;
+
+        assert_eq!(editor.current_diagnostics()[0].col_start, 2);
+        assert_eq!(editor.current_diagnostics()[0].col_end, 3);
+        assert_eq!(editor.all_diagnostics_at_cursor().len(), 1);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
