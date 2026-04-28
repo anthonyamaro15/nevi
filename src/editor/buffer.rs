@@ -160,8 +160,13 @@ impl Buffer {
 
     /// Get the char index for a given line and column
     pub fn line_col_to_char(&self, line: usize, col: usize) -> usize {
+        if line >= self.text.len_lines() {
+            return self.text.len_chars();
+        }
+
         let line_start = self.text.line_to_char(line);
-        line_start + col
+        let max_col = self.text.line(line).len_chars();
+        line_start + col.min(max_col)
     }
 
     /// Insert a character at the given line and column

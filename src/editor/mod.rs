@@ -6574,7 +6574,8 @@ impl Default for Editor {
 
 #[cfg(test)]
 mod tests {
-    use super::{Editor, JumpList};
+    use super::{Editor, JumpList, Mode};
+    use crate::input::Motion;
     use crate::lsp::types::{CodeActionItem, Diagnostic, DiagnosticSeverity, TextEdit};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -6618,6 +6619,49 @@ mod tests {
 
         let second = jumps.go_back(path.clone(), 40, 0).expect("second back");
         assert_eq!(second.line, 20);
+    }
+
+    #[test]
+    fn visual_delete_to_file_end_removes_all_text_with_trailing_newline() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("const a = 1;\nconst b = 2;\n");
+
+        editor.enter_visual_mode();
+        editor.apply_motion(Motion::FileEnd, 1);
+        editor.visual_delete();
+
+        assert_eq!(editor.buffer().content(), "");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!((editor.cursor.line, editor.cursor.col), (0, 0));
+    }
+
+    #[test]
+    fn visual_delete_to_true_eof_removes_all_text_without_trailing_newline() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("const a = 1;\nconst b = 2;");
+
+        editor.enter_visual_mode();
+        editor.apply_motion(Motion::FileEnd, 1);
+        editor.apply_motion(Motion::LineEnd, 1);
+        editor.visual_delete();
+
+        assert_eq!(editor.buffer().content(), "");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!((editor.cursor.line, editor.cursor.col), (0, 0));
+    }
+
+    #[test]
+    fn visual_line_delete_to_file_end_still_removes_all_text() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("const a = 1;\nconst b = 2;\n");
+
+        editor.enter_visual_line_mode();
+        editor.apply_motion(Motion::FileEnd, 1);
+        editor.visual_delete();
+
+        assert_eq!(editor.buffer().content(), "");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!((editor.cursor.line, editor.cursor.col), (0, 0));
     }
 
     #[test]
