@@ -1268,7 +1268,7 @@ mod tests {
             .get_color_for_capture("comment")
             .expect("comment color");
 
-        assert!(spans.iter().any(|s| s.fg == property && s.start_col <= 0 && s.end_col >= 4));
+        assert!(spans.iter().any(|s| s.fg == property && s.start_col == 0 && s.end_col >= 4));
         assert!(spans.iter().any(|s| s.fg == string && s.start_col <= 7 && s.end_col >= 10));
         assert!(spans.iter().any(|s| s.fg == comment && s.start_col <= 13 && s.end_col >= 15));
     }
