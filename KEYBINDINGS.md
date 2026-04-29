@@ -87,6 +87,7 @@ When specifying keys, use these formats:
 - [Window Management](#window-management)
 - [Leader Key Mappings](#leader-key-mappings)
 - [Finder/Picker (Telescope-like)](#finderpicker-telescope-like)
+- [File Explorer](#file-explorer)
 - [Harpoon-like Quick Files](#harpoon-like-quick-files)
 - [Commands](#commands)
 
@@ -230,7 +231,7 @@ Operators are commands that wait for a motion. For example, `d` (delete) + `w` (
 > - `d$` - Delete from cursor to end of line
 > - `diw` - Delete inner word (the word cursor is on)
 > - `ci"` - Change inside quotes
-> - `yap` - Yank around paragraph
+> - `ya(` - Yank around parentheses
 
 ### Undo/Redo
 
@@ -348,9 +349,9 @@ Record and replay sequences of commands.
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+l` | Accept Copilot suggestion |
-| `Alt+]` | Next Copilot suggestion |
-| `Alt+[` | Previous Copilot suggestion |
+| `Ctrl+l` | Accept visible Copilot suggestion |
+| `Alt+]` | Next visible Copilot suggestion |
+| `Alt+[` | Previous visible Copilot suggestion |
 
 ---
 
@@ -401,13 +402,11 @@ Text objects define regions of text. Use them with operators (`d`, `c`, `y`, etc
 | `iB` / `aB` | Inner/around braces (alias) |
 | `i[` / `a[` | Inner/around brackets |
 | `i<` / `a<` | Inner/around angle brackets |
-| `ip` / `ap` | Inner/around paragraph |
 
 > **Examples:**
 > - `ci"` - Change inside double quotes
 > - `da(` - Delete around parentheses (including the parens)
 > - `yiw` - Yank inner word
-> - `vip` - Select inner paragraph
 
 ---
 
@@ -497,7 +496,6 @@ Toggle comments on code.
 > **Examples:**
 > - `gcc` - Comment/uncomment current line
 > - `gcj` - Comment/uncomment current and next line
-> - `gcip` - Comment/uncomment inner paragraph
 
 ---
 
@@ -509,15 +507,15 @@ Split and navigate between windows.
 |-----|--------|
 | `Ctrl+w v` | Split window vertically |
 | `Ctrl+w s` | Split window horizontally |
-| `Ctrl+w c` | Close current window |
+| `Ctrl+w q` | Close current window |
 | `Ctrl+w o` | Close all other windows |
-| `Ctrl+w q` | Quit current window |
 | `Ctrl+w w` | Move to next window |
-| `Ctrl+w p` | Move to previous window |
+| `Ctrl+w W` | Move to previous window |
 | `Ctrl+w h` | Move to window on the left |
 | `Ctrl+w j` | Move to window below |
 | `Ctrl+w k` | Move to window above |
 | `Ctrl+w l` | Move to window on the right |
+| `Ctrl+h` / `Ctrl+j` / `Ctrl+k` / `Ctrl+l` | Move directly to neighboring windows |
 
 > **Note:** Currently all splits share the same orientation (all vertical OR all horizontal). Mixed layouts like having one vertical split with a horizontal split inside it are not yet supported.
 
@@ -578,13 +576,12 @@ When a finder popup is open (file finder, grep, buffers, etc.):
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+j` | Move to next result |
-| `Ctrl+k` | Move to previous result |
+| `Ctrl+j` / `Ctrl+n` / `Down` | Move to next result |
+| `Ctrl+k` / `Ctrl+p` / `Up` | Move to previous result |
 | `Enter` | Open selected file |
 | `Esc` | Switch to normal mode |
-| `Ctrl+t` or `p` | Toggle preview panel |
-| `Ctrl+d` | Scroll preview down |
-| `Ctrl+u` | Scroll preview up |
+| `Ctrl+c` | Close finder |
+| `Ctrl+t` | Toggle preview panel |
 
 ### Normal Mode (navigating results)
 
@@ -594,9 +591,45 @@ When a finder popup is open (file finder, grep, buffers, etc.):
 | `g` | Go to first result |
 | `G` | Go to last result |
 | `Enter` | Open selected file |
-| `Esc` | Close finder |
+| `Esc` / `Ctrl+[` / `Ctrl+c` | Close finder |
 | `i` | Enter insert mode |
 | `p` | Toggle preview |
+
+### Harpoon/Marks Finder Actions
+
+| Key | Action |
+|-----|--------|
+| `d` | Delete selected Harpoon item or mark |
+| `K` | Move selected Harpoon item up |
+| `J` | Move selected Harpoon item down |
+
+---
+
+## File Explorer
+
+When the file explorer sidebar is focused:
+
+| Key | Action |
+|-----|--------|
+| `Esc` / `Ctrl+[` / `q` | Close explorer |
+| `j` / `Down` | Move down |
+| `k` / `Up` | Move up |
+| `Enter` | Toggle directory or open file |
+| `l` / `Right` | Expand directory or open file |
+| `h` / `Left` | Collapse directory |
+| `Tab` | Toggle expand/collapse |
+| `W` | Collapse all directories |
+| `R` | Refresh explorer and git status |
+| `-` | Go to parent directory |
+| `Ctrl+l` | Focus editor and keep explorer open |
+| `a` | Create file or directory |
+| `r` | Rename selected item |
+| `d` | Delete selected item |
+| `/` | Search explorer |
+| `n` / `N` | Next/previous search match |
+| `c` | Copy selected item |
+| `x` | Cut selected item |
+| `p` | Paste copied/cut item |
 
 ---
 
@@ -615,33 +648,43 @@ See [Leader Key Mappings](#leader-key-mappings) for adding files and jumping to 
 
 ## Commands
 
-Type `:` to enter command mode. Common commands:
+Type `:` to enter command mode. Implemented commands include:
 
 ### File Operations
 
 | Command | Action |
 |---------|--------|
-| `:w` | Save file |
-| `:wa` | Save all files |
-| `:q` | Quit |
-| `:q!` | Force quit (discard changes) |
-| `:qa` | Quit all |
-| `:qa!` | Force quit all |
+| `:w` / `:write` | Save file |
+| `:wa` / `:wall` | Save all files |
+| `:q` / `:quit` | Quit |
+| `:q!` / `:quit!` | Force quit (discard changes) |
+| `:qa` / `:qall` | Quit all |
+| `:qa!` / `:qall!` | Force quit all |
 | `:wq` | Save and quit |
-| `:wqa` | Save all and quit |
-| `:x` | Save (if modified) and quit |
-| `:e {file}` | Edit/open a file |
+| `:wqa` / `:wqall` / `:xall` | Save all and quit |
+| `:x` / `:exit` | Save if modified and quit |
+| `:xa` | Save all modified files and quit all |
+| `:e {file}` / `:edit {file}` | Edit/open a file |
+| `:e!` / `:edit!` | Reload current file and discard changes |
+| `:new {path}` / `:touch {path}` | Create a file |
+| `:delete` / `:rm` | Delete current file with confirmation |
+| `:delete!` / `:rm!` | Force delete current file |
+| `:rename {path}` / `:mv {path}` | Rename current file |
+| `:mkdir {path}` | Create directory |
 
 ### Navigation
 
 | Command | Action |
 |---------|--------|
 | `:{n}` | Go to line n |
-| `:FindFiles` | Open file finder |
-| `:LiveGrep` | Search in files |
-| `:FindBuffers` | Open buffer finder |
-| `:FindDiagnostics` | Open diagnostics finder |
-| `:Explorer` | Toggle file explorer |
+| `:FindFiles` / `:ff` / `:files` | Open file finder |
+| `:LiveGrep` / `:grep` / `:rg` | Search in files |
+| `:SearchWord` / `:sw` | Search word under cursor |
+| `:FindBuffers` / `:fb` / `:buffers` | Open buffer finder |
+| `:FindDiagnostics` / `:diag` / `:fd` | Open diagnostics finder |
+| `:DiagnosticFloat` / `:df` | Show diagnostics for cursor line |
+| `:Explorer` / `:ex` | Toggle file explorer |
+| `:Explore` / `:Ex` | Open file explorer |
 
 ### Buffers
 
@@ -649,33 +692,50 @@ Type `:` to enter command mode. Common commands:
 |---------|--------|
 | `:bn` | Next buffer |
 | `:bp` | Previous buffer |
-| `:bd` | Close buffer |
 
 ### Splits
 
 | Command | Action |
 |---------|--------|
-| `:vs` | Vertical split |
-| `:sp` | Horizontal split |
+| `:vs` / `:vsplit` | Vertical split |
+| `:sp` / `:split` | Horizontal split |
+| `:only` / `:on` | Close all other panes |
+
+### Search
+
+| Command | Action |
+|---------|--------|
+| `:noh` / `:nohlsearch` | Clear search highlights |
+| `:s/{pattern}/{replacement}/` | Substitute on current line |
+| `:%s/{pattern}/{replacement}/` | Substitute in entire file |
 
 ### LSP
 
 | Command | Action |
 |---------|--------|
-| `:rn` | Rename symbol |
-| `:codeaction` | Show code actions |
+| `:Format` / `:format` | Format current document |
+| `:rn [name]` / `:lsprename [name]` | Rename symbol |
+| `:codeaction` / `:ca` | Show code actions |
 
 ### Other
 
 | Command | Action |
 |---------|--------|
 | `:Themes` | Open theme picker |
-| `:theme {name}` | Set theme |
-| `:LazyGit` | Open lazygit |
+| `:Theme {name}` / `:theme {name}` / `:colorscheme {name}` | Set theme |
+| `:LazyGit` / `:lg` | Open lazygit |
+| `:!{command}` | Run external shell command |
+| `:Terminal` / `:term` | Toggle floating terminal |
+| `:CopilotAuth` / `:Copilot` | Sign in to Copilot |
+| `:CopilotSignOut` | Sign out of Copilot |
+| `:CopilotStatus` | Show Copilot status |
+| `:CopilotToggle` | Toggle Copilot |
 | `:marks` | Show marks picker |
-| `:delmarks {m}` | Delete marks |
+| `:delmarks {m}` / `:delm {m}` | Delete marks |
+| `:delmarks!` / `:delm!` | Delete all local lowercase marks |
 | `:HarpoonAdd` | Add to harpoon |
 | `:HarpoonMenu` | Open harpoon menu |
+| `:Harpoon1` - `:Harpoon4` | Jump to harpoon slot |
 
 ---
 

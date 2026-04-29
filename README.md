@@ -203,7 +203,7 @@ Nevi aims for full vim/neovim keybind compatibility. Most common keybindings are
 | `1-4` | Jump to harpoon slot |
 
 ### Window Management
-`Ctrl+w v` (vsplit), `Ctrl+w s` (hsplit), `Ctrl+w c` (close), `Ctrl+w h/j/k/l` (navigate)
+`Ctrl+w v` (vsplit), `Ctrl+w s` (hsplit), `Ctrl+w q` (close), `Ctrl+w h/j/k/l` or `Ctrl+h/j/k/l` (navigate), `Ctrl+w w/W` (next/previous)
 
 ### And More
 Visual mode (`v/V/Ctrl+v`), macros (`q{a-z}/@{a-z}`), marks (`m{a-z}/'`), registers (`"{a-z}/"+`), replace mode (`R`)
@@ -218,11 +218,12 @@ Visual mode (`v/V/Ctrl+v`), macros (`q{a-z}/@{a-z}`), marks (`m{a-z}/'`), regist
 |----------|--------|--------|
 | Rust | rust-analyzer | Supported |
 | TypeScript/JavaScript | typescript-language-server | Supported |
-| Python | pyright | In Progress |
+| Python | pyright | Supported |
 | CSS/SCSS | vscode-css-language-server | Supported |
 | JSON | vscode-json-language-server | Supported |
 | TOML | taplo | Supported |
 | HTML | vscode-html-language-server | Supported |
+| Markdown | marksman | Optional, disabled by default |
 
 LSP servers are auto-detected when installed. See [`~/.config/nevi/config.toml`](#configuration) for LSP configuration options.
 
