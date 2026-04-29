@@ -12,10 +12,16 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
-struct GrepSearchResult {
-    generation: u64,
-    query: String,
-    items: Vec<FinderItem>,
+enum GrepSearchMessage {
+    Batch {
+        generation: u64,
+        query: String,
+        items: Vec<FinderItem>,
+    },
+    Finished {
+        generation: u64,
+        query: String,
+    },
 }
 
 /// Mode for the fuzzy finder
@@ -187,10 +193,12 @@ pub struct FuzzyFinder {
     pub preview_update_pending: bool,
     /// Pending grep search (debounce) - set when query changes in grep mode
     pub grep_search_pending: bool,
+    /// Whether an async grep search is currently running
+    pub grep_search_running: bool,
     /// Monotonic generation used to discard stale async grep results
     grep_search_generation: u64,
     /// Receiver for the currently running async grep search
-    grep_search_receiver: Option<Receiver<GrepSearchResult>>,
+    grep_search_receiver: Option<Receiver<GrepSearchMessage>>,
 }
 
 impl FuzzyFinder {
@@ -217,6 +225,7 @@ impl FuzzyFinder {
             preview_line: None,
             preview_update_pending: false,
             grep_search_pending: false,
+            grep_search_running: false,
             grep_search_generation: 0,
             grep_search_receiver: None,
         }
@@ -246,6 +255,7 @@ impl FuzzyFinder {
             preview_line: None,
             preview_update_pending: false,
             grep_search_pending: false,
+            grep_search_running: false,
             grep_search_generation: 0,
             grep_search_receiver: None,
         }
@@ -595,6 +605,7 @@ impl FuzzyFinder {
 
     pub fn cancel_grep_search(&mut self) {
         self.grep_search_pending = false;
+        self.grep_search_running = false;
         self.grep_search_receiver = None;
         self.grep_search_generation = self.grep_search_generation.wrapping_add(1);
     }
@@ -671,7 +682,11 @@ impl FuzzyFinder {
 
     /// Get display text for the current filter state
     pub fn status_text(&self) -> String {
-        format!("{}/{}", self.filtered.len(), self.items.len())
+        if self.mode == FinderMode::Grep && self.grep_search_running {
+            format!("{}/{} searching", self.filtered.len(), self.items.len())
+        } else {
+            format!("{}/{}", self.filtered.len(), self.items.len())
+        }
     }
 
     /// Execute the pending grep search (called after debounce from main loop)
@@ -691,6 +706,7 @@ impl FuzzyFinder {
             let (tx, rx) = mpsc::channel();
 
             self.grep_search_receiver = Some(rx);
+            self.grep_search_running = true;
             self.items.clear();
             self.filtered.clear();
             self.selected = 0;
@@ -698,11 +714,22 @@ impl FuzzyFinder {
             self.clear_preview_cache();
 
             thread::spawn(move || {
-                let items = searcher.search(&cwd, &query);
-                let _ = tx.send(GrepSearchResult {
+                const GREP_RESULT_BATCH_SIZE: usize = 50;
+                let finished_query = query.clone();
+                let tx_finished = tx.clone();
+
+                searcher.search_stream(&cwd, &query, GREP_RESULT_BATCH_SIZE, |items| {
+                    tx.send(GrepSearchMessage::Batch {
+                        generation,
+                        query: query.clone(),
+                        items,
+                    })
+                    .is_ok()
+                });
+
+                let _ = tx_finished.send(GrepSearchMessage::Finished {
                     generation,
-                    query,
-                    items,
+                    query: finished_query,
                 });
             });
         } else {
@@ -714,37 +741,62 @@ impl FuzzyFinder {
     }
 
     pub fn poll_grep_search(&mut self) -> bool {
-        let result = match self.grep_search_receiver.as_ref() {
-            Some(rx) => rx.try_recv(),
-            None => return false,
-        };
+        let mut changed = false;
 
-        match result {
-            Ok(result) => {
-                self.grep_search_receiver = None;
+        loop {
+            let message = match self.grep_search_receiver.as_ref() {
+                Some(rx) => rx.try_recv(),
+                None => return changed,
+            };
 
-                if self.mode != FinderMode::Grep
-                    || result.generation != self.grep_search_generation
-                    || result.query != self.query
-                {
-                    return false;
+            match message {
+                Ok(GrepSearchMessage::Batch {
+                    generation,
+                    query,
+                    items,
+                }) => {
+                    if self.mode != FinderMode::Grep
+                        || generation != self.grep_search_generation
+                        || query != self.query
+                    {
+                        continue;
+                    }
+
+                    let had_items = !self.items.is_empty();
+                    self.items.extend(items);
+                    self.filtered = (0..self.items.len()).collect();
+                    self.update_grep_match_indices();
+
+                    if !had_items {
+                        self.selected = 0;
+                        self.scroll_offset = 0;
+                        self.clear_preview_cache();
+                        if self.preview_enabled {
+                            self.preview_update_pending = true;
+                        }
+                    }
+
+                    changed = true;
                 }
+                Ok(GrepSearchMessage::Finished { generation, query }) => {
+                    self.grep_search_receiver = None;
 
-                self.items = result.items;
-                self.filtered = (0..self.items.len()).collect();
-                self.update_grep_match_indices();
-                self.selected = 0;
-                self.scroll_offset = 0;
-                self.clear_preview_cache();
-                if self.preview_enabled {
-                    self.preview_update_pending = true;
+                    if self.mode == FinderMode::Grep
+                        && generation == self.grep_search_generation
+                        && query == self.query
+                    {
+                        self.grep_search_running = false;
+                        changed = true;
+                    }
+
+                    return changed;
                 }
-                true
-            }
-            Err(TryRecvError::Empty) => false,
-            Err(TryRecvError::Disconnected) => {
-                self.grep_search_receiver = None;
-                false
+                Err(TryRecvError::Empty) => return changed,
+                Err(TryRecvError::Disconnected) => {
+                    self.grep_search_receiver = None;
+                    self.grep_search_running = false;
+                    return changed;
+                }
             }
         }
     }
@@ -914,9 +966,10 @@ impl Default for FuzzyFinder {
 
 #[cfg(test)]
 mod tests {
-    use super::{FinderItem, FinderMode, FuzzyFinder};
+    use super::{FinderItem, FinderMode, FuzzyFinder, GrepSearchMessage};
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::mpsc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(name: &str) -> PathBuf {
@@ -1036,5 +1089,51 @@ mod tests {
         assert_eq!(finder.preview_path, None);
         assert_eq!(finder.preview_line, None);
         assert_eq!(finder.preview_line_offset, 0);
+    }
+
+    #[test]
+    fn poll_grep_search_applies_batches_before_finished() {
+        let mut finder = FuzzyFinder::new();
+        finder.mode = FinderMode::Grep;
+        finder.query = "needle".to_string();
+        finder.grep_search_generation = 7;
+        finder.grep_search_running = true;
+
+        let (tx, rx) = mpsc::channel();
+        finder.grep_search_receiver = Some(rx);
+
+        tx.send(GrepSearchMessage::Batch {
+            generation: 7,
+            query: "needle".to_string(),
+            items: vec![
+                FinderItem::new(
+                    "src/main.rs:1: needle one".to_string(),
+                    PathBuf::from("src/main.rs"),
+                )
+                .with_line(1),
+                FinderItem::new(
+                    "src/main.rs:2: needle two".to_string(),
+                    PathBuf::from("src/main.rs"),
+                )
+                .with_line(2),
+            ],
+        })
+        .unwrap();
+
+        assert!(finder.poll_grep_search());
+        assert_eq!(finder.items.len(), 2);
+        assert_eq!(finder.filtered, vec![0, 1]);
+        assert!(finder.grep_search_running);
+        assert!(finder.grep_search_receiver.is_some());
+
+        tx.send(GrepSearchMessage::Finished {
+            generation: 7,
+            query: "needle".to_string(),
+        })
+        .unwrap();
+
+        assert!(finder.poll_grep_search());
+        assert!(!finder.grep_search_running);
+        assert!(finder.grep_search_receiver.is_none());
     }
 }
