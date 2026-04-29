@@ -97,6 +97,8 @@ pub struct UndoStack {
     redo_stack: VecDeque<UndoEntry>,
     /// Current entry being built (during editing)
     current_entry: Option<UndoEntry>,
+    /// Nesting depth for compound groups that should not be split by nested edit commands.
+    compound_group_depth: usize,
     /// Maximum number of undo entries to keep
     max_entries: usize,
     /// Time of last edit (for grouping rapid edits)
@@ -111,6 +113,7 @@ impl Default for UndoStack {
             undo_stack: VecDeque::new(),
             redo_stack: VecDeque::new(),
             current_entry: None,
+            compound_group_depth: 0,
             max_entries: 1000,
             last_edit_time: None,
             group_interval: DEFAULT_GROUP_INTERVAL,
@@ -127,6 +130,10 @@ impl UndoStack {
     /// If the last edit was within the group_interval, the existing group is continued
     /// Returns true if a new group was started, false if continuing existing group
     pub fn begin_undo_group(&mut self, cursor_line: usize, cursor_col: usize) -> bool {
+        if self.compound_group_depth > 0 && self.current_entry.is_some() {
+            return false;
+        }
+
         let now = Instant::now();
 
         // Check if we should continue the existing group (rapid edits)
@@ -148,6 +155,17 @@ impl UndoStack {
     /// End the current undo group (call after changes are done)
     /// Also resets the edit timing so the next edit starts a fresh group
     pub fn end_undo_group(&mut self, cursor_line: usize, cursor_col: usize) {
+        if self.compound_group_depth > 0 {
+            if let Some(ref mut entry) = self.current_entry {
+                entry.set_cursor_after(cursor_line, cursor_col);
+            }
+            return;
+        }
+
+        self.finish_undo_group(cursor_line, cursor_col);
+    }
+
+    fn finish_undo_group(&mut self, cursor_line: usize, cursor_col: usize) {
         if let Some(mut entry) = self.current_entry.take() {
             if !entry.is_empty() {
                 entry.set_cursor_after(cursor_line, cursor_col);
@@ -162,6 +180,30 @@ impl UndoStack {
         }
         // Reset timing so next edit starts a fresh group
         self.last_edit_time = None;
+    }
+
+    /// Start a compound undo group that nested edit commands cannot split.
+    pub fn begin_compound_group(&mut self, cursor_line: usize, cursor_col: usize) {
+        if self.compound_group_depth == 0 {
+            self.finish_undo_group(cursor_line, cursor_col);
+            self.current_entry = Some(UndoEntry::new(cursor_line, cursor_col));
+        }
+        self.compound_group_depth += 1;
+    }
+
+    /// End a compound undo group, finalizing it when the outermost group closes.
+    pub fn end_compound_group(&mut self, cursor_line: usize, cursor_col: usize) {
+        if self.compound_group_depth == 0 {
+            self.end_undo_group(cursor_line, cursor_col);
+            return;
+        }
+
+        self.compound_group_depth -= 1;
+        if self.compound_group_depth == 0 {
+            self.finish_undo_group(cursor_line, cursor_col);
+        } else if let Some(ref mut entry) = self.current_entry {
+            entry.set_cursor_after(cursor_line, cursor_col);
+        }
     }
 
     /// Record a change in the current undo group
@@ -227,7 +269,12 @@ impl UndoStack {
 
     /// Get the number of undo entries
     pub fn undo_count(&self) -> usize {
-        self.undo_stack.len() + if self.current_entry.as_ref().map_or(false, |e| !e.is_empty()) { 1 } else { 0 }
+        self.undo_stack.len()
+            + if self.current_entry.as_ref().map_or(false, |e| !e.is_empty()) {
+                1
+            } else {
+                0
+            }
     }
 
     /// Get the number of redo entries
@@ -240,6 +287,34 @@ impl UndoStack {
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.current_entry = None;
+        self.compound_group_depth = 0;
         self.last_edit_time = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Change, UndoStack};
+
+    #[test]
+    fn compound_group_keeps_nested_edits_in_one_undo_entry() {
+        let mut stack = UndoStack::new();
+
+        stack.begin_compound_group(0, 0);
+        stack.begin_undo_group(0, 0);
+        stack.record_change(Change::insert(0, 0, "a".to_string()));
+        stack.end_undo_group(0, 1);
+
+        stack.begin_undo_group(0, 1);
+        stack.record_change(Change::insert(0, 1, "b".to_string()));
+        stack.end_undo_group(0, 2);
+
+        assert_eq!(stack.undo_count(), 1);
+        stack.end_compound_group(0, 2);
+
+        let entry = stack.pop_undo().expect("compound undo entry");
+        assert_eq!(entry.changes.len(), 2);
+        assert_eq!(entry.cursor_before, (0, 0));
+        assert_eq!(entry.cursor_after, (0, 2));
     }
 }

@@ -719,6 +719,8 @@ pub struct Editor {
     pub command_line: CommandLine,
     /// Undo/redo history
     pub undo_stack: UndoStack,
+    /// Saved undo/redo history for each open buffer.
+    undo_stacks: Vec<UndoStack>,
     /// Search state
     pub search: SearchState,
     /// Visual selection state
@@ -1042,6 +1044,7 @@ impl Editor {
             input_state: InputState::new(),
             command_line: CommandLine::new(),
             undo_stack: UndoStack::new(),
+            undo_stacks: vec![UndoStack::new()],
             search: SearchState::default(),
             visual: VisualSelection::default(),
             syntax,
@@ -1280,12 +1283,7 @@ impl Editor {
     /// Update diagnostics for a file URI
     pub fn set_diagnostics(&mut self, uri: String, diags: Vec<Diagnostic>) {
         let diags = if let Some(buffer) = self.buffers.iter().find(|buffer| {
-            buffer
-                .path
-                .as_ref()
-                .map(crate::lsp::path_to_uri)
-                .as_deref()
-                == Some(uri.as_str())
+            buffer.path.as_ref().map(crate::lsp::path_to_uri).as_deref() == Some(uri.as_str())
         }) {
             diags
                 .into_iter()
@@ -1674,6 +1672,35 @@ impl Editor {
         &mut self.buffers[self.current_buffer_idx]
     }
 
+    fn save_current_undo_stack(&mut self) {
+        if let Some(stack) = self.undo_stacks.get_mut(self.current_buffer_idx) {
+            *stack = self.undo_stack.clone();
+        }
+    }
+
+    fn load_current_undo_stack(&mut self) {
+        self.undo_stack = self
+            .undo_stacks
+            .get(self.current_buffer_idx)
+            .cloned()
+            .unwrap_or_else(UndoStack::new);
+    }
+
+    fn reset_current_undo_stack(&mut self) {
+        self.undo_stack.clear();
+        if let Some(stack) = self.undo_stacks.get_mut(self.current_buffer_idx) {
+            stack.clear();
+        }
+    }
+
+    fn reset_undo_stack_for_buffer(&mut self, idx: usize) {
+        if idx == self.current_buffer_idx {
+            self.reset_current_undo_stack();
+        } else if let Some(stack) = self.undo_stacks.get_mut(idx) {
+            stack.clear();
+        }
+    }
+
     /// Replace the entire buffer content (used by external formatters)
     pub fn replace_buffer_content(&mut self, content: &str) {
         // Save cursor position
@@ -1682,6 +1709,7 @@ impl Editor {
 
         // Replace content
         self.buffer_mut().set_content(content);
+        self.reset_current_undo_stack();
 
         // Try to restore cursor position (clamp to valid range)
         let max_line = self.buffer().len_lines().saturating_sub(1);
@@ -1690,6 +1718,33 @@ impl Editor {
         self.cursor.col = cursor_col.min(max_col);
 
         // Increment syntax version to trigger re-parse
+        self.last_syntax_version = 0;
+    }
+
+    /// Replace the current buffer content as a single undoable change.
+    pub fn replace_buffer_content_with_undo(&mut self, content: &str) {
+        let old_content = self.buffer().content();
+        if old_content == content {
+            return;
+        }
+
+        let cursor_line = self.cursor.line;
+        let cursor_col = self.cursor.col;
+        self.undo_stack.end_undo_group(cursor_line, cursor_col);
+        self.undo_stack.begin_undo_group(cursor_line, cursor_col);
+        self.undo_stack
+            .record_change(Change::new(0, 0, old_content, content.to_string()));
+
+        self.buffer_mut().set_content(content);
+
+        let max_line = self.buffer().len_lines().saturating_sub(1);
+        self.cursor.line = cursor_line.min(max_line);
+        let max_col = self.buffer().line_len(self.cursor.line);
+        self.cursor.col = cursor_col.min(max_col);
+
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
+        self.save_current_undo_stack();
         self.last_syntax_version = 0;
     }
 
@@ -1764,6 +1819,7 @@ impl Editor {
 
     /// Save current pane state before switching
     fn save_pane_state(&mut self) {
+        self.save_current_undo_stack();
         if self.active_pane < self.panes.len() {
             self.panes[self.active_pane].cursor = self.cursor;
             self.panes[self.active_pane].viewport_offset = self.viewport_offset;
@@ -1779,6 +1835,7 @@ impl Editor {
             self.viewport_offset = self.panes[self.active_pane].viewport_offset;
             self.h_offset = self.panes[self.active_pane].h_offset;
             self.current_buffer_idx = self.panes[self.active_pane].buffer_idx;
+            self.load_current_undo_stack();
             // Re-parse syntax for the buffer
             let path = self.buffers[self.current_buffer_idx].path.clone();
             self.syntax.set_language_from_path_option(path.as_ref());
@@ -1810,6 +1867,7 @@ impl Editor {
             // Open file in new buffer
             let new_buffer = Buffer::from_file(path)?;
             self.buffers.push(new_buffer);
+            self.undo_stacks.push(UndoStack::new());
             self.buffers.len() - 1
         } else {
             // Same buffer as current pane
@@ -1871,6 +1929,7 @@ impl Editor {
     /// Close the current pane
     pub fn close_pane(&mut self) -> bool {
         if self.panes.len() > 1 {
+            self.save_current_undo_stack();
             self.panes.remove(self.active_pane);
             if self.active_pane >= self.panes.len() {
                 self.active_pane = self.panes.len() - 1;
@@ -1976,7 +2035,9 @@ impl Editor {
             .position(|b| b.path.as_ref().and_then(|p| p.canonicalize().ok()) == canonical_path)
         {
             // File already open, switch to that buffer
+            self.save_pane_state();
             self.current_buffer_idx = existing_idx;
+            self.load_current_undo_stack();
             self.cursor = Cursor::default();
             self.viewport_offset = 0;
             self.h_offset = 0;
@@ -2005,10 +2066,14 @@ impl Editor {
             && self.buffers[self.current_buffer_idx].path.is_none()
         {
             self.buffers[self.current_buffer_idx] = new_buffer;
+            self.reset_current_undo_stack();
             // Update active pane's buffer_idx (it's already pointing to current_buffer_idx)
         } else {
+            self.save_pane_state();
             self.buffers.push(new_buffer);
+            self.undo_stacks.push(UndoStack::new());
             self.current_buffer_idx = self.buffers.len() - 1;
+            self.load_current_undo_stack();
             // Update active pane to point to the new buffer
             if self.active_pane < self.panes.len() {
                 self.panes[self.active_pane].buffer_idx = self.current_buffer_idx;
@@ -2018,7 +2083,7 @@ impl Editor {
         self.cursor = Cursor::default();
         self.viewport_offset = 0;
         self.h_offset = 0;
-        self.undo_stack.clear();
+        self.reset_current_undo_stack();
 
         // Sync active pane's cursor and viewport
         if self.active_pane < self.panes.len() {
@@ -2038,16 +2103,18 @@ impl Editor {
 
     /// Close the current buffer
     pub fn close_current_buffer(&mut self) {
+        self.save_current_undo_stack();
         let removed_idx = self.current_buffer_idx;
 
         if self.buffers.len() <= 1 {
             // If it's the last buffer, just create a new empty one
             self.buffers[0] = Buffer::new();
+            self.undo_stacks = vec![UndoStack::new()];
             self.current_buffer_idx = 0;
             self.cursor = Cursor::default();
             self.viewport_offset = 0;
             self.h_offset = 0;
-            self.undo_stack.clear();
+            self.load_current_undo_stack();
             for pane in &mut self.panes {
                 pane.buffer_idx = 0;
                 pane.cursor = Cursor::default();
@@ -2057,6 +2124,7 @@ impl Editor {
         } else {
             // Remove the current buffer
             self.buffers.remove(removed_idx);
+            self.undo_stacks.remove(removed_idx);
 
             // Adjust current_buffer_idx if needed
             if self.current_buffer_idx >= self.buffers.len() {
@@ -2079,7 +2147,7 @@ impl Editor {
             self.cursor = Cursor::default();
             self.viewport_offset = 0;
             self.h_offset = 0;
-            self.undo_stack.clear();
+            self.load_current_undo_stack();
         }
 
         // Sync pane state
@@ -3121,16 +3189,35 @@ impl Editor {
         }
     }
 
+    /// Delete character at cursor as part of an already-open undo group.
+    pub fn delete_char_at_in_current_group(&mut self) {
+        let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
+        if line_len > 0 {
+            if let Some(ch) =
+                self.buffers[self.current_buffer_idx].char_at(self.cursor.line, self.cursor.col)
+            {
+                self.undo_stack.record_change(Change::delete(
+                    self.cursor.line,
+                    self.cursor.col,
+                    ch.to_string(),
+                ));
+                self.registers
+                    .delete(None, RegisterContent::Chars(ch.to_string()), true);
+            }
+            self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
+            self.clamp_cursor();
+        }
+    }
+
     /// Delete character before cursor in normal mode (X)
     pub fn delete_char_before_normal(&mut self) {
         if self.cursor.col > 0 {
+            self.begin_change();
             self.cursor.col -= 1;
             if let Some(ch) =
                 self.buffers[self.current_buffer_idx].char_at(self.cursor.line, self.cursor.col)
             {
                 // Record for undo
-                self.undo_stack
-                    .begin_undo_group(self.cursor.line + 1, self.cursor.col + 1);
                 self.undo_stack.record_change(Change::delete(
                     self.cursor.line,
                     self.cursor.col,
@@ -3494,7 +3581,7 @@ impl Editor {
             self.cursor = Cursor::default();
             self.viewport_offset = 0;
             self.h_offset = 0;
-            self.undo_stack.clear();
+            self.reset_current_undo_stack();
             self.parse_current_buffer();
             self.set_status("File reloaded");
             Ok(())
@@ -3509,18 +3596,20 @@ impl Editor {
         let mut reloaded = Vec::new();
         let mut warnings = Vec::new();
 
-        for buffer in self.buffers.iter_mut() {
-            if buffer.has_external_changes() {
-                if let Some(path) = &buffer.path {
+        let mut reloaded_indices = Vec::new();
+        for i in 0..self.buffers.len() {
+            if self.buffers[i].has_external_changes() {
+                if let Some(path) = &self.buffers[i].path {
                     let name = path
                         .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("file")
                         .to_string();
 
-                    if !buffer.dirty {
+                    if !self.buffers[i].dirty {
                         // Buffer is clean, safe to auto-reload
-                        if buffer.reload().is_ok() {
+                        if self.buffers[i].reload().is_ok() {
+                            reloaded_indices.push(i);
                             reloaded.push(name);
                         }
                     } else {
@@ -3529,6 +3618,10 @@ impl Editor {
                     }
                 }
             }
+        }
+
+        for idx in reloaded_indices {
+            self.reset_undo_stack_for_buffer(idx);
         }
 
         // Re-parse current buffer if it was reloaded
@@ -3607,7 +3700,12 @@ impl Editor {
                         ) {
                             Ok(formatted) => {
                                 if formatted != content {
-                                    self.buffers[i].set_content(&formatted);
+                                    if i == self.current_buffer_idx {
+                                        self.replace_buffer_content_with_undo(&formatted);
+                                    } else {
+                                        self.buffers[i].set_content(&formatted);
+                                        self.reset_undo_stack_for_buffer(i);
+                                    }
                                     formatted_count += 1;
                                 }
                                 formatter_name = Some(formatter_config.command.clone());
@@ -3639,6 +3737,8 @@ impl Editor {
 
     /// Undo the last change
     pub fn undo(&mut self) {
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
         if let Some(entry) = self.undo_stack.pop_undo() {
             // Apply changes in reverse order
             for change in entry.changes.iter().rev() {
@@ -3668,6 +3768,8 @@ impl Editor {
 
     /// Redo the last undone change
     pub fn redo(&mut self) {
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
         if let Some(entry) = self.undo_stack.pop_redo() {
             // Apply changes in forward order
             for change in entry.changes.iter() {
@@ -6442,6 +6544,7 @@ impl Editor {
 
         self.save_pane_state();
         self.current_buffer_idx = idx;
+        self.load_current_undo_stack();
         if self.active_pane < self.panes.len() {
             self.panes[self.active_pane].buffer_idx = idx;
             self.panes[self.active_pane].cursor = Cursor::default();
@@ -6662,6 +6765,80 @@ mod tests {
             repo.commit(Some("HEAD"), &signature, &signature, message, &tree, &[])
                 .expect("initial commit");
         }
+    }
+
+    #[test]
+    fn undo_history_follows_the_active_buffer() {
+        let tmp = unique_temp_dir("nevi_undo_per_buffer");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let first = tmp.join("first.txt");
+        let second = tmp.join("second.txt");
+        std::fs::write(&first, "abc\n").expect("write first");
+        std::fs::write(&second, "xyz\n").expect("write second");
+
+        let mut editor = Editor::default();
+        editor.open_file(first).expect("open first");
+        editor.enter_insert_mode_end();
+        editor.insert_char('!');
+        editor.enter_normal_mode();
+        assert_eq!(editor.buffer().content(), "abc!\n");
+
+        editor.open_file(second).expect("open second");
+        editor.undo();
+        assert_eq!(editor.buffer().content(), "xyz\n");
+
+        assert!(editor.switch_to_buffer(0));
+        editor.undo();
+        assert_eq!(editor.buffer().content(), "abc\n");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn undo_normal_x_restores_original_cursor_position() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("abc\n");
+        editor.cursor.col = 2;
+
+        editor.delete_char_before_normal();
+        assert_eq!(editor.buffer().content(), "ac\n");
+        assert_eq!(editor.cursor.col, 1);
+
+        editor.undo();
+        assert_eq!(editor.buffer().content(), "abc\n");
+        assert_eq!(editor.cursor.line, 0);
+        assert_eq!(editor.cursor.col, 2);
+    }
+
+    #[test]
+    fn autopair_backspace_keeps_insert_undo_group_open() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("");
+        editor.enter_insert_mode();
+        editor.insert_char('(');
+        editor.insert_char(')');
+        editor.cursor.col = 1;
+
+        editor.delete_char_before();
+        editor.delete_char_at_in_current_group();
+        editor.insert_char('a');
+        editor.enter_normal_mode();
+        assert_eq!(editor.buffer().content(), "a");
+
+        editor.undo();
+        assert_eq!(editor.buffer().content(), "");
+    }
+
+    #[test]
+    fn external_buffer_replacement_is_undoable() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("abc\n");
+
+        editor.replace_buffer_content_with_undo("ABC\n");
+        assert_eq!(editor.buffer().content(), "ABC\n");
+
+        editor.undo();
+        assert_eq!(editor.buffer().content(), "abc\n");
     }
 
     #[test]
