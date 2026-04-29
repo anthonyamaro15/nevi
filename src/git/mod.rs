@@ -1,7 +1,8 @@
 //! Git integration module for displaying git signs (added/modified/deleted lines)
 
 use similar::{ChangeTag, TextDiff};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// Status of a line compared to the HEAD version
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,6 +13,41 @@ pub enum GitLineStatus {
     Modified,
     /// Line(s) were deleted at this position
     Deleted,
+}
+
+/// Status of a file in the working tree or index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GitFileStatus {
+    /// File was added to the index
+    Added,
+    /// File was modified, renamed, or typechanged
+    Modified,
+    /// File was deleted
+    Deleted,
+    /// File is untracked
+    Untracked,
+    /// File has merge conflicts
+    Conflicted,
+}
+
+impl GitFileStatus {
+    fn priority(self) -> u8 {
+        match self {
+            GitFileStatus::Untracked => 1,
+            GitFileStatus::Added => 2,
+            GitFileStatus::Deleted => 3,
+            GitFileStatus::Modified => 4,
+            GitFileStatus::Conflicted => 5,
+        }
+    }
+
+    pub fn merge(self, other: Self) -> Self {
+        if other.priority() > self.priority() {
+            other
+        } else {
+            self
+        }
+    }
 }
 
 /// A single hunk representing a change at a specific line
@@ -102,6 +138,69 @@ impl GitRepo {
 
         false
     }
+
+    /// Get file statuses for the repository, keyed by absolute file path.
+    pub fn file_statuses(&self) -> HashMap<PathBuf, GitFileStatus> {
+        let mut statuses = HashMap::new();
+        let Some(workdir) = self.repo.workdir() else {
+            return statuses;
+        };
+
+        let mut options = git2::StatusOptions::new();
+        options
+            .include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .renames_head_to_index(true)
+            .renames_index_to_workdir(true);
+
+        let Ok(repo_statuses) = self.repo.statuses(Some(&mut options)) else {
+            return statuses;
+        };
+
+        for entry in repo_statuses.iter() {
+            let Some(relative) = entry.path() else {
+                continue;
+            };
+            let Some(status) = git_file_status_from_git2(entry.status()) else {
+                continue;
+            };
+
+            statuses.insert(workdir.join(relative), status);
+        }
+
+        statuses
+    }
+}
+
+fn git_file_status_from_git2(status: git2::Status) -> Option<GitFileStatus> {
+    if status.contains(git2::Status::CONFLICTED) {
+        return Some(GitFileStatus::Conflicted);
+    }
+
+    if status.intersects(git2::Status::WT_DELETED | git2::Status::INDEX_DELETED) {
+        return Some(GitFileStatus::Deleted);
+    }
+
+    if status.intersects(
+        git2::Status::WT_MODIFIED
+            | git2::Status::INDEX_MODIFIED
+            | git2::Status::WT_RENAMED
+            | git2::Status::INDEX_RENAMED
+            | git2::Status::WT_TYPECHANGE
+            | git2::Status::INDEX_TYPECHANGE,
+    ) {
+        return Some(GitFileStatus::Modified);
+    }
+
+    if status.contains(git2::Status::INDEX_NEW) {
+        return Some(GitFileStatus::Added);
+    }
+
+    if status.contains(git2::Status::WT_NEW) {
+        return Some(GitFileStatus::Untracked);
+    }
+
+    None
 }
 
 /// Compute the diff between HEAD content and current content
@@ -233,5 +332,41 @@ mod tests {
 
         assert_eq!(diff.hunks.len(), 2);
         assert!(diff.hunks.iter().all(|h| h.status == GitLineStatus::Added));
+    }
+
+    #[test]
+    fn test_git_file_status_priority() {
+        assert_eq!(
+            GitFileStatus::Added.merge(GitFileStatus::Modified),
+            GitFileStatus::Modified
+        );
+        assert_eq!(
+            GitFileStatus::Modified.merge(GitFileStatus::Conflicted),
+            GitFileStatus::Conflicted
+        );
+        assert_eq!(
+            GitFileStatus::Deleted.merge(GitFileStatus::Untracked),
+            GitFileStatus::Deleted
+        );
+    }
+
+    #[test]
+    fn test_git_file_status_from_git2() {
+        assert_eq!(
+            git_file_status_from_git2(git2::Status::WT_MODIFIED),
+            Some(GitFileStatus::Modified)
+        );
+        assert_eq!(
+            git_file_status_from_git2(git2::Status::INDEX_NEW),
+            Some(GitFileStatus::Added)
+        );
+        assert_eq!(
+            git_file_status_from_git2(git2::Status::WT_NEW),
+            Some(GitFileStatus::Untracked)
+        );
+        assert_eq!(
+            git_file_status_from_git2(git2::Status::CONFLICTED | git2::Status::WT_MODIFIED),
+            Some(GitFileStatus::Conflicted)
+        );
     }
 }
