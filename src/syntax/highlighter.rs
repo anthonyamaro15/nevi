@@ -2,7 +2,7 @@ use crossterm::style::Color;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Query, QueryCursor, Tree};
 
-use super::theme::Theme;
+use super::theme::{SyntaxStyle, Theme};
 
 /// Maximum query byte range to prevent freezing on minified files
 /// (e.g., minified JavaScript with 100KB+ single lines)
@@ -17,6 +17,8 @@ pub struct HighlightSpan {
     pub end_col: usize,
     /// Foreground color for this span
     pub fg: Color,
+    /// Full syntax style for this span
+    pub style: SyntaxStyle,
 }
 
 /// Internal span with priority for sorting
@@ -24,7 +26,7 @@ pub struct HighlightSpan {
 struct PrioritySpan {
     start_col: usize,
     end_col: usize,
-    fg: Color,
+    style: SyntaxStyle,
     /// Capture index - higher = later in query = higher priority
     priority: u32,
 }
@@ -82,8 +84,8 @@ pub fn get_line_highlights(
             let node = capture.node;
             let capture_name = query.capture_names()[capture.index as usize];
 
-            // Get the color for this capture
-            if let Some(color) = theme.get_color_for_capture(capture_name) {
+            // Get the style for this capture
+            if let Some(style) = theme.get_style_for_capture(capture_name) {
                 let node_start = node.start_byte();
                 let node_end = node.end_byte();
 
@@ -107,7 +109,7 @@ pub fn get_line_highlights(
                     spans.push(PrioritySpan {
                         start_col,
                         end_col,
-                        fg: color,
+                        style,
                         priority: capture.index,
                     });
                 }
@@ -117,7 +119,8 @@ pub fn get_line_highlights(
 
     // Sort spans by start column, then by priority (higher priority = later in query = wins)
     spans.sort_by(|a, b| {
-        a.start_col.cmp(&b.start_col)
+        a.start_col
+            .cmp(&b.start_col)
             .then_with(|| a.priority.cmp(&b.priority))
     });
 
@@ -164,14 +167,14 @@ pub fn get_line_highlights_yaml(
         if start_byte >= end_byte || end_byte > line_content.len() {
             return;
         }
-        if let Some(color) = theme.get_color_for_capture(capture) {
+        if let Some(style) = theme.get_style_for_capture(capture) {
             let start_col = byte_offset_to_char_index(&byte_to_char, start_byte);
             let end_col = byte_offset_to_char_index(&byte_to_char, end_byte);
             if start_col < end_col {
                 spans.push(PrioritySpan {
                     start_col,
                     end_col,
-                    fg: color,
+                    style,
                     priority,
                 });
             }
@@ -444,7 +447,10 @@ fn yaml_scalar_spans(line: &str, parse_end: usize) -> Vec<(usize, usize, YamlSca
 
             let token = &line[start..idx];
             let lower = token.to_ascii_lowercase();
-            if matches!(lower.as_str(), "true" | "false" | "yes" | "no" | "on" | "off") {
+            if matches!(
+                lower.as_str(),
+                "true" | "false" | "yes" | "no" | "on" | "off"
+            ) {
                 spans.push((start, idx, YamlScalarKind::Boolean));
             } else if lower == "null" {
                 spans.push((start, idx, YamlScalarKind::Null));
@@ -470,13 +476,22 @@ fn yaml_token_is_number(token: &str) -> bool {
         return false;
     }
 
-    if let Some(hex) = normalized.strip_prefix("0x").or_else(|| normalized.strip_prefix("0X")) {
+    if let Some(hex) = normalized
+        .strip_prefix("0x")
+        .or_else(|| normalized.strip_prefix("0X"))
+    {
         return !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit());
     }
-    if let Some(bin) = normalized.strip_prefix("0b").or_else(|| normalized.strip_prefix("0B")) {
+    if let Some(bin) = normalized
+        .strip_prefix("0b")
+        .or_else(|| normalized.strip_prefix("0B"))
+    {
         return !bin.is_empty() && bin.chars().all(|c| matches!(c, '0' | '1'));
     }
-    if let Some(oct) = normalized.strip_prefix("0o").or_else(|| normalized.strip_prefix("0O")) {
+    if let Some(oct) = normalized
+        .strip_prefix("0o")
+        .or_else(|| normalized.strip_prefix("0O"))
+    {
         return !oct.is_empty() && oct.chars().all(|c| ('0'..='7').contains(&c));
     }
 
@@ -497,15 +512,15 @@ fn resolve_overlapping_spans_with_priority(spans: Vec<PrioritySpan>) -> Vec<High
     }
 
     // For each column position, track the highest priority span covering it
-    let mut col_colors: Vec<Option<(Color, u32)>> = vec![None; max_col];
+    let mut col_styles: Vec<Option<(SyntaxStyle, u32)>> = vec![None; max_col];
 
     for span in &spans {
         for col in span.start_col..span.end_col {
-            if col < col_colors.len() {
-                match col_colors[col] {
-                    None => col_colors[col] = Some((span.fg, span.priority)),
+            if col < col_styles.len() {
+                match col_styles[col] {
+                    None => col_styles[col] = Some((span.style, span.priority)),
                     Some((_, existing_priority)) if span.priority > existing_priority => {
-                        col_colors[col] = Some((span.fg, span.priority));
+                        col_styles[col] = Some((span.style, span.priority));
                     }
                     _ => {} // Keep existing higher priority
                 }
@@ -515,32 +530,34 @@ fn resolve_overlapping_spans_with_priority(spans: Vec<PrioritySpan>) -> Vec<High
 
     // Convert column-based representation back to spans
     let mut result: Vec<HighlightSpan> = Vec::new();
-    let mut current_span: Option<(usize, Color)> = None;
+    let mut current_span: Option<(usize, SyntaxStyle)> = None;
 
-    for (col, color_opt) in col_colors.iter().enumerate() {
-        match (current_span, color_opt) {
-            (None, Some((color, _))) => {
+    for (col, style_opt) in col_styles.iter().enumerate() {
+        match (current_span, style_opt) {
+            (None, Some((style, _))) => {
                 // Start a new span
-                current_span = Some((col, *color));
+                current_span = Some((col, *style));
             }
-            (Some((_start, current_color)), Some((color, _))) if current_color == *color => {
+            (Some((_start, current_style)), Some((style, _))) if current_style == *style => {
                 // Continue same span
             }
-            (Some((start, current_color)), Some((color, _))) => {
-                // Different color - end current and start new
+            (Some((start, current_style)), Some((style, _))) => {
+                // Different style - end current and start new
                 result.push(HighlightSpan {
                     start_col: start,
                     end_col: col,
-                    fg: current_color,
+                    fg: current_style.fg,
+                    style: current_style,
                 });
-                current_span = Some((col, *color));
+                current_span = Some((col, *style));
             }
-            (Some((start, current_color)), None) => {
+            (Some((start, current_style)), None) => {
                 // End current span
                 result.push(HighlightSpan {
                     start_col: start,
                     end_col: col,
-                    fg: current_color,
+                    fg: current_style.fg,
+                    style: current_style,
                 });
                 current_span = None;
             }
@@ -549,11 +566,12 @@ fn resolve_overlapping_spans_with_priority(spans: Vec<PrioritySpan>) -> Vec<High
     }
 
     // Don't forget the last span
-    if let Some((start, color)) = current_span {
+    if let Some((start, style)) = current_span {
         result.push(HighlightSpan {
             start_col: start,
             end_col: max_col,
-            fg: color,
+            fg: style.fg,
+            style,
         });
     }
 
@@ -1029,6 +1047,14 @@ pub fn markdown_highlight_query() -> &'static str {
 (list_marker_plus) @operator
 (list_marker_star) @operator
 (list_marker_dot) @operator
+(list_marker_parenthesis) @operator
+
+; Reference links
+(link_reference_definition (link_label) @label)
+(link_reference_definition (link_destination) @string)
+(link_reference_definition (link_title) @string)
+(backslash_escape) @string
+(entity_reference) @constant
 
 ; Thematic breaks (horizontal rules ---, ***, ___)
 (thematic_break) @comment
@@ -1100,9 +1126,17 @@ pub fn html_highlight_query() -> &'static str {
 (attribute (quoted_attribute_value) @string)
 (attribute (attribute_value) @string)
 
+; Entities
+(entity) @constant
+
+; Malformed end tags still have a tag-like name
+(erroneous_end_tag_name) @tag
+
 ; Script and style content (raw text inside these elements)
 (script_element (raw_text) @string)
 (style_element (raw_text) @string)
+(script_element (raw_text) @embedded)
+(style_element (raw_text) @embedded)
 
 ; Text content - don't highlight by default (matches Neovim behavior)
 ; (text) @variable
@@ -1165,24 +1199,36 @@ pub fn python_highlight_query() -> &'static str {
   "case"
 ] @keyword
 
+; Attribute access
+(attribute attribute: (identifier) @property)
+
 ; Function definitions
 (function_definition name: (identifier) @function)
 
 ; Function calls
 (call function: (identifier) @function)
 (call function: (attribute attribute: (identifier) @function))
+((call function: (identifier) @function.builtin)
+ (#match? @function.builtin "^(abs|aiter|all|anext|any|ascii|bin|bool|breakpoint|bytearray|bytes|callable|chr|classmethod|compile|complex|delattr|dict|dir|divmod|enumerate|eval|exec|filter|float|format|frozenset|getattr|globals|hasattr|hash|help|hex|id|input|int|isinstance|issubclass|iter|len|list|locals|map|max|memoryview|min|next|object|oct|open|ord|pow|print|property|range|repr|reversed|round|set|setattr|slice|sorted|staticmethod|str|sum|super|tuple|type|vars|zip|__import__)$"))
 
 ; Class definitions
 (class_definition name: (identifier) @type)
 
 ; Decorators
 (decorator (identifier) @attribute)
+(decorator (attribute) @attribute)
+(decorator (call function: (attribute) @attribute))
 
 ; Type annotations
 (type (identifier) @type)
+(generic_type (identifier) @type)
+(typed_parameter (identifier) @variable.parameter)
+(typed_default_parameter (identifier) @variable.parameter)
+(default_parameter (identifier) @variable.parameter)
 
-; Attribute access
-(attribute attribute: (identifier) @property)
+; F-string interpolations
+(interpolation) @embedded
+(escape_interpolation) @embedded
 "##
 }
 
@@ -1191,11 +1237,56 @@ mod tests {
     use super::*;
     use tree_sitter::Parser;
 
+    fn assert_query_compiles(language: tree_sitter::Language, query_source: &str, name: &str) {
+        let query = Query::new(&language, query_source);
+        assert!(
+            query.is_ok(),
+            "{} query failed to compile: {:?}",
+            name,
+            query.err()
+        );
+    }
+
+    fn capture_texts(
+        language: tree_sitter::Language,
+        query_source: &str,
+        source: &str,
+    ) -> Vec<(String, String)> {
+        let query = Query::new(&language, query_source).expect("query should compile");
+        let mut parser = Parser::new();
+        parser
+            .set_language(&language)
+            .expect("parser should initialize");
+        let tree = parser.parse(source, None).expect("parse source");
+
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+        let mut captures = Vec::new();
+
+        while let Some(m) = matches.next() {
+            for capture in m.captures {
+                let name = query.capture_names()[capture.index as usize].to_string();
+                let text = capture
+                    .node
+                    .utf8_text(source.as_bytes())
+                    .unwrap_or("")
+                    .to_string();
+                captures.push((name, text));
+            }
+        }
+
+        captures
+    }
+
     #[test]
     fn rust_highlight_query_compiles() {
         let language = tree_sitter_rust::LANGUAGE;
         let query = Query::new(&language.into(), rust_highlight_query());
-        assert!(query.is_ok(), "Rust query failed to compile: {:?}", query.err());
+        assert!(
+            query.is_ok(),
+            "Rust query failed to compile: {:?}",
+            query.err()
+        );
     }
 
     #[test]
@@ -1217,6 +1308,242 @@ mod tests {
             query.is_ok(),
             "TypeScript query failed to compile: {:?}",
             query.err()
+        );
+    }
+
+    #[test]
+    fn tsx_highlight_query_compiles() {
+        assert_query_compiles(
+            tree_sitter_typescript::LANGUAGE_TSX.into(),
+            tsx_highlight_query(),
+            "TSX",
+        );
+    }
+
+    #[test]
+    fn css_highlight_query_compiles() {
+        assert_query_compiles(
+            tree_sitter_css::LANGUAGE.into(),
+            css_highlight_query(),
+            "CSS",
+        );
+    }
+
+    #[test]
+    fn json_highlight_query_compiles() {
+        assert_query_compiles(
+            tree_sitter_json::LANGUAGE.into(),
+            json_highlight_query(),
+            "JSON",
+        );
+    }
+
+    #[test]
+    fn markdown_highlight_query_compiles() {
+        assert_query_compiles(
+            tree_sitter_md::LANGUAGE.into(),
+            markdown_highlight_query(),
+            "Markdown",
+        );
+    }
+
+    #[test]
+    fn toml_highlight_query_compiles() {
+        assert_query_compiles(
+            tree_sitter_toml_ng::LANGUAGE.into(),
+            toml_highlight_query(),
+            "TOML",
+        );
+    }
+
+    #[test]
+    fn html_highlight_query_compiles() {
+        assert_query_compiles(
+            tree_sitter_html::LANGUAGE.into(),
+            html_highlight_query(),
+            "HTML",
+        );
+    }
+
+    #[test]
+    fn python_highlight_query_compiles() {
+        assert_query_compiles(
+            tree_sitter_python::LANGUAGE.into(),
+            python_highlight_query(),
+            "Python",
+        );
+    }
+
+    #[test]
+    fn python_query_captures_f_string_interpolation_as_embedded() {
+        let captures = capture_texts(
+            tree_sitter_python::LANGUAGE.into(),
+            python_highlight_query(),
+            "message = f\"Hello {name}\"\n",
+        );
+
+        assert!(
+            captures
+                .iter()
+                .any(|(name, text)| name == "embedded" && text.contains("{name}")),
+            "expected Python f-string interpolation to be captured as embedded, got {:?}",
+            captures
+        );
+    }
+
+    #[test]
+    fn python_query_captures_generic_types_and_builtin_calls() {
+        let captures = capture_texts(
+            tree_sitter_python::LANGUAGE.into(),
+            python_highlight_query(),
+            "from typing import Optional\nvalue: Optional[int] = len(items)\n",
+        );
+
+        assert!(
+            captures
+                .iter()
+                .any(|(name, text)| name == "type" && text == "Optional"),
+            "expected generic type name Optional to be captured, got {:?}",
+            captures
+        );
+        assert!(
+            captures
+                .iter()
+                .any(|(name, text)| name == "type" && text == "int"),
+            "expected nested type name int to be captured, got {:?}",
+            captures
+        );
+        assert!(
+            captures
+                .iter()
+                .any(|(name, text)| name == "function.builtin" && text == "len"),
+            "expected builtin call len to be captured, got {:?}",
+            captures
+        );
+    }
+
+    #[test]
+    fn python_query_captures_dotted_decorators() {
+        let captures = capture_texts(
+            tree_sitter_python::LANGUAGE.into(),
+            python_highlight_query(),
+            "@pytest.mark.parametrize(\"value\", [1])\ndef test_value(value):\n    pass\n",
+        );
+
+        assert!(
+            captures
+                .iter()
+                .any(|(name, text)| name == "attribute" && text.contains("pytest.mark.parametrize")),
+            "expected dotted decorator to be captured as an attribute, got {:?}",
+            captures
+        );
+    }
+
+    #[test]
+    fn python_member_calls_prefer_function_style_over_property_style() {
+        let language = tree_sitter_python::LANGUAGE;
+        let query = Query::new(&language.into(), python_highlight_query())
+            .expect("python query should compile");
+
+        let mut parser = Parser::new();
+        parser
+            .set_language(&language.into())
+            .expect("python parser should initialize");
+
+        let source = "self.name.upper()\n";
+        let tree = parser.parse(source, None).expect("parse python source");
+        let theme = Theme::default();
+        let spans = get_line_highlights(&tree, &query, source, &[0, source.len()], 0, &theme);
+        let upper_start = source.find("upper").expect("upper call");
+        let function = theme
+            .get_color_for_capture("function")
+            .expect("function color");
+        let property = theme
+            .get_color_for_capture("property")
+            .expect("property color");
+
+        let upper_span = spans
+            .iter()
+            .find(|span| span.start_col <= upper_start && span.end_col >= upper_start + 5)
+            .expect("upper should be highlighted");
+
+        assert_eq!(
+            upper_span.fg, function,
+            "expected member call to use function style, got {:?} in {:?}",
+            upper_span, spans
+        );
+
+        let name_start = source.find("name").expect("name property");
+        let name_span = spans
+            .iter()
+            .find(|span| span.start_col <= name_start && span.end_col >= name_start + 4)
+            .expect("name should be highlighted");
+        assert_eq!(
+            name_span.fg, property,
+            "expected plain member access to keep property style, got {:?} in {:?}",
+            name_span, spans
+        );
+    }
+
+    #[test]
+    fn html_query_captures_entities_and_embedded_raw_text() {
+        let captures = capture_texts(
+            tree_sitter_html::LANGUAGE.into(),
+            html_highlight_query(),
+            "<script>const x = 1;</script><style>.x { color: red; }</style><p>&amp;</p>\n",
+        );
+
+        assert!(
+            captures
+                .iter()
+                .any(|(name, text)| name == "embedded" && text.contains("const x")),
+            "expected script raw text to be captured as embedded, got {:?}",
+            captures
+        );
+        assert!(
+            captures
+                .iter()
+                .any(|(name, text)| name == "embedded" && text.contains("color: red")),
+            "expected style raw text to be captured as embedded, got {:?}",
+            captures
+        );
+        assert!(
+            captures
+                .iter()
+                .any(|(name, text)| name == "constant" && text == "&amp;"),
+            "expected HTML entity to be captured as a constant, got {:?}",
+            captures
+        );
+    }
+
+    #[test]
+    fn markdown_query_captures_reference_links_and_parenthesized_lists() {
+        let captures = capture_texts(
+            tree_sitter_md::LANGUAGE.into(),
+            markdown_highlight_query(),
+            "1) item\n\n[docs]: https://example.com \"Docs\"\n",
+        );
+
+        assert!(
+            captures
+                .iter()
+                .any(|(name, text)| name == "operator" && text.trim_end() == "1)"),
+            "expected parenthesized ordered list marker to be captured, got {:?}",
+            captures
+        );
+        assert!(
+            captures
+                .iter()
+                .any(|(name, text)| name == "label" && text.contains("docs")),
+            "expected reference link label to be captured, got {:?}",
+            captures
+        );
+        assert!(
+            captures
+                .iter()
+                .any(|(name, text)| name == "string" && text.contains("https://example.com")),
+            "expected reference link destination to be captured, got {:?}",
+            captures
         );
     }
 
@@ -1254,6 +1581,28 @@ mod tests {
     }
 
     #[test]
+    fn highlights_preserve_theme_style_attributes() {
+        let language = tree_sitter_rust::LANGUAGE;
+        let query = Query::new(&language.into(), rust_highlight_query())
+            .expect("rust query should compile");
+
+        let mut parser = Parser::new();
+        parser
+            .set_language(&language.into())
+            .expect("rust parser should initialize");
+
+        let source = "// comment\n";
+        let tree = parser.parse(source, None).expect("parse rust source");
+        let theme = Theme::default();
+        let spans = get_line_highlights(&tree, &query, source, &[0, source.len()], 0, &theme);
+
+        assert!(
+            spans.iter().any(|span| span.style.italic),
+            "expected comment highlight span to preserve italic style"
+        );
+    }
+
+    #[test]
     fn yaml_line_highlights_key_string_and_comment() {
         let source = "name: \"nevi\" # app name";
         let line_starts = vec![0];
@@ -1268,9 +1617,15 @@ mod tests {
             .get_color_for_capture("comment")
             .expect("comment color");
 
-        assert!(spans.iter().any(|s| s.fg == property && s.start_col == 0 && s.end_col >= 4));
-        assert!(spans.iter().any(|s| s.fg == string && s.start_col <= 7 && s.end_col >= 10));
-        assert!(spans.iter().any(|s| s.fg == comment && s.start_col <= 13 && s.end_col >= 15));
+        assert!(spans
+            .iter()
+            .any(|s| s.fg == property && s.start_col == 0 && s.end_col >= 4));
+        assert!(spans
+            .iter()
+            .any(|s| s.fg == string && s.start_col <= 7 && s.end_col >= 10));
+        assert!(spans
+            .iter()
+            .any(|s| s.fg == comment && s.start_col <= 13 && s.end_col >= 15));
     }
 
     #[test]
@@ -1282,11 +1637,15 @@ mod tests {
         let boolean = theme
             .get_color_for_capture("boolean")
             .expect("boolean color");
-        assert!(bool_spans.iter().any(|s| s.fg == boolean && s.start_col <= 9 && s.end_col >= 12));
+        assert!(bool_spans
+            .iter()
+            .any(|s| s.fg == boolean && s.start_col <= 9 && s.end_col >= 12));
 
         let num_source = "port: 8080";
         let num_spans = get_line_highlights_yaml(num_source, &[0], 0, &theme);
         let number = theme.get_color_for_capture("number").expect("number color");
-        assert!(num_spans.iter().any(|s| s.fg == number && s.start_col <= 6 && s.end_col >= 9));
+        assert!(num_spans
+            .iter()
+            .any(|s| s.fg == number && s.start_col <= 6 && s.end_col >= 9));
     }
 }
