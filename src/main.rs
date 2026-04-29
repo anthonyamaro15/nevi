@@ -1316,6 +1316,12 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        // Poll for async grep results. The search itself runs off the UI loop;
+        // this only applies the newest matching result set when it is ready.
+        if editor.finder.poll_grep_search() {
+            needs_redraw = true;
+        }
+
         // Check for pending finder preview updates (debounced)
         // This avoids the 10-40ms tree-sitter parsing on every keystroke
         if editor.finder.preview_update_pending {
