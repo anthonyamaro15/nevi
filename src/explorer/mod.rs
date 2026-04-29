@@ -298,7 +298,8 @@ impl FileExplorer {
             self.tree = Some(root_node);
 
             // Reload children for expanded directories
-            let expanded: Vec<PathBuf> = self.expanded.iter().cloned().collect();
+            let mut expanded: Vec<PathBuf> = self.expanded.iter().cloned().collect();
+            expanded.sort_by_key(|path| path.components().count());
             for path in expanded {
                 self.load_children_for(&path);
             }
@@ -937,5 +938,62 @@ impl FileExplorer {
         } else {
             format!("{}/{}", self.current_match + 1, self.search_matches.len())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FileExplorer;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos))
+    }
+
+    fn select_path(explorer: &mut FileExplorer, path: &Path) {
+        explorer.selected = explorer
+            .flat_view
+            .iter()
+            .position(|node| node.path == path)
+            .expect("path should be visible in explorer");
+    }
+
+    #[test]
+    fn refresh_preserves_nested_expanded_directory_contents() {
+        let root = unique_temp_dir("nevi_explorer_refresh");
+        let src = root.join("src");
+        let store = src.join("store");
+        std::fs::create_dir_all(&store).expect("create nested dir");
+        std::fs::write(store.join("existing.ts"), "").expect("write existing file");
+
+        let mut explorer = FileExplorer::new();
+        explorer.set_root(root.clone());
+        select_path(&mut explorer, &src);
+        explorer.expand();
+        select_path(&mut explorer, &store);
+        explorer.expand();
+        assert!(explorer
+            .flat_view
+            .iter()
+            .any(|node| node.path == store.join("existing.ts")));
+
+        std::fs::write(store.join("new.ts"), "").expect("write new file");
+        explorer.refresh();
+
+        assert!(explorer
+            .flat_view
+            .iter()
+            .any(|node| node.path == store.join("existing.ts")));
+        assert!(explorer
+            .flat_view
+            .iter()
+            .any(|node| node.path == store.join("new.ts")));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
