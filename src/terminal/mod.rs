@@ -5338,7 +5338,7 @@ fn play_macro(editor: &mut Editor, register: char, count: usize) {
     // Wrap the entire playback in an undo group
     editor
         .undo_stack
-        .begin_undo_group(editor.cursor.line, editor.cursor.col);
+        .begin_compound_group(editor.cursor.line, editor.cursor.col);
 
     // Play the macro `count` times
     for _ in 0..count {
@@ -5351,7 +5351,7 @@ fn play_macro(editor: &mut Editor, register: char, count: usize) {
 
     editor
         .undo_stack
-        .end_undo_group(editor.cursor.line, editor.cursor.col);
+        .end_compound_group(editor.cursor.line, editor.cursor.col);
 }
 
 /// Handle a key event and update editor state
@@ -6248,7 +6248,7 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
                         if is_matching_pair {
                             // Delete both characters
                             editor.delete_char_before(); // Delete opening
-                            editor.delete_char_at(); // Delete closing (now at cursor)
+                            editor.delete_char_at_in_current_group(); // Delete closing (now at cursor)
                             return;
                         }
                     }
@@ -7655,7 +7655,7 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
                             Ok(formatted) => {
                                 if formatted != content {
                                     // Replace buffer content with formatted version
-                                    editor.replace_buffer_content(&formatted);
+                                    editor.replace_buffer_content_with_undo(&formatted);
                                 }
                                 // Save the file
                                 match editor.save() {
