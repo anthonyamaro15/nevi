@@ -308,8 +308,7 @@ impl Default for KeymapSettings {
                     action: ":Themes".to_string(),
                     desc: Some("Open theme picker".to_string()),
                 },
-                // Terminal - disabled due to rendering flicker issues
-                // See NEOVIM_PARITY.md "On Hold" section for details
+                // Terminal leader mapping is disabled by default; use Ctrl+\ or :Terminal.
                 // LeaderMapping {
                 //     key: "t".to_string(),
                 //     action: ":Terminal".to_string(),
@@ -690,12 +689,14 @@ fn default_config_template() -> &'static str {
 # max_grep_results = 1000    # Max grep results
 #
 # Finder keybinds (when finder is open):
-#   Ctrl+t or p    - Toggle preview panel (50/50 split)
-#   Ctrl+j/k       - Navigate results (insert mode)
+#   Ctrl+t         - Toggle preview panel (insert mode)
+#   p              - Toggle preview panel (normal mode)
+#   Ctrl+j/n       - Navigate down results (insert mode)
+#   Ctrl+k/p       - Navigate up results (insert mode)
 #   j/k            - Navigate results (normal mode)
 #   Esc            - Switch to normal mode / close finder
+#   Ctrl+c         - Close finder
 #   Enter          - Open selected file
-#   Ctrl+d/u       - Scroll preview down/up
 #
 # Add extra ignore patterns (these are ADDED to defaults, not replacing):
 # ignore_patterns = ["my-folder", "*.generated.ts"]
@@ -872,10 +873,11 @@ fn default_config_template() -> &'static str {
 # ----------------------------------------------------------------------------
 # Ctrl+w v         - Split vertical
 # Ctrl+w s         - Split horizontal
-# Ctrl+w c         - Close window
+# Ctrl+w q         - Close window
 # Ctrl+w o         - Close other windows
-# Ctrl+w w/p       - Next/previous window
+# Ctrl+w w/W       - Next/previous window
 # Ctrl+w h/j/k/l   - Move to window left/down/up/right
+# Ctrl+h/j/k/l     - Move directly to window left/down/up/right
 #
 # ----------------------------------------------------------------------------
 # NORMAL MODE - Harpoon
@@ -988,7 +990,9 @@ fn default_config_template() -> &'static str {
 # LSP (Language Server Protocol)
 # ============================================================================
 # LSP servers are auto-detected and enabled by default.
-# Supported: rust-analyzer, typescript-language-server, vscode-css-language-server, vscode-json-language-server
+# Supported: rust-analyzer, typescript-language-server, vscode-css-language-server,
+# vscode-json-language-server, taplo, vscode-html-language-server, pyright-langserver
+# Optional: marksman for Markdown (disabled by default)
 #
 # To disable LSP entirely:
 # [lsp]
