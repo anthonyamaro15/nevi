@@ -141,8 +141,22 @@ impl GrepSearcher {
 
     /// Search for a pattern in all files under root using ripgrep's grep crate
     pub fn search(&self, root: &Path, pattern: &str) -> Vec<FinderItem> {
+        let mut results = Vec::new();
+        self.search_stream(root, pattern, usize::MAX, |batch| {
+            results.extend(batch);
+            true
+        });
+        results
+    }
+
+    /// Search for a pattern and emit result batches while walking files.
+    /// Returning false from on_batch stops the search early.
+    pub fn search_stream<F>(&self, root: &Path, pattern: &str, batch_size: usize, mut on_batch: F)
+    where
+        F: FnMut(Vec<FinderItem>) -> bool,
+    {
         if pattern.is_empty() {
-            return Vec::new();
+            return;
         }
 
         // Escape regex special characters for literal search, then make case-insensitive
@@ -154,14 +168,16 @@ impl GrepSearcher {
             .build(&escaped_pattern)
         {
             Ok(m) => m,
-            Err(_) => return Vec::new(),
+            Err(_) => return,
         };
 
         // Build searcher with line numbers
         let mut searcher = SearcherBuilder::new().line_number(true).build();
 
-        let mut results = Vec::new();
+        let batch_size = batch_size.max(1);
+        let mut batch = Vec::new();
         let result_count = Arc::new(AtomicUsize::new(0));
+        let mut stop_requested = false;
 
         // Walk directory respecting .gitignore. filter_entry prevents descending
         // into custom-ignored directories before we inspect their files.
@@ -213,9 +229,6 @@ impl GrepSearcher {
             let max_results = self.max_results;
             let count_ref = Arc::clone(&result_count);
 
-            // Collect matches from this file
-            let mut file_results: Vec<FinderItem> = Vec::new();
-
             let search_result = searcher.search_path(
                 &matcher,
                 path,
@@ -241,20 +254,34 @@ impl GrepSearcher {
                         .with_line(line_num as usize)
                         .with_col(match_col);
 
-                    file_results.push(item);
+                    batch.push(item);
                     count_ref.fetch_add(1, Ordering::Relaxed);
+
+                    if batch.len() >= batch_size {
+                        let items = std::mem::take(&mut batch);
+                        if !on_batch(items) {
+                            stop_requested = true;
+                            return Ok(false);
+                        }
+                    }
 
                     Ok(true)
                 }),
             );
 
-            // Ignore search errors (binary files, permission denied, etc.)
-            if search_result.is_ok() {
-                results.extend(file_results);
+            // Ignore search errors (binary files, permission denied, etc.), but
+            // stop immediately when the receiver asks us to quit.
+            if stop_requested {
+                break;
+            }
+            if search_result.is_err() {
+                continue;
             }
         }
 
-        results
+        if !batch.is_empty() && !stop_requested {
+            let _ = on_batch(batch);
+        }
     }
 
     /// Check if file has a binary extension
@@ -336,6 +363,31 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].line, Some(1));
         assert_eq!(results[0].col, Some(14));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn streaming_search_emits_multiple_batches() {
+        let root = unique_temp_dir("grep_stream");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("src/main.rs"),
+            "needle one\nneedle two\nneedle three\nneedle four\nneedle five\n",
+        )
+        .unwrap();
+
+        let searcher = GrepSearcher::new().with_max_results(10);
+        let mut batch_lengths = Vec::new();
+        let mut total = 0;
+        searcher.search_stream(&root, "needle", 2, |batch| {
+            total += batch.len();
+            batch_lengths.push(batch.len());
+            true
+        });
+
+        assert_eq!(total, 5);
+        assert_eq!(batch_lengths, vec![2, 2, 1]);
 
         let _ = fs::remove_dir_all(root);
     }

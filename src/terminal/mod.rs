@@ -4669,11 +4669,7 @@ impl Terminal {
         write!(self.stdout, "\u{2502}")?; // │
 
         // Draw bottom border with count indicator
-        let status = format!(
-            " {}/{} ",
-            editor.finder.filtered.len(),
-            editor.finder.items.len()
-        );
+        let status = format!(" {} ", editor.finder.status_text());
         queue!(
             self.stdout,
             cursor::MoveTo(win.x, win.y + win.height - 1),
