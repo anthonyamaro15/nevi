@@ -6310,11 +6310,8 @@ impl Editor {
     pub fn close_finder(&mut self) {
         self.mode = Mode::Normal;
         self.clear_status();
-        // Clear preview state
-        self.finder.preview_content.clear();
-        self.finder.preview_path = None;
-        self.finder.preview_scroll = 0;
-        self.finder.preview_update_pending = false;
+        self.finder.cancel_grep_search();
+        self.finder.clear_preview_cache();
     }
 
     /// Update the preview syntax highlighting for the currently selected finder item
@@ -6330,13 +6327,16 @@ impl Editor {
         }
 
         // Get the selected item's path
-        let selected_path = match self.finder.selected_item() {
-            Some(item) => item.path.clone(),
+        let (selected_path, selected_line) = match self.finder.selected_item() {
+            Some(item) => (item.path.clone(), item.line),
             None => return,
         };
 
         // Check if we need to update (path changed)
-        if self.finder.preview_path.as_ref() == Some(&selected_path) {
+        if self.finder.preview_path.as_ref() == Some(&selected_path)
+            && (self.finder.mode != crate::finder::FinderMode::Grep
+                || self.finder.preview_line == selected_line)
+        {
             return;
         }
 

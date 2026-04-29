@@ -6,9 +6,17 @@ pub use file_picker::FilePicker;
 pub use grep::GrepSearcher;
 pub use matcher::FuzzyMatcher;
 
-use std::path::PathBuf;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
+
+struct GrepSearchResult {
+    generation: u64,
+    query: String,
+    items: Vec<FinderItem>,
+}
 
 /// Mode for the fuzzy finder
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +48,8 @@ pub struct FinderItem {
     pub path: PathBuf,
     /// Line number (for grep results)
     pub line: Option<usize>,
+    /// Column number (0-indexed, for grep results)
+    pub col: Option<usize>,
     /// Buffer index (for buffer picker results)
     pub buffer_idx: Option<usize>,
     /// Match score for sorting
@@ -54,6 +64,7 @@ impl FinderItem {
             display,
             path,
             line: None,
+            col: None,
             buffer_idx: None,
             score: 0,
             match_indices: Vec::new(),
@@ -62,6 +73,11 @@ impl FinderItem {
 
     pub fn with_line(mut self, line: usize) -> Self {
         self.line = Some(line);
+        self
+    }
+
+    pub fn with_col(mut self, col: usize) -> Self {
+        self.col = Some(col);
         self
     }
 
@@ -108,13 +124,22 @@ impl FloatingWindow {
 
     /// Calculate centered position for a floating window with optional preview panel
     /// Window size is always the same - only internal layout changes with preview toggle
-    pub fn centered_with_preview(term_width: u16, term_height: u16, _preview_enabled: bool) -> Self {
+    pub fn centered_with_preview(
+        term_width: u16,
+        term_height: u16,
+        _preview_enabled: bool,
+    ) -> Self {
         // Window is always 90% width (same size whether preview is on or off)
         let width = (term_width * 90 / 100).min(200).max(80);
         let height = (term_height * 70 / 100).min(40).max(10);
         let x = (term_width.saturating_sub(width)) / 2;
         let y = (term_height.saturating_sub(height)) / 2;
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 }
 
@@ -152,12 +177,20 @@ pub struct FuzzyFinder {
     pub preview_content: Vec<String>,
     /// Preview scroll offset
     pub preview_scroll: usize,
+    /// 0-indexed source line represented by preview_content[0]
+    pub preview_line_offset: usize,
     /// Path of currently previewed file
     pub preview_path: Option<PathBuf>,
+    /// Line number currently targeted by the preview, if any
+    pub preview_line: Option<usize>,
     /// Pending preview update (debounce) - stores the time when update was requested
     pub preview_update_pending: bool,
     /// Pending grep search (debounce) - set when query changes in grep mode
     pub grep_search_pending: bool,
+    /// Monotonic generation used to discard stale async grep results
+    grep_search_generation: u64,
+    /// Receiver for the currently running async grep search
+    grep_search_receiver: Option<Receiver<GrepSearchResult>>,
 }
 
 impl FuzzyFinder {
@@ -179,9 +212,13 @@ impl FuzzyFinder {
             preview_enabled: false,
             preview_content: Vec::new(),
             preview_scroll: 0,
+            preview_line_offset: 0,
             preview_path: None,
+            preview_line: None,
             preview_update_pending: false,
             grep_search_pending: false,
+            grep_search_generation: 0,
+            grep_search_receiver: None,
         }
     }
 
@@ -204,9 +241,13 @@ impl FuzzyFinder {
             preview_enabled: false,
             preview_content: Vec::new(),
             preview_scroll: 0,
+            preview_line_offset: 0,
             preview_path: None,
+            preview_line: None,
             preview_update_pending: false,
             grep_search_pending: false,
+            grep_search_generation: 0,
+            grep_search_receiver: None,
         }
     }
 
@@ -218,6 +259,8 @@ impl FuzzyFinder {
         self.cursor = 0;
         self.selected = 0;
         self.scroll_offset = 0;
+        self.clear_preview_cache();
+        self.cancel_grep_search();
 
         // Populate files
         self.items = self.file_picker.list_files(cwd);
@@ -233,13 +276,15 @@ impl FuzzyFinder {
         self.cursor = 0;
         self.selected = 0;
         self.scroll_offset = 0;
+        self.clear_preview_cache();
+        self.cancel_grep_search();
 
         // Populate buffers
         self.items = buffer_names
             .into_iter()
             .map(|(idx, name, path)| {
-                let mut item = FinderItem::new(format!("{}: {}", idx + 1, name), path)
-                    .with_buffer_idx(idx);
+                let mut item =
+                    FinderItem::new(format!("{}: {}", idx + 1, name), path).with_buffer_idx(idx);
                 item.score = idx as u32;
                 item
             })
@@ -256,13 +301,16 @@ impl FuzzyFinder {
         self.cursor = 0;
         self.selected = 0;
         self.scroll_offset = 0;
+        self.clear_preview_cache();
+        self.cancel_grep_search();
 
         // Populate harpoon files with slot numbers
         self.items = files
             .into_iter()
             .enumerate()
             .map(|(idx, path)| {
-                let display = path.file_name()
+                let display = path
+                    .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| path.to_string_lossy().to_string());
                 let mut item = FinderItem::new(format!("{:>2}  {}", idx + 1, display), path);
@@ -282,6 +330,8 @@ impl FuzzyFinder {
         self.cursor = 0;
         self.selected = 0;
         self.scroll_offset = 0;
+        self.clear_preview_cache();
+        self.cancel_grep_search();
 
         // Populate marks
         self.items = marks
@@ -311,7 +361,9 @@ impl FuzzyFinder {
         self.cursor = 0;
         self.selected = 0;
         self.scroll_offset = 0;
+        self.clear_preview_cache();
         self.cwd = cwd.to_path_buf();
+        self.cancel_grep_search();
 
         // Start with empty results - will populate as user types
         self.items.clear();
@@ -327,21 +379,13 @@ impl FuzzyFinder {
         self.cursor = query.chars().count();
         self.selected = 0;
         self.scroll_offset = 0;
+        self.clear_preview_cache();
         self.cwd = cwd.to_path_buf();
+        self.cancel_grep_search();
 
-        // Immediately run search if query is long enough
         if query.len() >= 2 {
-            self.items = self.grep_searcher.search(&self.cwd, &self.query);
-            self.filtered = (0..self.items.len()).collect();
-
-            // Highlight the search query in results
-            let query_lower = self.query.to_lowercase();
-            for item in &mut self.items {
-                let display_lower = item.display.to_lowercase();
-                if let Some(pos) = display_lower.find(&query_lower) {
-                    item.match_indices = (pos..pos + self.query.len()).collect();
-                }
-            }
+            self.grep_search_pending = true;
+            self.execute_grep_search();
         } else {
             self.items.clear();
             self.filtered.clear();
@@ -358,6 +402,8 @@ impl FuzzyFinder {
         self.cursor = 0;
         self.selected = 0;
         self.scroll_offset = 0;
+        self.clear_preview_cache();
+        self.cancel_grep_search();
 
         self.items = diagnostic_items;
         self.filtered = (0..self.items.len()).collect();
@@ -396,14 +442,10 @@ impl FuzzyFinder {
     /// Get icon for a file based on extension
     /// Uses 2-character type indicators for consistent terminal width
     pub fn get_file_icon(path: &std::path::Path) -> &'static str {
-        let ext = path.extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         // Check for special filenames first
-        let filename = path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         match filename.to_lowercase().as_str() {
             ".gitignore" | ".gitattributes" => "GT",
@@ -546,7 +588,25 @@ impl FuzzyFinder {
 
     /// Get the currently selected item
     pub fn selected_item(&self) -> Option<&FinderItem> {
-        self.filtered.get(self.selected).and_then(|&idx| self.items.get(idx))
+        self.filtered
+            .get(self.selected)
+            .and_then(|&idx| self.items.get(idx))
+    }
+
+    pub fn cancel_grep_search(&mut self) {
+        self.grep_search_pending = false;
+        self.grep_search_receiver = None;
+        self.grep_search_generation = self.grep_search_generation.wrapping_add(1);
+    }
+
+    fn update_grep_match_indices(&mut self) {
+        let query_lower = self.query.to_lowercase();
+        for item in &mut self.items {
+            let display_lower = item.display.to_lowercase();
+            if let Some(pos) = display_lower.find(&query_lower) {
+                item.match_indices = (pos..pos + self.query.len()).collect();
+            }
+        }
     }
 
     /// Update the filtered list based on the current query
@@ -565,7 +625,8 @@ impl FuzzyFinder {
                 } else {
                     self.items.clear();
                     self.filtered.clear();
-                    self.grep_search_pending = false;
+                    self.cancel_grep_search();
+                    self.clear_preview_cache();
                 }
             }
             _ => {
@@ -575,14 +636,18 @@ impl FuzzyFinder {
                     self.filtered = (0..self.items.len()).collect();
                 } else {
                     // Filter and sort by match score, and get match indices
-                    let mut scored: Vec<(usize, u32, Vec<usize>)> = self.items
+                    let mut scored: Vec<(usize, u32, Vec<usize>)> = self
+                        .items
                         .iter()
                         .enumerate()
                         .filter_map(|(idx, item)| {
-                            self.matcher.match_score(&self.query, &item.display).map(|score| {
-                                let indices = self.matcher.match_indices(&self.query, &item.display);
-                                (idx, score, indices)
-                            })
+                            self.matcher
+                                .match_score(&self.query, &item.display)
+                                .map(|score| {
+                                    let indices =
+                                        self.matcher.match_indices(&self.query, &item.display);
+                                    (idx, score, indices)
+                                })
                         })
                         .collect();
 
@@ -618,21 +683,69 @@ impl FuzzyFinder {
         self.grep_search_pending = false;
 
         if self.query.len() >= 2 {
-            self.items = self.grep_searcher.search(&self.cwd, &self.query);
-            self.filtered = (0..self.items.len()).collect();
+            let cwd = self.cwd.clone();
+            let query = self.query.clone();
+            let searcher = self.grep_searcher.clone();
+            self.grep_search_generation = self.grep_search_generation.wrapping_add(1);
+            let generation = self.grep_search_generation;
+            let (tx, rx) = mpsc::channel();
 
-            // For grep, highlight the search query in results
-            let query_lower = self.query.to_lowercase();
-            for item in &mut self.items {
-                let display_lower = item.display.to_lowercase();
-                if let Some(pos) = display_lower.find(&query_lower) {
-                    item.match_indices = (pos..pos + self.query.len()).collect();
-                }
-            }
-
-            // Reset selection after new results
+            self.grep_search_receiver = Some(rx);
+            self.items.clear();
+            self.filtered.clear();
             self.selected = 0;
             self.scroll_offset = 0;
+            self.clear_preview_cache();
+
+            thread::spawn(move || {
+                let items = searcher.search(&cwd, &query);
+                let _ = tx.send(GrepSearchResult {
+                    generation,
+                    query,
+                    items,
+                });
+            });
+        } else {
+            self.items.clear();
+            self.filtered.clear();
+            self.cancel_grep_search();
+            self.clear_preview_cache();
+        }
+    }
+
+    pub fn poll_grep_search(&mut self) -> bool {
+        let result = match self.grep_search_receiver.as_ref() {
+            Some(rx) => rx.try_recv(),
+            None => return false,
+        };
+
+        match result {
+            Ok(result) => {
+                self.grep_search_receiver = None;
+
+                if self.mode != FinderMode::Grep
+                    || result.generation != self.grep_search_generation
+                    || result.query != self.query
+                {
+                    return false;
+                }
+
+                self.items = result.items;
+                self.filtered = (0..self.items.len()).collect();
+                self.update_grep_match_indices();
+                self.selected = 0;
+                self.scroll_offset = 0;
+                self.clear_preview_cache();
+                if self.preview_enabled {
+                    self.preview_update_pending = true;
+                }
+                true
+            }
+            Err(TryRecvError::Empty) => false,
+            Err(TryRecvError::Disconnected) => {
+                self.grep_search_receiver = None;
+                false
+            }
         }
     }
 
@@ -641,10 +754,17 @@ impl FuzzyFinder {
         self.preview_enabled = !self.preview_enabled;
         if self.preview_enabled {
             // Clear cache to force reload when re-enabled
-            self.preview_path = None;
-            self.preview_content.clear();
-            self.preview_scroll = 0;
+            self.clear_preview_cache();
         }
+    }
+
+    pub fn clear_preview_cache(&mut self) {
+        self.preview_content.clear();
+        self.preview_scroll = 0;
+        self.preview_line_offset = 0;
+        self.preview_path = None;
+        self.preview_line = None;
+        self.preview_update_pending = false;
     }
 
     /// Update preview content if the selected file changed
@@ -655,7 +775,11 @@ impl FuzzyFinder {
         }
 
         // Only show preview for Files, Grep, Harpoon, and Marks modes
-        if self.mode != FinderMode::Files && self.mode != FinderMode::Grep && self.mode != FinderMode::Harpoon && self.mode != FinderMode::Marks {
+        if self.mode != FinderMode::Files
+            && self.mode != FinderMode::Grep
+            && self.mode != FinderMode::Harpoon
+            && self.mode != FinderMode::Marks
+        {
             return None;
         }
 
@@ -663,11 +787,16 @@ impl FuzzyFinder {
         let selected_path = selected_item.path.clone();
         let selected_line = selected_item.line;
 
+        let should_reload = self.preview_path.as_ref() != Some(&selected_path)
+            || (self.mode == FinderMode::Grep && self.preview_line != selected_line);
+
         // Check if we need to load new content
-        if self.preview_path.as_ref() != Some(&selected_path) {
+        if should_reload {
             self.preview_content.clear();
             self.preview_scroll = 0;
+            self.preview_line_offset = 0;
             self.preview_path = Some(selected_path.clone());
+            self.preview_line = selected_line;
 
             // Check if file is likely binary
             if is_likely_binary(&selected_path) {
@@ -681,14 +810,29 @@ impl FuzzyFinder {
                 return Some((selected_path, &self.preview_content));
             }
 
-            // Read only the lines we need using buffered reader
-            // This avoids reading entire large files into memory
+            // Read only the lines we need using buffered reader.
+            // For grep results, read a window around the matching line so deep
+            // matches still preview correctly without loading the whole file.
             const MAX_PREVIEW_LINES: usize = 150;
+            const GREP_PREVIEW_CONTEXT_BEFORE: usize = 10;
+            let start_line = if self.mode == FinderMode::Grep {
+                selected_line
+                    .map(|line_num| {
+                        line_num
+                            .saturating_sub(1)
+                            .saturating_sub(GREP_PREVIEW_CONTEXT_BEFORE)
+                    })
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            self.preview_line_offset = start_line;
+
             match File::open(&selected_path) {
                 Ok(file) => {
                     let reader = BufReader::new(file);
                     let mut line_count = 0;
-                    for line in reader.lines().take(MAX_PREVIEW_LINES + 1) {
+                    for line in reader.lines().skip(start_line).take(MAX_PREVIEW_LINES + 1) {
                         match line {
                             Ok(l) => {
                                 if line_count < MAX_PREVIEW_LINES {
@@ -699,11 +843,16 @@ impl FuzzyFinder {
                             Err(_) => {
                                 // Binary file or encoding issue - stop reading
                                 if self.preview_content.is_empty() {
-                                    self.preview_content = vec!["(Unable to read file)".to_string()];
+                                    self.preview_content =
+                                        vec!["(Unable to read file)".to_string()];
                                 }
                                 break;
                             }
                         }
+                    }
+                    if self.preview_content.is_empty() {
+                        self.preview_content = vec!["(No preview at requested line)".to_string()];
+                        self.preview_line_offset = 0;
                     }
                     if line_count > MAX_PREVIEW_LINES {
                         self.preview_content.push("... (truncated)".to_string());
@@ -714,14 +863,7 @@ impl FuzzyFinder {
                 }
             }
 
-            // For grep results, scroll preview to show the matching line
-            if self.mode == FinderMode::Grep {
-                if let Some(line_num) = selected_line {
-                    // Center the matching line in the preview
-                    let preview_height = 20; // Approximate, will be adjusted by render
-                    self.preview_scroll = line_num.saturating_sub(preview_height / 2);
-                }
-            }
+            self.preview_scroll = 0;
         }
 
         Some((self.preview_path.clone()?, &self.preview_content))
@@ -730,7 +872,9 @@ impl FuzzyFinder {
     /// Scroll preview down
     pub fn scroll_preview_down(&mut self, amount: usize) {
         if !self.preview_content.is_empty() {
-            self.preview_scroll = self.preview_scroll.saturating_add(amount)
+            self.preview_scroll = self
+                .preview_scroll
+                .saturating_add(amount)
                 .min(self.preview_content.len().saturating_sub(1));
         }
     }
@@ -749,14 +893,10 @@ impl FuzzyFinder {
 /// Check if a file is likely binary based on extension
 fn is_likely_binary(path: &PathBuf) -> bool {
     let binary_exts = [
-        "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "svg",
-        "mp3", "mp4", "wav", "avi", "mov", "mkv", "flv",
-        "zip", "tar", "gz", "bz2", "xz", "7z", "rar",
-        "exe", "dll", "so", "dylib", "bin",
-        "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
-        "wasm", "o", "a", "class", "pyc",
-        "ttf", "otf", "woff", "woff2", "eot",
-        "db", "sqlite", "sqlite3",
+        "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "svg", "mp3", "mp4", "wav", "avi",
+        "mov", "mkv", "flv", "zip", "tar", "gz", "bz2", "xz", "7z", "rar", "exe", "dll", "so",
+        "dylib", "bin", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "wasm", "o", "a",
+        "class", "pyc", "ttf", "otf", "woff", "woff2", "eot", "db", "sqlite", "sqlite3",
     ];
 
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
@@ -769,5 +909,132 @@ fn is_likely_binary(path: &PathBuf) -> bool {
 impl Default for FuzzyFinder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FinderItem, FinderMode, FuzzyFinder};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("nevi_{}_{}_{}", name, std::process::id(), nanos))
+    }
+
+    fn write_numbered_file(path: &std::path::Path, needle_lines: &[usize]) {
+        let mut content = String::new();
+        for line_num in 1..=260 {
+            if needle_lines.contains(&line_num) {
+                content.push_str(&format!("line {} needle\n", line_num));
+            } else {
+                content.push_str(&format!("line {}\n", line_num));
+            }
+        }
+        fs::write(path, content).unwrap();
+    }
+
+    fn wait_for_grep_results(finder: &mut FuzzyFinder) {
+        for _ in 0..100 {
+            if finder.poll_grep_search() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("async grep search did not finish");
+    }
+
+    #[test]
+    fn grep_preview_loads_window_around_deep_match() {
+        let root = unique_temp_dir("finder_grep_preview");
+        fs::create_dir_all(root.join("src")).unwrap();
+        let path = root.join("src/main.rs");
+        write_numbered_file(&path, &[220]);
+
+        let mut finder = FuzzyFinder::new();
+        finder.preview_enabled = true;
+        finder.open_grep_with_query(&root, "needle");
+        wait_for_grep_results(&mut finder);
+
+        assert_eq!(finder.items.len(), 1);
+        finder.update_preview_content();
+
+        assert!(finder.preview_line_offset > 0);
+        let match_idx = finder
+            .preview_content
+            .iter()
+            .position(|line| line.contains("needle"))
+            .expect("preview should include deep grep match");
+        assert_eq!(finder.preview_line_offset + match_idx + 1, 220);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn grep_preview_reloads_for_same_file_different_match_line() {
+        let root = unique_temp_dir("finder_grep_preview_same_file");
+        fs::create_dir_all(root.join("src")).unwrap();
+        let path = root.join("src/main.rs");
+        write_numbered_file(&path, &[20, 220]);
+
+        let mut finder = FuzzyFinder::new();
+        finder.mode = FinderMode::Grep;
+        finder.preview_enabled = true;
+        finder.items = vec![
+            FinderItem::new("src/main.rs:20: line 20 needle".to_string(), path.clone())
+                .with_line(20),
+            FinderItem::new("src/main.rs:220: line 220 needle".to_string(), path).with_line(220),
+        ];
+        finder.filtered = vec![0, 1];
+
+        finder.selected = 0;
+        finder.update_preview_content();
+        let first_offset = finder.preview_line_offset;
+
+        finder.selected = 1;
+        finder.update_preview_content();
+
+        assert_ne!(finder.preview_line_offset, first_offset);
+        let match_idx = finder
+            .preview_content
+            .iter()
+            .position(|line| line.contains("line 220 needle"))
+            .expect("preview should reload around second match");
+        assert_eq!(finder.preview_line_offset + match_idx + 1, 220);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn grep_query_below_threshold_clears_stale_preview() {
+        let mut finder = FuzzyFinder::new();
+        finder.mode = FinderMode::Grep;
+        finder.query = "n".to_string();
+        finder.preview_content = vec!["stale preview".to_string()];
+        finder.preview_path = Some(PathBuf::from("src/main.rs"));
+        finder.preview_line = Some(42);
+        finder.preview_line_offset = 41;
+        finder.grep_search_pending = true;
+        finder.items = vec![FinderItem::new(
+            "src/main.rs:42: old match".to_string(),
+            PathBuf::from("src/main.rs"),
+        )
+        .with_line(42)];
+        finder.filtered = vec![0];
+
+        finder.update_filter();
+
+        assert!(finder.items.is_empty());
+        assert!(finder.filtered.is_empty());
+        assert!(!finder.grep_search_pending);
+        assert!(finder.preview_content.is_empty());
+        assert_eq!(finder.preview_path, None);
+        assert_eq!(finder.preview_line, None);
+        assert_eq!(finder.preview_line_offset, 0);
     }
 }

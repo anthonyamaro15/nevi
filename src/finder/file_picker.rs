@@ -1,5 +1,5 @@
-use std::path::Path;
 use ignore::WalkBuilder;
+use std::path::Path;
 
 use super::FinderItem;
 
@@ -91,14 +91,21 @@ impl FilePicker {
     pub fn list_files(&self, root: &Path) -> Vec<FinderItem> {
         let mut files = Vec::new();
 
-        // Use the ignore crate's WalkBuilder which respects .gitignore
-        let walker = WalkBuilder::new(root)
-            .hidden(false)  // Don't ignore hidden files by default
-            .git_ignore(true)  // Respect .gitignore
-            .git_global(true)  // Respect global gitignore
+        // Use the ignore crate's WalkBuilder which respects .gitignore.
+        // filter_entry prevents descending into custom-ignored directories.
+        let root_buf = root.to_path_buf();
+        let ignore_patterns = self.ignore_patterns.clone();
+        let mut builder = WalkBuilder::new(root);
+        builder
+            .hidden(false) // Don't ignore hidden files by default
+            .git_ignore(true) // Respect .gitignore
+            .git_global(true) // Respect global gitignore
             .git_exclude(true) // Respect .git/info/exclude
-            .max_depth(Some(20))  // Limit depth
-            .build();
+            .max_depth(Some(20))
+            .filter_entry(move |entry| {
+                !Self::should_ignore_path(&root_buf, entry.path(), &ignore_patterns)
+            });
+        let walker = builder.build();
 
         for entry in walker.flatten() {
             // Skip directories and root
@@ -106,7 +113,7 @@ impl FilePicker {
                 let path = entry.path();
 
                 // Check additional ignore patterns
-                if self.should_ignore(path) {
+                if Self::should_ignore_path(root, path, &self.ignore_patterns) {
                     continue;
                 }
 
@@ -133,13 +140,25 @@ impl FilePicker {
     }
 
     /// Check if a path should be ignored based on custom patterns
-    fn should_ignore(&self, path: &Path) -> bool {
+    fn should_ignore_path(root: &Path, path: &Path, patterns: &[String]) -> bool {
+        let rel_path = path.strip_prefix(root).unwrap_or(path);
+        if rel_path.as_os_str().is_empty() {
+            return false;
+        }
+        Self::path_matches_patterns(rel_path, patterns)
+    }
+
+    fn path_matches_patterns(path: &Path, patterns: &[String]) -> bool {
         let path_str = path.to_string_lossy();
 
-        for pattern in &self.ignore_patterns {
+        for pattern in patterns {
+            if pattern == "*" {
+                return true;
+            }
+
             if pattern.starts_with('*') && pattern.ends_with('*') {
                 // Contains pattern like *build* (matches anywhere)
-                let middle = &pattern[1..pattern.len()-1];
+                let middle = &pattern[1..pattern.len() - 1];
                 if path_str.contains(middle) {
                     return true;
                 }
@@ -156,7 +175,7 @@ impl FilePicker {
                 }
             } else if pattern.ends_with('*') {
                 // Prefix pattern like build*
-                let prefix = &pattern[..pattern.len()-1];
+                let prefix = &pattern[..pattern.len() - 1];
                 for component in path.components() {
                     if let std::path::Component::Normal(name) = component {
                         if name.to_string_lossy().starts_with(prefix) {
@@ -183,5 +202,42 @@ impl FilePicker {
 impl Default for FilePicker {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FilePicker;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("nevi_{}_{}_{}", name, std::process::id(), nanos))
+    }
+
+    #[test]
+    fn custom_ignore_patterns_exclude_files_under_ignored_directories() {
+        let root = unique_temp_dir("finder_ignore");
+        fs::create_dir_all(root.join("ignored/deep")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("ignored/deep/hidden.rs"), "hidden").unwrap();
+        fs::write(root.join("src/visible.rs"), "visible").unwrap();
+
+        let picker = FilePicker::new().with_ignore_patterns(vec!["ignored".to_string()]);
+        let displays: Vec<_> = picker
+            .list_files(&root)
+            .into_iter()
+            .map(|item| item.display)
+            .collect();
+
+        assert!(displays.iter().any(|path| path == "src/visible.rs"));
+        assert!(!displays.iter().any(|path| path.contains("ignored")));
+
+        let _ = fs::remove_dir_all(root);
     }
 }

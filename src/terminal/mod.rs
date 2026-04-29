@@ -28,6 +28,31 @@ fn log_finder_profile(msg: &str) {
     }
 }
 
+fn finder_preview_match_ranges(line: &str, query: &str) -> Vec<(usize, usize)> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+
+    let query_lower = query.to_lowercase();
+    let query_len = query.chars().count();
+    let mut ranges = Vec::new();
+    let mut next_start_col = 0;
+
+    for (char_idx, (byte_idx, _)) in line.char_indices().enumerate() {
+        if char_idx < next_start_col {
+            continue;
+        }
+
+        if line[byte_idx..].to_lowercase().starts_with(&query_lower) {
+            let end_col = char_idx + query_len;
+            ranges.push((char_idx, end_col));
+            next_start_col = end_col.max(char_idx + 1);
+        }
+    }
+
+    ranges
+}
+
 use crate::commands::{parse_command, Command, CommandPopupMode, CommandResult};
 use crate::config::{CommandModeAction, LeaderAction};
 use crate::editor::{Editor, LspAction, Mode, Pane, PaneDirection, SplitLayout};
@@ -4731,6 +4756,8 @@ impl Terminal {
         let finder_bg = theme.ui.finder_bg;
         let finder_fg = theme.ui.foreground;
         let line_num_color = theme.ui.line_number;
+        let search_match_bg = theme.ui.search_match_bg;
+        let search_match_fg = theme.ui.search_match_fg;
 
         queue!(
             self.stdout,
@@ -4741,6 +4768,7 @@ impl Terminal {
         // Get preview content
         let preview_content = &editor.finder.preview_content;
         let preview_scroll = editor.finder.preview_scroll;
+        let preview_line_offset = editor.finder.preview_line_offset;
 
         if preview_content.is_empty() {
             // No preview available
@@ -4774,41 +4802,71 @@ impl Terminal {
             write!(
                 self.stdout,
                 "{:>width$}\u{2502}",
-                line_idx + 1,
+                preview_line_offset + line_idx + 1,
                 width = line_num_width
             )?;
 
             // Get syntax highlights if available
             let highlights = self.get_preview_highlights(editor, line_idx);
+            let grep_match_ranges = if editor.finder.mode == crate::finder::FinderMode::Grep
+                && editor.finder.query.len() >= 2
+            {
+                finder_preview_match_ranges(line, &editor.finder.query)
+            } else {
+                Vec::new()
+            };
 
             // Render line content with syntax highlighting
             let content_width = preview_width.saturating_sub(line_num_width + 1);
             let chars: Vec<char> = line.chars().take(content_width).collect();
 
-            queue!(self.stdout, SetForegroundColor(finder_fg))?;
+            queue!(
+                self.stdout,
+                SetBackgroundColor(finder_bg),
+                SetForegroundColor(finder_fg)
+            )?;
 
-            if highlights.is_empty() {
+            if highlights.is_empty() && grep_match_ranges.is_empty() {
                 // No highlighting, just render the text
                 for ch in &chars {
                     write!(self.stdout, "{}", ch)?;
                 }
             } else {
-                // Render with syntax highlighting
+                // Render with syntax highlighting, with grep matches overlaid.
+                let mut highlight_idx = 0;
+                let mut current_fg: Option<Color> = Some(finder_fg);
+                let mut current_bg: Option<Color> = Some(finder_bg);
                 for (col, ch) in chars.iter().enumerate() {
-                    // Find highlight for this column
-                    let mut color = finder_fg;
-                    for span in &highlights {
-                        if col >= span.start_col && col < span.end_col {
-                            color = span.fg;
-                            break;
-                        }
+                    let syntax_color =
+                        Self::get_syntax_color_at(&highlights, col, &mut highlight_idx);
+                    let is_grep_match = grep_match_ranges
+                        .iter()
+                        .any(|(start, end)| col >= *start && col < *end);
+
+                    let (desired_bg, desired_fg) = if is_grep_match {
+                        (search_match_bg, search_match_fg)
+                    } else {
+                        (finder_bg, syntax_color.unwrap_or(finder_fg))
+                    };
+
+                    if Some(desired_bg) != current_bg {
+                        queue!(self.stdout, SetBackgroundColor(desired_bg))?;
+                        current_bg = Some(desired_bg);
                     }
-                    queue!(self.stdout, SetForegroundColor(color))?;
+                    if Some(desired_fg) != current_fg {
+                        queue!(self.stdout, SetForegroundColor(desired_fg))?;
+                        current_fg = Some(desired_fg);
+                    }
                     write!(self.stdout, "{}", ch)?;
                 }
             }
 
             // Pad remaining space
+            queue!(
+                self.stdout,
+                SetBackgroundColor(finder_bg),
+                SetForegroundColor(finder_fg)
+            )?;
             for _ in chars.len()..content_width {
                 write!(self.stdout, " ")?;
             }
@@ -6864,12 +6922,15 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
                     }
                 } else {
                     // Open the selected file
+                    let target_line = item.line;
+                    let target_col = item.col;
                     if let Err(e) = editor.open_file(item.path) {
                         editor.set_status(format!("Error opening file: {}", e));
-                    } else if let Some(line_num) = item.line {
+                    } else if let Some(line_num) = target_line {
                         // Jump to the line (for grep results)
                         editor.cursor.line = line_num.saturating_sub(1);
-                        editor.cursor.col = 0;
+                        editor.cursor.col = target_col.unwrap_or(0);
+                        editor.clamp_cursor();
                         editor.scroll_to_cursor();
                     }
                 }
@@ -8197,7 +8258,7 @@ pub fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
 
 #[cfg(test)]
 mod tests {
-    use super::execute_command;
+    use super::{execute_command, finder_preview_match_ranges};
     use crate::commands::Command;
     use crate::editor::Editor;
     use std::path::PathBuf;
@@ -8235,5 +8296,21 @@ mod tests {
             .contains("No write since last change"));
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn finder_preview_match_ranges_are_literal_case_insensitive() {
+        assert_eq!(
+            finder_preview_match_ranges("main Main remain", "MAIN"),
+            vec![(0, 4), (5, 9), (12, 16)]
+        );
+    }
+
+    #[test]
+    fn finder_preview_match_ranges_skip_overlapping_matches() {
+        assert_eq!(
+            finder_preview_match_ranges("aaaa", "aa"),
+            vec![(0, 2), (2, 4)]
+        );
     }
 }

@@ -1,13 +1,14 @@
+use grep_regex::RegexMatcherBuilder;
+use grep_searcher::{sinks::UTF8, SearcherBuilder};
+use ignore::WalkBuilder;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use ignore::WalkBuilder;
-use grep_regex::RegexMatcherBuilder;
-use grep_searcher::{SearcherBuilder, sinks::UTF8};
 
 use super::FinderItem;
 
 /// Live grep searcher using ripgrep's grep crate for fast searching
+#[derive(Clone)]
 pub struct GrepSearcher {
     /// Maximum number of results
     max_results: usize,
@@ -22,6 +23,7 @@ impl GrepSearcher {
             // Version control
             ".git".to_string(),
             ".svn".to_string(),
+            ".hg".to_string(),
             // Dependencies
             "node_modules".to_string(),
             "vendor".to_string(),
@@ -37,9 +39,15 @@ impl GrepSearcher {
             // Cache directories
             ".cache".to_string(),
             "__pycache__".to_string(),
+            ".pytest_cache".to_string(),
+            ".mypy_cache".to_string(),
             // IDE/Editor
             ".idea".to_string(),
             ".vscode".to_string(),
+            // Logs and temp files
+            "*.log".to_string(),
+            "*.tmp".to_string(),
+            "*.bak".to_string(),
             // Coverage
             "coverage".to_string(),
             ".nyc_output".to_string(),
@@ -67,11 +75,36 @@ impl GrepSearcher {
         }
     }
 
+    /// Set maximum grep results.
+    #[cfg(test)]
+    pub fn with_max_results(mut self, max: usize) -> Self {
+        self.max_results = max;
+        self
+    }
+
+    /// Replace ignore patterns.
+    pub fn with_ignore_patterns(mut self, patterns: Vec<String>) -> Self {
+        self.ignore_patterns = patterns;
+        self
+    }
+
     /// Check if a path should be ignored
-    fn should_ignore(&self, path: &Path) -> bool {
-        for pattern in &self.ignore_patterns {
+    fn should_ignore_path(root: &Path, path: &Path, patterns: &[String]) -> bool {
+        let rel_path = path.strip_prefix(root).unwrap_or(path);
+        if rel_path.as_os_str().is_empty() {
+            return false;
+        }
+        Self::path_matches_patterns(rel_path, patterns)
+    }
+
+    fn path_matches_patterns(path: &Path, patterns: &[String]) -> bool {
+        for pattern in patterns {
+            if pattern == "*" {
+                return true;
+            }
+
             if pattern.starts_with('*') && pattern.ends_with('*') {
-                let middle = &pattern[1..pattern.len()-1];
+                let middle = &pattern[1..pattern.len() - 1];
                 if path.to_string_lossy().contains(middle) {
                     return true;
                 }
@@ -85,7 +118,7 @@ impl GrepSearcher {
                     }
                 }
             } else if pattern.ends_with('*') {
-                let prefix = &pattern[..pattern.len()-1];
+                let prefix = &pattern[..pattern.len() - 1];
                 for component in path.components() {
                     if let std::path::Component::Normal(name) = component {
                         if name.to_string_lossy().starts_with(prefix) {
@@ -125,21 +158,26 @@ impl GrepSearcher {
         };
 
         // Build searcher with line numbers
-        let mut searcher = SearcherBuilder::new()
-            .line_number(true)
-            .build();
+        let mut searcher = SearcherBuilder::new().line_number(true).build();
 
         let mut results = Vec::new();
         let result_count = Arc::new(AtomicUsize::new(0));
 
-        // Walk directory respecting .gitignore
-        let walker = WalkBuilder::new(root)
+        // Walk directory respecting .gitignore. filter_entry prevents descending
+        // into custom-ignored directories before we inspect their files.
+        let root_buf = root.to_path_buf();
+        let ignore_patterns = self.ignore_patterns.clone();
+        let mut builder = WalkBuilder::new(root);
+        builder
             .hidden(false)
             .git_ignore(true)
             .git_global(true)
             .git_exclude(true)
             .max_depth(Some(20))
-            .build();
+            .filter_entry(move |entry| {
+                !Self::should_ignore_path(&root_buf, entry.path(), &ignore_patterns)
+            });
+        let walker = builder.build();
 
         for entry in walker.flatten() {
             // Check if we've hit the max results
@@ -155,7 +193,7 @@ impl GrepSearcher {
             let path = entry.path();
 
             // Skip ignored paths (build directories, etc.)
-            if self.should_ignore(path) {
+            if Self::should_ignore_path(root, path, &self.ignore_patterns) {
                 continue;
             }
 
@@ -196,15 +234,12 @@ impl GrepSearcher {
                         line_trimmed.to_string()
                     };
 
-                    let display = format!(
-                        "{}:{}: {}",
-                        rel_path,
-                        line_num,
-                        line_display
-                    );
+                    let display = format!("{}:{}: {}", rel_path, line_num, line_display);
 
+                    let match_col = find_case_insensitive_char_index(line, pattern);
                     let item = FinderItem::new(display, path_buf.clone())
-                        .with_line(line_num as usize);
+                        .with_line(line_num as usize)
+                        .with_col(match_col);
 
                     file_results.push(item);
                     count_ref.fetch_add(1, Ordering::Relaxed);
@@ -225,14 +260,10 @@ impl GrepSearcher {
     /// Check if file has a binary extension
     fn is_binary_extension(&self, path: &Path) -> bool {
         let binary_extensions = [
-            "png", "jpg", "jpeg", "gif", "bmp", "ico", "svg",
-            "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
-            "zip", "tar", "gz", "bz2", "xz", "7z", "rar",
-            "exe", "dll", "so", "dylib", "o", "a",
-            "wasm", "class", "pyc", "pyo",
-            "mp3", "mp4", "wav", "avi", "mkv", "mov",
-            "ttf", "otf", "woff", "woff2", "eot",
-            "db", "sqlite", "sqlite3",
+            "png", "jpg", "jpeg", "gif", "bmp", "ico", "svg", "pdf", "doc", "docx", "xls", "xlsx",
+            "ppt", "pptx", "zip", "tar", "gz", "bz2", "xz", "7z", "rar", "exe", "dll", "so",
+            "dylib", "o", "a", "wasm", "class", "pyc", "pyo", "mp3", "mp4", "wav", "avi", "mkv",
+            "mov", "ttf", "otf", "woff", "woff2", "eot", "db", "sqlite", "sqlite3",
         ];
 
         path.extension()
@@ -245,5 +276,67 @@ impl GrepSearcher {
 impl Default for GrepSearcher {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn find_case_insensitive_char_index(line: &str, pattern: &str) -> usize {
+    let pattern_lower = pattern.to_lowercase();
+
+    for (char_idx, (byte_idx, _)) in line.char_indices().enumerate() {
+        if line[byte_idx..].to_lowercase().starts_with(&pattern_lower) {
+            return char_idx;
+        }
+    }
+
+    0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GrepSearcher;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("nevi_{}_{}_{}", name, std::process::id(), nanos))
+    }
+
+    #[test]
+    fn custom_ignore_patterns_exclude_matches_under_ignored_directories() {
+        let root = unique_temp_dir("grep_ignore");
+        fs::create_dir_all(root.join("ignored/deep")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("ignored/deep/hidden.rs"), "needle hidden").unwrap();
+        fs::write(root.join("src/visible.rs"), "needle visible").unwrap();
+
+        let searcher = GrepSearcher::new().with_ignore_patterns(vec!["ignored".to_string()]);
+        let results = searcher.search(&root, "needle");
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].display.contains("src/visible.rs"));
+        assert_eq!(results[0].col, Some(0));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn grep_results_store_match_column() {
+        let root = unique_temp_dir("grep_column");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "  let value = Needle;\n").unwrap();
+
+        let searcher = GrepSearcher::new().with_max_results(10);
+        let results = searcher.search(&root, "needle");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].line, Some(1));
+        assert_eq!(results[0].col, Some(14));
+
+        let _ = fs::remove_dir_all(root);
     }
 }
