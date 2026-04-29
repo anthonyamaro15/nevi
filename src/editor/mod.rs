@@ -1305,20 +1305,21 @@ impl Editor {
         }
 
         // Sort edits by position (reverse order) so we can apply from end to start
-        let mut sorted_edits: Vec<&TextEdit> = edits.iter().collect();
-        sorted_edits.sort_by(|a, b| {
-            // Compare by end position first (descending)
-            match b.end_line.cmp(&a.end_line) {
-                std::cmp::Ordering::Equal => b.end_col.cmp(&a.end_col),
-                other => other,
-            }
+        let mut sorted_edits: Vec<(usize, &TextEdit)> = edits.iter().enumerate().collect();
+        sorted_edits.sort_by(|(a_idx, a), (b_idx, b)| {
+            b.start_line
+                .cmp(&a.start_line)
+                .then_with(|| b.start_col.cmp(&a.start_col))
+                .then_with(|| b.end_line.cmp(&a.end_line))
+                .then_with(|| b.end_col.cmp(&a.end_col))
+                .then_with(|| b_idx.cmp(a_idx))
         });
 
         // Begin an undo group for all formatting changes
         self.begin_change();
 
         // Apply each edit
-        for edit in sorted_edits {
+        for (_, edit) in sorted_edits {
             let start_col = self.lsp_utf16_col_to_buffer_col(edit.start_line, edit.start_col);
             let end_col = self.lsp_utf16_col_to_buffer_col(edit.end_line, edit.end_col);
 
@@ -6728,6 +6729,56 @@ mod tests {
         }]);
 
         assert_eq!(editor.buffer().content(), "a😀X\n");
+    }
+
+    #[test]
+    fn lsp_same_position_insert_edits_preserve_server_order() {
+        let mut editor = Editor::default();
+        editor.buffer_mut().insert_str(0, 0, "ab\n");
+
+        editor.apply_text_edits(&[
+            TextEdit {
+                start_line: 0,
+                start_col: 1,
+                end_line: 0,
+                end_col: 1,
+                new_text: "X".to_string(),
+            },
+            TextEdit {
+                start_line: 0,
+                start_col: 1,
+                end_line: 0,
+                end_col: 1,
+                new_text: "Y".to_string(),
+            },
+        ]);
+
+        assert_eq!(editor.buffer().content(), "aXYb\n");
+    }
+
+    #[test]
+    fn lsp_adjacent_insert_and_delete_use_original_positions() {
+        let mut editor = Editor::default();
+        editor.buffer_mut().insert_str(0, 0, "ab\n");
+
+        editor.apply_text_edits(&[
+            TextEdit {
+                start_line: 0,
+                start_col: 1,
+                end_line: 0,
+                end_col: 1,
+                new_text: "X".to_string(),
+            },
+            TextEdit {
+                start_line: 0,
+                start_col: 0,
+                end_line: 0,
+                end_col: 1,
+                new_text: String::new(),
+            },
+        ]);
+
+        assert_eq!(editor.buffer().content(), "Xb\n");
     }
 
     #[test]
