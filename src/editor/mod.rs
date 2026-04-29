@@ -1109,6 +1109,7 @@ impl Editor {
     pub fn set_project_root(&mut self, path: std::path::PathBuf) {
         self.project_root = Some(path.clone());
         self.explorer.set_root(path.clone());
+        self.refresh_explorer_git_statuses();
         self.harpoon.set_project_root(path.clone());
         self.floating_terminal.set_working_dir(path);
     }
@@ -1566,6 +1567,7 @@ impl Editor {
         if let Some(root) = &self.project_root {
             self.git_repo = crate::git::GitRepo::open(root);
         }
+        self.refresh_explorer_git_statuses();
     }
 
     /// Set git diff for a file path
@@ -1609,6 +1611,23 @@ impl Editor {
         let diff = crate::git::compute_diff(&head_content, &current_content);
 
         self.set_git_diff(path.to_string_lossy().to_string(), diff);
+    }
+
+    /// Refresh git-backed explorer markers.
+    pub fn refresh_explorer_git_statuses(&mut self) {
+        if let Some(repo) = &self.git_repo {
+            let mut statuses = repo.file_statuses();
+            for buffer in &self.buffers {
+                if buffer.dirty {
+                    if let Some(path) = &buffer.path {
+                        statuses.insert(path.clone(), crate::git::GitFileStatus::Modified);
+                    }
+                }
+            }
+            self.explorer.rebuild_git_statuses_from(statuses);
+        } else {
+            self.explorer.clear_git_statuses();
+        }
     }
 
     /// Get reference to the git repository (if available)
@@ -3272,6 +3291,7 @@ impl Editor {
         ));
         // Update git diff after save (file now matches HEAD if no other changes)
         self.update_git_diff();
+        self.refresh_explorer_git_statuses();
         Ok(())
     }
 
@@ -3531,6 +3551,7 @@ impl Editor {
             }
         }
         self.update_git_diff();
+        self.refresh_explorer_git_statuses();
         Ok(saved_count)
     }
 
@@ -3578,6 +3599,7 @@ impl Editor {
             }
         }
         self.update_git_diff();
+        self.refresh_explorer_git_statuses();
         Ok((saved_count, formatted_count, formatter_name))
     }
 
@@ -6324,6 +6346,7 @@ impl Editor {
         self.explorer.toggle();
         self.update_pane_rects();
         if self.explorer.visible {
+            self.refresh_explorer_git_statuses();
             self.mode = Mode::Explorer;
         } else {
             self.mode = Mode::Normal;
@@ -6333,6 +6356,7 @@ impl Editor {
     /// Open the file explorer sidebar
     pub fn open_explorer(&mut self) {
         self.explorer.show();
+        self.refresh_explorer_git_statuses();
         self.update_pane_rects();
         self.mode = Mode::Explorer;
     }

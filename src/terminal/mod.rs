@@ -1544,9 +1544,12 @@ impl Terminal {
                     icon_color
                 };
 
-                // Calculate available width for name (remaining - icon - space)
-                // Using 1 for icon since we'll handle padding separately
-                let name_max_width = remaining_width.saturating_sub(2); // 1 icon + 1 space
+                let git_status = editor.explorer.git_status_for_path(&node.path);
+
+                // Calculate available width for name.
+                // Layout: icon + space + git marker column + space + name
+                let prefix_width = 4;
+                let name_max_width = remaining_width.saturating_sub(prefix_width);
 
                 // Truncate name if needed
                 let name_chars: Vec<char> = node.name.chars().collect();
@@ -1564,13 +1567,42 @@ impl Terminal {
                 execute!(self.stdout, SetForegroundColor(dimmed_icon_color))?;
                 print!("{} ", icon);
 
+                // Print git marker with git-sign colors. Keep the marker column
+                // stable so file names do not shift when status appears.
+                match git_status {
+                    Some(crate::git::GitFileStatus::Added) => {
+                        execute!(self.stdout, SetForegroundColor(theme.git.added))?;
+                        print!("+ ");
+                    }
+                    Some(crate::git::GitFileStatus::Modified) => {
+                        execute!(self.stdout, SetForegroundColor(theme.git.modified))?;
+                        print!("x ");
+                    }
+                    Some(crate::git::GitFileStatus::Deleted) => {
+                        execute!(self.stdout, SetForegroundColor(theme.git.deleted))?;
+                        print!("- ");
+                    }
+                    Some(crate::git::GitFileStatus::Untracked) => {
+                        execute!(self.stdout, SetForegroundColor(theme.git.added))?;
+                        print!("? ");
+                    }
+                    Some(crate::git::GitFileStatus::Conflicted) => {
+                        execute!(self.stdout, SetForegroundColor(theme.diagnostic.error))?;
+                        print!("! ");
+                    }
+                    None => {
+                        execute!(self.stdout, SetForegroundColor(name_color))?;
+                        print!("  ");
+                    }
+                }
+
                 // Print name with color, padded to fill remaining width
                 execute!(self.stdout, SetForegroundColor(name_color))?;
                 let name_display_len = name_display.chars().count();
                 print!("{}", name_display);
 
                 // Fill any remaining space with background
-                let used_width = 2 + name_display_len; // icon(1) + space(1) + name
+                let used_width = prefix_width + name_display_len;
                 if used_width < remaining_width {
                     print!("{:width$}", "", width = remaining_width - used_width);
                 }
@@ -7226,6 +7258,7 @@ fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
         // Refresh
         (KeyModifiers::SHIFT, KeyCode::Char('R')) => {
             editor.explorer.refresh();
+            editor.refresh_explorer_git_statuses();
         }
 
         // Go to parent directory
@@ -7325,6 +7358,7 @@ fn execute_explorer_action(editor: &mut Editor) {
                     Ok(_) => {
                         editor.set_status(format!("Created: {}", new_path.display()));
                         editor.explorer.refresh();
+                        editor.refresh_explorer_git_statuses();
                     }
                     Err(e) => {
                         editor.set_status(format!("Error: {}", e));
@@ -7339,6 +7373,7 @@ fn execute_explorer_action(editor: &mut Editor) {
                     Ok(_) => {
                         editor.set_status(format!("Created: {}", new_path.display()));
                         editor.explorer.refresh();
+                        editor.refresh_explorer_git_statuses();
                         // Auto-open the newly created file
                         if let Err(e) = editor.open_file(new_path.clone()) {
                             editor.set_status(format!("Created but failed to open: {}", e));
@@ -7370,6 +7405,7 @@ fn execute_explorer_action(editor: &mut Editor) {
                     Ok(_) => {
                         editor.set_status(format!("Renamed to: {}", new_path.display()));
                         editor.explorer.refresh();
+                        editor.refresh_explorer_git_statuses();
                     }
                     Err(e) => {
                         editor.set_status(format!("Error: {}", e));
@@ -7391,6 +7427,7 @@ fn execute_explorer_action(editor: &mut Editor) {
                         Ok(_) => {
                             editor.set_status(format!("Deleted: {}", path.display()));
                             editor.explorer.refresh();
+                            editor.refresh_explorer_git_statuses();
                         }
                         Err(e) => {
                             editor.set_status(format!("Error: {}", e));
@@ -7465,6 +7502,7 @@ fn execute_explorer_paste(editor: &mut Editor) {
                 editor.explorer.clear_clipboard();
             }
             editor.explorer.refresh();
+            editor.refresh_explorer_git_statuses();
         }
         Err(e) => {
             editor.set_status(format!("Error: {}", e));

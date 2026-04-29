@@ -1,6 +1,8 @@
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::{Path, PathBuf};
+
+use crate::git::{GitFileStatus, GitRepo};
 
 /// Pending action in the file explorer
 #[derive(Debug, Clone, PartialEq)]
@@ -144,6 +146,8 @@ pub struct FileExplorer {
     pub search_matches: Vec<usize>,
     /// Current match index in search_matches
     pub current_match: usize,
+    /// Git status by file and ancestor directory path
+    git_statuses: HashMap<PathBuf, GitFileStatus>,
 }
 
 impl Default for FileExplorer {
@@ -165,6 +169,7 @@ impl Default for FileExplorer {
             search_cursor: 0,
             search_matches: Vec::new(),
             current_match: 0,
+            git_statuses: HashMap::new(),
         }
     }
 }
@@ -177,6 +182,7 @@ impl FileExplorer {
     /// Set the root directory and build the tree
     pub fn set_root(&mut self, path: PathBuf) {
         self.root = Some(path.clone());
+        self.git_statuses.clear();
         let mut root_node = TreeNode::new(path.clone(), 0);
         root_node.load_children();
         self.tree = Some(root_node);
@@ -298,7 +304,8 @@ impl FileExplorer {
             self.tree = Some(root_node);
 
             // Reload children for expanded directories
-            let expanded: Vec<PathBuf> = self.expanded.iter().cloned().collect();
+            let mut expanded: Vec<PathBuf> = self.expanded.iter().cloned().collect();
+            expanded.sort_by_key(|path| path.components().count());
             for path in expanded {
                 self.load_children_for(&path);
             }
@@ -310,6 +317,73 @@ impl FileExplorer {
                 self.selected = self.flat_view.len().saturating_sub(1);
             }
         }
+    }
+
+    /// Rebuild git status markers from the current repository state.
+    pub fn refresh_git_statuses(&mut self, repo: &GitRepo) {
+        self.rebuild_git_statuses_from(repo.file_statuses());
+    }
+
+    /// Clear all git status markers.
+    pub fn clear_git_statuses(&mut self) {
+        self.git_statuses.clear();
+    }
+
+    /// Rebuild git status markers from raw file statuses.
+    pub fn rebuild_git_statuses_from(&mut self, file_statuses: HashMap<PathBuf, GitFileStatus>) {
+        let Some(root) = &self.root else {
+            self.git_statuses.clear();
+            return;
+        };
+
+        self.git_statuses = Self::aggregate_git_statuses(root, file_statuses);
+    }
+
+    /// Get the git marker for a file or directory path.
+    pub fn git_status_for_path(&self, path: &Path) -> Option<GitFileStatus> {
+        self.git_statuses.get(path).copied()
+    }
+
+    fn aggregate_git_statuses(
+        root: &Path,
+        file_statuses: HashMap<PathBuf, GitFileStatus>,
+    ) -> HashMap<PathBuf, GitFileStatus> {
+        let mut aggregated = HashMap::new();
+
+        for (path, status) in file_statuses {
+            if !path.starts_with(root) {
+                continue;
+            }
+
+            Self::insert_git_status(&mut aggregated, path.clone(), status);
+
+            let mut current = path.parent();
+            while let Some(parent) = current {
+                if !parent.starts_with(root) {
+                    break;
+                }
+
+                Self::insert_git_status(&mut aggregated, parent.to_path_buf(), status);
+
+                if parent == root {
+                    break;
+                }
+                current = parent.parent();
+            }
+        }
+
+        aggregated
+    }
+
+    fn insert_git_status(
+        statuses: &mut HashMap<PathBuf, GitFileStatus>,
+        path: PathBuf,
+        status: GitFileStatus,
+    ) {
+        statuses
+            .entry(path)
+            .and_modify(|existing| *existing = existing.merge(status))
+            .or_insert(status);
     }
 
     /// Load children for a directory path in the tree
@@ -937,5 +1011,125 @@ impl FileExplorer {
         } else {
             format!("{}/{}", self.current_match + 1, self.search_matches.len())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FileExplorer;
+    use crate::git::GitFileStatus;
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos))
+    }
+
+    fn select_path(explorer: &mut FileExplorer, path: &Path) {
+        explorer.selected = explorer
+            .flat_view
+            .iter()
+            .position(|node| node.path == path)
+            .expect("path should be visible in explorer");
+    }
+
+    #[test]
+    fn refresh_preserves_nested_expanded_directory_contents() {
+        let root = unique_temp_dir("nevi_explorer_refresh");
+        let src = root.join("src");
+        let store = src.join("store");
+        std::fs::create_dir_all(&store).expect("create nested dir");
+        std::fs::write(store.join("existing.ts"), "").expect("write existing file");
+
+        let mut explorer = FileExplorer::new();
+        explorer.set_root(root.clone());
+        select_path(&mut explorer, &src);
+        explorer.expand();
+        select_path(&mut explorer, &store);
+        explorer.expand();
+        assert!(explorer
+            .flat_view
+            .iter()
+            .any(|node| node.path == store.join("existing.ts")));
+
+        std::fs::write(store.join("new.ts"), "").expect("write new file");
+        explorer.refresh();
+
+        assert!(explorer
+            .flat_view
+            .iter()
+            .any(|node| node.path == store.join("existing.ts")));
+        assert!(explorer
+            .flat_view
+            .iter()
+            .any(|node| node.path == store.join("new.ts")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn git_statuses_propagate_to_parent_directories() {
+        let root = unique_temp_dir("nevi_explorer_git_status");
+        let src = root.join("src");
+        let utils = src.join("utils");
+        let changed = utils.join("fetchData.ts");
+        let clean = utils.join("geometryUtils.ts");
+        std::fs::create_dir_all(&utils).expect("create nested dir");
+        std::fs::write(&changed, "").expect("write changed file");
+        std::fs::write(&clean, "").expect("write clean file");
+
+        let mut explorer = FileExplorer::new();
+        explorer.set_root(root.clone());
+
+        let mut file_statuses = HashMap::new();
+        file_statuses.insert(changed.clone(), GitFileStatus::Modified);
+        explorer.rebuild_git_statuses_from(file_statuses);
+
+        assert_eq!(
+            explorer.git_status_for_path(&changed),
+            Some(GitFileStatus::Modified)
+        );
+        assert_eq!(
+            explorer.git_status_for_path(&utils),
+            Some(GitFileStatus::Modified)
+        );
+        assert_eq!(
+            explorer.git_status_for_path(&src),
+            Some(GitFileStatus::Modified)
+        );
+        assert_eq!(explorer.git_status_for_path(&clean), None);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn parent_git_status_uses_highest_priority_child_status() {
+        let root = unique_temp_dir("nevi_explorer_git_status_priority");
+        let src = root.join("src");
+        let modified = src.join("modified.ts");
+        let added = src.join("added.ts");
+        std::fs::create_dir_all(&src).expect("create nested dir");
+        std::fs::write(&modified, "").expect("write modified file");
+        std::fs::write(&added, "").expect("write added file");
+
+        let mut explorer = FileExplorer::new();
+        explorer.set_root(root.clone());
+
+        let mut file_statuses = HashMap::new();
+        file_statuses.insert(added, GitFileStatus::Added);
+        file_statuses.insert(modified, GitFileStatus::Modified);
+        explorer.rebuild_git_statuses_from(file_statuses);
+
+        assert_eq!(
+            explorer.git_status_for_path(&src),
+            Some(GitFileStatus::Modified)
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
