@@ -2,7 +2,7 @@ use crossterm::style::Color;
 use std::collections::HashMap;
 
 /// Syntax highlighting style (color + attributes)
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyntaxStyle {
     pub fg: Color,
     pub bold: bool,

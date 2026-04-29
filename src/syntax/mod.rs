@@ -2,7 +2,7 @@ mod highlighter;
 mod theme;
 
 pub use highlighter::HighlightSpan;
-pub use theme::{HighlightGroup, Theme};
+pub use theme::{HighlightGroup, SyntaxStyle, Theme};
 
 use std::path::Path;
 use tree_sitter::{Parser, Query, Tree};
@@ -62,8 +62,8 @@ impl SyntaxManager {
             Some("ts") | Some("mts") | Some("cts") => self.set_typescript_language(),
             Some("tsx") => self.set_tsx_language(),
             Some("css") => self.set_css_language(),
-            Some("scss") | Some("sass") => self.set_css_language(), // SCSS uses CSS parser
-            Some("json") => self.set_json_language(),
+            Some("scss") | Some("sass") => self.set_scss_language(),
+            Some("json") | Some("jsonc") => self.set_json_language(),
             Some("md") | Some("markdown") => self.set_markdown_language(),
             Some("toml") => self.set_toml_language(),
             Some("yaml") | Some("yml") => self.set_yaml_language(),
@@ -216,6 +216,34 @@ impl SyntaxManager {
             }
             Err(e) => {
                 self.language = Some(format!("css (lang error: {:?})", e));
+            }
+        }
+    }
+
+    /// Set up SCSS/Sass highlighting.
+    ///
+    /// This currently reuses the CSS grammar and SCSS query path. It preserves
+    /// the filetype name so language-aware behavior does not collapse SCSS into
+    /// plain CSS.
+    fn set_scss_language(&mut self) {
+        let language = tree_sitter_css::LANGUAGE;
+        match self.parser.set_language(&language.into()) {
+            Ok(()) => {
+                self.language = Some("scss".to_string());
+
+                let query_source = highlighter::scss_highlight_query();
+                match Query::new(&language.into(), query_source) {
+                    Ok(query) => {
+                        self.query = Some(query);
+                    }
+                    Err(e) => {
+                        self.language = Some(format!("scss (query error: {:?})", e));
+                        self.query = None;
+                    }
+                }
+            }
+            Err(e) => {
+                self.language = Some(format!("scss (lang error: {:?})", e));
             }
         }
     }
@@ -616,7 +644,7 @@ pub fn get_comment_string(language: Option<&str>) -> &'static str {
     match language {
         Some("rust") => "// ",
         Some("javascript") | Some("typescript") | Some("tsx") => "// ",
-        Some("css") => "/* ",  // CSS only has block comments, but we use line-style
+        Some("css") | Some("scss") => "/* ",  // CSS only has block comments, but we use line-style
         Some("json") => "// ",  // JSON doesn't support comments, but some tools allow //
         Some("markdown") => "<!-- ",  // HTML-style for markdown
         Some("python") => "# ",
@@ -634,8 +662,48 @@ pub fn get_comment_string(language: Option<&str>) -> &'static str {
 /// Returns None for line-style comments like //
 pub fn get_comment_end(language: Option<&str>) -> Option<&'static str> {
     match language {
-        Some("css") => Some(" */"),
+        Some("css") | Some("scss") => Some(" */"),
         Some("markdown") | Some("html") | Some("xml") => Some(" -->"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn jsonc_extension_uses_json_highlighting() {
+        let mut syntax = SyntaxManager::new();
+        syntax.set_language_from_path(Path::new("settings.jsonc"));
+
+        let mut buffer = Buffer::new();
+        buffer.set_content("{\"enabled\": true}\n");
+        syntax.parse(&buffer);
+
+        assert_eq!(syntax.language_name(), Some("json"));
+        assert!(syntax.has_highlighting());
+        assert!(
+            !syntax.get_line_highlights(0).is_empty(),
+            "jsonc should reuse JSON syntax highlighting"
+        );
+    }
+
+    #[test]
+    fn scss_extension_keeps_scss_language_name_and_highlights() {
+        let mut syntax = SyntaxManager::new();
+        syntax.set_language_from_path(Path::new("styles.scss"));
+
+        let mut buffer = Buffer::new();
+        buffer.set_content("$accent: #ff00aa;\n.button { color: $accent; }\n");
+        syntax.parse(&buffer);
+
+        assert_eq!(syntax.language_name(), Some("scss"));
+        assert!(syntax.has_highlighting());
+        assert!(
+            !syntax.get_line_highlights(1).is_empty(),
+            "scss should use the SCSS highlight path instead of plain text"
+        );
     }
 }

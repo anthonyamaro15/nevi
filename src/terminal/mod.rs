@@ -60,7 +60,7 @@ use crate::input::{
     InsertPosition, KeyAction, Operator, TextObject, TextObjectModifier, TextObjectType,
 };
 use crate::lsp::types::{CompletionKind, Diagnostic, DiagnosticSeverity};
-use crate::syntax::HighlightSpan;
+use crate::syntax::{HighlightSpan, SyntaxStyle};
 
 /// Events from the terminal that the editor cares about
 pub enum EditorEvent {
@@ -1301,6 +1301,8 @@ impl Terminal {
         let mut current_fg: Option<Color> = None;
         let mut current_bg: Option<Color> = None;
         let mut current_underline: Option<Color> = None;
+        let mut current_bold = false;
+        let mut current_italic = false;
 
         for (i, ch) in chars.iter().enumerate() {
             // Calculate the actual column in the original line
@@ -1348,10 +1350,11 @@ impl Terminal {
             });
 
             // Find syntax highlight for this position
-            let syntax_color = highlights
+            let syntax_style = highlights
                 .iter()
                 .find(|h| actual_col >= h.start_col && actual_col < h.end_col)
-                .map(|h| h.fg);
+                .map(|h| h.style);
+            let syntax_color = syntax_style.map(|style| style.fg);
 
             // Check if within a hint diagnostic (unused variable/import) - grey out the text
             let is_hint_diagnostic =
@@ -1368,6 +1371,13 @@ impl Terminal {
             } else {
                 (base_bg, syntax_color.unwrap_or(editor_fg))
             };
+            let desired_style = if in_visual || (!is_search && !is_hint_diagnostic) {
+                syntax_style
+            } else {
+                None
+            };
+            let desired_bold = desired_style.map_or(false, |style| style.bold);
+            let desired_italic = desired_style.map_or(false, |style| style.italic);
 
             // Only change colors when necessary
             if Some(desired_bg) != current_bg {
@@ -1377,6 +1387,28 @@ impl Terminal {
             if Some(desired_fg) != current_fg {
                 execute!(self.stdout, SetForegroundColor(desired_fg))?;
                 current_fg = Some(desired_fg);
+            }
+            if desired_bold != current_bold {
+                execute!(
+                    self.stdout,
+                    SetAttribute(if desired_bold {
+                        Attribute::Bold
+                    } else {
+                        Attribute::NoBold
+                    })
+                )?;
+                current_bold = desired_bold;
+            }
+            if desired_italic != current_italic {
+                execute!(
+                    self.stdout,
+                    SetAttribute(if desired_italic {
+                        Attribute::Italic
+                    } else {
+                        Attribute::NoItalic
+                    })
+                )?;
+                current_italic = desired_italic;
             }
 
             // Handle underline attribute changes for diagnostics
@@ -1401,6 +1433,8 @@ impl Terminal {
         execute!(
             self.stdout,
             SetAttribute(Attribute::NoUnderline),
+            SetAttribute(Attribute::NoBold),
+            SetAttribute(Attribute::NoItalic),
             SetBackgroundColor(base_bg),
             SetForegroundColor(editor_fg)
         )?;
@@ -5007,13 +5041,16 @@ impl Terminal {
         let mut current_fg: Option<Color> = None;
         let mut current_bg: Option<Color> = None;
         let mut current_underline: Option<Color> = None;
+        let mut current_bold = false;
+        let mut current_italic = false;
         for (i, ch) in chars.iter().enumerate() {
             // Map display column to actual buffer column
             let actual_col = col_offset + i;
 
             // Find syntax color for this column
-            let syntax_color =
-                Self::get_syntax_color_at(highlights, actual_col, &mut highlight_idx);
+            let syntax_style =
+                Self::get_syntax_style_at(highlights, actual_col, &mut highlight_idx);
+            let syntax_color = syntax_style.map(|style| style.fg);
 
             // Check if in visual selection
             let is_selected = in_selection && actual_col >= sel_start && actual_col < sel_end;
@@ -5045,6 +5082,13 @@ impl Terminal {
             } else {
                 (base_bg, syntax_color.unwrap_or(editor_fg))
             };
+            let desired_style = if is_selected || (!is_search_match && !is_hint_diagnostic) {
+                syntax_style
+            } else {
+                None
+            };
+            let desired_bold = desired_style.map_or(false, |style| style.bold);
+            let desired_italic = desired_style.map_or(false, |style| style.italic);
 
             // Only change colors when necessary
             if Some(desired_bg) != current_bg {
@@ -5054,6 +5098,28 @@ impl Terminal {
             if Some(desired_fg) != current_fg {
                 execute!(self.stdout, SetForegroundColor(desired_fg))?;
                 current_fg = Some(desired_fg);
+            }
+            if desired_bold != current_bold {
+                execute!(
+                    self.stdout,
+                    SetAttribute(if desired_bold {
+                        Attribute::Bold
+                    } else {
+                        Attribute::NoBold
+                    })
+                )?;
+                current_bold = desired_bold;
+            }
+            if desired_italic != current_italic {
+                execute!(
+                    self.stdout,
+                    SetAttribute(if desired_italic {
+                        Attribute::Italic
+                    } else {
+                        Attribute::NoItalic
+                    })
+                )?;
+                current_italic = desired_italic;
             }
 
             // Handle underline attribute changes for diagnostics
@@ -5084,6 +5150,8 @@ impl Terminal {
         execute!(
             self.stdout,
             SetAttribute(Attribute::NoUnderline),
+            SetAttribute(Attribute::NoBold),
+            SetAttribute(Attribute::NoItalic),
             SetBackgroundColor(base_bg),
             SetForegroundColor(editor_fg)
         )?;
@@ -5097,6 +5165,15 @@ impl Terminal {
         col: usize,
         hint_idx: &mut usize,
     ) -> Option<Color> {
+        Self::get_syntax_style_at(highlights, col, hint_idx).map(|style| style.fg)
+    }
+
+    /// Get the syntax style at a given column position
+    fn get_syntax_style_at(
+        highlights: &[HighlightSpan],
+        col: usize,
+        hint_idx: &mut usize,
+    ) -> Option<SyntaxStyle> {
         // Start searching from hint_idx for efficiency
         while *hint_idx < highlights.len() {
             let span = &highlights[*hint_idx];
@@ -5105,7 +5182,7 @@ impl Terminal {
                 return None;
             } else if col < span.end_col {
                 // Inside this span
-                return Some(span.fg);
+                return Some(span.style);
             } else {
                 // Past this span, try next
                 *hint_idx += 1;
