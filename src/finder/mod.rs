@@ -611,12 +611,13 @@ impl FuzzyFinder {
     }
 
     fn update_grep_match_indices(&mut self) {
-        let query_lower = self.query.to_lowercase();
         for item in &mut self.items {
-            let display_lower = item.display.to_lowercase();
-            if let Some(pos) = display_lower.find(&query_lower) {
-                item.match_indices = (pos..pos + self.query.len()).collect();
-            }
+            item.match_indices.clear();
+            item.match_indices = grep_result_match_indices(
+                &item.display,
+                &self.query,
+                grep_result_snippet_start(&item.display),
+            );
         }
     }
 
@@ -942,6 +943,53 @@ impl FuzzyFinder {
     }
 }
 
+fn grep_result_snippet_start(display: &str) -> usize {
+    let mut colon_count = 0;
+
+    for (idx, ch) in display.char_indices() {
+        if ch == ':' {
+            colon_count += 1;
+            if colon_count == 2 {
+                let after_colon = idx + ch.len_utf8();
+                let whitespace_bytes = display[after_colon..]
+                    .chars()
+                    .take_while(|ch| ch.is_whitespace())
+                    .map(char::len_utf8)
+                    .sum::<usize>();
+                return after_colon + whitespace_bytes;
+            }
+        }
+    }
+
+    0
+}
+
+fn grep_result_match_indices(display: &str, query: &str, start_byte: usize) -> Vec<usize> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+
+    let query_lower = query.to_lowercase();
+    let query_len = query.chars().count();
+    let start_char = display[..start_byte].chars().count();
+    let mut next_start_char = start_char;
+    let mut indices = Vec::new();
+
+    for (char_idx, (byte_idx, _)) in display.char_indices().enumerate() {
+        if char_idx < next_start_char {
+            continue;
+        }
+
+        if display[byte_idx..].to_lowercase().starts_with(&query_lower) {
+            let end_char = char_idx + query_len;
+            indices.extend(char_idx..end_char);
+            next_start_char = end_char.max(char_idx + 1);
+        }
+    }
+
+    indices
+}
+
 /// Check if a file is likely binary based on extension
 fn is_likely_binary(path: &PathBuf) -> bool {
     let binary_exts = [
@@ -1135,5 +1183,46 @@ mod tests {
         assert!(finder.poll_grep_search());
         assert!(!finder.grep_search_running);
         assert!(finder.grep_search_receiver.is_none());
+    }
+
+    #[test]
+    fn grep_result_highlight_ignores_path_matches() {
+        let mut finder = FuzzyFinder::new();
+        finder.mode = FinderMode::Grep;
+        finder.query = "main".to_string();
+        finder.items = vec![FinderItem::new(
+            "src/main.rs:12: no match here".to_string(),
+            PathBuf::from("src/main.rs"),
+        )];
+
+        finder.update_grep_match_indices();
+
+        assert!(finder.items[0].match_indices.is_empty());
+    }
+
+    #[test]
+    fn grep_result_highlight_starts_in_match_snippet() {
+        let mut finder = FuzzyFinder::new();
+        finder.mode = FinderMode::Grep;
+        finder.query = "main".to_string();
+        finder.items = vec![FinderItem::new(
+            "src/main.rs:12: fn main() { main(); }".to_string(),
+            PathBuf::from("src/main.rs"),
+        )];
+
+        finder.update_grep_match_indices();
+
+        let chars: Vec<char> = finder.items[0].display.chars().collect();
+        let highlighted: String = finder.items[0]
+            .match_indices
+            .iter()
+            .map(|idx| chars[*idx])
+            .collect();
+
+        assert_eq!(highlighted, "mainmain");
+        assert!(finder.items[0]
+            .match_indices
+            .iter()
+            .all(|idx| *idx >= "src/main.rs:12: ".chars().count()));
     }
 }
