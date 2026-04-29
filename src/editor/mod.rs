@@ -1596,21 +1596,46 @@ impl Editor {
     /// Update git diff for the current buffer
     pub fn update_git_diff(&mut self) {
         let Some(repo) = &self.git_repo else { return };
-        let Some(path) = self.buffer().path.clone() else {
-            return;
-        };
 
-        let Some(head_content) = repo.head_content(&path) else {
+        if let Some((path, diff)) = Self::git_diff_for_buffer(repo, self.buffer()) {
+            self.set_git_diff(path, diff);
+        } else if let Some(path) = self.buffer().path.as_ref() {
             // File not tracked by git or new file - clear any existing diff
-            let path_str = path.to_string_lossy().to_string();
-            self.git_diffs.remove(&path_str);
+            self.git_diffs.remove(&path.to_string_lossy().to_string());
+        }
+    }
+
+    /// Update git diffs for every open buffer.
+    pub fn update_all_git_diffs(&mut self) {
+        let Some(repo) = &self.git_repo else {
+            self.git_diffs.clear();
             return;
         };
 
-        let current_content = self.buffer().content();
-        let diff = crate::git::compute_diff(&head_content, &current_content);
+        let mut git_diffs = HashMap::new();
+        for buffer in &self.buffers {
+            if let Some((path, diff)) = Self::git_diff_for_buffer(repo, buffer) {
+                git_diffs.insert(path, diff);
+            }
+        }
+        self.git_diffs = git_diffs;
+    }
 
-        self.set_git_diff(path.to_string_lossy().to_string(), diff);
+    fn git_diff_for_buffer(
+        repo: &crate::git::GitRepo,
+        buffer: &Buffer,
+    ) -> Option<(String, crate::git::GitDiff)> {
+        let path = buffer.path.as_ref()?;
+        let head_content = repo.head_content(path)?;
+        let current_content = buffer.content();
+        let diff = crate::git::compute_diff(&head_content, &current_content);
+        Some((path.to_string_lossy().to_string(), diff))
+    }
+
+    /// Refresh all git-derived editor state.
+    pub fn refresh_git_state(&mut self) {
+        self.update_all_git_diffs();
+        self.refresh_explorer_git_statuses();
     }
 
     /// Refresh git-backed explorer markers.
@@ -6602,7 +6627,7 @@ mod tests {
     use super::{Editor, JumpList, Mode};
     use crate::input::Motion;
     use crate::lsp::types::{CodeActionItem, Diagnostic, DiagnosticSeverity, TextEdit};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
@@ -6611,6 +6636,32 @@ mod tests {
             .expect("system time")
             .as_nanos();
         std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos))
+    }
+
+    fn commit_file(repo: &git2::Repository, relative_path: &Path, message: &str) {
+        let signature =
+            git2::Signature::now("Nevi Test", "nevi-test@example.com").expect("signature");
+        let mut index = repo.index().expect("index");
+        index.add_path(relative_path).expect("add file");
+        index.write().expect("write index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+
+        if let Some(parent_id) = repo.head().ok().and_then(|head| head.target()) {
+            let parent = repo.find_commit(parent_id).expect("find parent");
+            repo.commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                message,
+                &tree,
+                &[&parent],
+            )
+            .expect("commit");
+        } else {
+            repo.commit(Some("HEAD"), &signature, &signature, message, &tree, &[])
+                .expect("initial commit");
+        }
     }
 
     #[test]
@@ -6734,6 +6785,36 @@ mod tests {
             .panes()
             .iter()
             .all(|pane| pane.buffer_idx < editor.buffer_count()));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn update_all_git_diffs_recomputes_against_new_head() {
+        let tmp = unique_temp_dir("nevi_git_refresh_head");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let root = tmp.canonicalize().expect("canonical temp dir");
+        let path = root.join("tracked.rs");
+        std::fs::write(&path, "old\n").expect("write tracked file");
+        let repo = git2::Repository::init(&root).expect("init repo");
+        commit_file(&repo, Path::new("tracked.rs"), "initial");
+
+        let mut editor = Editor::default();
+        editor.set_project_root(root.clone());
+        editor.init_git();
+        editor.open_file(path.clone()).expect("open tracked file");
+
+        editor.replace_buffer_content("new\n");
+        editor.save().expect("save modified file");
+        assert_eq!(
+            editor.git_status_for_line(0),
+            Some(crate::git::GitLineStatus::Modified)
+        );
+
+        commit_file(&repo, Path::new("tracked.rs"), "external commit");
+        editor.update_all_git_diffs();
+
+        assert_eq!(editor.git_status_for_line(0), None);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

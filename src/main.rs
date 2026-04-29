@@ -293,11 +293,11 @@ fn main() -> anyhow::Result<()> {
                         EditorEvent::FocusGained => {
                             // Check all open buffers for external changes
                             let reload_result = editor.check_and_reload_external_changes();
-                            editor.refresh_explorer_git_statuses();
+                            editor.refresh_git_state();
                             if let Some(msg) = reload_result {
                                 editor.set_status(msg);
-                                needs_redraw = true;
                             }
+                            needs_redraw = true;
                             continue 'main_loop; // No key to handle
                         }
                         EditorEvent::Resize(cols, rows) => {
@@ -1272,7 +1272,7 @@ fn main() -> anyhow::Result<()> {
             if let Err(e) = terminal.run_external_process(&cmd) {
                 editor.set_status(format!("Error running command: {}", e));
             }
-            editor.refresh_explorer_git_statuses();
+            editor.refresh_git_state();
             needs_redraw = true;
             continue;
         }
