@@ -101,6 +101,49 @@ struct WrapSegment {
     is_first: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TerminalRenderStyle {
+    fg: Color,
+    bg: Color,
+    bold: bool,
+    dim: bool,
+    italic: bool,
+    underline: bool,
+    double_underline: bool,
+    undercurl: bool,
+    underdotted: bool,
+    underdashed: bool,
+    strikeout: bool,
+}
+
+impl TerminalRenderStyle {
+    fn from_terminal_cell(
+        cell: &crate::floating_terminal::TerminalCell,
+        default_fg: Color,
+        default_bg: Color,
+    ) -> Self {
+        let mut fg = cell.fg.unwrap_or(default_fg);
+        let mut bg = cell.bg.unwrap_or(default_bg);
+        if cell.inverse {
+            std::mem::swap(&mut fg, &mut bg);
+        }
+
+        Self {
+            fg,
+            bg,
+            bold: cell.bold,
+            dim: cell.dim,
+            italic: cell.italic,
+            underline: cell.underline,
+            double_underline: cell.double_underline,
+            undercurl: cell.undercurl,
+            underdotted: cell.underdotted,
+            underdashed: cell.underdashed,
+            strikeout: cell.strikeout,
+        }
+    }
+}
+
 /// Dim a color by reducing its brightness (for hidden files, etc.)
 fn dim_color(color: Color) -> Color {
     match color {
@@ -353,13 +396,12 @@ impl Terminal {
             self.render_theme_picker(editor)?;
         }
 
-        // Render floating terminal if visible
+        // Position cursor
         if editor.floating_terminal.is_visible() {
             self.render_floating_terminal(editor)?;
+        } else {
+            self.position_cursor(editor)?;
         }
-
-        // Position cursor
-        self.position_cursor(editor)?;
 
         self.stdout.flush()?;
         Ok(())
@@ -4028,12 +4070,8 @@ impl Terminal {
     /// Render the floating terminal
     fn render_floating_terminal(&mut self, editor: &Editor) -> anyhow::Result<()> {
         // Calculate terminal dimensions (60% of screen, centered)
-        let term_width = (editor.term_width as f32 * 0.6) as u16;
-        let term_height = (editor.term_height as f32 * 0.6) as u16;
-
-        // Ensure minimum size
-        let term_width = term_width.max(40);
-        let term_height = term_height.max(10);
+        let (term_width, term_height) =
+            crate::floating_terminal::popup_size_for_screen(editor.term_width, editor.term_height);
 
         // Center the terminal
         let term_x = (editor.term_width.saturating_sub(term_width)) / 2;
@@ -4104,13 +4142,13 @@ impl Terminal {
         // Get terminal content
         let content_height = (term_height - 2) as usize;
         let content_width = (term_width - 2) as usize;
-        let lines = editor
+        let cells = editor
             .floating_terminal
-            .get_visible_lines(content_height, content_width);
+            .get_visible_cells(content_height, content_width);
         let (cursor_row, cursor_col) = editor.floating_terminal.get_cursor_pos();
 
         // Draw terminal content
-        for (row, line) in lines.iter().enumerate() {
+        for (row, line) in cells.iter().enumerate() {
             execute!(self.stdout, cursor::MoveTo(term_x, term_y + 1 + row as u16))?;
             execute!(
                 self.stdout,
@@ -4119,22 +4157,27 @@ impl Terminal {
             )?;
             print!("│");
 
+            let mut active_style = None;
+            for cell in line {
+                let style = TerminalRenderStyle::from_terminal_cell(cell, text_color, bg_color);
+                if active_style != Some(style) {
+                    self.apply_terminal_cell_style(style)?;
+                    active_style = Some(style);
+                }
+                print!("{}", if cell.hidden { ' ' } else { cell.ch });
+            }
+
             execute!(
                 self.stdout,
-                SetForegroundColor(text_color),
+                SetAttribute(Attribute::Reset),
+                SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-
-            // Print line content, padding to fill width
-            let display: String = line.chars().take(content_width).collect();
-            print!("{:<width$}", display, width = content_width);
-
-            execute!(self.stdout, SetForegroundColor(border_color))?;
             print!("│");
         }
 
         // Fill remaining rows if content is shorter
-        for row in lines.len()..content_height {
+        for row in cells.len()..content_height {
             execute!(self.stdout, cursor::MoveTo(term_x, term_y + 1 + row as u16))?;
             execute!(
                 self.stdout,
@@ -4170,6 +4213,48 @@ impl Terminal {
         let cursor_x = term_x + 1 + cursor_col.min(content_width.saturating_sub(1)) as u16;
         let cursor_y = term_y + 1 + cursor_row.min(content_height.saturating_sub(1)) as u16;
         execute!(self.stdout, cursor::MoveTo(cursor_x, cursor_y))?;
+
+        Ok(())
+    }
+
+    fn apply_terminal_cell_style(
+        &mut self,
+        style: TerminalRenderStyle,
+    ) -> anyhow::Result<()> {
+        execute!(
+            self.stdout,
+            SetAttribute(Attribute::Reset),
+            SetForegroundColor(style.fg),
+            SetBackgroundColor(style.bg)
+        )?;
+
+        if style.bold {
+            execute!(self.stdout, SetAttribute(Attribute::Bold))?;
+        }
+        if style.dim {
+            execute!(self.stdout, SetAttribute(Attribute::Dim))?;
+        }
+        if style.italic {
+            execute!(self.stdout, SetAttribute(Attribute::Italic))?;
+        }
+        if style.underline {
+            execute!(self.stdout, SetAttribute(Attribute::Underlined))?;
+        }
+        if style.double_underline {
+            execute!(self.stdout, SetAttribute(Attribute::DoubleUnderlined))?;
+        }
+        if style.undercurl {
+            execute!(self.stdout, SetAttribute(Attribute::Undercurled))?;
+        }
+        if style.underdotted {
+            execute!(self.stdout, SetAttribute(Attribute::Underdotted))?;
+        }
+        if style.underdashed {
+            execute!(self.stdout, SetAttribute(Attribute::Underdashed))?;
+        }
+        if style.strikeout {
+            execute!(self.stdout, SetAttribute(Attribute::CrossedOut))?;
+        }
 
         Ok(())
     }
@@ -5449,12 +5534,7 @@ pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
 
     // If floating terminal is visible, handle its keys
     if editor.floating_terminal.is_visible() {
-        // Escape closes the terminal (alternative to Ctrl-\)
-        if key.code == KeyCode::Esc && key.modifiers.is_empty() {
-            editor.floating_terminal.toggle();
-            return;
-        }
-        // All other keys go to the terminal
+        // Terminal apps need Escape; Ctrl-\ is the dedicated toggle key.
         editor.floating_terminal.send_key(key);
         return;
     }
@@ -8190,6 +8270,10 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
         Command::ToggleTerminal => {
             editor.floating_terminal.toggle();
             CommandResult::Ok
+        }
+        Command::TerminalKill => {
+            editor.floating_terminal.close();
+            CommandResult::Message("Terminal killed".to_string())
         }
 
         // Copilot commands - these are handled by main.rs through editor flags

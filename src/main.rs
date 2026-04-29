@@ -246,6 +246,7 @@ fn main() -> anyhow::Result<()> {
     let mut last_render = Instant::now() - render_interval;
     let max_key_events_per_frame: usize = 8;
     let mut redraw_from_input = false;
+    let mut terminal_redraw_pending = false;
     let typing_pause = Duration::from_millis(50);
     let mut last_input_at: Option<Instant> = None;
 
@@ -316,9 +317,11 @@ fn main() -> anyhow::Result<()> {
 
                     // Check for manual completion trigger (Ctrl+Space) in insert mode
                     let manual_completion = editor.mode == Mode::Insert
+                        && !editor.floating_terminal.is_visible()
                         && key.modifiers == KeyModifiers::CONTROL
                         && key.code == KeyCode::Char(' ');
 
+                    let mut key_went_to_terminal = false;
                     if manual_completion {
                         // Request completion from LSP (only if ready for this file type)
                         if let Some(ref mut mlsp) = multi_lsp {
@@ -335,7 +338,10 @@ fn main() -> anyhow::Result<()> {
                     } else {
                         let t_handle_key = Instant::now();
                         let mode_before = editor.mode;
+                        let terminal_visible_before_key = editor.floating_terminal.is_visible();
                         handle_key(&mut editor, key);
+                        key_went_to_terminal =
+                            terminal_visible_before_key && editor.floating_terminal.is_visible();
                         let elapsed = t_handle_key.elapsed();
                         // Only log slow handle_key operations (>1ms) with details
                         if elapsed.as_micros() > 1000 {
@@ -345,6 +351,14 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                     last_input_at = Some(Instant::now());
+
+                    if key_went_to_terminal {
+                        events_processed += 1;
+                        if !terminal.poll_key(Duration::from_millis(0))? {
+                            break;
+                        }
+                        continue;
+                    }
 
                     // Check if we should resolve completion item documentation
                     // Only resolve when selection changes (tracked by last_resolved_label)
@@ -1257,9 +1271,16 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        // Process floating terminal output if visible
-        if editor.floating_terminal.is_visible() {
-            editor.floating_terminal.process_output();
+        // Drain PTY output even while hidden so background commands keep flowing.
+        let terminal_was_visible = editor.floating_terminal.is_visible();
+        if editor.floating_terminal.process_output() {
+            if editor.floating_terminal.is_visible() {
+                terminal_redraw_pending = true;
+            } else if terminal_was_visible {
+                terminal_redraw_pending = false;
+                needs_redraw = true;
+                redraw_from_input = true;
+            }
         }
 
         // Check if we should quit
@@ -1416,6 +1437,18 @@ fn main() -> anyhow::Result<()> {
                 terminal.render(&editor)?;
                 profile!(profile_file, "render: {:?}", t_render.elapsed());
                 needs_redraw = false;
+                terminal_redraw_pending = false;
+                last_render = now;
+                redraw_from_input = false;
+            }
+        } else if terminal_redraw_pending && editor.floating_terminal.is_visible() {
+            let now = Instant::now();
+            if now.duration_since(last_render) >= render_interval {
+                editor.sync_floating_terminal_size();
+                let t_render = Instant::now();
+                terminal.render_terminal_only(&editor)?;
+                profile!(profile_file, "terminal_render: {:?}", t_render.elapsed());
+                terminal_redraw_pending = false;
                 last_render = now;
                 redraw_from_input = false;
             }
