@@ -2624,6 +2624,13 @@ impl Editor {
         self.check_clipboard_error();
     }
 
+    /// Paste after cursor count times.
+    pub fn paste_after_count(&mut self, register: Option<char>, count: usize) {
+        for _ in 0..count.max(1) {
+            self.paste_after(register);
+        }
+    }
+
     /// Paste before cursor from a register
     pub fn paste_before(&mut self, register: Option<char>) {
         if let Some(content) = self.registers.get_content(register) {
@@ -2679,6 +2686,13 @@ impl Editor {
                 .end_undo_group(self.cursor.line, self.cursor.col);
         }
         self.check_clipboard_error();
+    }
+
+    /// Paste before cursor count times.
+    pub fn paste_before_count(&mut self, register: Option<char>, count: usize) {
+        for _ in 0..count.max(1) {
+            self.paste_before(register);
+        }
     }
 
     /// Enter insert mode
@@ -3166,27 +3180,39 @@ impl Editor {
 
     /// Delete character at cursor (x in normal mode)
     pub fn delete_char_at(&mut self) {
-        let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
-        if line_len > 0 {
-            if let Some(ch) =
-                self.buffers[self.current_buffer_idx].char_at(self.cursor.line, self.cursor.col)
-            {
-                // Record for undo (single operation = single undo group)
-                self.begin_change();
-                self.undo_stack.record_change(Change::delete(
-                    self.cursor.line,
-                    self.cursor.col,
-                    ch.to_string(),
-                ));
-                self.undo_stack
-                    .end_undo_group(self.cursor.line, self.cursor.col);
+        self.delete_chars_at(1);
+    }
 
-                self.registers
-                    .delete(None, RegisterContent::Chars(ch.to_string()), true);
-            }
-            self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
-            self.clamp_cursor();
+    /// Delete count characters at cursor (x with count)
+    pub fn delete_chars_at(&mut self, count: usize) {
+        let count = count.max(1);
+        let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
+        if line_len == 0 || self.cursor.col >= line_len {
+            return;
         }
+
+        let start_col = self.cursor.col;
+        let end_col = (start_col + count - 1).min(line_len.saturating_sub(1));
+        let deleted = self.get_range_text(self.cursor.line, start_col, self.cursor.line, end_col);
+        if deleted.is_empty() {
+            return;
+        }
+
+        self.begin_change();
+        self.undo_stack
+            .record_change(Change::delete(self.cursor.line, start_col, deleted.clone()));
+        self.buffers[self.current_buffer_idx].delete_range(
+            self.cursor.line,
+            start_col,
+            self.cursor.line,
+            end_col + 1,
+        );
+        self.cursor.col = start_col;
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
+        self.registers
+            .delete(None, RegisterContent::Chars(deleted), true);
+        self.clamp_cursor();
     }
 
     /// Delete character at cursor as part of an already-open undo group.
@@ -3211,26 +3237,37 @@ impl Editor {
 
     /// Delete character before cursor in normal mode (X)
     pub fn delete_char_before_normal(&mut self) {
-        if self.cursor.col > 0 {
-            self.begin_change();
-            self.cursor.col -= 1;
-            if let Some(ch) =
-                self.buffers[self.current_buffer_idx].char_at(self.cursor.line, self.cursor.col)
-            {
-                // Record for undo
-                self.undo_stack.record_change(Change::delete(
-                    self.cursor.line,
-                    self.cursor.col,
-                    ch.to_string(),
-                ));
-                self.undo_stack
-                    .end_undo_group(self.cursor.line, self.cursor.col);
+        self.delete_chars_before_normal(1);
+    }
 
-                self.registers
-                    .delete(None, RegisterContent::Chars(ch.to_string()), true);
-            }
-            self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
+    /// Delete count characters before cursor in normal mode (X with count)
+    pub fn delete_chars_before_normal(&mut self, count: usize) {
+        if self.cursor.col == 0 {
+            return;
         }
+
+        let count = count.max(1);
+        let end_col = self.cursor.col - 1;
+        let start_col = self.cursor.col.saturating_sub(count);
+        let deleted = self.get_range_text(self.cursor.line, start_col, self.cursor.line, end_col);
+        if deleted.is_empty() {
+            return;
+        }
+
+        self.begin_change();
+        self.undo_stack
+            .record_change(Change::delete(self.cursor.line, start_col, deleted.clone()));
+        self.buffers[self.current_buffer_idx].delete_range(
+            self.cursor.line,
+            start_col,
+            self.cursor.line,
+            end_col + 1,
+        );
+        self.cursor.col = start_col;
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
+        self.registers
+            .delete(None, RegisterContent::Chars(deleted), true);
     }
 
     /// Delete word before cursor (Ctrl+w in insert mode)
@@ -4666,6 +4703,207 @@ impl Editor {
         self.scroll_to_cursor();
     }
 
+    /// Paste over the current visual selection.
+    pub fn visual_paste(&mut self, register: Option<char>) {
+        let Some(content) = self.registers.get_content(register) else {
+            return;
+        };
+
+        let replacement = content.as_str().to_string();
+        let mode = self.mode;
+        let (start_line, start_col, end_line, end_col) = self.get_visual_range();
+
+        match mode {
+            Mode::VisualLine => {
+                let deleted = self.get_lines_text(start_line, end_line);
+                let count = end_line - start_line + 1;
+
+                self.begin_change();
+                self.undo_stack
+                    .record_change(Change::delete(start_line, 0, deleted.clone()));
+                self.delete_lines(start_line, count);
+                self.undo_stack
+                    .record_change(Change::insert(start_line, 0, replacement.clone()));
+                self.buffers[self.current_buffer_idx].insert_str(start_line, 0, &replacement);
+                self.cursor.line = start_line.min(
+                    self.buffers[self.current_buffer_idx]
+                        .len_lines()
+                        .saturating_sub(1),
+                );
+                self.cursor.col = 0;
+                self.undo_stack
+                    .end_undo_group(self.cursor.line, self.cursor.col);
+                self.registers
+                    .delete(None, RegisterContent::Lines(deleted), false);
+            }
+            Mode::Visual => {
+                let deleted = self.get_range_text(start_line, start_col, end_line, end_col);
+
+                self.begin_change();
+                self.undo_stack.record_change(Change::delete(
+                    start_line,
+                    start_col,
+                    deleted.clone(),
+                ));
+                self.buffers[self.current_buffer_idx].delete_range(
+                    start_line,
+                    start_col,
+                    end_line,
+                    end_col + 1,
+                );
+                self.undo_stack.record_change(Change::insert(
+                    start_line,
+                    start_col,
+                    replacement.clone(),
+                ));
+                self.buffers[self.current_buffer_idx].insert_str(
+                    start_line,
+                    start_col,
+                    &replacement,
+                );
+                self.cursor.line = start_line;
+                self.cursor.col = start_col;
+                self.undo_stack
+                    .end_undo_group(self.cursor.line, self.cursor.col);
+
+                let is_small = !deleted.contains('\n');
+                self.registers
+                    .delete(None, RegisterContent::Chars(deleted), is_small);
+            }
+            Mode::VisualBlock => {
+                let (top, left, bottom, right) = self
+                    .visual
+                    .get_block_range(self.cursor.line, self.cursor.col);
+                let replacement_line = replacement
+                    .lines()
+                    .next()
+                    .unwrap_or(&replacement)
+                    .to_string();
+                let mut deleted_lines = Vec::new();
+
+                self.begin_change();
+                for line_idx in (top..=bottom).rev() {
+                    let line_len = self.buffers[self.current_buffer_idx].line_len(line_idx);
+                    let insert_col = left.min(line_len);
+                    if left < line_len {
+                        let actual_right = right.min(line_len.saturating_sub(1));
+                        let deleted = self.get_range_text(line_idx, left, line_idx, actual_right);
+                        deleted_lines.push(deleted.clone());
+                        self.undo_stack
+                            .record_change(Change::delete(line_idx, left, deleted));
+                        self.buffers[self.current_buffer_idx].delete_range(
+                            line_idx,
+                            left,
+                            line_idx,
+                            actual_right + 1,
+                        );
+                    } else {
+                        deleted_lines.push(String::new());
+                    }
+
+                    self.undo_stack.record_change(Change::insert(
+                        line_idx,
+                        insert_col,
+                        replacement_line.clone(),
+                    ));
+                    self.buffers[self.current_buffer_idx].insert_str(
+                        line_idx,
+                        insert_col,
+                        &replacement_line,
+                    );
+                }
+
+                deleted_lines.reverse();
+                self.cursor.line = top;
+                self.cursor.col = left;
+                self.undo_stack
+                    .end_undo_group(self.cursor.line, self.cursor.col);
+                self.registers.delete(
+                    None,
+                    RegisterContent::Chars(deleted_lines.join("\n")),
+                    false,
+                );
+            }
+            _ => return,
+        }
+
+        self.mode = Mode::Normal;
+        self.clamp_cursor();
+        self.scroll_to_cursor();
+    }
+
+    /// Surround the current visual selection.
+    pub fn surround_visual_selection(&mut self, surround_char: char) {
+        let (open, close) = Self::get_surround_pair(surround_char);
+        let mode = self.mode;
+        let (start_line, start_col, end_line, end_col) = self.get_visual_range();
+
+        self.begin_change();
+        match mode {
+            Mode::VisualLine => {
+                let close_col = self.buffers[self.current_buffer_idx].line_len(end_line);
+                self.undo_stack.record_change(Change::insert(
+                    end_line,
+                    close_col,
+                    close.to_string(),
+                ));
+                self.buffers[self.current_buffer_idx].insert_char(end_line, close_col, close);
+                self.undo_stack
+                    .record_change(Change::insert(start_line, 0, open.to_string()));
+                self.buffers[self.current_buffer_idx].insert_char(start_line, 0, open);
+                self.cursor.line = start_line;
+                self.cursor.col = 0;
+            }
+            Mode::Visual => {
+                self.undo_stack.record_change(Change::insert(
+                    end_line,
+                    end_col + 1,
+                    close.to_string(),
+                ));
+                self.buffers[self.current_buffer_idx].insert_char(end_line, end_col + 1, close);
+                self.undo_stack.record_change(Change::insert(
+                    start_line,
+                    start_col,
+                    open.to_string(),
+                ));
+                self.buffers[self.current_buffer_idx].insert_char(start_line, start_col, open);
+                self.cursor.line = start_line;
+                self.cursor.col = start_col;
+            }
+            Mode::VisualBlock => {
+                let (top, left, bottom, right) = self
+                    .visual
+                    .get_block_range(self.cursor.line, self.cursor.col);
+                for line_idx in (top..=bottom).rev() {
+                    let line_len = self.buffers[self.current_buffer_idx].line_len(line_idx);
+                    let close_col = (right + 1).min(line_len);
+                    let open_col = left.min(line_len);
+                    self.undo_stack.record_change(Change::insert(
+                        line_idx,
+                        close_col,
+                        close.to_string(),
+                    ));
+                    self.buffers[self.current_buffer_idx].insert_char(line_idx, close_col, close);
+                    self.undo_stack.record_change(Change::insert(
+                        line_idx,
+                        open_col,
+                        open.to_string(),
+                    ));
+                    self.buffers[self.current_buffer_idx].insert_char(line_idx, open_col, open);
+                }
+                self.cursor.line = top;
+                self.cursor.col = left;
+            }
+            _ => return,
+        }
+
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
+        self.mode = Mode::Normal;
+        self.clamp_cursor();
+        self.scroll_to_cursor();
+    }
+
     // ============================================
     // Text Object Operations
     // ============================================
@@ -5054,37 +5292,47 @@ impl Editor {
 
     /// Replace character at cursor with given character (r command)
     pub fn replace_char(&mut self, ch: char) {
+        self.replace_chars(ch, 1);
+    }
+
+    /// Replace count characters at cursor with the given character (r with count)
+    pub fn replace_chars(&mut self, ch: char, count: usize) {
+        let count = count.max(1);
         let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
         if line_len == 0 || self.cursor.col >= line_len {
             return;
         }
 
-        // Get the old character for undo
-        let old_char =
-            self.buffers[self.current_buffer_idx].char_at(self.cursor.line, self.cursor.col);
-        if old_char.is_none() {
+        let start_col = self.cursor.col;
+        let end_col = (start_col + count - 1).min(line_len.saturating_sub(1));
+        let old_text = self.get_range_text(self.cursor.line, start_col, self.cursor.line, end_col);
+        if old_text.is_empty() {
             return;
         }
-        let old_char = old_char.unwrap();
+        let replacement: String = std::iter::repeat(ch)
+            .take(old_text.chars().count())
+            .collect();
 
-        // Record for undo
         self.begin_change();
-        self.undo_stack.record_change(Change::delete(
-            self.cursor.line,
-            self.cursor.col,
-            old_char.to_string(),
-        ));
+        self.undo_stack
+            .record_change(Change::delete(self.cursor.line, start_col, old_text));
         self.undo_stack.record_change(Change::insert(
             self.cursor.line,
-            self.cursor.col,
-            ch.to_string(),
+            start_col,
+            replacement.clone(),
         ));
+
+        self.buffers[self.current_buffer_idx].delete_range(
+            self.cursor.line,
+            start_col,
+            self.cursor.line,
+            end_col + 1,
+        );
+        self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, start_col, &replacement);
+        self.cursor.col = start_col + replacement.chars().count().saturating_sub(1);
         self.undo_stack
             .end_undo_group(self.cursor.line, self.cursor.col);
-
-        // Delete old char and insert new one
-        self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
-        self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, self.cursor.col, ch);
+        self.clamp_cursor();
     }
 
     /// Join current line with next line (J command)
@@ -5179,6 +5427,18 @@ impl Editor {
         self.clamp_cursor();
     }
 
+    /// Join count lines total, matching Vim's J count behavior.
+    pub fn join_lines_count(&mut self, count: usize) {
+        let joins = count.max(2).saturating_sub(1);
+        for _ in 0..joins {
+            let before = self.buffers[self.current_buffer_idx].len_lines();
+            self.join_lines();
+            if self.buffers[self.current_buffer_idx].len_lines() == before {
+                break;
+            }
+        }
+    }
+
     /// Join current line with next line without inserting space (gJ command)
     pub fn join_lines_no_space(&mut self) {
         let total_lines = self.buffers[self.current_buffer_idx].len_lines();
@@ -5210,6 +5470,18 @@ impl Editor {
         self.undo_stack
             .end_undo_group(self.cursor.line, self.cursor.col);
         self.clamp_cursor();
+    }
+
+    /// Join count lines total without inserting spaces, matching gJ with count.
+    pub fn join_lines_no_space_count(&mut self, count: usize) {
+        let joins = count.max(2).saturating_sub(1);
+        for _ in 0..joins {
+            let before = self.buffers[self.current_buffer_idx].len_lines();
+            self.join_lines_no_space();
+            if self.buffers[self.current_buffer_idx].len_lines() == before {
+                break;
+            }
+        }
     }
 
     // ============================================
@@ -5324,6 +5596,46 @@ impl Editor {
         } else {
             self.set_status("Could not find text object");
         }
+    }
+
+    /// Add surrounding to a motion range (ys{motion}{char}).
+    pub fn add_surrounding_motion(&mut self, motion: Motion, count: usize, surround_char: char) {
+        let (open, close) = Self::get_surround_pair(surround_char);
+
+        if let Some((start_line, start_col, end_line, end_col)) = self.motion_range(motion, count) {
+            self.begin_change();
+            self.undo_stack
+                .record_change(Change::insert(end_line, end_col + 1, close.to_string()));
+            self.buffers[self.current_buffer_idx].insert_char(end_line, end_col + 1, close);
+            self.undo_stack
+                .record_change(Change::insert(start_line, start_col, open.to_string()));
+            self.buffers[self.current_buffer_idx].insert_char(start_line, start_col, open);
+            self.cursor.line = start_line;
+            self.cursor.col = start_col;
+            self.undo_stack
+                .end_undo_group(self.cursor.line, self.cursor.col);
+            self.clamp_cursor();
+            self.scroll_to_cursor();
+        }
+    }
+
+    /// Add surrounding to the current line (yss{char}).
+    pub fn add_surrounding_line(&mut self, surround_char: char) {
+        let (open, close) = Self::get_surround_pair(surround_char);
+        let line = self.cursor.line;
+        let line_len = self.buffers[self.current_buffer_idx].line_len(line);
+
+        self.begin_change();
+        self.undo_stack
+            .record_change(Change::insert(line, line_len, close.to_string()));
+        self.buffers[self.current_buffer_idx].insert_char(line, line_len, close);
+        self.undo_stack
+            .record_change(Change::insert(line, 0, open.to_string()));
+        self.buffers[self.current_buffer_idx].insert_char(line, 0, open);
+        self.cursor.col = 0;
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
+        self.clamp_cursor();
     }
 
     // ============================================
@@ -5703,6 +6015,26 @@ impl Editor {
             self.cursor.line = start_line;
             self.cursor.col = start_col;
         }
+    }
+
+    /// Toggle case for count characters from cursor (~ command).
+    pub fn toggle_case_chars(&mut self, count: usize) {
+        let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
+        if line_len == 0 || self.cursor.col >= line_len {
+            return;
+        }
+
+        let start_col = self.cursor.col;
+        let end_col = (start_col + count.max(1) - 1).min(line_len.saturating_sub(1));
+        self.transform_case(
+            self.cursor.line,
+            start_col,
+            self.cursor.line,
+            end_col,
+            CaseOperator::ToggleCase,
+        );
+        self.cursor.col = end_col;
+        self.clamp_cursor();
     }
 
     /// Case transformation on current line (guu, gUU, g~~)

@@ -31,6 +31,18 @@ to = "$"
 
 Now pressing `H` does what `^` normally does (jump to first non-blank character).
 
+### Remapping Keys in Visual Mode
+
+Visual mode keys can be remapped with the same key notation:
+
+```toml
+[[keymap.visual]]
+from = "s"
+to = "S"
+```
+
+Now pressing `s` in visual mode surrounds the selection instead of changing it.
+
 ### Adding Leader Shortcuts
 
 Create your own `<leader>` + key combinations:
@@ -219,11 +231,11 @@ Operators are commands that wait for a motion. For example, `d` (delete) + `w` (
 | `C` | Change from cursor to end of line |
 | `yy` | Yank entire line |
 | `Y` | Yank entire line |
-| `x` | Delete character under cursor |
-| `X` | Delete character before cursor |
-| `p` | Paste after cursor |
-| `P` | Paste before cursor |
-| `r{char}` | Replace character under cursor |
+| `x` / `{n}x` | Delete character(s) under cursor |
+| `X` / `{n}X` | Delete character(s) before cursor |
+| `p` / `{n}p` | Paste after cursor |
+| `P` / `{n}P` | Paste before cursor |
+| `r{char}` / `{n}r{char}` | Replace character(s) under cursor |
 | `.` | Repeat last change |
 
 > **Examples:**
@@ -253,7 +265,7 @@ Operators are commands that wait for a motion. For example, `d` (delete) + `w` (
 
 | Key | Action |
 |-----|--------|
-| `~` | Toggle case of character under cursor |
+| `~` / `{n}~` | Toggle case of character(s) under cursor |
 | `gu{motion}` | Lowercase with motion |
 | `guu` | Lowercase entire line |
 | `gU{motion}` | Uppercase with motion |
@@ -265,8 +277,8 @@ Operators are commands that wait for a motion. For example, `d` (delete) + `w` (
 
 | Key | Action |
 |-----|--------|
-| `J` | Join current line with line below (with space) |
-| `gJ` | Join lines without adding space |
+| `J` / `{n}J` | Join lines with spaces |
+| `gJ` / `{n}gJ` | Join lines without adding spaces |
 
 ---
 
@@ -464,6 +476,7 @@ Add, change, or delete surrounding pairs (quotes, brackets, etc.).
 | `ds{char}` | Delete surrounding pair |
 | `cs{old}{new}` | Change surrounding pair |
 | `ys{motion}{char}` | Add surrounding pair |
+| `yss{char}` | Add surrounding pair around current line |
 
 **In Visual Mode:**
 | Key | Action |

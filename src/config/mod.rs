@@ -163,6 +163,8 @@ pub struct KeymapSettings {
     pub timeoutlen: u64,
     /// Normal mode key remappings
     pub normal: Vec<KeymapEntry>,
+    /// Visual mode key remappings
+    pub visual: Vec<KeymapEntry>,
     /// Insert mode key remappings
     pub insert: Vec<KeymapEntry>,
     /// Command mode mappings for command-line UX actions
@@ -177,6 +179,7 @@ impl Default for KeymapSettings {
             leader: " ".to_string(), // Space as leader (common in Neovim)
             timeoutlen: 1000,        // 1 second (matches Vim default)
             normal: Vec::new(),
+            visual: Vec::new(),
             insert: Vec::new(),
             command_mappings: vec![
                 CommandModeMapping {
@@ -778,11 +781,11 @@ fn default_config_template() -> &'static str {
 # d{motion}/dd/D   - Delete with motion / line / to end
 # c{motion}/cc/C   - Change with motion / line / to end
 # y{motion}/yy/Y   - Yank with motion / line / line
-# p/P              - Paste after/before cursor
-# x/X              - Delete char under/before cursor
-# r{char}          - Replace character
-# J                - Join lines with space
-# gJ               - Join lines without space
+# p/P              - Paste after/before cursor (supports count)
+# x/X              - Delete char under/before cursor (supports count)
+# r{char}          - Replace character (supports count)
+# J                - Join lines with space (supports count)
+# gJ               - Join lines without space (supports count)
 # .                - Repeat last change
 # u/Ctrl+r         - Undo/redo
 #
@@ -797,7 +800,7 @@ fn default_config_template() -> &'static str {
 # ----------------------------------------------------------------------------
 # NORMAL MODE - Case
 # ----------------------------------------------------------------------------
-# ~                - Swap case of character
+# ~                - Swap case of character (supports count)
 # gu{motion}/guu   - Lowercase with motion / line
 # gU{motion}/gUU   - Uppercase with motion / line
 # g~{motion}/g~~   - Toggle case with motion / line
@@ -845,6 +848,7 @@ fn default_config_template() -> &'static str {
 # ds{char}         - Delete surrounding pair
 # cs{old}{new}     - Change surrounding pair
 # ys{motion}{char} - Add surrounding pair
+# yss{char}        - Add surrounding pair around current line
 #
 # ----------------------------------------------------------------------------
 # NORMAL MODE - Comment
@@ -969,6 +973,11 @@ fn default_config_template() -> &'static str {
 # [[keymap.normal]]
 # from = "L"
 # to = "$"
+#
+# To remap keys in visual mode:
+# [[keymap.visual]]
+# from = "s"
+# to = "S"
 #
 # To add/override leader mappings:
 # [[keymap.leader_mappings]]

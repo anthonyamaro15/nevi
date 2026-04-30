@@ -5547,6 +5547,7 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         }
     }
 
+    let register_before_action = editor.input_state.selected_register;
     let t_process = std::time::Instant::now();
     let action = editor.input_state.process_normal_key(key);
     let process_elapsed = t_process.elapsed();
@@ -5564,7 +5565,10 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         }
 
         KeyAction::OperatorMotion(op, motion, count) => {
-            let register = editor.input_state.take_register();
+            let register = editor
+                .input_state
+                .take_register()
+                .or(register_before_action);
             match op {
                 Operator::Delete => editor.delete_motion(motion, count, register),
                 Operator::Change => editor.change_motion(motion, count, register),
@@ -5575,7 +5579,10 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         }
 
         KeyAction::OperatorLine(op, count) => {
-            let register = editor.input_state.take_register();
+            let register = editor
+                .input_state
+                .take_register()
+                .or(register_before_action);
             match op {
                 Operator::Delete => editor.delete_line(count, register),
                 Operator::Change => editor.change_line(count, register),
@@ -5586,7 +5593,10 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         }
 
         KeyAction::OperatorTextObject(op, text_object) => {
-            let register = editor.input_state.take_register();
+            let register = editor
+                .input_state
+                .take_register()
+                .or(register_before_action);
             match op {
                 Operator::Delete => editor.delete_text_object(text_object, register),
                 Operator::Change => editor.change_text_object(text_object, register),
@@ -5690,22 +5700,28 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             }
         }
 
-        KeyAction::DeleteChar => {
-            editor.delete_char_at();
+        KeyAction::DeleteChar(count) => {
+            editor.delete_chars_at(count);
         }
 
-        KeyAction::DeleteCharBefore => {
-            editor.delete_char_before_normal();
+        KeyAction::DeleteCharBefore(count) => {
+            editor.delete_chars_before_normal(count);
         }
 
-        KeyAction::PasteAfter => {
-            let register = editor.input_state.take_register();
-            editor.paste_after(register);
+        KeyAction::PasteAfter(count) => {
+            let register = editor
+                .input_state
+                .take_register()
+                .or(register_before_action);
+            editor.paste_after_count(register, count);
         }
 
-        KeyAction::PasteBefore => {
-            let register = editor.input_state.take_register();
-            editor.paste_before(register);
+        KeyAction::PasteBefore(count) => {
+            let register = editor
+                .input_state
+                .take_register()
+                .or(register_before_action);
+            editor.paste_before_count(register, count);
         }
 
         KeyAction::Undo => {
@@ -5716,16 +5732,20 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.redo();
         }
 
-        KeyAction::ReplaceChar(c) => {
-            editor.replace_char(c);
+        KeyAction::ReplaceChar(c, count) => {
+            editor.replace_chars(c, count);
         }
 
-        KeyAction::JoinLines => {
-            editor.join_lines();
+        KeyAction::ToggleCaseChars(count) => {
+            editor.toggle_case_chars(count);
         }
 
-        KeyAction::JoinLinesNoSpace => {
-            editor.join_lines_no_space();
+        KeyAction::JoinLines(count) => {
+            editor.join_lines_count(count);
+        }
+
+        KeyAction::JoinLinesNoSpace(count) => {
+            editor.join_lines_no_space_count(count);
         }
 
         KeyAction::ScrollCenter => {
@@ -5955,6 +5975,14 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
 
         KeyAction::AddSurround(text_object, surround_char) => {
             editor.add_surrounding(text_object, surround_char);
+        }
+
+        KeyAction::AddSurroundMotion(motion, count, surround_char) => {
+            editor.add_surrounding_motion(motion, count, surround_char);
+        }
+
+        KeyAction::AddSurroundLine(surround_char) => {
+            editor.add_surrounding_line(surround_char);
         }
 
         KeyAction::ToggleCommentLine => {
@@ -6642,6 +6670,14 @@ fn handle_search_mode(editor: &mut Editor, key: KeyEvent) {
 fn handle_visual_mode(editor: &mut Editor, key: KeyEvent) {
     use crate::input::Motion;
 
+    if editor.input_state.pending_visual_surround {
+        editor.input_state.pending_visual_surround = false;
+        if let KeyCode::Char(c) = key.code {
+            editor.surround_visual_selection(c);
+        }
+        return;
+    }
+
     // Handle gc for comment toggle (after g was pressed)
     if editor.input_state.pending_comment {
         editor.input_state.pending_comment = false;
@@ -6691,6 +6727,11 @@ fn handle_visual_mode(editor: &mut Editor, key: KeyEvent) {
         return;
     }
 
+    if let Some(mapping) = editor.keymap.get_visual_mapping(key).cloned() {
+        execute_visual_keymap_action(editor, &mapping);
+        return;
+    }
+
     match (key.modifiers, key.code) {
         // Exit visual mode
         (KeyModifiers::NONE, KeyCode::Esc)
@@ -6731,6 +6772,13 @@ fn handle_visual_mode(editor: &mut Editor, key: KeyEvent) {
         }
         (KeyModifiers::NONE, KeyCode::Char('y')) => {
             editor.visual_yank();
+        }
+        (KeyModifiers::NONE, KeyCode::Char('p')) => {
+            let register = editor.input_state.take_register();
+            editor.visual_paste(register);
+        }
+        (KeyModifiers::SHIFT, KeyCode::Char('S')) => {
+            editor.input_state.pending_visual_surround = true;
         }
 
         // Motions - extend selection
@@ -6855,6 +6903,23 @@ fn handle_visual_mode(editor: &mut Editor, key: KeyEvent) {
         }
 
         _ => {}
+    }
+}
+
+fn execute_visual_keymap_action(editor: &mut Editor, action: &LeaderAction) {
+    match action {
+        LeaderAction::Command(cmd_str) => {
+            let cmd = parse_command(cmd_str);
+            execute_command(editor, cmd);
+        }
+        LeaderAction::Keys(keys) => {
+            for key in keys {
+                if !editor.mode.is_visual() {
+                    break;
+                }
+                handle_visual_mode(editor, *key);
+            }
+        }
     }
 }
 
@@ -8254,11 +8319,22 @@ pub fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
 
 #[cfg(test)]
 mod tests {
-    use super::{execute_command, finder_preview_match_ranges};
+    use super::{execute_command, finder_preview_match_ranges, handle_key};
     use crate::commands::Command;
-    use crate::editor::Editor;
+    use crate::config::{KeymapEntry, Settings};
+    use crate::editor::{Editor, Mode, RegisterContent};
+    use crate::input::Motion;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn shift_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)
+    }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -8308,5 +8384,164 @@ mod tests {
             finder_preview_match_ranges("aaaa", "aa"),
             vec![(0, 2), (2, 4)]
         );
+    }
+
+    #[test]
+    fn normal_tilde_toggles_counted_chars() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("aBcD\n");
+
+        handle_key(&mut editor, key('3'));
+        handle_key(&mut editor, shift_key('~'));
+
+        assert_eq!(editor.buffer().content(), "AbCD\n");
+    }
+
+    #[test]
+    fn normal_counted_x_deletes_multiple_chars() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("abcd\n");
+
+        handle_key(&mut editor, key('3'));
+        handle_key(&mut editor, key('x'));
+
+        assert_eq!(editor.buffer().content(), "d\n");
+    }
+
+    #[test]
+    fn normal_counted_replace_replaces_multiple_chars() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("abcd\n");
+
+        handle_key(&mut editor, key('3'));
+        handle_key(&mut editor, key('r'));
+        handle_key(&mut editor, key('x'));
+
+        assert_eq!(editor.buffer().content(), "xxxd\n");
+    }
+
+    #[test]
+    fn normal_counted_named_paste_repeats_content() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("ab\n");
+        editor
+            .registers
+            .yank(Some('a'), RegisterContent::Chars("x".to_string()));
+
+        handle_key(&mut editor, key('"'));
+        handle_key(&mut editor, key('a'));
+        handle_key(&mut editor, key('3'));
+        handle_key(&mut editor, key('p'));
+
+        assert_eq!(editor.buffer().content(), "axxxb\n");
+    }
+
+    #[test]
+    fn normal_counted_join_joins_that_many_lines() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("a\nb\nc\nd\n");
+
+        handle_key(&mut editor, key('3'));
+        handle_key(&mut editor, shift_key('J'));
+
+        assert_eq!(editor.buffer().content(), "a b c\nd\n");
+    }
+
+    #[test]
+    fn visual_paste_replaces_selection() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("hello world\n");
+        editor
+            .registers
+            .yank(Some('a'), RegisterContent::Chars("nevi".to_string()));
+
+        editor.enter_visual_mode();
+        editor.apply_motion(Motion::WordEnd, 1);
+        editor.input_state.selected_register = Some('a');
+        handle_key(&mut editor, key('p'));
+
+        assert_eq!(editor.buffer().content(), "nevi world\n");
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn visual_surround_wraps_selection() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("hello\n");
+
+        editor.enter_visual_mode();
+        editor.apply_motion(Motion::WordEnd, 1);
+        handle_key(&mut editor, shift_key('S'));
+        handle_key(&mut editor, key('"'));
+
+        assert_eq!(editor.buffer().content(), "\"hello\"\n");
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn visual_keymap_can_override_change_with_paste() {
+        let mut settings = Settings::default();
+        settings.keymap.visual.push(KeymapEntry {
+            from: "s".to_string(),
+            to: "p".to_string(),
+        });
+        let mut editor = Editor::new(settings);
+        editor.replace_buffer_content("hello world\n");
+        editor
+            .registers
+            .yank(Some('a'), RegisterContent::Chars("nevi".to_string()));
+
+        editor.enter_visual_mode();
+        editor.apply_motion(Motion::WordEnd, 1);
+        editor.input_state.selected_register = Some('a');
+        handle_key(&mut editor, key('s'));
+
+        assert_eq!(editor.buffer().content(), "nevi world\n");
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn visual_keymap_can_override_change_with_surround() {
+        let mut settings = Settings::default();
+        settings.keymap.visual.push(KeymapEntry {
+            from: "s".to_string(),
+            to: "S".to_string(),
+        });
+        let mut editor = Editor::new(settings);
+        editor.replace_buffer_content("hello\n");
+
+        editor.enter_visual_mode();
+        editor.apply_motion(Motion::WordEnd, 1);
+        handle_key(&mut editor, key('s'));
+        handle_key(&mut editor, key('"'));
+
+        assert_eq!(editor.buffer().content(), "\"hello\"\n");
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn ys_line_surrounds_current_line() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("hello\n");
+
+        handle_key(&mut editor, key('y'));
+        handle_key(&mut editor, key('s'));
+        handle_key(&mut editor, key('s'));
+        handle_key(&mut editor, key(')'));
+
+        assert_eq!(editor.buffer().content(), "(hello)\n");
+    }
+
+    #[test]
+    fn ys_motion_surrounds_motion_range() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("hello world\n");
+
+        handle_key(&mut editor, key('y'));
+        handle_key(&mut editor, key('s'));
+        handle_key(&mut editor, shift_key('$'));
+        handle_key(&mut editor, key('"'));
+
+        assert_eq!(editor.buffer().content(), "\"hello world\"\n");
     }
 }
