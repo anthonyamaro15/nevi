@@ -279,6 +279,14 @@ pub enum LspNotification {
         /// Resolved companion edits such as auto-import insertion
         additional_text_edits: Vec<TextEdit>,
     },
+
+    /// Work-done progress from a language server.
+    Progress {
+        title: String,
+        message: Option<String>,
+        percentage: Option<u64>,
+        done: bool,
+    },
 }
 
 /// A code action item from LSP
