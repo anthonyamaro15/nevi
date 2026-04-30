@@ -102,6 +102,8 @@ pub enum Command {
     HarpoonJump(usize),
     /// :Terminal - Toggle floating terminal
     ToggleTerminal,
+    /// :TerminalKill - Kill the floating terminal process
+    TerminalKill,
     /// :CopilotAuth - Initiate Copilot sign-in
     CopilotAuth,
     /// :CopilotSignOut - Sign out of Copilot
@@ -440,6 +442,12 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         command: "Terminal",
         aliases: &["terminal", "term"],
         description: "Toggle floating terminal",
+        takes_args: false,
+    },
+    CommandSpec {
+        command: "TerminalKill",
+        aliases: &["terminalkill", "termkill"],
+        description: "Kill floating terminal",
         takes_args: false,
     },
     CommandSpec {
@@ -809,6 +817,7 @@ pub fn parse_command(input: &str) -> Command {
 
         // Terminal command
         "Terminal" | "terminal" | "term" => Command::ToggleTerminal,
+        "TerminalKill" | "terminalkill" | "TermKill" | "termkill" => Command::TerminalKill,
 
         // Copilot commands
         "CopilotAuth" | "copilotauth" | "Copilot" | "copilot" => Command::CopilotAuth,

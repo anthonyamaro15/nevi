@@ -2171,6 +2171,14 @@ impl Editor {
         self.term_width = width;
         self.term_height = height;
         self.update_pane_rects();
+        self.sync_floating_terminal_size();
+    }
+
+    /// Keep the PTY dimensions aligned with the floating terminal content area.
+    pub fn sync_floating_terminal_size(&mut self) {
+        let (rows, cols) =
+            crate::floating_terminal::content_size_for_screen(self.term_width, self.term_height);
+        self.floating_terminal.resize(rows, cols);
     }
 
     /// Get the number of rows available for text (excluding status line)

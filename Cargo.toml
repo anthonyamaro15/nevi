@@ -54,6 +54,7 @@ serde_json = "1.0"        # JSON serialization for LSP messages
 
 # Floating terminal
 portable-pty = "0.8"      # Cross-platform PTY support
+alacritty_terminal = { version = "0.26", default-features = false }
 grep-regex = "0.1.14"
 grep-searcher = "0.1.16"
 grep-matcher = "0.1.8"
