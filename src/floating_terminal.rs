@@ -683,6 +683,24 @@ impl FloatingTerminal {
         Ok(self.active_status())
     }
 
+    /// Rename the active terminal session.
+    pub fn rename_active_session(&mut self, name: String) -> anyhow::Result<String> {
+        let Some(idx) = self.active else {
+            anyhow::bail!("No terminal session");
+        };
+
+        self.rename_session_by_index(idx, name)
+    }
+
+    /// Rename a terminal session by its 1-based list position.
+    pub fn rename_session(&mut self, position: usize, name: String) -> anyhow::Result<String> {
+        if position == 0 || position > self.sessions.len() {
+            anyhow::bail!("No terminal session {}", position);
+        }
+
+        self.rename_session_by_index(position - 1, name)
+    }
+
     /// Return structured summaries of all terminal sessions.
     pub fn session_infos(&self) -> Vec<TerminalSessionInfo> {
         self.sessions
@@ -908,6 +926,20 @@ impl FloatingTerminal {
         Ok(())
     }
 
+    fn rename_session_by_index(&mut self, idx: usize, name: String) -> anyhow::Result<String> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("Terminal name cannot be empty");
+        }
+
+        let Some(session) = self.sessions.get_mut(idx) else {
+            anyhow::bail!("No terminal session {}", idx + 1);
+        };
+
+        session.name = trimmed.to_string();
+        Ok(format!("Terminal {} renamed to: {}", idx + 1, session.name))
+    }
+
     /// Feed bytes directly into the active emulator. Used by unit tests.
     #[cfg(test)]
     fn process_bytes(&mut self, data: &[u8]) {
@@ -1058,6 +1090,33 @@ mod tests {
         assert_eq!(terminal.sessions[0].name, "server");
         assert_eq!(terminal.sessions[1].name, "tests");
         assert_eq!(terminal.active, Some(1));
+    }
+
+    #[test]
+    fn rename_terminal_sessions_by_active_or_position() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.push_session(Some("server".to_string()));
+        terminal.push_session(Some("git".to_string()));
+        terminal.active = Some(1);
+
+        terminal
+            .rename_active_session("lazygit".to_string())
+            .unwrap();
+        terminal
+            .rename_session(1, " dev server ".to_string())
+            .unwrap();
+
+        assert_eq!(terminal.sessions[0].name, "dev server");
+        assert_eq!(terminal.sessions[1].name, "lazygit");
+    }
+
+    #[test]
+    fn rename_terminal_rejects_empty_name() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.push_session(Some("server".to_string()));
+
+        assert!(terminal.rename_active_session("   ".to_string()).is_err());
+        assert_eq!(terminal.sessions[0].name, "server");
     }
 
     #[test]

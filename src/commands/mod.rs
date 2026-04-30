@@ -114,6 +114,8 @@ pub enum Command {
     TerminalPicker,
     /// :TerminalSelect {index} - Select floating terminal session
     TerminalSelect(usize),
+    /// :TerminalRename [index] {name} - Rename a floating terminal session
+    TerminalRename(Option<usize>, String),
     /// :TerminalKill - Kill the floating terminal process
     TerminalKill,
     /// :CopilotAuth - Initiate Copilot sign-in
@@ -496,6 +498,12 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         command: "TerminalSelect",
         aliases: &["terminalselect", "termsel", "termselect"],
         description: "Select floating terminal session",
+        takes_args: true,
+    },
+    CommandSpec {
+        command: "TerminalRename",
+        aliases: &["terminalrename", "termrename"],
+        description: "Rename floating terminal session",
         takes_args: true,
     },
     CommandSpec {
@@ -890,6 +898,9 @@ pub fn parse_command(input: &str) -> Command {
                 Command::Unknown("termselect: missing session number".to_string())
             }
         }
+        "TerminalRename" | "terminalrename" | "TermRename" | "termrename" => {
+            parse_terminal_rename_args(args)
+        }
         "TerminalKill" | "terminalkill" | "TermKill" | "termkill" => Command::TerminalKill,
 
         // Copilot commands
@@ -921,6 +932,25 @@ pub fn parse_command(input: &str) -> Command {
 
         // Unknown command
         _ => Command::Unknown(cmd.to_string()),
+    }
+}
+
+fn parse_terminal_rename_args(args: Option<&str>) -> Command {
+    let Some(args) = args.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Command::Unknown("termrename: missing name".to_string());
+    };
+
+    let mut parts = args.splitn(2, char::is_whitespace);
+    let first = parts.next().unwrap_or("");
+    let rest = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    if let (Ok(position), Some(name)) = (first.parse::<usize>(), rest) {
+        Command::TerminalRename(Some(position), name.to_string())
+    } else {
+        Command::TerminalRename(None, args.to_string())
     }
 }
 
@@ -1034,6 +1064,14 @@ impl CommandLine {
     /// Prepare a fresh command prompt state when entering `:` mode.
     pub fn begin_prompt(&mut self) {
         self.clear();
+        self.refresh_command_suggestions();
+    }
+
+    /// Prepare command mode with prefilled input.
+    pub fn begin_prompt_with_input(&mut self, input: impl Into<String>) {
+        self.clear();
+        self.input = input.into();
+        self.cursor = self.char_count();
         self.refresh_command_suggestions();
     }
 
@@ -1477,6 +1515,14 @@ mod tests {
         assert!(matches!(parse_command("termprev"), Command::TerminalPrev));
         assert!(matches!(parse_command("termls"), Command::TerminalList));
         assert!(matches!(parse_command("termmenu"), Command::TerminalPicker));
+        assert!(matches!(
+            parse_command("termrename server"),
+            Command::TerminalRename(None, name) if name == "server"
+        ));
+        assert!(matches!(
+            parse_command("termrename 2 test runner"),
+            Command::TerminalRename(Some(2), name) if name == "test runner"
+        ));
     }
 
     #[test]
