@@ -118,10 +118,12 @@ impl Default for TerminalCell {
     }
 }
 
-/// Floating terminal state
-pub struct FloatingTerminal {
+/// One PTY-backed terminal session.
+struct TerminalSession {
+    id: usize,
+    name: String,
     /// Whether the terminal is currently visible
-    pub visible: bool,
+    visible: bool,
     /// Alacritty terminal emulator grid
     term: Term<VoidListener>,
     /// VTE parser feeding the emulator grid
@@ -145,13 +147,12 @@ pub struct FloatingTerminal {
     process_exited: bool,
 }
 
-impl FloatingTerminal {
-    /// Create a new floating terminal (not yet spawned)
-    pub fn new() -> Self {
-        let rows = 24;
-        let cols = 80;
-
+impl TerminalSession {
+    /// Create a new terminal session (not yet spawned)
+    fn new(id: usize, name: String, rows: u16, cols: u16, working_dir: PathBuf) -> Self {
         Self {
+            id,
+            name,
             visible: false,
             term: Self::new_term(rows, cols),
             processor: VteProcessor::new(),
@@ -162,7 +163,7 @@ impl FloatingTerminal {
             child: None,
             output_buffer: Arc::new(Mutex::new(Vec::new())),
             reader_thread: None,
-            working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+            working_dir,
             process_exited: false,
         }
     }
@@ -174,25 +175,21 @@ impl FloatingTerminal {
     }
 
     /// Set the working directory for the terminal
-    pub fn set_working_dir(&mut self, path: PathBuf) {
+    fn set_working_dir(&mut self, path: PathBuf) {
         self.working_dir = path;
     }
 
-    /// Toggle terminal visibility
-    pub fn toggle(&mut self) -> bool {
-        if self.visible && !self.process_exited {
-            self.visible = false;
-        } else {
-            // Spawn if not already running or if process exited
-            if self.pty_master.is_none() || self.process_exited {
-                if let Err(e) = self.spawn() {
-                    eprintln!("Failed to spawn terminal: {}", e);
-                    return false;
-                }
-            }
-            self.visible = true;
+    fn show(&mut self) -> anyhow::Result<()> {
+        // Spawn if not already running or if process exited
+        if self.pty_master.is_none() || self.process_exited {
+            self.spawn()?;
         }
-        self.visible
+        self.visible = true;
+        Ok(())
+    }
+
+    fn hide(&mut self) {
+        self.visible = false;
     }
 
     /// Spawn the terminal process
@@ -255,7 +252,7 @@ impl FloatingTerminal {
     }
 
     /// Resize the terminal
-    pub fn resize(&mut self, rows: u16, cols: u16) {
+    fn resize(&mut self, rows: u16, cols: u16) {
         let rows = rows.max(1).min(BUFFER_ROWS as u16);
         let cols = cols.max(2).min(BUFFER_COLS as u16);
         if self.rows == rows && self.cols == cols {
@@ -277,7 +274,7 @@ impl FloatingTerminal {
     }
 
     /// Send input to the terminal
-    pub fn send_input(&mut self, data: &[u8]) {
+    fn send_input(&mut self, data: &[u8]) {
         if let Some(ref mut writer) = self.pty_writer {
             if writer.write_all(data).and_then(|_| writer.flush()).is_err() {
                 self.mark_process_exited();
@@ -286,7 +283,7 @@ impl FloatingTerminal {
     }
 
     /// Send a key to the terminal
-    pub fn send_key(&mut self, key: crossterm::event::KeyEvent) {
+    fn send_key(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
 
         let app_cursor = self.term.mode().contains(TermMode::APP_CURSOR);
@@ -338,7 +335,7 @@ impl FloatingTerminal {
 
     /// Process output from the terminal and update buffer
     /// Returns true if there was new output to process
-    pub fn process_output(&mut self) -> bool {
+    fn process_output(&mut self) -> bool {
         // Check if process has exited
         let process_exited = self
             .child
@@ -382,7 +379,7 @@ impl FloatingTerminal {
     }
 
     /// Get visible styled cells for rendering.
-    pub fn get_visible_cells(&self, rows: usize, cols: usize) -> Vec<Vec<TerminalCell>> {
+    fn get_visible_cells(&self, rows: usize, cols: usize) -> Vec<Vec<TerminalCell>> {
         let mut lines = vec![vec![TerminalCell::default(); cols]; rows];
         let content = self.term.renderable_content();
 
@@ -401,7 +398,7 @@ impl FloatingTerminal {
     }
 
     /// Get visible lines for tests and plain rendering fallbacks.
-    pub fn get_visible_lines(&self, rows: usize, cols: usize) -> Vec<String> {
+    fn get_visible_lines(&self, rows: usize, cols: usize) -> Vec<String> {
         self.get_visible_cells(rows, cols)
             .into_iter()
             .map(|row| {
@@ -415,7 +412,7 @@ impl FloatingTerminal {
     }
 
     /// Get cursor position within visible area
-    pub fn get_cursor_pos(&self) -> (usize, usize) {
+    fn get_cursor_pos(&self) -> (usize, usize) {
         let content = self.term.renderable_content();
         point_to_viewport(content.display_offset, content.cursor.point)
             .map(|point| (point.line, point.column.0))
@@ -423,12 +420,12 @@ impl FloatingTerminal {
     }
 
     /// Check if terminal is visible
-    pub fn is_visible(&self) -> bool {
+    fn is_visible(&self) -> bool {
         self.visible
     }
 
     /// Close the terminal (kill process)
-    pub fn close(&mut self) {
+    fn close(&mut self) {
         self.visible = false;
 
         // Kill the child process first
@@ -580,6 +577,314 @@ impl FloatingTerminal {
     }
 }
 
+/// Manages multiple floating terminal sessions.
+pub struct FloatingTerminal {
+    sessions: Vec<TerminalSession>,
+    active: Option<usize>,
+    rows: u16,
+    cols: u16,
+    working_dir: PathBuf,
+    next_id: usize,
+}
+
+impl FloatingTerminal {
+    /// Create a new floating terminal manager.
+    pub fn new() -> Self {
+        Self {
+            sessions: Vec::new(),
+            active: None,
+            rows: 24,
+            cols: 80,
+            working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+            next_id: 1,
+        }
+    }
+
+    /// Set the working directory used by newly created terminal sessions.
+    pub fn set_working_dir(&mut self, path: PathBuf) {
+        self.working_dir = path.clone();
+        for session in &mut self.sessions {
+            if session.pty_master.is_none() || session.process_exited {
+                session.set_working_dir(path.clone());
+            }
+        }
+    }
+
+    /// Toggle the active terminal's visibility, creating the first session if needed.
+    pub fn toggle(&mut self) -> bool {
+        if let Some(active) = self.active_session() {
+            if active.is_visible() && !active.process_exited {
+                active.hide();
+                return false;
+            }
+        }
+
+        self.show_active().is_ok()
+    }
+
+    /// Create and show a new terminal session.
+    pub fn create_session(&mut self, name: Option<String>) -> anyhow::Result<String> {
+        let idx = self.push_session(name);
+        self.show_session(idx)?;
+        Ok(self.active_status())
+    }
+
+    /// Switch to the next terminal session and show it.
+    pub fn next_session(&mut self) -> anyhow::Result<String> {
+        if self.sessions.is_empty() {
+            return self.create_session(None);
+        }
+
+        let next = self
+            .active
+            .map(|idx| (idx + 1) % self.sessions.len())
+            .unwrap_or(0);
+        self.show_session(next)?;
+        Ok(self.active_status())
+    }
+
+    /// Switch to the previous terminal session and show it.
+    pub fn previous_session(&mut self) -> anyhow::Result<String> {
+        if self.sessions.is_empty() {
+            return self.create_session(None);
+        }
+
+        let previous = self
+            .active
+            .map(|idx| {
+                if idx == 0 {
+                    self.sessions.len() - 1
+                } else {
+                    idx - 1
+                }
+            })
+            .unwrap_or(0);
+        self.show_session(previous)?;
+        Ok(self.active_status())
+    }
+
+    /// Select a terminal session by its 1-based list position and show it.
+    pub fn select_session(&mut self, position: usize) -> anyhow::Result<String> {
+        if position == 0 || position > self.sessions.len() {
+            anyhow::bail!("No terminal session {}", position);
+        }
+
+        self.show_session(position - 1)?;
+        Ok(self.active_status())
+    }
+
+    /// Return a compact summary of all terminal sessions.
+    pub fn list_sessions(&self) -> String {
+        if self.sessions.is_empty() {
+            return "No terminal sessions".to_string();
+        }
+
+        let sessions = self
+            .sessions
+            .iter()
+            .enumerate()
+            .map(|(idx, session)| {
+                let marker = if Some(idx) == self.active { "*" } else { " " };
+                let state = if session.process_exited {
+                    "exited"
+                } else if session.is_visible() {
+                    "visible"
+                } else {
+                    "hidden"
+                };
+                format!(
+                    "{}{}:{}#{} ({})",
+                    marker,
+                    idx + 1,
+                    session.name,
+                    session.id,
+                    state
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        format!("Terminals: {}", sessions)
+    }
+
+    /// Title for the active floating terminal window.
+    pub fn title(&self) -> String {
+        self.active
+            .and_then(|idx| self.sessions.get(idx).map(|session| (idx, session)))
+            .map(|(idx, session)| {
+                format!(
+                    " Terminal {}/{}: {} ",
+                    idx + 1,
+                    self.sessions.len(),
+                    session.name
+                )
+            })
+            .unwrap_or_else(|| " Terminal ".to_string())
+    }
+
+    /// Resize all sessions to match the floating terminal content area.
+    pub fn resize(&mut self, rows: u16, cols: u16) {
+        self.rows = rows.max(1).min(BUFFER_ROWS as u16);
+        self.cols = cols.max(2).min(BUFFER_COLS as u16);
+        for session in &mut self.sessions {
+            session.resize(self.rows, self.cols);
+        }
+    }
+
+    /// Send a key to the active visible terminal.
+    pub fn send_key(&mut self, key: crossterm::event::KeyEvent) {
+        if let Some(active) = self.active_session() {
+            if active.is_visible() {
+                active.send_key(key);
+            }
+        }
+    }
+
+    /// Process output for all sessions.
+    /// Returns true when the active visible terminal needs a redraw or has just hidden.
+    pub fn process_output(&mut self) -> bool {
+        let active = self.active;
+        let mut active_changed = false;
+
+        for (idx, session) in self.sessions.iter_mut().enumerate() {
+            let was_visible = session.is_visible();
+            if session.process_output()
+                && Some(idx) == active
+                && (was_visible || session.is_visible())
+            {
+                active_changed = true;
+            }
+        }
+
+        active_changed
+    }
+
+    /// Get visible styled cells for rendering.
+    pub fn get_visible_cells(&self, rows: usize, cols: usize) -> Vec<Vec<TerminalCell>> {
+        self.active
+            .and_then(|idx| self.sessions.get(idx))
+            .map(|session| session.get_visible_cells(rows, cols))
+            .unwrap_or_else(|| vec![vec![TerminalCell::default(); cols]; rows])
+    }
+
+    /// Get visible lines for tests and plain rendering fallbacks.
+    pub fn get_visible_lines(&self, rows: usize, cols: usize) -> Vec<String> {
+        self.active
+            .and_then(|idx| self.sessions.get(idx))
+            .map(|session| session.get_visible_lines(rows, cols))
+            .unwrap_or_else(|| vec![String::new(); rows])
+    }
+
+    /// Get cursor position within visible area.
+    pub fn get_cursor_pos(&self) -> (usize, usize) {
+        self.active
+            .and_then(|idx| self.sessions.get(idx))
+            .map(|session| session.get_cursor_pos())
+            .unwrap_or((0, 0))
+    }
+
+    /// Check if the active terminal is visible.
+    pub fn is_visible(&self) -> bool {
+        self.active
+            .and_then(|idx| self.sessions.get(idx))
+            .map(|session| session.is_visible())
+            .unwrap_or(false)
+    }
+
+    /// Kill and remove the active terminal session.
+    pub fn close(&mut self) {
+        let Some(idx) = self.active else {
+            return;
+        };
+        if idx >= self.sessions.len() {
+            self.active = None;
+            return;
+        }
+
+        let mut session = self.sessions.remove(idx);
+        session.close();
+
+        if self.sessions.is_empty() {
+            self.active = None;
+        } else {
+            self.active = Some(idx.min(self.sessions.len() - 1));
+        }
+    }
+
+    fn active_status(&self) -> String {
+        self.active
+            .and_then(|idx| {
+                self.sessions.get(idx).map(|session| {
+                    format!(
+                        "Terminal {}/{}: {}",
+                        idx + 1,
+                        self.sessions.len(),
+                        session.name
+                    )
+                })
+            })
+            .unwrap_or_else(|| "No terminal sessions".to_string())
+    }
+
+    fn active_session(&mut self) -> Option<&mut TerminalSession> {
+        let idx = self.active?;
+        self.sessions.get_mut(idx)
+    }
+
+    fn ensure_active_index(&mut self) -> usize {
+        if self.active.is_none_or(|idx| idx >= self.sessions.len()) {
+            let idx = self.push_session(None);
+            self.active = Some(idx);
+        }
+
+        self.active.unwrap_or(0)
+    }
+
+    fn push_session(&mut self, name: Option<String>) -> usize {
+        let id = self.next_id;
+        self.next_id += 1;
+        let name = name
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| format!("term-{}", id));
+
+        let session =
+            TerminalSession::new(id, name, self.rows, self.cols, self.working_dir.clone());
+        self.sessions.push(session);
+        let idx = self.sessions.len() - 1;
+        self.active = Some(idx);
+        idx
+    }
+
+    fn show_active(&mut self) -> anyhow::Result<()> {
+        let idx = self.ensure_active_index();
+        self.show_session(idx)
+    }
+
+    fn show_session(&mut self, idx: usize) -> anyhow::Result<()> {
+        if idx >= self.sessions.len() {
+            anyhow::bail!("No terminal session {}", idx + 1);
+        }
+
+        for (session_idx, session) in self.sessions.iter_mut().enumerate() {
+            if session_idx != idx {
+                session.hide();
+            }
+        }
+
+        self.sessions[idx].show()?;
+        self.active = Some(idx);
+        Ok(())
+    }
+
+    /// Feed bytes directly into the active emulator. Used by unit tests.
+    #[cfg(test)]
+    fn process_bytes(&mut self, data: &[u8]) {
+        let idx = self.ensure_active_index();
+        self.sessions[idx].process_bytes(data);
+    }
+}
+
 impl Default for FloatingTerminal {
     fn default() -> Self {
         Self::new()
@@ -654,5 +959,50 @@ mod tests {
 
         assert_eq!(cells[0][0].ch, 'r');
         assert!(cells[0][0].fg.is_some());
+    }
+
+    #[test]
+    fn terminal_sessions_keep_independent_buffers() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.resize(3, 20);
+
+        let first = terminal.ensure_active_index();
+        terminal.sessions[first].process_bytes(b"server");
+        let second = terminal.push_session(Some("git".to_string()));
+        terminal.sessions[second].process_bytes(b"lazygit");
+
+        terminal.active = Some(first);
+        assert_eq!(terminal.get_visible_lines(3, 20)[0], "server");
+
+        terminal.active = Some(second);
+        assert_eq!(terminal.get_visible_lines(3, 20)[0], "lazygit");
+        assert_eq!(terminal.title(), " Terminal 2/2: git ");
+    }
+
+    #[test]
+    fn terminal_list_marks_active_session() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.push_session(Some("server".to_string()));
+        terminal.push_session(Some("git".to_string()));
+        terminal.active = Some(1);
+
+        let list = terminal.list_sessions();
+
+        assert!(list.contains(" 1:server#1"));
+        assert!(list.contains("*2:git#2"));
+    }
+
+    #[test]
+    fn close_removes_active_session() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.push_session(Some("server".to_string()));
+        terminal.push_session(Some("git".to_string()));
+        terminal.active = Some(0);
+
+        terminal.close();
+
+        assert_eq!(terminal.sessions.len(), 1);
+        assert_eq!(terminal.sessions[0].name, "git");
+        assert_eq!(terminal.active, Some(0));
     }
 }

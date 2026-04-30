@@ -4106,10 +4106,15 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        let title = " Terminal ";
         let close_hint = " [<C-\\>] ";
         let title_start = 2usize;
         let close_start = (term_width as usize).saturating_sub(close_hint.len() + 2);
+        let max_title_width = close_start.saturating_sub(title_start).saturating_sub(1);
+        let mut title = editor.floating_terminal.title();
+        if title.chars().count() > max_title_width {
+            title = title.chars().take(max_title_width).collect();
+        }
+        let title_width = title.chars().count();
 
         print!("╭");
         for i in 1..(term_width - 1) {
@@ -4118,7 +4123,7 @@ impl Terminal {
                 execute!(self.stdout, SetForegroundColor(title_color))?;
                 print!("{}", title);
                 execute!(self.stdout, SetForegroundColor(border_color))?;
-            } else if i > title_start && i < title_start + title.len() {
+            } else if i > title_start && i < title_start + title_width {
                 // Skip - title already printed
             } else if i == close_start {
                 execute!(
@@ -4217,10 +4222,7 @@ impl Terminal {
         Ok(())
     }
 
-    fn apply_terminal_cell_style(
-        &mut self,
-        style: TerminalRenderStyle,
-    ) -> anyhow::Result<()> {
+    fn apply_terminal_cell_style(&mut self, style: TerminalRenderStyle) -> anyhow::Result<()> {
         execute!(
             self.stdout,
             SetAttribute(Attribute::Reset),
@@ -8271,6 +8273,23 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             editor.floating_terminal.toggle();
             CommandResult::Ok
         }
+        Command::TerminalNew(name) => match editor.floating_terminal.create_session(name) {
+            Ok(message) => CommandResult::Message(message),
+            Err(e) => CommandResult::Error(format!("Terminal new failed: {}", e)),
+        },
+        Command::TerminalNext => match editor.floating_terminal.next_session() {
+            Ok(message) => CommandResult::Message(message),
+            Err(e) => CommandResult::Error(format!("Terminal next failed: {}", e)),
+        },
+        Command::TerminalPrev => match editor.floating_terminal.previous_session() {
+            Ok(message) => CommandResult::Message(message),
+            Err(e) => CommandResult::Error(format!("Terminal previous failed: {}", e)),
+        },
+        Command::TerminalList => CommandResult::Message(editor.floating_terminal.list_sessions()),
+        Command::TerminalSelect(index) => match editor.floating_terminal.select_session(index) {
+            Ok(message) => CommandResult::Message(message),
+            Err(e) => CommandResult::Error(format!("Terminal select failed: {}", e)),
+        },
         Command::TerminalKill => {
             editor.floating_terminal.close();
             CommandResult::Message("Terminal killed".to_string())

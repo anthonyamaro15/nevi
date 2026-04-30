@@ -102,6 +102,16 @@ pub enum Command {
     HarpoonJump(usize),
     /// :Terminal - Toggle floating terminal
     ToggleTerminal,
+    /// :TerminalNew [name] - Create a new floating terminal session
+    TerminalNew(Option<String>),
+    /// :TerminalNext - Switch to next floating terminal session
+    TerminalNext,
+    /// :TerminalPrev - Switch to previous floating terminal session
+    TerminalPrev,
+    /// :TerminalList - List floating terminal sessions
+    TerminalList,
+    /// :TerminalSelect {index} - Select floating terminal session
+    TerminalSelect(usize),
     /// :TerminalKill - Kill the floating terminal process
     TerminalKill,
     /// :CopilotAuth - Initiate Copilot sign-in
@@ -443,6 +453,36 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         aliases: &["terminal", "term"],
         description: "Toggle floating terminal",
         takes_args: false,
+    },
+    CommandSpec {
+        command: "TerminalNew",
+        aliases: &["terminalnew", "termnew"],
+        description: "Create floating terminal session",
+        takes_args: true,
+    },
+    CommandSpec {
+        command: "TerminalNext",
+        aliases: &["terminalnext", "termnext"],
+        description: "Switch to next floating terminal session",
+        takes_args: false,
+    },
+    CommandSpec {
+        command: "TerminalPrev",
+        aliases: &["terminalprev", "termprev"],
+        description: "Switch to previous floating terminal session",
+        takes_args: false,
+    },
+    CommandSpec {
+        command: "TerminalList",
+        aliases: &["terminallist", "termlist", "termls"],
+        description: "List floating terminal sessions",
+        takes_args: false,
+    },
+    CommandSpec {
+        command: "TerminalSelect",
+        aliases: &["terminalselect", "termsel", "termselect"],
+        description: "Select floating terminal session",
+        takes_args: true,
     },
     CommandSpec {
         command: "TerminalKill",
@@ -817,6 +857,21 @@ pub fn parse_command(input: &str) -> Command {
 
         // Terminal command
         "Terminal" | "terminal" | "term" => Command::ToggleTerminal,
+        "TerminalNew" | "terminalnew" | "TermNew" | "termnew" => {
+            Command::TerminalNew(args.map(|value| value.to_string()))
+        }
+        "TerminalNext" | "terminalnext" | "TermNext" | "termnext" => Command::TerminalNext,
+        "TerminalPrev" | "terminalprev" | "TermPrev" | "termprev" => Command::TerminalPrev,
+        "TerminalList" | "terminallist" | "TermList" | "termlist" | "termls" => {
+            Command::TerminalList
+        }
+        "TerminalSelect" | "terminalselect" | "TermSelect" | "termselect" | "termsel" => {
+            if let Some(index) = args.and_then(|value| value.parse::<usize>().ok()) {
+                Command::TerminalSelect(index)
+            } else {
+                Command::Unknown("termselect: missing session number".to_string())
+            }
+        }
         "TerminalKill" | "terminalkill" | "TermKill" | "termkill" => Command::TerminalKill,
 
         // Copilot commands
@@ -1388,6 +1443,21 @@ mod tests {
         let changed = line.accept_completion_selection();
         assert!(changed);
         assert_eq!(line.input, "mkdir src/components");
+    }
+
+    #[test]
+    fn terminal_session_commands_parse_arguments() {
+        assert!(matches!(
+            parse_command("termnew server"),
+            Command::TerminalNew(Some(name)) if name == "server"
+        ));
+        assert!(matches!(
+            parse_command("termsel 2"),
+            Command::TerminalSelect(2)
+        ));
+        assert!(matches!(parse_command("termnext"), Command::TerminalNext));
+        assert!(matches!(parse_command("termprev"), Command::TerminalPrev));
+        assert!(matches!(parse_command("termls"), Command::TerminalList));
     }
 
     #[test]
