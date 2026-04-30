@@ -3,7 +3,7 @@
 //! Provides a toggleable floating terminal window that runs the user's shell.
 
 use alacritty_terminal::{
-    event::VoidListener,
+    event::{Event, EventListener},
     grid::Dimensions,
     term::{
         cell::{Cell, Flags},
@@ -27,6 +27,7 @@ const BUFFER_COLS: usize = 200;
 const FLOATING_TERMINAL_RATIO: f32 = 0.6;
 const MIN_POPUP_WIDTH: u16 = 40;
 const MIN_POPUP_HEIGHT: u16 = 10;
+const MAX_TITLE_LEN: usize = 120;
 
 /// Calculate the floating terminal popup size for the editor screen.
 pub fn popup_size_for_screen(screen_width: u16, screen_height: u16) -> (u16, u16) {
@@ -78,6 +79,44 @@ impl Dimensions for TerminalDimensions {
     }
 }
 
+#[derive(Clone)]
+struct TerminalEventListener {
+    title: Arc<Mutex<Option<String>>>,
+}
+
+impl EventListener for TerminalEventListener {
+    fn send_event(&self, event: Event) {
+        match event {
+            Event::Title(title) => {
+                if let Ok(mut current_title) = self.title.lock() {
+                    *current_title = sanitize_terminal_title(&title);
+                }
+            }
+            Event::ResetTitle => {
+                if let Ok(mut current_title) = self.title.lock() {
+                    *current_title = None;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn sanitize_terminal_title(title: &str) -> Option<String> {
+    let sanitized: String = title
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(MAX_TITLE_LEN)
+        .collect();
+    let sanitized = sanitized.trim();
+
+    if sanitized.is_empty() {
+        None
+    } else {
+        Some(sanitized.to_string())
+    }
+}
+
 /// A renderable terminal cell with the style resolved from Alacritty's grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerminalCell {
@@ -125,9 +164,15 @@ struct TerminalSession {
     /// Whether the terminal is currently visible
     visible: bool,
     /// Alacritty terminal emulator grid
-    term: Term<VoidListener>,
+    term: Term<TerminalEventListener>,
     /// VTE parser feeding the emulator grid
     processor: VteProcessor,
+    /// Current OSC window title emitted by terminal programs
+    terminal_title: Arc<Mutex<Option<String>>>,
+    /// Command line currently being typed at the shell prompt
+    pending_command: String,
+    /// Last command submitted from the shell prompt
+    last_command: Option<String>,
     /// Terminal dimensions
     rows: u16,
     cols: u16,
@@ -150,12 +195,16 @@ struct TerminalSession {
 impl TerminalSession {
     /// Create a new terminal session (not yet spawned)
     fn new(id: usize, name: String, rows: u16, cols: u16, working_dir: PathBuf) -> Self {
+        let terminal_title = Arc::new(Mutex::new(None));
         Self {
             id,
             name,
             visible: false,
-            term: Self::new_term(rows, cols),
+            term: Self::new_term(rows, cols, terminal_title.clone()),
             processor: VteProcessor::new(),
+            terminal_title,
+            pending_command: String::new(),
+            last_command: None,
             rows,
             cols,
             pty_master: None,
@@ -168,10 +217,20 @@ impl TerminalSession {
         }
     }
 
-    fn new_term(rows: u16, cols: u16) -> Term<VoidListener> {
+    fn new_term(
+        rows: u16,
+        cols: u16,
+        terminal_title: Arc<Mutex<Option<String>>>,
+    ) -> Term<TerminalEventListener> {
         let mut config = Config::default();
         config.scrolling_history = BUFFER_ROWS;
-        Term::new(config, &TerminalDimensions::new(rows, cols), VoidListener)
+        Term::new(
+            config,
+            &TerminalDimensions::new(rows, cols),
+            TerminalEventListener {
+                title: terminal_title,
+            },
+        )
     }
 
     /// Set the working directory for the terminal
@@ -245,7 +304,12 @@ impl TerminalSession {
         }
 
         // Clear emulator state for a fresh shell.
-        self.term = Self::new_term(self.rows, self.cols);
+        if let Ok(mut title) = self.terminal_title.lock() {
+            *title = None;
+        }
+        self.pending_command.clear();
+        self.last_command = None;
+        self.term = Self::new_term(self.rows, self.cols, self.terminal_title.clone());
         self.processor = VteProcessor::new();
 
         Ok(())
@@ -285,6 +349,8 @@ impl TerminalSession {
     /// Send a key to the terminal
     fn send_key(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
+
+        self.capture_prompt_key_for_metadata(key);
 
         let app_cursor = self.term.mode().contains(TermMode::APP_CURSOR);
         let cursor_sequence = |normal: u8, app: u8| {
@@ -333,6 +399,33 @@ impl TerminalSession {
         self.send_input(&data);
     }
 
+    fn capture_prompt_key_for_metadata(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return;
+        }
+
+        match (key.modifiers, key.code) {
+            (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(ch)) => {
+                self.pending_command.push(ch);
+            }
+            (_, KeyCode::Backspace) => {
+                self.pending_command.pop();
+            }
+            (_, KeyCode::Enter) => {
+                if let Some(command) = sanitize_terminal_title(&self.pending_command) {
+                    self.last_command = Some(command);
+                }
+                self.pending_command.clear();
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('u' | 'c')) => {
+                self.pending_command.clear();
+            }
+            _ => {}
+        }
+    }
+
     /// Process output from the terminal and update buffer
     /// Returns true if there was new output to process
     fn process_output(&mut self) -> bool {
@@ -376,6 +469,17 @@ impl TerminalSession {
     /// Process bytes and update terminal buffer
     fn process_bytes(&mut self, data: &[u8]) {
         self.processor.advance(&mut self.term, data);
+    }
+
+    fn terminal_title(&self) -> Option<String> {
+        self.terminal_title
+            .lock()
+            .ok()
+            .and_then(|title| title.clone())
+    }
+
+    fn display_metadata(&self) -> Option<String> {
+        self.last_command.clone().or_else(|| self.terminal_title())
     }
 
     /// Get visible styled cells for rendering.
@@ -583,6 +687,7 @@ pub struct TerminalSessionInfo {
     pub position: usize,
     pub id: usize,
     pub name: String,
+    pub metadata: Option<String>,
     pub active: bool,
     pub state: &'static str,
 }
@@ -710,6 +815,7 @@ impl FloatingTerminal {
                 position: idx + 1,
                 id: session.id,
                 name: session.name.clone(),
+                metadata: session.display_metadata(),
                 active: Some(idx) == self.active,
                 state: if session.process_exited {
                     "exited"
@@ -733,9 +839,14 @@ impl FloatingTerminal {
             .into_iter()
             .map(|session| {
                 let marker = if session.active { "*" } else { " " };
+                let title = session
+                    .metadata
+                    .filter(|title| title != &session.name)
+                    .map(|title| format!(" - {}", title))
+                    .unwrap_or_default();
                 format!(
-                    "{}{}:{}#{} ({})",
-                    marker, session.position, session.name, session.id, session.state
+                    "{}{}:{}#{} ({}){}",
+                    marker, session.position, session.name, session.id, session.state, title
                 )
             })
             .collect::<Vec<_>>()
@@ -1010,6 +1121,42 @@ mod tests {
         terminal.process_bytes(b"before\x1b]0;title\x1b\\after");
 
         assert_eq!(terminal.get_visible_lines(3, 20)[0], "beforeafter");
+        assert_eq!(
+            terminal.session_infos()[0].metadata.as_deref(),
+            Some("title")
+        );
+    }
+
+    #[test]
+    fn osc_title_metadata_is_sanitized() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.resize(3, 20);
+
+        terminal.process_bytes(b"\x1b]0; npm\x01 run dev \x07");
+
+        assert_eq!(
+            terminal.session_infos()[0].metadata.as_deref(),
+            Some("npm run dev")
+        );
+    }
+
+    #[test]
+    fn submitted_command_metadata_overrides_stale_title() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut terminal = FloatingTerminal::new();
+        terminal.process_bytes(b"\x1b]0;old title\x07");
+        terminal.sessions[0].visible = true;
+
+        for ch in "npm run dev".chars() {
+            terminal.send_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        terminal.send_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(
+            terminal.session_infos()[0].metadata.as_deref(),
+            Some("npm run dev")
+        );
     }
 
     #[test]
@@ -1068,10 +1215,12 @@ mod tests {
         assert_eq!(infos.len(), 2);
         assert_eq!(infos[0].position, 1);
         assert_eq!(infos[0].name, "server");
+        assert_eq!(infos[0].metadata, None);
         assert!(!infos[0].active);
         assert_eq!(infos[0].state, "exited");
         assert_eq!(infos[1].position, 2);
         assert_eq!(infos[1].name, "git");
+        assert_eq!(infos[1].metadata, None);
         assert!(infos[1].active);
         assert_eq!(infos[1].state, "hidden");
     }

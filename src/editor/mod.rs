@@ -6288,9 +6288,14 @@ impl Editor {
             .into_iter()
             .map(|session| {
                 let marker = if session.active { "*" } else { " " };
+                let title = session
+                    .metadata
+                    .filter(|title| title != &session.name)
+                    .map(|title| format!("  {}", title))
+                    .unwrap_or_default();
                 let display = format!(
-                    "{} {:>2}  {:<18} #{} {}",
-                    marker, session.position, session.name, session.id, session.state
+                    "{} {:>2}  {:<18} #{} {:<7}{}",
+                    marker, session.position, session.name, session.id, session.state, title
                 );
                 let mut item = FinderItem::new(display, std::path::PathBuf::new())
                     .with_terminal_session_position(session.position)
