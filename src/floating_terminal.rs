@@ -577,6 +577,16 @@ impl TerminalSession {
     }
 }
 
+/// Lightweight metadata for rendering terminal sessions outside the terminal UI.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalSessionInfo {
+    pub position: usize,
+    pub id: usize,
+    pub name: String,
+    pub active: bool,
+    pub state: &'static str,
+}
+
 /// Manages multiple floating terminal sessions.
 pub struct FloatingTerminal {
     sessions: Vec<TerminalSession>,
@@ -673,6 +683,27 @@ impl FloatingTerminal {
         Ok(self.active_status())
     }
 
+    /// Return structured summaries of all terminal sessions.
+    pub fn session_infos(&self) -> Vec<TerminalSessionInfo> {
+        self.sessions
+            .iter()
+            .enumerate()
+            .map(|(idx, session)| TerminalSessionInfo {
+                position: idx + 1,
+                id: session.id,
+                name: session.name.clone(),
+                active: Some(idx) == self.active,
+                state: if session.process_exited {
+                    "exited"
+                } else if session.is_visible() {
+                    "visible"
+                } else {
+                    "hidden"
+                },
+            })
+            .collect()
+    }
+
     /// Return a compact summary of all terminal sessions.
     pub fn list_sessions(&self) -> String {
         if self.sessions.is_empty() {
@@ -680,25 +711,13 @@ impl FloatingTerminal {
         }
 
         let sessions = self
-            .sessions
-            .iter()
-            .enumerate()
-            .map(|(idx, session)| {
-                let marker = if Some(idx) == self.active { "*" } else { " " };
-                let state = if session.process_exited {
-                    "exited"
-                } else if session.is_visible() {
-                    "visible"
-                } else {
-                    "hidden"
-                };
+            .session_infos()
+            .into_iter()
+            .map(|session| {
+                let marker = if session.active { "*" } else { " " };
                 format!(
                     "{}{}:{}#{} ({})",
-                    marker,
-                    idx + 1,
-                    session.name,
-                    session.id,
-                    state
+                    marker, session.position, session.name, session.id, session.state
                 )
             })
             .collect::<Vec<_>>()
@@ -793,22 +812,34 @@ impl FloatingTerminal {
 
     /// Kill and remove the active terminal session.
     pub fn close(&mut self) {
-        let Some(idx) = self.active else {
-            return;
-        };
-        if idx >= self.sessions.len() {
-            self.active = None;
-            return;
+        if let Some(idx) = self.active {
+            let _ = self.close_session(idx + 1);
+        }
+    }
+
+    /// Kill and remove a terminal session by its 1-based list position.
+    pub fn close_session(&mut self, position: usize) -> anyhow::Result<String> {
+        if position == 0 || position > self.sessions.len() {
+            anyhow::bail!("No terminal session {}", position);
         }
 
+        let idx = position - 1;
+        let removed_name = self.sessions[idx].name.clone();
         let mut session = self.sessions.remove(idx);
         session.close();
 
         if self.sessions.is_empty() {
             self.active = None;
         } else {
-            self.active = Some(idx.min(self.sessions.len() - 1));
+            self.active = match self.active {
+                Some(active) if active == idx => Some(idx.min(self.sessions.len() - 1)),
+                Some(active) if active > idx => Some(active - 1),
+                Some(active) if active < self.sessions.len() => Some(active),
+                _ => Some(self.sessions.len() - 1),
+            };
         }
+
+        Ok(format!("Terminal killed: {}", removed_name))
     }
 
     fn active_status(&self) -> String {
@@ -990,6 +1021,43 @@ mod tests {
 
         assert!(list.contains(" 1:server#1"));
         assert!(list.contains("*2:git#2"));
+    }
+
+    #[test]
+    fn terminal_session_infos_include_position_active_and_state() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.push_session(Some("server".to_string()));
+        terminal.push_session(Some("git".to_string()));
+        terminal.active = Some(1);
+        terminal.sessions[0].process_exited = true;
+
+        let infos = terminal.session_infos();
+
+        assert_eq!(infos.len(), 2);
+        assert_eq!(infos[0].position, 1);
+        assert_eq!(infos[0].name, "server");
+        assert!(!infos[0].active);
+        assert_eq!(infos[0].state, "exited");
+        assert_eq!(infos[1].position, 2);
+        assert_eq!(infos[1].name, "git");
+        assert!(infos[1].active);
+        assert_eq!(infos[1].state, "hidden");
+    }
+
+    #[test]
+    fn close_session_removes_requested_session_and_preserves_active() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.push_session(Some("server".to_string()));
+        terminal.push_session(Some("git".to_string()));
+        terminal.push_session(Some("tests".to_string()));
+        terminal.active = Some(2);
+
+        terminal.close_session(2).unwrap();
+
+        assert_eq!(terminal.sessions.len(), 2);
+        assert_eq!(terminal.sessions[0].name, "server");
+        assert_eq!(terminal.sessions[1].name, "tests");
+        assert_eq!(terminal.active, Some(1));
     }
 
     #[test]

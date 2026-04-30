@@ -6272,6 +6272,32 @@ impl Editor {
         self.mode = Mode::Finder;
     }
 
+    /// Open the fuzzy finder in terminal session mode
+    pub fn open_terminal_picker(&mut self) {
+        use crate::finder::FinderItem;
+
+        let terminal_items: Vec<FinderItem> = self
+            .floating_terminal
+            .session_infos()
+            .into_iter()
+            .map(|session| {
+                let marker = if session.active { "*" } else { " " };
+                let display = format!(
+                    "{} {:>2}  {:<18} #{} {}",
+                    marker, session.position, session.name, session.id, session.state
+                );
+                let mut item = FinderItem::new(display, std::path::PathBuf::new())
+                    .with_terminal_session_position(session.position)
+                    .with_icon("TR");
+                item.score = session.position as u32;
+                item
+            })
+            .collect();
+
+        self.finder.open_terminals(terminal_items);
+        self.mode = Mode::Finder;
+    }
+
     /// Open the fuzzy finder in marks mode
     pub fn open_finder_marks(&mut self) {
         use crate::finder::MarkInfo;

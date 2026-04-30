@@ -33,6 +33,7 @@ pub enum FinderMode {
     Diagnostics,
     Harpoon,
     Marks,
+    Terminals,
 }
 
 /// Input mode for the fuzzy finder (like vim modes)
@@ -58,6 +59,10 @@ pub struct FinderItem {
     pub col: Option<usize>,
     /// Buffer index (for buffer picker results)
     pub buffer_idx: Option<usize>,
+    /// Terminal session position (1-indexed, for terminal picker results)
+    pub terminal_session_position: Option<usize>,
+    /// Optional 2-character icon override
+    pub icon: Option<&'static str>,
     /// Match score for sorting
     pub score: u32,
     /// Indices of matched characters (for highlighting)
@@ -72,6 +77,8 @@ impl FinderItem {
             line: None,
             col: None,
             buffer_idx: None,
+            terminal_session_position: None,
+            icon: None,
             score: 0,
             match_indices: Vec::new(),
         }
@@ -89,6 +96,16 @@ impl FinderItem {
 
     pub fn with_buffer_idx(mut self, idx: usize) -> Self {
         self.buffer_idx = Some(idx);
+        self
+    }
+
+    pub fn with_terminal_session_position(mut self, position: usize) -> Self {
+        self.terminal_session_position = Some(position);
+        self
+    }
+
+    pub fn with_icon(mut self, icon: &'static str) -> Self {
+        self.icon = Some(icon);
         self
     }
 
@@ -359,6 +376,22 @@ impl FuzzyFinder {
                 item
             })
             .collect();
+        self.filtered = (0..self.items.len()).collect();
+        self.populated = true;
+    }
+
+    /// Open the finder in terminal session mode
+    pub fn open_terminals(&mut self, terminal_items: Vec<FinderItem>) {
+        self.mode = FinderMode::Terminals;
+        self.input_mode = FinderInputMode::Normal;
+        self.query.clear();
+        self.cursor = 0;
+        self.selected = 0;
+        self.scroll_offset = 0;
+        self.clear_preview_cache();
+        self.cancel_grep_search();
+
+        self.items = terminal_items;
         self.filtered = (0..self.items.len()).collect();
         self.populated = true;
     }
@@ -1014,7 +1047,7 @@ impl Default for FuzzyFinder {
 
 #[cfg(test)]
 mod tests {
-    use super::{FinderItem, FinderMode, FuzzyFinder, GrepSearchMessage};
+    use super::{FinderInputMode, FinderItem, FinderMode, FuzzyFinder, GrepSearchMessage};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::mpsc;
@@ -1074,6 +1107,36 @@ mod tests {
         assert_eq!(finder.preview_line_offset + match_idx + 1, 220);
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_finder_filters_sessions_by_display() {
+        let mut finder = FuzzyFinder::new();
+        finder.open_terminals(vec![
+            FinderItem::new(
+                "  1  server             #1 hidden".to_string(),
+                PathBuf::new(),
+            )
+            .with_terminal_session_position(1)
+            .with_icon("TR"),
+            FinderItem::new(
+                "*  2  git                #2 visible".to_string(),
+                PathBuf::new(),
+            )
+            .with_terminal_session_position(2)
+            .with_icon("TR"),
+        ]);
+
+        assert_eq!(finder.mode, FinderMode::Terminals);
+        assert_eq!(finder.input_mode, FinderInputMode::Normal);
+
+        finder.insert_char('g');
+
+        assert_eq!(finder.filtered.len(), 1);
+        assert_eq!(
+            finder.selected_item().unwrap().terminal_session_position,
+            Some(2)
+        );
     }
 
     #[test]

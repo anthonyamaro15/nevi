@@ -110,6 +110,8 @@ pub enum Command {
     TerminalPrev,
     /// :TerminalList - List floating terminal sessions
     TerminalList,
+    /// :Terminals - Open floating terminal session picker
+    TerminalPicker,
     /// :TerminalSelect {index} - Select floating terminal session
     TerminalSelect(usize),
     /// :TerminalKill - Kill the floating terminal process
@@ -476,6 +478,18 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         command: "TerminalList",
         aliases: &["terminallist", "termlist", "termls"],
         description: "List floating terminal sessions",
+        takes_args: false,
+    },
+    CommandSpec {
+        command: "Terminals",
+        aliases: &[
+            "terminals",
+            "terminalmenu",
+            "termmenu",
+            "terminalpicker",
+            "termpicker",
+        ],
+        description: "Open floating terminal session picker",
         takes_args: false,
     },
     CommandSpec {
@@ -864,6 +878,10 @@ pub fn parse_command(input: &str) -> Command {
         "TerminalPrev" | "terminalprev" | "TermPrev" | "termprev" => Command::TerminalPrev,
         "TerminalList" | "terminallist" | "TermList" | "termlist" | "termls" => {
             Command::TerminalList
+        }
+        "Terminals" | "terminals" | "TerminalMenu" | "terminalmenu" | "TermMenu" | "termmenu"
+        | "TerminalPicker" | "terminalpicker" | "TermPicker" | "termpicker" => {
+            Command::TerminalPicker
         }
         "TerminalSelect" | "terminalselect" | "TermSelect" | "termselect" | "termsel" => {
             if let Some(index) = args.and_then(|value| value.parse::<usize>().ok()) {
@@ -1458,6 +1476,7 @@ mod tests {
         assert!(matches!(parse_command("termnext"), Command::TerminalNext));
         assert!(matches!(parse_command("termprev"), Command::TerminalPrev));
         assert!(matches!(parse_command("termls"), Command::TerminalList));
+        assert!(matches!(parse_command("termmenu"), Command::TerminalPicker));
     }
 
     #[test]

@@ -4330,6 +4330,7 @@ impl Terminal {
             crate::finder::FinderMode::Diagnostics => " Diagnostics ",
             crate::finder::FinderMode::Harpoon => " Harpoon ",
             crate::finder::FinderMode::Marks => " Marks ",
+            crate::finder::FinderMode::Terminals => " Terminals ",
         };
 
         if preview_enabled {
@@ -4431,8 +4432,15 @@ impl Terminal {
                 }
 
                 // Get file type indicator (2 chars + space)
-                let icon = FuzzyFinder::get_file_icon(&item.path);
+                let icon = item
+                    .icon
+                    .unwrap_or_else(|| FuzzyFinder::get_file_icon(&item.path));
                 let icon_color = match icon {
+                    "TR" => Color::Rgb {
+                        r: 90,
+                        g: 210,
+                        b: 120,
+                    }, // Terminal - green
                     "RS" => Color::Rgb {
                         r: 255,
                         g: 100,
@@ -7071,7 +7079,12 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
         // Select item
         (KeyModifiers::NONE, KeyCode::Enter) => {
             if let Some(item) = editor.finder_select() {
-                if let Some(buf_idx) = item.buffer_idx {
+                if let Some(position) = item.terminal_session_position {
+                    match editor.floating_terminal.select_session(position) {
+                        Ok(message) => editor.set_status(message),
+                        Err(e) => editor.set_status(format!("Terminal select failed: {}", e)),
+                    }
+                } else if let Some(buf_idx) = item.buffer_idx {
                     if !editor.switch_to_buffer(buf_idx) {
                         editor.set_status("Buffer not found");
                     }
@@ -7140,6 +7153,19 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
             }
         }
 
+        // Terminal picker: 'n' creates a new terminal session and opens it
+        (KeyModifiers::NONE, KeyCode::Char('n'))
+            if is_normal_mode && editor.finder.mode == crate::finder::FinderMode::Terminals =>
+        {
+            match editor.floating_terminal.create_session(None) {
+                Ok(message) => {
+                    editor.close_finder();
+                    editor.set_status(message);
+                }
+                Err(e) => editor.set_status(format!("Terminal new failed: {}", e)),
+            }
+        }
+
         // Normal mode: 'gg' to go to top (simplified to just 'g' for now)
         (KeyModifiers::NONE, KeyCode::Char('g')) if is_normal_mode => {
             editor.finder.selected = 0;
@@ -7153,6 +7179,37 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
                 editor.finder.selected = editor.finder.filtered.len() - 1;
                 adjust_scroll(editor);
                 selection_changed = true;
+            }
+        }
+
+        // Terminal picker: 'd' kills the selected terminal session
+        (KeyModifiers::NONE, KeyCode::Char('d'))
+            if is_normal_mode && editor.finder.mode == crate::finder::FinderMode::Terminals =>
+        {
+            let selected = editor.finder.selected;
+            let position = editor
+                .finder
+                .selected_item()
+                .and_then(|item| item.terminal_session_position);
+
+            if let Some(position) = position {
+                match editor.floating_terminal.close_session(position) {
+                    Ok(message) => {
+                        if editor.floating_terminal.session_infos().is_empty() {
+                            editor.close_finder();
+                            editor.set_status(message);
+                        } else {
+                            editor.open_terminal_picker();
+                            if !editor.finder.filtered.is_empty() {
+                                editor.finder.selected =
+                                    selected.min(editor.finder.filtered.len() - 1);
+                                adjust_scroll(editor);
+                            }
+                            editor.set_status(message);
+                        }
+                    }
+                    Err(e) => editor.set_status(format!("Terminal kill failed: {}", e)),
+                }
             }
         }
 
@@ -8286,6 +8343,10 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             Err(e) => CommandResult::Error(format!("Terminal previous failed: {}", e)),
         },
         Command::TerminalList => CommandResult::Message(editor.floating_terminal.list_sessions()),
+        Command::TerminalPicker => {
+            editor.open_terminal_picker();
+            CommandResult::Ok
+        }
         Command::TerminalSelect(index) => match editor.floating_terminal.select_session(index) {
             Ok(message) => CommandResult::Message(message),
             Err(e) => CommandResult::Error(format!("Terminal select failed: {}", e)),
