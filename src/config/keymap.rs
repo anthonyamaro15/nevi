@@ -34,6 +34,8 @@ pub enum CommandModeAction {
 pub struct KeymapLookup {
     /// Normal mode remappings: from key -> action (can be single key or command)
     normal: HashMap<KeyEvent, LeaderAction>,
+    /// Visual mode remappings: from key -> action (can be single key or command)
+    visual: HashMap<KeyEvent, LeaderAction>,
     /// Insert mode remappings: from -> to (single key only)
     insert: HashMap<KeyEvent, KeyEvent>,
     /// Command mode mappings: key -> command-line UX action
@@ -48,6 +50,7 @@ impl Default for KeymapLookup {
     fn default() -> Self {
         Self {
             normal: HashMap::new(),
+            visual: HashMap::new(),
             insert: HashMap::new(),
             command: HashMap::new(),
             leader_key: None,
@@ -60,6 +63,7 @@ impl KeymapLookup {
     /// Build lookup tables from settings, returning any parse errors
     pub fn from_settings(settings: &KeymapSettings) -> (Self, Vec<String>) {
         let mut normal = HashMap::new();
+        let mut visual = HashMap::new();
         let mut insert = HashMap::new();
         let mut command = HashMap::new();
         let mut errors = Vec::new();
@@ -71,6 +75,15 @@ impl KeymapLookup {
                 normal.insert(from, action);
             } else {
                 errors.push(format!("Keymap: invalid normal mode key '{}'", entry.from));
+            }
+        }
+
+        for entry in &settings.visual {
+            if let Some(from) = parse_key_notation(&entry.from) {
+                let action = parse_action(&entry.to);
+                visual.insert(from, action);
+            } else {
+                errors.push(format!("Keymap: invalid visual mode key '{}'", entry.from));
             }
         }
 
@@ -149,6 +162,7 @@ impl KeymapLookup {
         (
             Self {
                 normal,
+                visual,
                 insert,
                 command,
                 leader_key,
@@ -161,6 +175,11 @@ impl KeymapLookup {
     /// Get the normal mode mapping for a key, if one exists
     pub fn get_normal_mapping(&self, key: KeyEvent) -> Option<&LeaderAction> {
         self.normal.get(&key)
+    }
+
+    /// Get the visual mode mapping for a key, if one exists
+    pub fn get_visual_mapping(&self, key: KeyEvent) -> Option<&LeaderAction> {
+        self.visual.get(&key)
     }
 
     /// Remap a key in insert mode, returning the original if no mapping exists
@@ -176,6 +195,11 @@ impl KeymapLookup {
     /// Check if there are any normal mode mappings
     pub fn has_normal_mappings(&self) -> bool {
         !self.normal.is_empty()
+    }
+
+    /// Check if there are any visual mode mappings
+    pub fn has_visual_mappings(&self) -> bool {
+        !self.visual.is_empty()
     }
 
     /// Check if there are any insert mode mappings
@@ -432,6 +456,7 @@ mod tests {
             leader: " ".to_string(), // Literal space, as used in default config
             timeoutlen: 1000,
             normal: vec![],
+            visual: vec![],
             insert: vec![],
             command_mappings: vec![],
             leader_mappings: vec![super::super::LeaderMapping {
@@ -464,6 +489,7 @@ mod tests {
             leader: "<Space>".to_string(),
             timeoutlen: 1000,
             normal: vec![],
+            visual: vec![],
             insert: vec![],
             command_mappings: vec![],
             leader_mappings: vec![super::super::LeaderMapping {
@@ -488,6 +514,22 @@ mod tests {
         // Check we can look up the mapping
         let action = lookup.get_leader_action("w");
         assert!(action.is_some(), "Should find 'w' mapping");
+    }
+
+    #[test]
+    fn test_visual_mapping_parses() {
+        use super::super::{KeymapEntry, KeymapSettings};
+
+        let mut settings = KeymapSettings::default();
+        settings.visual = vec![KeymapEntry {
+            from: "s".to_string(),
+            to: "S".to_string(),
+        }];
+
+        let (lookup, errors) = KeymapLookup::from_settings(&settings);
+        assert!(errors.is_empty(), "Should have no errors");
+        assert!(lookup.has_visual_mappings(), "Should have visual mappings");
+        assert!(lookup.get_visual_mapping(char_to_key_event('s')).is_some());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 pub mod motion;
 
-pub use motion::{Motion, apply_motion};
+pub use motion::{apply_motion, Motion};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -49,6 +49,12 @@ pub struct InputState {
     pub pending_surround_add: bool,
     /// Text object for surround add operation
     pub surround_add_object: Option<TextObject>,
+    /// Motion for surround add operation
+    pub surround_add_motion: Option<(Motion, usize)>,
+    /// Line target for surround add operation (yss)
+    pub surround_add_line: bool,
+    /// Pending visual surround (S waiting for char)
+    pub pending_visual_surround: bool,
     /// Pending comment toggle (gc waiting for motion or second c)
     pub pending_comment: bool,
     /// Pending case operator (gu, gU, g~ waiting for motion)
@@ -68,19 +74,19 @@ pub struct InputState {
 /// Operators that can be combined with motions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operator {
-    Delete,  // d
-    Change,  // c
-    Yank,    // y
-    Indent,  // >
-    Dedent,  // <
+    Delete, // d
+    Change, // c
+    Yank,   // y
+    Indent, // >
+    Dedent, // <
 }
 
 /// Case transformation operators
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaseOperator {
-    Lowercase,   // gu
-    Uppercase,   // gU
-    ToggleCase,  // g~
+    Lowercase,  // gu
+    Uppercase,  // gU
+    ToggleCase, // g~
 }
 
 /// Text object modifier (inner vs around)
@@ -93,15 +99,15 @@ pub enum TextObjectModifier {
 /// Text object types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextObjectType {
-    Word,        // w
-    BigWord,     // W
-    DoubleQuote, // "
-    SingleQuote, // '
-    BackTick,    // `
-    Paren,       // ( ) b
-    Brace,       // { } B
-    Bracket,     // [ ]
-    AngleBracket,// < >
+    Word,         // w
+    BigWord,      // W
+    DoubleQuote,  // "
+    SingleQuote,  // '
+    BackTick,     // `
+    Paren,        // ( ) b
+    Brace,        // { } B
+    Bracket,      // [ ]
+    AngleBracket, // < >
 }
 
 /// A complete text object specification
@@ -129,15 +135,17 @@ pub enum KeyAction {
     /// Enter insert mode
     EnterInsert(InsertPosition),
     /// Delete character at cursor
-    DeleteChar,
+    DeleteChar(usize),
     /// Delete character before cursor (X)
-    DeleteCharBefore,
+    DeleteCharBefore(usize),
     /// Replace character at cursor with given char (r)
-    ReplaceChar(char),
+    ReplaceChar(char, usize),
+    /// Toggle case of count chars starting at cursor (~)
+    ToggleCaseChars(usize),
     /// Join current line with next (J)
-    JoinLines,
+    JoinLines(usize),
     /// Join lines without space (gJ)
-    JoinLinesNoSpace,
+    JoinLinesNoSpace(usize),
     /// Scroll cursor to center of screen (zz)
     ScrollCenter,
     /// Scroll cursor to top of screen (zt)
@@ -147,9 +155,9 @@ pub enum KeyAction {
     /// Repeat last change (.)
     RepeatLastChange,
     /// Paste after cursor
-    PasteAfter,
+    PasteAfter(usize),
     /// Paste before cursor
-    PasteBefore,
+    PasteBefore(usize),
     /// Undo
     Undo,
     /// Redo
@@ -223,6 +231,10 @@ pub enum KeyAction {
     ChangeSurround(char, char),
     /// Add surrounding to text object (ys)
     AddSurround(TextObject, char),
+    /// Add surrounding to motion range (ys{motion})
+    AddSurroundMotion(Motion, usize, char),
+    /// Add surrounding to current line (yss)
+    AddSurroundLine(char),
     /// Toggle comment on current line (gcc)
     ToggleCommentLine,
     /// Toggle comment with motion (gc{motion})
@@ -278,12 +290,12 @@ pub enum KeyAction {
 /// Where to position cursor when entering insert mode
 #[derive(Debug, Clone, Copy)]
 pub enum InsertPosition {
-    AtCursor,      // i
-    AfterCursor,   // a
-    LineStart,     // I
-    LineEnd,       // A
-    NewLineBelow,  // o
-    NewLineAbove,  // O
+    AtCursor,     // i
+    AfterCursor,  // a
+    LineStart,    // I
+    LineEnd,      // A
+    NewLineBelow, // o
+    NewLineAbove, // O
 }
 
 impl InputState {
@@ -307,6 +319,9 @@ impl InputState {
         self.pending_surround_change = None;
         self.pending_surround_add = false;
         self.surround_add_object = None;
+        self.surround_add_motion = None;
+        self.surround_add_line = false;
+        self.pending_visual_surround = false;
         self.pending_comment = false;
         self.pending_case_operator = None;
         self.pending_set_mark = false;
@@ -362,8 +377,15 @@ impl InputState {
             self.pending_register_select = false;
             if let KeyCode::Char(c) = key.code {
                 // Valid register names: a-z, A-Z, 0-9, ", -, +, *, _, /
-                if c.is_ascii_alphabetic() || c.is_ascii_digit()
-                    || c == '"' || c == '-' || c == '+' || c == '*' || c == '_' || c == '/' {
+                if c.is_ascii_alphabetic()
+                    || c.is_ascii_digit()
+                    || c == '"'
+                    || c == '-'
+                    || c == '+'
+                    || c == '*'
+                    || c == '_'
+                    || c == '/'
+                {
                     self.selected_register = Some(c);
                     return KeyAction::Pending;
                 }
@@ -383,7 +405,7 @@ impl InputState {
             self.pending_replace = false;
             if let KeyCode::Char(c) = key.code {
                 self.reset();
-                return KeyAction::ReplaceChar(c);
+                return KeyAction::ReplaceChar(c, count);
             } else if key.code == KeyCode::Esc {
                 self.reset();
                 return KeyAction::Pending;
@@ -447,8 +469,39 @@ impl InputState {
                 return KeyAction::Unknown;
             }
 
+            if let Some((motion, motion_count)) = self.surround_add_motion.take() {
+                if let KeyCode::Char(c) = key.code {
+                    let surround_char = Self::normalize_surround_char(c);
+                    self.pending_surround_add = false;
+                    self.reset();
+                    return KeyAction::AddSurroundMotion(motion, motion_count, surround_char);
+                }
+                self.reset();
+                return KeyAction::Unknown;
+            }
+
+            if self.surround_add_line {
+                if let KeyCode::Char(c) = key.code {
+                    let surround_char = Self::normalize_surround_char(c);
+                    self.pending_surround_add = false;
+                    self.surround_add_line = false;
+                    self.reset();
+                    return KeyAction::AddSurroundLine(surround_char);
+                }
+                self.reset();
+                return KeyAction::Unknown;
+            }
+
             // Need to get text object (i/a modifier or direct object)
             match key.code {
+                KeyCode::Char(c @ '1'..='9') => {
+                    self.accumulate_count(c);
+                    return KeyAction::Pending;
+                }
+                KeyCode::Char('0') if self.count.is_some() => {
+                    self.accumulate_count('0');
+                    return KeyAction::Pending;
+                }
                 KeyCode::Char('i') => {
                     self.pending_text_object = Some(TextObjectModifier::Inner);
                     // Keep pending_surround_add true
@@ -474,7 +527,15 @@ impl InputState {
                     });
                     return KeyAction::Pending;
                 }
+                KeyCode::Char('s') => {
+                    self.surround_add_line = true;
+                    return KeyAction::Pending;
+                }
                 _ => {
+                    if let Some((motion, motion_count)) = self.key_to_surround_motion(key) {
+                        self.surround_add_motion = Some((motion, motion_count));
+                        return KeyAction::Pending;
+                    }
                     self.reset();
                     return KeyAction::Unknown;
                 }
@@ -587,7 +648,8 @@ impl InputState {
             }
 
             // Register selection with "
-            (KeyModifiers::SHIFT, KeyCode::Char('"')) | (KeyModifiers::NONE, KeyCode::Char('"')) => {
+            (KeyModifiers::SHIFT, KeyCode::Char('"'))
+            | (KeyModifiers::NONE, KeyCode::Char('"')) => {
                 self.pending_register_select = true;
                 KeyAction::Pending
             }
@@ -656,7 +718,8 @@ impl InputState {
             }
 
             // Indent operator
-            (KeyModifiers::SHIFT, KeyCode::Char('>')) | (KeyModifiers::NONE, KeyCode::Char('>')) => {
+            (KeyModifiers::SHIFT, KeyCode::Char('>'))
+            | (KeyModifiers::NONE, KeyCode::Char('>')) => {
                 if self.pending_operator == Some(Operator::Indent) {
                     // >> - indent line
                     let final_count = self.combined_count();
@@ -668,7 +731,8 @@ impl InputState {
                 }
             }
             // Dedent operator
-            (KeyModifiers::SHIFT, KeyCode::Char('<')) | (KeyModifiers::NONE, KeyCode::Char('<')) => {
+            (KeyModifiers::SHIFT, KeyCode::Char('<'))
+            | (KeyModifiers::NONE, KeyCode::Char('<')) => {
                 if self.pending_operator == Some(Operator::Dedent) {
                     // << - dedent line
                     let final_count = self.combined_count();
@@ -685,11 +749,13 @@ impl InputState {
                 self.pending_set_mark = true;
                 KeyAction::Pending
             }
-            (KeyModifiers::NONE, KeyCode::Char('\'')) | (KeyModifiers::SHIFT, KeyCode::Char('\'')) => {
+            (KeyModifiers::NONE, KeyCode::Char('\''))
+            | (KeyModifiers::SHIFT, KeyCode::Char('\'')) => {
                 self.pending_goto_mark_line = true;
                 KeyAction::Pending
             }
-            (KeyModifiers::NONE, KeyCode::Char('`')) | (KeyModifiers::SHIFT, KeyCode::Char('`')) => {
+            (KeyModifiers::NONE, KeyCode::Char('`'))
+            | (KeyModifiers::SHIFT, KeyCode::Char('`')) => {
                 self.pending_goto_mark_exact = true;
                 KeyAction::Pending
             }
@@ -701,7 +767,8 @@ impl InputState {
                 self.pending_record_macro = true;
                 KeyAction::Pending
             }
-            (KeyModifiers::SHIFT, KeyCode::Char('@')) | (KeyModifiers::NONE, KeyCode::Char('@')) => {
+            (KeyModifiers::SHIFT, KeyCode::Char('@'))
+            | (KeyModifiers::NONE, KeyCode::Char('@')) => {
                 // '@' plays a macro (waiting for register name or another @)
                 self.pending_play_macro = true;
                 KeyAction::Pending
@@ -745,25 +812,15 @@ impl InputState {
             (KeyModifiers::NONE, KeyCode::Char('0')) => {
                 self.motion_or_operator(Motion::LineStart, count)
             }
-            (_, KeyCode::Char('^')) => {
-                self.motion_or_operator(Motion::FirstNonBlank, count)
-            }
-            (_, KeyCode::Char('$')) => {
-                self.motion_or_operator(Motion::LineEnd, count)
-            }
+            (_, KeyCode::Char('^')) => self.motion_or_operator(Motion::FirstNonBlank, count),
+            (_, KeyCode::Char('$')) => self.motion_or_operator(Motion::LineEnd, count),
 
             // Paragraph motions
-            (_, KeyCode::Char('}')) => {
-                self.motion_or_operator(Motion::ParagraphForward, count)
-            }
-            (_, KeyCode::Char('{')) => {
-                self.motion_or_operator(Motion::ParagraphBackward, count)
-            }
+            (_, KeyCode::Char('}')) => self.motion_or_operator(Motion::ParagraphForward, count),
+            (_, KeyCode::Char('{')) => self.motion_or_operator(Motion::ParagraphBackward, count),
 
             // Bracket matching
-            (_, KeyCode::Char('%')) => {
-                self.motion_or_operator(Motion::MatchingBracket, count)
-            }
+            (_, KeyCode::Char('%')) => self.motion_or_operator(Motion::MatchingBracket, count),
 
             // Find char motions (f, F, t, T)
             (KeyModifiers::NONE, KeyCode::Char('f')) => {
@@ -889,18 +946,19 @@ impl InputState {
             // Simple operations
             (KeyModifiers::NONE, KeyCode::Char('x')) => {
                 self.reset();
-                KeyAction::DeleteChar
+                KeyAction::DeleteChar(count)
             }
             (KeyModifiers::SHIFT, KeyCode::Char('X')) => {
                 self.reset();
-                KeyAction::DeleteCharBefore
+                KeyAction::DeleteCharBefore(count)
             }
             (KeyModifiers::NONE, KeyCode::Char('r')) => {
                 // r - replace character (wait for replacement char)
                 self.pending_replace = true;
                 KeyAction::Pending
             }
-            (KeyModifiers::SHIFT, KeyCode::Char('R')) | (KeyModifiers::NONE, KeyCode::Char('R')) => {
+            (KeyModifiers::SHIFT, KeyCode::Char('R'))
+            | (KeyModifiers::NONE, KeyCode::Char('R')) => {
                 // R - enter replace mode
                 self.reset();
                 KeyAction::EnterReplace
@@ -908,7 +966,7 @@ impl InputState {
             (KeyModifiers::SHIFT, KeyCode::Char('J')) => {
                 // J - join lines
                 self.reset();
-                KeyAction::JoinLines
+                KeyAction::JoinLines(count)
             }
             (KeyModifiers::SHIFT, KeyCode::Char('K')) => {
                 // K - show hover documentation (LSP)
@@ -919,6 +977,11 @@ impl InputState {
                 // . - repeat last change
                 self.reset();
                 KeyAction::RepeatLastChange
+            }
+            (KeyModifiers::SHIFT, KeyCode::Char('~'))
+            | (KeyModifiers::NONE, KeyCode::Char('~')) => {
+                self.reset();
+                KeyAction::ToggleCaseChars(count)
             }
             (KeyModifiers::NONE, KeyCode::Char('z')) => {
                 // z prefix for scroll commands (zz, zt, zb)
@@ -937,11 +1000,11 @@ impl InputState {
             }
             (KeyModifiers::NONE, KeyCode::Char('p')) => {
                 self.reset();
-                KeyAction::PasteAfter
+                KeyAction::PasteAfter(count)
             }
             (KeyModifiers::SHIFT, KeyCode::Char('P')) => {
                 self.reset();
-                KeyAction::PasteBefore
+                KeyAction::PasteBefore(count)
             }
 
             // D = d$ (delete to end of line)
@@ -1122,7 +1185,8 @@ impl InputState {
                 KeyAction::Pending
             }
             // g~ - toggle case (waits for motion)
-            ('g', KeyModifiers::SHIFT, KeyCode::Char('~')) | ('g', KeyModifiers::NONE, KeyCode::Char('~')) => {
+            ('g', KeyModifiers::SHIFT, KeyCode::Char('~'))
+            | ('g', KeyModifiers::NONE, KeyCode::Char('~')) => {
                 self.pending_case_operator = Some(CaseOperator::ToggleCase);
                 KeyAction::Pending
             }
@@ -1151,7 +1215,7 @@ impl InputState {
             // gJ - join lines without space
             ('g', KeyModifiers::SHIFT, KeyCode::Char('J')) => {
                 self.reset();
-                KeyAction::JoinLinesNoSpace
+                KeyAction::JoinLinesNoSpace(count)
             }
             // g; - go to older change position
             ('g', KeyModifiers::NONE, KeyCode::Char(';')) => {
@@ -1220,7 +1284,11 @@ impl InputState {
     }
 
     /// Handle text object type key after i/a modifier
-    fn handle_text_object_type(&mut self, modifier: TextObjectModifier, key: KeyEvent) -> KeyAction {
+    fn handle_text_object_type(
+        &mut self,
+        modifier: TextObjectModifier,
+        key: KeyEvent,
+    ) -> KeyAction {
         let object_type = match (key.modifiers, key.code) {
             // Word objects
             (KeyModifiers::NONE, KeyCode::Char('w')) => Some(TextObjectType::Word),
@@ -1281,16 +1349,58 @@ impl InputState {
             KeyCode::Char('"') => Some(TextObjectType::DoubleQuote),
             KeyCode::Char('\'') => Some(TextObjectType::SingleQuote),
             KeyCode::Char('`') => Some(TextObjectType::BackTick),
-            KeyCode::Char('(') | KeyCode::Char(')') | KeyCode::Char('b') => Some(TextObjectType::Paren),
-            KeyCode::Char('{') | KeyCode::Char('}') | KeyCode::Char('B') => Some(TextObjectType::Brace),
-            KeyCode::Char('[') | KeyCode::Char(']') | KeyCode::Char('r') => Some(TextObjectType::Bracket),
-            KeyCode::Char('<') | KeyCode::Char('>') | KeyCode::Char('a') => Some(TextObjectType::AngleBracket),
+            KeyCode::Char('(') | KeyCode::Char(')') | KeyCode::Char('b') => {
+                Some(TextObjectType::Paren)
+            }
+            KeyCode::Char('{') | KeyCode::Char('}') | KeyCode::Char('B') => {
+                Some(TextObjectType::Brace)
+            }
+            KeyCode::Char('[') | KeyCode::Char(']') | KeyCode::Char('r') => {
+                Some(TextObjectType::Bracket)
+            }
+            KeyCode::Char('<') | KeyCode::Char('>') | KeyCode::Char('a') => {
+                Some(TextObjectType::AngleBracket)
+            }
             _ => None,
         }
     }
 
+    fn key_to_surround_motion(&self, key: KeyEvent) -> Option<(Motion, usize)> {
+        let count = self.effective_count();
+        let motion = match (key.modifiers, key.code) {
+            (KeyModifiers::NONE, KeyCode::Char('h')) | (_, KeyCode::Left) => Motion::Left,
+            (KeyModifiers::NONE, KeyCode::Char('j')) | (_, KeyCode::Down) => Motion::Down,
+            (KeyModifiers::NONE, KeyCode::Char('k')) | (_, KeyCode::Up) => Motion::Up,
+            (KeyModifiers::NONE, KeyCode::Char('l')) | (_, KeyCode::Right) => Motion::Right,
+            (KeyModifiers::NONE, KeyCode::Char('b')) => Motion::WordBackward,
+            (KeyModifiers::SHIFT, KeyCode::Char('B')) => Motion::BigWordBackward,
+            (KeyModifiers::NONE, KeyCode::Char('e')) => Motion::WordEnd,
+            (KeyModifiers::SHIFT, KeyCode::Char('E')) => Motion::BigWordEnd,
+            (KeyModifiers::NONE, KeyCode::Char('0')) => Motion::LineStart,
+            (_, KeyCode::Char('^')) => Motion::FirstNonBlank,
+            (_, KeyCode::Char('$')) => Motion::LineEnd,
+            (_, KeyCode::Char('}')) => Motion::ParagraphForward,
+            (_, KeyCode::Char('{')) => Motion::ParagraphBackward,
+            (_, KeyCode::Char('%')) => Motion::MatchingBracket,
+            (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
+                if self.count.is_some() {
+                    return Some((Motion::GotoLine(count), 1));
+                }
+                Motion::FileEnd
+            }
+            _ => return None,
+        };
+
+        Some((motion, count))
+    }
+
     /// Handle the target character after f/F/t/T
-    fn handle_find_char_target(&mut self, find_type: FindCharType, key: KeyEvent, count: usize) -> KeyAction {
+    fn handle_find_char_target(
+        &mut self,
+        find_type: FindCharType,
+        key: KeyEvent,
+        count: usize,
+    ) -> KeyAction {
         // Only accept regular character input
         if let KeyCode::Char(target) = key.code {
             // Store for repeat with ; and ,
@@ -1320,43 +1430,23 @@ impl InputState {
         self.reset();
         match (key.modifiers, key.code) {
             // Navigation
-            (KeyModifiers::NONE, KeyCode::Char('h')) | (_, KeyCode::Left) => {
-                KeyAction::WindowLeft
-            }
-            (KeyModifiers::NONE, KeyCode::Char('j')) | (_, KeyCode::Down) => {
-                KeyAction::WindowDown
-            }
-            (KeyModifiers::NONE, KeyCode::Char('k')) | (_, KeyCode::Up) => {
-                KeyAction::WindowUp
-            }
+            (KeyModifiers::NONE, KeyCode::Char('h')) | (_, KeyCode::Left) => KeyAction::WindowLeft,
+            (KeyModifiers::NONE, KeyCode::Char('j')) | (_, KeyCode::Down) => KeyAction::WindowDown,
+            (KeyModifiers::NONE, KeyCode::Char('k')) | (_, KeyCode::Up) => KeyAction::WindowUp,
             (KeyModifiers::NONE, KeyCode::Char('l')) | (_, KeyCode::Right) => {
                 KeyAction::WindowRight
             }
             // Cycle through windows
-            (KeyModifiers::NONE, KeyCode::Char('w')) => {
-                KeyAction::WindowNext
-            }
-            (KeyModifiers::SHIFT, KeyCode::Char('W')) => {
-                KeyAction::WindowPrev
-            }
+            (KeyModifiers::NONE, KeyCode::Char('w')) => KeyAction::WindowNext,
+            (KeyModifiers::SHIFT, KeyCode::Char('W')) => KeyAction::WindowPrev,
             // Splits
-            (KeyModifiers::NONE, KeyCode::Char('v')) => {
-                KeyAction::WindowSplitVertical
-            }
-            (KeyModifiers::NONE, KeyCode::Char('s')) => {
-                KeyAction::WindowSplitHorizontal
-            }
+            (KeyModifiers::NONE, KeyCode::Char('v')) => KeyAction::WindowSplitVertical,
+            (KeyModifiers::NONE, KeyCode::Char('s')) => KeyAction::WindowSplitHorizontal,
             // Close
-            (KeyModifiers::NONE, KeyCode::Char('q')) => {
-                KeyAction::WindowClose
-            }
-            (KeyModifiers::NONE, KeyCode::Char('o')) => {
-                KeyAction::WindowCloseOthers
-            }
+            (KeyModifiers::NONE, KeyCode::Char('q')) => KeyAction::WindowClose,
+            (KeyModifiers::NONE, KeyCode::Char('o')) => KeyAction::WindowCloseOthers,
             // Escape cancels
-            (_, KeyCode::Esc) => {
-                KeyAction::Pending
-            }
+            (_, KeyCode::Esc) => KeyAction::Pending,
             _ => KeyAction::Unknown,
         }
     }
@@ -1459,7 +1549,12 @@ impl InputState {
     }
 
     /// Handle motion after gu/gU/g~ (case transformation)
-    fn handle_case_motion(&mut self, case_op: CaseOperator, key: KeyEvent, count: usize) -> KeyAction {
+    fn handle_case_motion(
+        &mut self,
+        case_op: CaseOperator,
+        key: KeyEvent,
+        count: usize,
+    ) -> KeyAction {
         match (key.modifiers, key.code) {
             // guu, gUU, g~~ - operate on current line
             (KeyModifiers::NONE, KeyCode::Char('u')) if case_op == CaseOperator::Lowercase => {
@@ -1470,8 +1565,10 @@ impl InputState {
                 self.reset();
                 KeyAction::CaseLine(case_op, count)
             }
-            (KeyModifiers::SHIFT, KeyCode::Char('~')) | (KeyModifiers::NONE, KeyCode::Char('~'))
-                if case_op == CaseOperator::ToggleCase => {
+            (KeyModifiers::SHIFT, KeyCode::Char('~'))
+            | (KeyModifiers::NONE, KeyCode::Char('~'))
+                if case_op == CaseOperator::ToggleCase =>
+            {
                 self.reset();
                 KeyAction::CaseLine(case_op, count)
             }
