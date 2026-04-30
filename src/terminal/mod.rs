@@ -2,10 +2,7 @@ use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute, queue,
-    style::{
-        Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
-        SetUnderlineColor,
-    },
+    style::{Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor},
     terminal::{self, ClearType},
 };
 use std::io::{self, Stdout, Write};
@@ -51,6 +48,29 @@ fn finder_preview_match_ranges(line: &str, query: &str) -> Vec<(usize, usize)> {
     }
 
     ranges
+}
+
+fn reset_text_attributes<W: Write>(out: &mut W, bg: Color, fg: Color) -> io::Result<()> {
+    execute!(
+        out,
+        SetAttribute(Attribute::Reset),
+        SetBackgroundColor(bg),
+        SetForegroundColor(fg)
+    )
+}
+
+fn write_row_padding<W: Write>(
+    out: &mut W,
+    chars_printed: usize,
+    row_width: usize,
+    bg: Color,
+    fg: Color,
+) -> io::Result<()> {
+    reset_text_attributes(out, bg, fg)?;
+    for _ in chars_printed..row_width {
+        write!(out, " ")?;
+    }
+    Ok(())
 }
 
 use crate::commands::{parse_command, Command, CommandPopupMode, CommandResult};
@@ -211,6 +231,8 @@ impl Terminal {
         execute!(
             stdout,
             terminal::EnterAlternateScreen,
+            ResetColor,
+            SetAttribute(Attribute::Reset),
             cursor::Hide,
             event::EnableFocusChange
         )?;
@@ -234,7 +256,13 @@ impl Terminal {
     /// The terminal is restored before running and re-initialized after
     pub fn run_external_process(&mut self, command: &str) -> anyhow::Result<()> {
         // Leave alternate screen and show cursor
-        execute!(self.stdout, cursor::Show, terminal::LeaveAlternateScreen)?;
+        execute!(
+            self.stdout,
+            ResetColor,
+            SetAttribute(Attribute::Reset),
+            cursor::Show,
+            terminal::LeaveAlternateScreen
+        )?;
         self.stdout.flush()?;
 
         // Disable raw mode so the external process can use normal terminal
@@ -253,6 +281,8 @@ impl Terminal {
         execute!(
             self.stdout,
             terminal::EnterAlternateScreen,
+            ResetColor,
+            SetAttribute(Attribute::Reset),
             cursor::Hide,
             event::EnableFocusChange
         )?;
@@ -278,7 +308,12 @@ impl Terminal {
 
     /// Render the editor state to the terminal
     pub fn render(&mut self, editor: &Editor) -> anyhow::Result<()> {
-        execute!(self.stdout, cursor::MoveTo(0, 0))?;
+        execute!(
+            self.stdout,
+            ResetColor,
+            SetAttribute(Attribute::Reset),
+            cursor::MoveTo(0, 0)
+        )?;
 
         // Skip rendering background when finder is open - it's a large overlay
         // that covers most of the screen, so rendering underneath is wasted work
@@ -544,12 +579,9 @@ impl Terminal {
                     editor_bg
                 };
 
-                // Set background and foreground for this row
-                execute!(
-                    self.stdout,
-                    SetBackgroundColor(row_bg),
-                    SetForegroundColor(editor_fg)
-                )?;
+                // Reset text attributes at row start so diagnostic underline state
+                // cannot leak across rows or redraws.
+                reset_text_attributes(&mut self.stdout, row_bg, editor_fg)?;
 
                 // Sign column (git signs + diagnostic icons) - only on first segment
                 // Layout: [Git Sign][Diagnostic] = 2 chars total
@@ -749,9 +781,13 @@ impl Terminal {
                     }
                 }
 
-                for _ in chars_printed..pane_width {
-                    print!(" ");
-                }
+                write_row_padding(
+                    &mut self.stdout,
+                    chars_printed,
+                    pane_width,
+                    row_bg,
+                    editor_fg,
+                )?;
 
                 current_row += 1;
             }
@@ -765,11 +801,7 @@ impl Terminal {
             execute!(self.stdout, cursor::MoveTo(rect.x, screen_y))?;
 
             // Set editor background for empty rows
-            execute!(
-                self.stdout,
-                SetBackgroundColor(editor_bg),
-                SetForegroundColor(editor_fg)
-            )?;
+            reset_text_attributes(&mut self.stdout, editor_bg, editor_fg)?;
 
             print!("  "); // Empty sign column
 
@@ -787,9 +819,13 @@ impl Terminal {
             } else {
                 1
             };
-            for _ in chars_printed..pane_width {
-                print!(" ");
-            }
+            write_row_padding(
+                &mut self.stdout,
+                chars_printed,
+                pane_width,
+                editor_bg,
+                editor_fg,
+            )?;
 
             current_row += 1;
         }
@@ -845,11 +881,7 @@ impl Terminal {
                 } else {
                     editor_bg
                 };
-            execute!(
-                self.stdout,
-                SetBackgroundColor(row_bg),
-                SetForegroundColor(editor_fg)
-            )?;
+            reset_text_attributes(&mut self.stdout, row_bg, editor_fg)?;
 
             if file_line < buffer.len_lines() {
                 // Check for diagnostics on this line (only for active pane)
@@ -1181,14 +1213,13 @@ impl Terminal {
                     }
 
                     // Fill remaining space in pane with theme background
-                    execute!(
-                        self.stdout,
-                        SetBackgroundColor(row_bg),
-                        SetForegroundColor(editor_fg)
+                    write_row_padding(
+                        &mut self.stdout,
+                        chars_printed,
+                        pane_width,
+                        row_bg,
+                        editor_fg,
                     )?;
-                    for _ in chars_printed..pane_width {
-                        print!(" ");
-                    }
                 }
             } else {
                 // Empty line - sign column + line indicator
@@ -1212,9 +1243,13 @@ impl Terminal {
                 } else {
                     1
                 };
-                for _ in chars_printed..pane_width {
-                    print!(" ");
-                }
+                write_row_padding(
+                    &mut self.stdout,
+                    chars_printed,
+                    pane_width,
+                    row_bg,
+                    editor_fg,
+                )?;
             }
             // Keep background color set (don't reset to terminal default)
         }
@@ -1242,9 +1277,9 @@ impl Terminal {
         selection_bg: Color,
         search_match_bg: Color,
         search_match_fg: Color,
-        diagnostic_error_color: Color,
-        diagnostic_warning_color: Color,
-        diagnostic_info_color: Color,
+        _diagnostic_error_color: Color,
+        _diagnostic_warning_color: Color,
+        _diagnostic_info_color: Color,
         diagnostic_hint_color: Color,
     ) -> anyhow::Result<()> {
         let chars: Vec<char> = text.chars().collect();
@@ -1300,7 +1335,6 @@ impl Terminal {
 
         let mut current_fg: Option<Color> = None;
         let mut current_bg: Option<Color> = None;
-        let mut current_underline: Option<Color> = None;
         let mut current_bold = false;
         let mut current_italic = false;
 
@@ -1340,14 +1374,7 @@ impl Terminal {
             // Check if in search match
             let is_search = in_search_match(actual_col);
 
-            // Check for diagnostic underline (skip Hint - we grey out text instead)
             let diag_at_col = get_diagnostic_at(actual_col);
-            let diag_underline_color = diag_at_col.and_then(|d| match d.severity {
-                DiagnosticSeverity::Error => Some(diagnostic_error_color),
-                DiagnosticSeverity::Warning => Some(diagnostic_warning_color),
-                DiagnosticSeverity::Information => Some(diagnostic_info_color),
-                DiagnosticSeverity::Hint => None, // No underline for hints - text is greyed out instead
-            });
 
             // Find syntax highlight for this position
             let syntax_style = highlights
@@ -1409,21 +1436,6 @@ impl Terminal {
                     })
                 )?;
                 current_italic = desired_italic;
-            }
-
-            // Handle underline attribute changes for diagnostics
-            if diag_underline_color != current_underline {
-                if let Some(color) = diag_underline_color {
-                    // Use colored underline (keeps syntax highlighting intact)
-                    execute!(
-                        self.stdout,
-                        SetUnderlineColor(color),
-                        SetAttribute(Attribute::Underlined)
-                    )?;
-                } else {
-                    execute!(self.stdout, SetAttribute(Attribute::NoUnderline))?;
-                }
-                current_underline = diag_underline_color;
             }
 
             print!("{}", ch);
@@ -4940,9 +4952,9 @@ impl Terminal {
         selection_bg: Color,
         search_match_bg: Color,
         search_match_fg: Color,
-        diagnostic_error_color: Color,
-        diagnostic_warning_color: Color,
-        diagnostic_info_color: Color,
+        _diagnostic_error_color: Color,
+        _diagnostic_warning_color: Color,
+        _diagnostic_info_color: Color,
         diagnostic_hint_color: Color,
     ) -> anyhow::Result<()> {
         let chars: Vec<char> = line.chars().collect();
@@ -5040,7 +5052,6 @@ impl Terminal {
         let mut highlight_idx = 0;
         let mut current_fg: Option<Color> = None;
         let mut current_bg: Option<Color> = None;
-        let mut current_underline: Option<Color> = None;
         let mut current_bold = false;
         let mut current_italic = false;
         for (i, ch) in chars.iter().enumerate() {
@@ -5058,14 +5069,7 @@ impl Terminal {
             // Check if in search match
             let is_search_match = in_search_match(actual_col);
 
-            // Check for diagnostic underline (skip Hint - we grey out text instead)
             let diag_at_col = get_diagnostic_at(actual_col);
-            let diag_underline_color = diag_at_col.and_then(|d| match d.severity {
-                DiagnosticSeverity::Error => Some(diagnostic_error_color),
-                DiagnosticSeverity::Warning => Some(diagnostic_warning_color),
-                DiagnosticSeverity::Information => Some(diagnostic_info_color),
-                DiagnosticSeverity::Hint => None, // No underline for hints - text is greyed out instead
-            });
 
             // Check if within a hint diagnostic (unused variable/import) - grey out the text
             let is_hint_diagnostic =
@@ -5120,21 +5124,6 @@ impl Terminal {
                     })
                 )?;
                 current_italic = desired_italic;
-            }
-
-            // Handle underline attribute changes for diagnostics
-            if diag_underline_color != current_underline {
-                if let Some(color) = diag_underline_color {
-                    // Use colored underline (keeps syntax highlighting intact)
-                    execute!(
-                        self.stdout,
-                        SetUnderlineColor(color),
-                        SetAttribute(Attribute::Underlined)
-                    )?;
-                } else {
-                    execute!(self.stdout, SetAttribute(Attribute::NoUnderline))?;
-                }
-                current_underline = diag_underline_color;
             }
 
             print!("{}", ch);
@@ -5225,6 +5214,8 @@ impl Drop for Terminal {
         let _ = execute!(
             self.stdout,
             event::DisableFocusChange,
+            ResetColor,
+            SetAttribute(Attribute::Reset),
             cursor::SetCursorStyle::DefaultUserShape,
             cursor::Show,
             terminal::LeaveAlternateScreen
@@ -6173,17 +6164,7 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
                     // Record frecency usage
                     editor.record_completion_use(&label);
 
-                    // Delete back to trigger position and insert completion
-                    let chars_to_delete = editor
-                        .cursor
-                        .col
-                        .saturating_sub(editor.completion.trigger_col);
-                    for _ in 0..chars_to_delete {
-                        editor.delete_char_before();
-                    }
-                    for c in text.chars() {
-                        editor.insert_char(c);
-                    }
+                    replace_completion_text(editor, editor.completion.trigger_col, &text);
 
                     // Auto-brackets: add () for functions/methods and position cursor inside
                     let needs_brackets = matches!(
@@ -8312,6 +8293,42 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
     }
 }
 
+fn completion_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
+fn completion_word_suffix_len(editor: &Editor) -> usize {
+    let Some(line) = editor.buffer().line(editor.cursor.line) else {
+        return 0;
+    };
+    let chars: Vec<char> = line.chars().collect();
+    let mut len = 0;
+    let mut col = editor.cursor.col;
+
+    while col < chars.len() && completion_word_char(chars[col]) {
+        len += 1;
+        col += 1;
+    }
+
+    len
+}
+
+fn replace_completion_text(editor: &mut Editor, trigger_col: usize, text: &str) {
+    let chars_after_cursor = completion_word_suffix_len(editor);
+    for _ in 0..chars_after_cursor {
+        editor.delete_char_at();
+    }
+
+    let chars_before_cursor = editor.cursor.col.saturating_sub(trigger_col);
+    for _ in 0..chars_before_cursor {
+        editor.delete_char_before();
+    }
+
+    for ch in text.chars() {
+        editor.insert_char(ch);
+    }
+}
+
 /// Execute a leader key action
 pub fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
     match action {
@@ -8331,11 +8348,33 @@ pub fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
 
 #[cfg(test)]
 mod tests {
-    use super::{execute_command, finder_preview_match_ranges};
+    use super::{
+        execute_command, finder_preview_match_ranges, replace_completion_text,
+        reset_text_attributes, write_row_padding,
+    };
     use crate::commands::Command;
     use crate::editor::Editor;
+    use crossterm::style::Color;
+    use std::io::{self, Write};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(Default)]
+    struct RecordingWriter {
+        events: Vec<String>,
+    }
+
+    impl Write for RecordingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.events.push(String::from_utf8_lossy(buf).to_string());
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.events.push("<flush>".to_string());
+            Ok(())
+        }
+    }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -8385,5 +8424,50 @@ mod tests {
             finder_preview_match_ranges("aaaa", "aa"),
             vec![(0, 2), (2, 4)]
         );
+    }
+
+    #[test]
+    fn row_padding_resets_underline_before_printing_spaces() {
+        let mut output = Vec::new();
+
+        write_row_padding(&mut output, 0, 3, Color::Black, Color::White).expect("write padding");
+
+        let rendered = String::from_utf8(output).expect("valid utf8");
+        let reset_index = rendered
+            .find("\x1b[0m")
+            .expect("padding resets text attributes before writing spaces");
+        let spaces_index = rendered
+            .rfind("   ")
+            .expect("padding writes the requested spaces");
+
+        assert!(
+            reset_index < spaces_index,
+            "attribute reset must be emitted before padding spaces"
+        );
+    }
+
+    #[test]
+    fn text_attribute_reset_flushes_before_print_macro_output() {
+        let mut output = RecordingWriter::default();
+
+        reset_text_attributes(&mut output, Color::Black, Color::White).expect("reset attributes");
+
+        assert!(
+            output.events.iter().any(|event| event == "<flush>"),
+            "attribute reset must flush because pane rendering mixes crossterm writes with print!"
+        );
+    }
+
+    #[test]
+    fn completion_replacement_removes_word_suffix_after_cursor() {
+        let mut editor = Editor::default();
+        editor.buffer_mut().insert_str(0, 0, "use std::fs;\n");
+        editor.cursor.line = 0;
+        editor.cursor.col = "use st".chars().count();
+
+        replace_completion_text(&mut editor, "use ".chars().count(), "std");
+
+        assert_eq!(editor.buffer().content(), "use std::fs;\n");
+        assert_eq!(editor.cursor.col, "use std".chars().count());
     }
 }

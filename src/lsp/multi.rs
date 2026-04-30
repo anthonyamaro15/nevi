@@ -127,6 +127,14 @@ impl MultiLspManager {
             || msg.contains("channel closed")
     }
 
+    fn notification_for_error(message: String) -> LspNotification {
+        if Self::is_fatal_error(&message) {
+            LspNotification::Error { message }
+        } else {
+            LspNotification::Status { message }
+        }
+    }
+
     /// Create a new multi-LSP manager with the given configurations
     pub fn new(
         workspace_root: PathBuf,
@@ -175,9 +183,10 @@ impl MultiLspManager {
 
         // Get config data without holding the borrow across server startup.
         let (enabled, command, args) = {
-            let config = self.configs.get(&lang).ok_or_else(|| {
-                anyhow::anyhow!("No config for language {:?}", lang)
-            })?;
+            let config = self
+                .configs
+                .get(&lang)
+                .ok_or_else(|| anyhow::anyhow!("No config for language {:?}", lang))?;
             (
                 config.enabled,
                 config.effective_command().to_string(),
@@ -195,12 +204,15 @@ impl MultiLspManager {
         // Try to start the server (using effective command/args which resolve presets)
         match LspManager::start(&command, &args, root_path) {
             Ok(manager) => {
-                self.instances.insert(lang, LspInstance {
-                    manager,
-                    ready: false,
-                    current_file: None,
-                    document_version: 1,
-                });
+                self.instances.insert(
+                    lang,
+                    LspInstance {
+                        manager,
+                        ready: false,
+                        current_file: None,
+                        document_version: 1,
+                    },
+                );
                 Ok(true)
             }
             Err(e) => Err(e),
@@ -210,6 +222,13 @@ impl MultiLspManager {
     /// Start a server for a file if needed
     pub fn ensure_server_for_file(&mut self, path: &Path) -> anyhow::Result<Option<LanguageId>> {
         if let Some(lang) = LanguageId::from_path(path) {
+            let Some(config) = self.configs.get(&lang) else {
+                return Ok(None);
+            };
+            if !config.enabled {
+                return Ok(None);
+            }
+
             self.ensure_server_for_language_with_file(lang, Some(path))?;
             Ok(Some(lang))
         } else {
@@ -224,8 +243,7 @@ impl MultiLspManager {
 
     /// Check if any server is ready for the given file
     pub fn is_ready_for_file(&self, path: &Path) -> bool {
-        LanguageId::from_path(path)
-            .map_or(false, |lang| self.is_ready(lang))
+        LanguageId::from_path(path).map_or(false, |lang| self.is_ready(lang))
     }
 
     /// Get a mutable reference to the instance for a language
@@ -249,6 +267,8 @@ impl MultiLspManager {
                     if Self::is_fatal_error(message) {
                         instance.ready = false;
                     }
+                    notifications.push((lang, Self::notification_for_error(message.clone())));
+                    continue;
                 }
                 notifications.push((lang, notification));
             }
@@ -280,7 +300,9 @@ impl MultiLspManager {
         if let Some(instance) = self.get_instance_mut(lang) {
             if instance.ready {
                 instance.document_version += 1;
-                instance.manager.did_change(path, instance.document_version, text)?;
+                instance
+                    .manager
+                    .did_change(path, instance.document_version, text)?;
             }
         }
         Ok(())
@@ -303,20 +325,33 @@ impl MultiLspManager {
     }
 
     /// Request completions for a file
-    pub fn completion(&mut self, path: &PathBuf, line: u32, character: u32) -> anyhow::Result<()> {
+    pub fn completion(
+        &mut self,
+        path: &PathBuf,
+        line: u32,
+        character: u32,
+        buffer_version: u64,
+    ) -> anyhow::Result<()> {
         let lang = LanguageId::from_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
         if let Some(instance) = self.get_instance_mut(lang) {
             if instance.ready {
-                instance.manager.completion(path, line, character)?;
+                instance
+                    .manager
+                    .completion(path, line, character, buffer_version)?;
             }
         }
         Ok(())
     }
 
     /// Resolve a completion item to get full documentation
-    pub fn completion_resolve(&mut self, path: &PathBuf, item: serde_json::Value, label: String) -> anyhow::Result<()> {
+    pub fn completion_resolve(
+        &mut self,
+        path: &PathBuf,
+        item: serde_json::Value,
+        label: String,
+    ) -> anyhow::Result<()> {
         let lang = LanguageId::from_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
@@ -342,7 +377,12 @@ impl MultiLspManager {
     }
 
     /// Request go-to-definition for a file
-    pub fn goto_definition(&mut self, path: &PathBuf, line: u32, character: u32) -> anyhow::Result<()> {
+    pub fn goto_definition(
+        &mut self,
+        path: &PathBuf,
+        line: u32,
+        character: u32,
+    ) -> anyhow::Result<()> {
         let lang = LanguageId::from_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
@@ -368,7 +408,12 @@ impl MultiLspManager {
     }
 
     /// Request signature help
-    pub fn signature_help(&mut self, path: &PathBuf, line: u32, character: u32) -> anyhow::Result<()> {
+    pub fn signature_help(
+        &mut self,
+        path: &PathBuf,
+        line: u32,
+        character: u32,
+    ) -> anyhow::Result<()> {
         let lang = LanguageId::from_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
@@ -381,13 +426,20 @@ impl MultiLspManager {
     }
 
     /// Request document formatting
-    pub fn formatting(&mut self, path: &PathBuf, tab_size: u32) -> anyhow::Result<()> {
+    pub fn formatting(
+        &mut self,
+        path: &PathBuf,
+        tab_size: u32,
+        buffer_version: u64,
+    ) -> anyhow::Result<()> {
         let lang = LanguageId::from_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
         if let Some(instance) = self.get_instance_mut(lang) {
             if instance.ready {
-                instance.manager.formatting(path, tab_size)?;
+                instance
+                    .manager
+                    .formatting(path, tab_size, buffer_version)?;
             }
         }
         Ok(())
@@ -401,6 +453,7 @@ impl MultiLspManager {
         start_character: u32,
         end_line: u32,
         end_character: u32,
+        buffer_version: u64,
         diagnostics: Vec<crate::lsp::types::Diagnostic>,
     ) -> anyhow::Result<()> {
         let lang = LanguageId::from_path(path)
@@ -414,6 +467,7 @@ impl MultiLspManager {
                     start_character,
                     end_line,
                     end_character,
+                    buffer_version,
                     diagnostics,
                 )?;
             }
@@ -422,13 +476,22 @@ impl MultiLspManager {
     }
 
     /// Request rename
-    pub fn rename(&mut self, path: &PathBuf, line: u32, character: u32, new_name: String) -> anyhow::Result<()> {
+    pub fn rename(
+        &mut self,
+        path: &PathBuf,
+        line: u32,
+        character: u32,
+        new_name: String,
+        buffer_version: u64,
+    ) -> anyhow::Result<()> {
         let lang = LanguageId::from_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
         if let Some(instance) = self.get_instance_mut(lang) {
             if instance.ready {
-                instance.manager.rename(path, line, character, new_name)?;
+                instance
+                    .manager
+                    .rename(path, line, character, new_name, buffer_version)?;
             }
         }
         Ok(())
@@ -448,7 +511,9 @@ impl MultiLspManager {
             if let Some(lang) = LanguageId::from_path(p) {
                 if let Some(instance) = self.instances.get(&lang) {
                     // Get the server name from config
-                    let server_name = self.configs.get(&lang)
+                    let server_name = self
+                        .configs
+                        .get(&lang)
                         .map(|c| c.effective_command())
                         .unwrap_or("unknown");
 
@@ -564,5 +629,48 @@ mod tests {
         assert!(!MultiLspManager::is_fatal_error(
             "LSP stderr: rust-analyzer: using proc-macro server"
         ));
+    }
+
+    #[test]
+    fn ensure_server_for_file_returns_none_for_disabled_language() {
+        let tmp = unique_temp_dir("nevi_lsp_disabled");
+        fs::create_dir_all(&tmp).expect("create temp dir");
+
+        let mut manager = make_manager(tmp.clone());
+        let result = manager
+            .ensure_server_for_file(&tmp.join("README.md"))
+            .expect("ensure server");
+
+        assert_eq!(result, None);
+        assert_eq!(
+            manager.status(Some(tmp.join("README.md").as_path())),
+            "LSP: markdown (disabled)"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn nonfatal_stderr_logs_are_reported_as_status_notifications() {
+        match MultiLspManager::notification_for_error(
+            "LSP stderr: rust-analyzer: using proc-macro server".to_string(),
+        ) {
+            LspNotification::Status { message } => {
+                assert_eq!(
+                    message,
+                    "LSP stderr: rust-analyzer: using proc-macro server"
+                );
+            }
+            other => panic!("expected status notification, got {:?}", other),
+        }
+
+        match MultiLspManager::notification_for_error(
+            "Failed to start LSP server: No such file or directory".to_string(),
+        ) {
+            LspNotification::Error { message } => {
+                assert!(message.contains("Failed to start LSP server"));
+            }
+            other => panic!("expected error notification, got {:?}", other),
+        }
     }
 }

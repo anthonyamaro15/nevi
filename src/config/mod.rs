@@ -503,6 +503,7 @@ pub enum LspPreset {
     /// vscode-eslint-language-server --stdio
     Eslint,
     /// rust-analyzer (default for Rust)
+    #[serde(alias = "rust_analyzer")]
     RustAnalyzer,
     /// pyright-langserver --stdio (default for Python)
     Pyright,
@@ -1087,6 +1088,9 @@ pub fn load_config() -> Settings {
                 // Merge command mode mappings: defaults + user overrides by action
                 user_settings.keymap.command_mappings =
                     merge_command_mappings(&user_settings.keymap.command_mappings);
+                // Merge LSP server configs so partial per-server overrides keep defaults.
+                user_settings.lsp.servers =
+                    merge_lsp_servers_with_defaults(user_settings.lsp.servers);
                 user_settings
             }
             Err(e) => {
@@ -1098,6 +1102,52 @@ pub fn load_config() -> Settings {
             eprintln!("Warning: Failed to read config file: {}", e);
             Settings::default()
         }
+    }
+}
+
+fn merge_lsp_servers_with_defaults(user: LspServers) -> LspServers {
+    let defaults = LspServers::default();
+
+    LspServers {
+        rust: merge_lsp_server_config(defaults.rust, user.rust),
+        typescript: merge_lsp_server_config(defaults.typescript, user.typescript),
+        javascript: merge_lsp_server_config(defaults.javascript, user.javascript),
+        css: merge_lsp_server_config(defaults.css, user.css),
+        json: merge_lsp_server_config(defaults.json, user.json),
+        toml: merge_lsp_server_config(defaults.toml, user.toml),
+        markdown: merge_lsp_server_config(defaults.markdown, user.markdown),
+        html: merge_lsp_server_config(defaults.html, user.html),
+        python: merge_lsp_server_config(defaults.python, user.python),
+    }
+}
+
+fn merge_lsp_server_config(default: LspServerConfig, user: LspServerConfig) -> LspServerConfig {
+    let user_has_preset = user.preset.is_some();
+    let user_has_command = !user.command.is_empty();
+
+    LspServerConfig {
+        enabled: user.enabled,
+        preset: user.preset.or(default.preset),
+        command: if user_has_command || user_has_preset {
+            user.command
+        } else {
+            default.command
+        },
+        args: if user.args.is_empty() && !user_has_command && !user_has_preset {
+            default.args
+        } else {
+            user.args
+        },
+        root_patterns: if user.root_patterns.is_empty() {
+            default.root_patterns
+        } else {
+            user.root_patterns
+        },
+        file_extensions: if user.file_extensions.is_empty() {
+            default.file_extensions
+        } else {
+            user.file_extensions
+        },
     }
 }
 
@@ -1141,6 +1191,80 @@ fn merge_command_mappings(user_mappings: &[CommandModeMapping]) -> Vec<CommandMo
     merged.extend(user_mappings.iter().cloned());
 
     merged
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lsp_server_partial_config_keeps_default_command_and_args() {
+        let mut settings: Settings = toml::from_str(
+            r#"
+            [lsp.servers.typescript]
+            root_patterns = ["pnpm-workspace.yaml", "package.json"]
+            "#,
+        )
+        .expect("parse settings");
+
+        settings.lsp.servers = merge_lsp_servers_with_defaults(settings.lsp.servers);
+
+        assert_eq!(
+            settings.lsp.servers.typescript.effective_command(),
+            "typescript-language-server"
+        );
+        assert_eq!(
+            settings.lsp.servers.typescript.effective_args(),
+            vec!["--stdio".to_string()]
+        );
+        assert_eq!(
+            settings.lsp.servers.typescript.root_patterns,
+            vec![
+                "pnpm-workspace.yaml".to_string(),
+                "package.json".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn lsp_preset_can_be_configured_with_documented_rust_analyzer_name() {
+        let settings: Settings = toml::from_str(
+            r#"
+            [lsp.servers.rust]
+            preset = "rust_analyzer"
+            "#,
+        )
+        .expect("parse settings");
+
+        assert_eq!(
+            settings.lsp.servers.rust.preset,
+            Some(LspPreset::RustAnalyzer)
+        );
+    }
+
+    #[test]
+    fn lsp_preset_with_custom_roots_uses_preset_command_not_default_command() {
+        let mut settings: Settings = toml::from_str(
+            r#"
+            [lsp.servers.typescript]
+            preset = "biome"
+            root_patterns = ["biome.json", "package.json"]
+            "#,
+        )
+        .expect("parse settings");
+
+        settings.lsp.servers = merge_lsp_servers_with_defaults(settings.lsp.servers);
+
+        assert_eq!(settings.lsp.servers.typescript.effective_command(), "biome");
+        assert_eq!(
+            settings.lsp.servers.typescript.effective_args(),
+            vec!["lsp-proxy".to_string()]
+        );
+        assert_eq!(
+            settings.lsp.servers.typescript.root_patterns,
+            vec!["biome.json".to_string(), "package.json".to_string()]
+        );
+    }
 }
 
 /// Save the theme setting to config.toml
