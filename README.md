@@ -77,6 +77,7 @@ nevi file1.rs file2.rs
 - `<Space>ff` - Find files
 - `<Space>fg` - Live grep
 - `<Space>e` - File explorer
+- `<Space>tt` - Terminal picker
 
 ## Configuration
 
@@ -93,6 +94,10 @@ scroll_off = 8
 
 [theme]
 colorscheme = "onedark"
+
+[terminal]
+popup_width_ratio = 0.9
+popup_height_ratio = 0.9
 
 [lsp]
 enabled = true
@@ -190,6 +195,7 @@ Nevi aims for full vim/neovim keybind compatibility. Most common keybindings are
 | `sw` | Search word under cursor |
 | `fb` | Find buffers |
 | `ft` | Theme picker |
+| `tt` | Terminal picker |
 | `e` | File explorer |
 | `ca` | Code actions |
 | `rn` | Rename symbol |
