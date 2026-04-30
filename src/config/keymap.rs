@@ -517,6 +517,19 @@ mod tests {
     }
 
     #[test]
+    fn default_keymap_includes_terminal_picker_mapping() {
+        use super::super::KeymapSettings;
+
+        let (lookup, errors) = KeymapLookup::from_settings(&KeymapSettings::default());
+
+        assert!(errors.is_empty(), "Should have no errors");
+        match lookup.get_leader_action("tt") {
+            Some(LeaderAction::Command(command)) => assert_eq!(command, "Terminals"),
+            _ => panic!("Expected <leader>tt to open the terminal picker"),
+        }
+    }
+
+    #[test]
     fn test_visual_mapping_parses() {
         use super::super::{KeymapEntry, KeymapSettings};
 

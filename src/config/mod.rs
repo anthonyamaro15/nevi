@@ -18,6 +18,7 @@ pub use languages::{load_languages_config, FormatterConfig, LanguageConfig, Lang
 pub struct Settings {
     pub editor: EditorSettings,
     pub theme: ThemeSettings,
+    pub terminal: TerminalSettings,
     pub keymap: KeymapSettings,
     pub finder: FinderSettings,
     pub lsp: LspSettings,
@@ -29,6 +30,7 @@ impl Default for Settings {
         Self {
             editor: EditorSettings::default(),
             theme: ThemeSettings::default(),
+            terminal: TerminalSettings::default(),
             keymap: KeymapSettings::default(),
             finder: FinderSettings::default(),
             lsp: LspSettings::default(),
@@ -120,6 +122,25 @@ impl Default for ThemeSettings {
     fn default() -> Self {
         Self {
             colorscheme: "onedark".to_string(),
+        }
+    }
+}
+
+/// Floating terminal settings
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct TerminalSettings {
+    /// Floating terminal width as a ratio of the editor width (default: 0.9)
+    pub popup_width_ratio: f32,
+    /// Floating terminal height as a ratio of the editor height (default: 0.9)
+    pub popup_height_ratio: f32,
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        Self {
+            popup_width_ratio: 0.9,
+            popup_height_ratio: 0.9,
         }
     }
 }
@@ -311,12 +332,12 @@ impl Default for KeymapSettings {
                     action: ":Themes".to_string(),
                     desc: Some("Open theme picker".to_string()),
                 },
-                // Terminal leader mapping is disabled by default; use Ctrl+\ or :Terminal.
-                // LeaderMapping {
-                //     key: "t".to_string(),
-                //     action: ":Terminal".to_string(),
-                //     desc: Some("Toggle terminal".to_string()),
-                // },
+                // Terminal
+                LeaderMapping {
+                    key: "tt".to_string(),
+                    action: ":Terminals".to_string(),
+                    desc: Some("Open terminal picker".to_string()),
+                },
             ],
         }
     }
@@ -685,6 +706,13 @@ fn default_config_template() -> &'static str {
 # colorscheme = "onedark"    # Color scheme name
 
 # ============================================================================
+# FLOATING TERMINAL
+# ============================================================================
+# [terminal]
+# popup_width_ratio = 0.9     # Width as a fraction of the screen (0.2 to 1.0)
+# popup_height_ratio = 0.9    # Height as a fraction of the screen (0.2 to 1.0)
+
+# ============================================================================
 # FINDER (Fuzzy file picker, grep)
 # ============================================================================
 # [finder]
@@ -945,6 +973,7 @@ fn default_config_template() -> &'static str {
 # <leader>sw       - Search word under cursor (grep)
 # <leader>fb       - Find buffers
 # <leader>ft       - Theme picker
+# <leader>tt       - Terminal picker
 # <leader>ca       - Code actions
 # <leader>rn       - Rename symbol
 # <leader>d        - Search diagnostics

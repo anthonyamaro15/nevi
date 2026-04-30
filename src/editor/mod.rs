@@ -2176,8 +2176,13 @@ impl Editor {
 
     /// Keep the PTY dimensions aligned with the floating terminal content area.
     pub fn sync_floating_terminal_size(&mut self) {
-        let (rows, cols) =
-            crate::floating_terminal::content_size_for_screen(self.term_width, self.term_height);
+        let terminal = &self.settings.terminal;
+        let (rows, cols) = crate::floating_terminal::content_size_for_screen(
+            self.term_width,
+            self.term_height,
+            terminal.popup_width_ratio,
+            terminal.popup_height_ratio,
+        );
         self.floating_terminal.resize(rows, cols);
     }
 

@@ -24,19 +24,36 @@ use std::thread::{self, JoinHandle};
 /// Terminal buffer size (scrollback)
 const BUFFER_ROWS: usize = 1000;
 const BUFFER_COLS: usize = 200;
-const FLOATING_TERMINAL_RATIO: f32 = 0.6;
+const DEFAULT_FLOATING_TERMINAL_RATIO: f32 = 0.9;
+const MIN_FLOATING_TERMINAL_RATIO: f32 = 0.2;
+const MAX_FLOATING_TERMINAL_RATIO: f32 = 1.0;
 const MIN_POPUP_WIDTH: u16 = 40;
 const MIN_POPUP_HEIGHT: u16 = 10;
 const MAX_TITLE_LEN: usize = 120;
 const VISIBLE_OUTPUT_CHUNK_BYTES: usize = 256 * 1024;
 const BACKGROUND_OUTPUT_CHUNK_BYTES: usize = 32 * 1024;
 
+fn normalize_popup_ratio(ratio: f32) -> f32 {
+    if ratio.is_finite() {
+        ratio.clamp(MIN_FLOATING_TERMINAL_RATIO, MAX_FLOATING_TERMINAL_RATIO)
+    } else {
+        DEFAULT_FLOATING_TERMINAL_RATIO
+    }
+}
+
 /// Calculate the floating terminal popup size for the editor screen.
-pub fn popup_size_for_screen(screen_width: u16, screen_height: u16) -> (u16, u16) {
-    let width = ((screen_width as f32 * FLOATING_TERMINAL_RATIO) as u16)
+pub fn popup_size_for_screen(
+    screen_width: u16,
+    screen_height: u16,
+    width_ratio: f32,
+    height_ratio: f32,
+) -> (u16, u16) {
+    let width_ratio = normalize_popup_ratio(width_ratio);
+    let height_ratio = normalize_popup_ratio(height_ratio);
+    let width = ((screen_width as f32 * width_ratio) as u16)
         .max(MIN_POPUP_WIDTH)
         .min(screen_width.max(2));
-    let height = ((screen_height as f32 * FLOATING_TERMINAL_RATIO) as u16)
+    let height = ((screen_height as f32 * height_ratio) as u16)
         .max(MIN_POPUP_HEIGHT)
         .min(screen_height.max(2));
 
@@ -44,8 +61,14 @@ pub fn popup_size_for_screen(screen_width: u16, screen_height: u16) -> (u16, u16
 }
 
 /// Calculate the PTY content size for the floating terminal popup.
-pub fn content_size_for_screen(screen_width: u16, screen_height: u16) -> (u16, u16) {
-    let (popup_width, popup_height) = popup_size_for_screen(screen_width, screen_height);
+pub fn content_size_for_screen(
+    screen_width: u16,
+    screen_height: u16,
+    width_ratio: f32,
+    height_ratio: f32,
+) -> (u16, u16) {
+    let (popup_width, popup_height) =
+        popup_size_for_screen(screen_width, screen_height, width_ratio, height_ratio);
     let rows = popup_height.saturating_sub(2).max(1);
     let cols = popup_width.saturating_sub(2).max(1);
 
@@ -1084,8 +1107,14 @@ mod tests {
 
     #[test]
     fn content_size_matches_popup_inner_area() {
-        assert_eq!(popup_size_for_screen(120, 40), (72, 24));
-        assert_eq!(content_size_for_screen(120, 40), (22, 70));
+        assert_eq!(popup_size_for_screen(120, 40, 0.9, 0.9), (108, 36));
+        assert_eq!(content_size_for_screen(120, 40, 0.9, 0.9), (34, 106));
+    }
+
+    #[test]
+    fn popup_size_clamps_configured_ratios() {
+        assert_eq!(popup_size_for_screen(120, 40, 2.0, f32::NAN), (120, 36));
+        assert_eq!(popup_size_for_screen(120, 40, 0.1, 0.1), (40, 10));
     }
 
     #[test]

@@ -4069,35 +4069,25 @@ impl Terminal {
 
     /// Render the floating terminal
     fn render_floating_terminal(&mut self, editor: &Editor) -> anyhow::Result<()> {
-        // Calculate terminal dimensions (60% of screen, centered)
-        let (term_width, term_height) =
-            crate::floating_terminal::popup_size_for_screen(editor.term_width, editor.term_height);
+        // Calculate configured terminal dimensions, centered.
+        let terminal = &editor.settings.terminal;
+        let (term_width, term_height) = crate::floating_terminal::popup_size_for_screen(
+            editor.term_width,
+            editor.term_height,
+            terminal.popup_width_ratio,
+            terminal.popup_height_ratio,
+        );
 
         // Center the terminal
         let term_x = (editor.term_width.saturating_sub(term_width)) / 2;
         let term_y = (editor.term_height.saturating_sub(term_height)) / 2;
 
-        // Colors
-        let border_color = Color::Rgb {
-            r: 100,
-            g: 180,
-            b: 100,
-        };
-        let bg_color = Color::Rgb {
-            r: 20,
-            g: 20,
-            b: 25,
-        };
-        let text_color = Color::Rgb {
-            r: 200,
-            g: 200,
-            b: 200,
-        };
-        let title_color = Color::Rgb {
-            r: 150,
-            g: 220,
-            b: 150,
-        };
+        let theme = editor.theme();
+        let border_color = theme.ui.popup_border;
+        let bg_color = theme.ui.popup_bg;
+        let text_color = theme.ui.foreground;
+        let title_color = theme.ui.finder_prompt;
+        let hint_color = theme.ui.line_number;
 
         // Draw top border with title
         execute!(self.stdout, cursor::MoveTo(term_x, term_y))?;
@@ -4126,14 +4116,7 @@ impl Terminal {
             } else if i > title_start && i < title_start + title_width {
                 // Skip - title already printed
             } else if i == close_start {
-                execute!(
-                    self.stdout,
-                    SetForegroundColor(Color::Rgb {
-                        r: 100,
-                        g: 100,
-                        b: 110
-                    })
-                )?;
+                execute!(self.stdout, SetForegroundColor(hint_color))?;
                 print!("{}", close_hint);
                 execute!(self.stdout, SetForegroundColor(border_color))?;
             } else if i > close_start && i < close_start + close_hint.len() {
