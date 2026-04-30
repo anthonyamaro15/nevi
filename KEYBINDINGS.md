@@ -726,6 +726,14 @@ Type `:` to enter command mode. Implemented commands include:
 | `:LazyGit` / `:lg` | Open lazygit |
 | `:!{command}` | Run external shell command |
 | `:Terminal` / `:term` | Toggle floating terminal |
+| `:TerminalNew [name]` / `:termnew [name]` | Create floating terminal session |
+| `:TerminalNext` / `:termnext` | Switch to next floating terminal session |
+| `:TerminalPrev` / `:termprev` | Switch to previous floating terminal session |
+| `:TerminalList` / `:termls` | List floating terminal sessions |
+| `:Terminals` / `:termmenu` | Open floating terminal session picker (`Enter` selects, `d` kills, `n` creates, `r` renames) |
+| `:TerminalSelect {n}` / `:termsel {n}` | Select floating terminal session |
+| `:TerminalRename [n] {name}` / `:termrename [n] {name}` | Rename active terminal or terminal session `n` |
+| `:TerminalKill` / `:termkill` | Kill floating terminal |
 | `:CopilotAuth` / `:Copilot` | Sign in to Copilot |
 | `:CopilotSignOut` | Sign out of Copilot |
 | `:CopilotStatus` | Show Copilot status |
