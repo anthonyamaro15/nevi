@@ -1,6 +1,6 @@
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent},
     execute, queue,
     style::{
         Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
@@ -66,6 +66,8 @@ use crate::syntax::{HighlightSpan, SyntaxStyle};
 pub enum EditorEvent {
     /// A key press
     Key(KeyEvent),
+    /// A mouse event
+    Mouse(MouseEvent),
     /// Terminal gained focus (for autoread)
     FocusGained,
     /// Terminal was resized
@@ -243,6 +245,7 @@ fn calculate_wrap_segments(
 /// Terminal handler responsible for rendering and input
 pub struct Terminal {
     stdout: Stdout,
+    mouse_capture_enabled: bool,
 }
 
 impl Terminal {
@@ -258,7 +261,24 @@ impl Terminal {
             event::EnableFocusChange
         )?;
 
-        Ok(Self { stdout })
+        Ok(Self {
+            stdout,
+            mouse_capture_enabled: false,
+        })
+    }
+
+    fn set_mouse_capture(&mut self, enabled: bool) -> anyhow::Result<()> {
+        if self.mouse_capture_enabled == enabled {
+            return Ok(());
+        }
+
+        if enabled {
+            execute!(self.stdout, event::EnableMouseCapture)?;
+        } else {
+            execute!(self.stdout, event::DisableMouseCapture)?;
+        }
+        self.mouse_capture_enabled = enabled;
+        Ok(())
     }
 
     /// Get terminal size
@@ -276,6 +296,9 @@ impl Terminal {
     /// Run an external process (like lazygit) suspending the editor
     /// The terminal is restored before running and re-initialized after
     pub fn run_external_process(&mut self, command: &str) -> anyhow::Result<()> {
+        let restore_mouse_capture = self.mouse_capture_enabled;
+        self.set_mouse_capture(false)?;
+
         // Leave alternate screen and show cursor
         execute!(self.stdout, cursor::Show, terminal::LeaveAlternateScreen)?;
         self.stdout.flush()?;
@@ -299,6 +322,9 @@ impl Terminal {
             cursor::Hide,
             event::EnableFocusChange
         )?;
+        if restore_mouse_capture {
+            self.set_mouse_capture(true)?;
+        }
 
         // Check if command succeeded
         match status {
@@ -321,6 +347,7 @@ impl Terminal {
 
     /// Render the editor state to the terminal
     pub fn render(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        self.set_mouse_capture(editor.floating_terminal.is_visible())?;
         execute!(self.stdout, cursor::MoveTo(0, 0))?;
 
         // Skip rendering background when finder is open - it's a large overlay
@@ -5274,6 +5301,7 @@ impl Terminal {
     pub fn read_event(&self) -> anyhow::Result<Option<EditorEvent>> {
         match event::read()? {
             Event::Key(key_event) => Ok(Some(EditorEvent::Key(key_event))),
+            Event::Mouse(mouse_event) => Ok(Some(EditorEvent::Mouse(mouse_event))),
             Event::FocusGained => Ok(Some(EditorEvent::FocusGained)),
             Event::Resize(cols, rows) => Ok(Some(EditorEvent::Resize(cols, rows))),
             _ => Ok(None),
@@ -5302,6 +5330,7 @@ impl Drop for Terminal {
         // Restore terminal state
         let _ = execute!(
             self.stdout,
+            event::DisableMouseCapture,
             event::DisableFocusChange,
             cursor::SetCursorStyle::DefaultUserShape,
             cursor::Show,
