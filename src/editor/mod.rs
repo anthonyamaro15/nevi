@@ -3431,6 +3431,12 @@ impl Editor {
         self.command_line.begin_prompt();
     }
 
+    /// Enter command mode with prefilled input.
+    pub fn enter_command_mode_with_input(&mut self, input: impl Into<String>) {
+        self.mode = Mode::Command;
+        self.command_line.begin_prompt_with_input(input);
+    }
+
     /// Exit command mode back to normal
     pub fn exit_command_mode(&mut self) {
         self.mode = Mode::Normal;

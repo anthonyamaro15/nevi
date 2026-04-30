@@ -7213,6 +7213,28 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
             }
         }
 
+        // Terminal picker: 'r' opens command mode prefilled for renaming the selected session
+        (KeyModifiers::NONE, KeyCode::Char('r'))
+            if is_normal_mode && editor.finder.mode == crate::finder::FinderMode::Terminals =>
+        {
+            let position = editor
+                .finder
+                .selected_item()
+                .and_then(|item| item.terminal_session_position);
+
+            if let Some(position) = position {
+                let name = editor
+                    .floating_terminal
+                    .session_infos()
+                    .into_iter()
+                    .find(|session| session.position == position)
+                    .map(|session| session.name)
+                    .unwrap_or_default();
+                editor.close_finder();
+                editor.enter_command_mode_with_input(format!("termrename {} {}", position, name));
+            }
+        }
+
         // Harpoon mode: 'd' to delete selected item
         (KeyModifiers::NONE, KeyCode::Char('d'))
             if is_normal_mode && editor.finder.mode == crate::finder::FinderMode::Harpoon =>
@@ -8351,6 +8373,16 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             Ok(message) => CommandResult::Message(message),
             Err(e) => CommandResult::Error(format!("Terminal select failed: {}", e)),
         },
+        Command::TerminalRename(position, name) => {
+            let result = match position {
+                Some(position) => editor.floating_terminal.rename_session(position, name),
+                None => editor.floating_terminal.rename_active_session(name),
+            };
+            match result {
+                Ok(message) => CommandResult::Message(message),
+                Err(e) => CommandResult::Error(format!("Terminal rename failed: {}", e)),
+            }
+        }
         Command::TerminalKill => {
             editor.floating_terminal.close();
             CommandResult::Message("Terminal killed".to_string())
