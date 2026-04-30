@@ -56,6 +56,15 @@ desc = "Save all files"
 
 Now `<Space>s` saves all open files.
 
+For example, the terminal picker is mapped to `<Space>tt` by default and can be changed the same way:
+
+```toml
+[[keymap.leader_mappings]]
+key = "t"
+action = ":Terminals"
+desc = "Terminal picker"
+```
+
 ### Key Notation
 
 When specifying keys, use these formats:
@@ -550,6 +559,7 @@ The leader key is `Space` by default. Press `Space` followed by these keys:
 | `<leader>sw` | Search word under cursor |
 | `<leader>fb` | Find buffers |
 | `<leader>ft` | Theme picker |
+| `<leader>tt` | Terminal picker |
 
 > **Tip:** In the file finder or grep, press `Ctrl+t` to toggle a preview panel showing file contents.
 
