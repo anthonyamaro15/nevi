@@ -99,6 +99,87 @@ pub struct LspClient {
     pending_requests: PendingRequests,
 }
 
+fn client_capabilities() -> ClientCapabilities {
+    ClientCapabilities {
+        text_document: Some(lsp_types::TextDocumentClientCapabilities {
+            completion: Some(lsp_types::CompletionClientCapabilities {
+                completion_item: Some(lsp_types::CompletionItemCapability {
+                    snippet_support: Some(false),
+                    documentation_format: Some(vec![
+                        lsp_types::MarkupKind::PlainText,
+                        lsp_types::MarkupKind::Markdown,
+                    ]),
+                    // Tell server we support resolving documentation and detail lazily.
+                    resolve_support: Some(lsp_types::CompletionItemCapabilityResolveSupport {
+                        properties: vec![
+                            "documentation".to_string(),
+                            "detail".to_string(),
+                            "additionalTextEdits".to_string(),
+                        ],
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            hover: Some(lsp_types::HoverClientCapabilities {
+                content_format: Some(vec![lsp_types::MarkupKind::PlainText]),
+                ..Default::default()
+            }),
+            signature_help: Some(lsp_types::SignatureHelpClientCapabilities {
+                signature_information: Some(lsp_types::SignatureInformationSettings {
+                    documentation_format: Some(vec![lsp_types::MarkupKind::PlainText]),
+                    parameter_information: Some(lsp_types::ParameterInformationSettings {
+                        label_offset_support: Some(true),
+                    }),
+                    active_parameter_support: Some(true),
+                }),
+                ..Default::default()
+            }),
+            definition: Some(lsp_types::GotoCapability {
+                link_support: Some(false),
+                ..Default::default()
+            }),
+            publish_diagnostics: Some(lsp_types::PublishDiagnosticsClientCapabilities {
+                related_information: Some(true),
+                ..Default::default()
+            }),
+            code_action: Some(lsp_types::CodeActionClientCapabilities {
+                code_action_literal_support: Some(lsp_types::CodeActionLiteralSupport {
+                    code_action_kind: lsp_types::CodeActionKindLiteralSupport {
+                        value_set: vec![
+                            lsp_types::CodeActionKind::QUICKFIX.as_str().to_string(),
+                            lsp_types::CodeActionKind::REFACTOR.as_str().to_string(),
+                            lsp_types::CodeActionKind::REFACTOR_EXTRACT
+                                .as_str()
+                                .to_string(),
+                            lsp_types::CodeActionKind::REFACTOR_INLINE
+                                .as_str()
+                                .to_string(),
+                            lsp_types::CodeActionKind::REFACTOR_REWRITE
+                                .as_str()
+                                .to_string(),
+                            lsp_types::CodeActionKind::SOURCE.as_str().to_string(),
+                            lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS
+                                .as_str()
+                                .to_string(),
+                            lsp_types::CodeActionKind::SOURCE_FIX_ALL
+                                .as_str()
+                                .to_string(),
+                        ],
+                    },
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        window: Some(lsp_types::WindowClientCapabilities {
+            work_done_progress: Some(true),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 impl LspClient {
     /// Spawn a new LSP server process
     pub fn spawn(command: &str, args: &[String]) -> Result<(Self, PendingRequests, SharedStdin)> {
@@ -158,82 +239,7 @@ impl LspClient {
             root_path: Some(root_path.to_string_lossy().to_string()),
             root_uri: Some(root_uri.clone()),
             initialization_options: initialization_options_for_command(&self.command),
-            capabilities: ClientCapabilities {
-                text_document: Some(lsp_types::TextDocumentClientCapabilities {
-                    completion: Some(lsp_types::CompletionClientCapabilities {
-                        completion_item: Some(lsp_types::CompletionItemCapability {
-                            snippet_support: Some(false),
-                            documentation_format: Some(vec![
-                                lsp_types::MarkupKind::PlainText,
-                                lsp_types::MarkupKind::Markdown,
-                            ]),
-                            // Tell server we support resolving documentation and detail lazily
-                            resolve_support: Some(
-                                lsp_types::CompletionItemCapabilityResolveSupport {
-                                    properties: vec![
-                                        "documentation".to_string(),
-                                        "detail".to_string(),
-                                        "additionalTextEdits".to_string(),
-                                    ],
-                                },
-                            ),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    }),
-                    hover: Some(lsp_types::HoverClientCapabilities {
-                        content_format: Some(vec![lsp_types::MarkupKind::PlainText]),
-                        ..Default::default()
-                    }),
-                    signature_help: Some(lsp_types::SignatureHelpClientCapabilities {
-                        signature_information: Some(lsp_types::SignatureInformationSettings {
-                            documentation_format: Some(vec![lsp_types::MarkupKind::PlainText]),
-                            parameter_information: Some(lsp_types::ParameterInformationSettings {
-                                label_offset_support: Some(true),
-                            }),
-                            active_parameter_support: Some(true),
-                        }),
-                        ..Default::default()
-                    }),
-                    definition: Some(lsp_types::GotoCapability {
-                        link_support: Some(false),
-                        ..Default::default()
-                    }),
-                    publish_diagnostics: Some(lsp_types::PublishDiagnosticsClientCapabilities {
-                        related_information: Some(true),
-                        ..Default::default()
-                    }),
-                    code_action: Some(lsp_types::CodeActionClientCapabilities {
-                        code_action_literal_support: Some(lsp_types::CodeActionLiteralSupport {
-                            code_action_kind: lsp_types::CodeActionKindLiteralSupport {
-                                value_set: vec![
-                                    lsp_types::CodeActionKind::QUICKFIX.as_str().to_string(),
-                                    lsp_types::CodeActionKind::REFACTOR.as_str().to_string(),
-                                    lsp_types::CodeActionKind::REFACTOR_EXTRACT
-                                        .as_str()
-                                        .to_string(),
-                                    lsp_types::CodeActionKind::REFACTOR_INLINE
-                                        .as_str()
-                                        .to_string(),
-                                    lsp_types::CodeActionKind::REFACTOR_REWRITE
-                                        .as_str()
-                                        .to_string(),
-                                    lsp_types::CodeActionKind::SOURCE.as_str().to_string(),
-                                    lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS
-                                        .as_str()
-                                        .to_string(),
-                                    lsp_types::CodeActionKind::SOURCE_FIX_ALL
-                                        .as_str()
-                                        .to_string(),
-                                ],
-                            },
-                        }),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
+            capabilities: client_capabilities(),
             trace: None,
             workspace_folders: Some(vec![WorkspaceFolder {
                 uri: root_uri.clone(),
@@ -1179,6 +1185,32 @@ fn handle_notification(method: &str, params: Option<Value>) -> Option<LspNotific
             let message = params.get("message")?.as_str()?.to_string();
             Some(LspNotification::Status { message })
         }
+        "$/progress" => {
+            let params = params?;
+            let value = params.get("value")?;
+            let kind = value.get("kind")?.as_str()?;
+            let title = value
+                .get("title")
+                .and_then(|title| title.as_str())
+                .unwrap_or("loading")
+                .to_string();
+            let message = value
+                .get("message")
+                .and_then(|message| message.as_str())
+                .map(|message| message.to_string());
+            let percentage = value.get("percentage").and_then(|percentage| {
+                percentage
+                    .as_u64()
+                    .or_else(|| percentage.as_f64().map(|value| value as u64))
+            });
+
+            Some(LspNotification::Progress {
+                title,
+                message,
+                percentage,
+                done: kind == "end",
+            })
+        }
         _ => None,
     }
 }
@@ -1838,5 +1870,49 @@ mod tests {
     #[test]
     fn non_typescript_servers_do_not_get_typescript_initialization_options() {
         assert!(initialization_options_for_command("rust-analyzer").is_none());
+    }
+
+    #[test]
+    fn client_capabilities_advertise_work_done_progress() {
+        let capabilities = client_capabilities();
+
+        assert_eq!(
+            capabilities
+                .window
+                .and_then(|window| window.work_done_progress),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn progress_notifications_are_parsed_for_status_display() {
+        let notification = handle_notification(
+            "$/progress",
+            Some(json!({
+                "token": "rustAnalyzer/Indexing",
+                "value": {
+                    "kind": "report",
+                    "title": "rust-analyzer",
+                    "message": "indexing",
+                    "percentage": 42
+                }
+            })),
+        )
+        .expect("progress notification");
+
+        match notification {
+            LspNotification::Progress {
+                title,
+                message,
+                percentage,
+                done,
+            } => {
+                assert_eq!(title, "rust-analyzer");
+                assert_eq!(message.as_deref(), Some("indexing"));
+                assert_eq!(percentage, Some(42));
+                assert!(!done);
+            }
+            other => panic!("expected progress notification, got {other:?}"),
+        }
     }
 }
