@@ -27,6 +27,7 @@ pub enum RequestKind {
         uri: String,
         line: u32,
         character: u32,
+        buffer_version: u64,
     },
     Definition {
         uri: String,
@@ -45,6 +46,7 @@ pub enum RequestKind {
     },
     Formatting {
         uri: String,
+        buffer_version: u64,
     },
     References {
         uri: String,
@@ -57,14 +59,18 @@ pub enum RequestKind {
         start_character: u32,
         end_line: u32,
         end_character: u32,
+        buffer_version: u64,
     },
     Rename {
         uri: String,
         line: u32,
         character: u32,
         new_name: String,
+        buffer_version: u64,
     },
     CompletionResolve {
+        /// Stable ID of the item being resolved.
+        item_id: u64,
         /// Label of the item being resolved (for matching response to item)
         label: String,
     },
@@ -102,12 +108,15 @@ pub enum LspRequest {
         uri: String,
         line: u32,
         character: u32,
+        buffer_version: u64,
     },
 
     /// Resolve a completion item to get full documentation
     CompletionResolve {
         /// The raw LSP completion item to resolve
         item: serde_json::Value,
+        /// Stable ID of the item being resolved
+        item_id: u64,
         /// Label for matching the response to the item
         label: String,
     },
@@ -137,6 +146,7 @@ pub enum LspRequest {
     Formatting {
         uri: String,
         tab_size: u32,
+        buffer_version: u64,
     },
 
     /// Request find references
@@ -153,6 +163,7 @@ pub enum LspRequest {
         start_character: u32,
         end_line: u32,
         end_character: u32,
+        buffer_version: u64,
         diagnostics: Vec<Diagnostic>,
     },
 
@@ -162,6 +173,7 @@ pub enum LspRequest {
         line: u32,
         character: u32,
         new_name: String,
+        buffer_version: u64,
     },
 }
 
@@ -189,6 +201,7 @@ pub enum LspNotification {
         request_uri: String,
         request_line: u32,
         request_character: u32,
+        request_version: u64,
     },
 
     /// Definition location result (may have multiple locations for traits, etc.)
@@ -224,6 +237,7 @@ pub enum LspNotification {
         edits: Vec<TextEdit>,
         /// Request context for validation
         request_uri: String,
+        request_version: u64,
     },
 
     /// References result
@@ -238,6 +252,7 @@ pub enum LspNotification {
         actions: Vec<CodeActionItem>,
         /// Request context for validation
         request_uri: String,
+        request_version: u64,
     },
 
     /// Rename result with workspace edits
@@ -246,16 +261,23 @@ pub enum LspNotification {
         edits: Vec<(String, Vec<TextEdit>)>,
         /// Request context for validation
         request_uri: String,
+        request_version: u64,
     },
 
     /// Resolved completion item with documentation
     CompletionResolved {
+        /// Stable ID of the item that was resolved
+        item_id: u64,
         /// Label of the item that was resolved
         label: String,
         /// Resolved documentation
         documentation: Option<String>,
         /// Resolved detail (may be updated too)
         detail: Option<String>,
+        /// Resolved main edit, if the server filled it in
+        text_edit: Option<TextEdit>,
+        /// Resolved companion edits such as auto-import insertion
+        additional_text_edits: Vec<TextEdit>,
     },
 }
 
@@ -340,6 +362,8 @@ pub enum DiagnosticSeverity {
 /// A completion item
 #[derive(Debug, Clone)]
 pub struct CompletionItem {
+    /// Stable ID for matching completionItem/resolve responses
+    pub item_id: u64,
     /// Display label
     pub label: String,
     /// Kind of completion (function, variable, etc.)
@@ -354,6 +378,10 @@ pub struct CompletionItem {
     pub filter_text: Option<String>,
     /// Text used for sorting (if different from label)
     pub sort_text: Option<String>,
+    /// LSP text edit to apply when accepting this completion
+    pub text_edit: Option<TextEdit>,
+    /// LSP companion edits to apply when accepting this completion
+    pub additional_text_edits: Vec<TextEdit>,
     /// Raw LSP item data for completionItem/resolve
     pub raw_data: Option<serde_json::Value>,
 }
@@ -392,30 +420,30 @@ impl CompletionKind {
     /// Get a short display icon for the kind (Zed-style)
     pub fn icon(&self) -> &'static str {
         match self {
-            CompletionKind::Text => "󰦨",      // text icon
-            CompletionKind::Method => "󰊕",     // method/function
-            CompletionKind::Function => "󰊕",   // function
-            CompletionKind::Constructor => "", // constructor
-            CompletionKind::Field => "󰜢",      // field
-            CompletionKind::Variable => "󰀫",   // variable
-            CompletionKind::Class => "󰠱",      // class
-            CompletionKind::Interface => "󰜰",  // interface
-            CompletionKind::Module => "󰏗",     // module/package
-            CompletionKind::Property => "󰖷",   // property
-            CompletionKind::Unit => "󰑭",       // unit
-            CompletionKind::Value => "󰎠",      // value
-            CompletionKind::Enum => "󰕘",       // enum
-            CompletionKind::Keyword => "󰌋",    // keyword
-            CompletionKind::Snippet => "󰩫",    // snippet
-            CompletionKind::Color => "󰏘",      // color
-            CompletionKind::File => "󰈔",       // file
-            CompletionKind::Reference => "󰈇",  // reference
-            CompletionKind::Folder => "󰉋",     // folder
-            CompletionKind::EnumMember => "󰕘", // enum member
-            CompletionKind::Constant => "󰏿",   // constant
-            CompletionKind::Struct => "󰙅",     // struct
-            CompletionKind::Event => "󰉁",      // event
-            CompletionKind::Operator => "󰆕",   // operator
+            CompletionKind::Text => "󰦨",          // text icon
+            CompletionKind::Method => "󰊕",        // method/function
+            CompletionKind::Function => "󰊕",      // function
+            CompletionKind::Constructor => "",    // constructor
+            CompletionKind::Field => "󰜢",         // field
+            CompletionKind::Variable => "󰀫",      // variable
+            CompletionKind::Class => "󰠱",         // class
+            CompletionKind::Interface => "󰜰",     // interface
+            CompletionKind::Module => "󰏗",        // module/package
+            CompletionKind::Property => "󰖷",      // property
+            CompletionKind::Unit => "󰑭",          // unit
+            CompletionKind::Value => "󰎠",         // value
+            CompletionKind::Enum => "󰕘",          // enum
+            CompletionKind::Keyword => "󰌋",       // keyword
+            CompletionKind::Snippet => "󰩫",       // snippet
+            CompletionKind::Color => "󰏘",         // color
+            CompletionKind::File => "󰈔",          // file
+            CompletionKind::Reference => "󰈇",     // reference
+            CompletionKind::Folder => "󰉋",        // folder
+            CompletionKind::EnumMember => "󰕘",    // enum member
+            CompletionKind::Constant => "󰏿",      // constant
+            CompletionKind::Struct => "󰙅",        // struct
+            CompletionKind::Event => "󰉁",         // event
+            CompletionKind::Operator => "󰆕",      // operator
             CompletionKind::TypeParameter => "󰊄", // type parameter
         }
     }
@@ -457,11 +485,17 @@ impl CompletionKind {
             // Functions/Methods - Blue
             CompletionKind::Method | CompletionKind::Function => (97, 175, 239),
             // Types/Classes - Yellow/Orange
-            CompletionKind::Class | CompletionKind::Interface | CompletionKind::Struct => (229, 192, 123),
+            CompletionKind::Class | CompletionKind::Interface | CompletionKind::Struct => {
+                (229, 192, 123)
+            }
             // Variables/Fields - Cyan
-            CompletionKind::Variable | CompletionKind::Field | CompletionKind::Property => (86, 182, 194),
+            CompletionKind::Variable | CompletionKind::Field | CompletionKind::Property => {
+                (86, 182, 194)
+            }
             // Constants/Values - Purple
-            CompletionKind::Constant | CompletionKind::Value | CompletionKind::EnumMember => (198, 120, 221),
+            CompletionKind::Constant | CompletionKind::Value | CompletionKind::EnumMember => {
+                (198, 120, 221)
+            }
             // Enums - Green
             CompletionKind::Enum => (152, 195, 121),
             // Keywords - Red/Pink

@@ -589,8 +589,10 @@ impl CompletionState {
             });
             self.filtered = indices.into_iter().map(|(i, _, _)| i).collect();
         } else {
-            // Fuzzy filter using filterText (fallback to label), combined with frecency
-            let mut scored: Vec<(usize, f64)> = self
+            // Preserve server sortText for prefix matches. Servers such as
+            // tsserver use sortText to rank auto-import candidates correctly.
+            let query_lower = self.filter_text.to_lowercase();
+            let mut scored: Vec<(usize, bool, String, u32, f64)> = self
                 .items
                 .iter()
                 .enumerate()
@@ -601,15 +603,20 @@ impl CompletionState {
                         .map(|fuzzy_score| {
                             let frecency_score =
                                 frecency.map(|f| f.score(&item.label)).unwrap_or(1.0);
-                            // Combined score: fuzzy_score * frecency_boost
-                            let combined = fuzzy_score as f64 * frecency_score;
-                            (i, combined)
+                            let is_prefix = match_text.to_lowercase().starts_with(&query_lower);
+                            let sort_key =
+                                item.sort_text.as_deref().unwrap_or(&item.label).to_string();
+                            (i, is_prefix, sort_key, fuzzy_score, frecency_score)
                         })
                 })
                 .collect();
-            // Sort by combined score (higher is better)
-            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            self.filtered = scored.into_iter().map(|(i, _)| i).collect();
+            scored.sort_by(|a, b| {
+                b.1.cmp(&a.1)
+                    .then_with(|| a.2.cmp(&b.2))
+                    .then_with(|| b.3.cmp(&a.3))
+                    .then_with(|| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal))
+            });
+            self.filtered = scored.into_iter().map(|(i, _, _, _, _)| i).collect();
         }
         self.selected = 0;
     }
@@ -1254,21 +1261,29 @@ impl Editor {
         self.completion.refilter_with_frecency(Some(&self.frecency));
     }
 
-    /// Update a completion item with resolved documentation
-    pub fn update_completion_item_documentation(
+    /// Update a completion item with resolved documentation and edits.
+    pub fn update_completion_item_resolution(
         &mut self,
+        item_id: u64,
         label: &str,
         documentation: Option<String>,
         detail: Option<String>,
+        text_edit: Option<TextEdit>,
+        additional_text_edits: Vec<TextEdit>,
     ) {
-        // Find the item by label and update its documentation
         for item in &mut self.completion.items {
-            if item.label == label {
+            if item.item_id == item_id && item.label == label {
                 if documentation.is_some() {
                     item.documentation = documentation;
                 }
                 if detail.is_some() {
                     item.detail = detail;
+                }
+                if text_edit.is_some() {
+                    item.text_edit = text_edit;
+                }
+                if !additional_text_edits.is_empty() {
+                    item.additional_text_edits = additional_text_edits;
                 }
                 break;
             }
@@ -1395,6 +1410,102 @@ impl Editor {
 
         // Ensure cursor is in valid position
         self.clamp_cursor();
+    }
+
+    fn text_position_after_insert(
+        start_line: usize,
+        start_col: usize,
+        inserted_text: &str,
+    ) -> (usize, usize) {
+        let mut line = start_line;
+        let mut col = start_col;
+        for ch in inserted_text.chars() {
+            if ch == '\n' {
+                line += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+        (line, col)
+    }
+
+    fn text_edit_buffer_range(&self, edit: &TextEdit) -> ((usize, usize), (usize, usize)) {
+        let start_col = self.lsp_utf16_col_to_buffer_col(edit.start_line, edit.start_col);
+        let end_col = self.lsp_utf16_col_to_buffer_col(edit.end_line, edit.end_col);
+        ((edit.start_line, start_col), (edit.end_line, end_col))
+    }
+
+    fn position_after_text_edit(
+        &self,
+        position: (usize, usize),
+        edit: &TextEdit,
+    ) -> (usize, usize) {
+        let ((start_line, start_col), (end_line, end_col)) = self.text_edit_buffer_range(edit);
+        let (pos_line, pos_col) = position;
+
+        if (pos_line, pos_col) < (start_line, start_col) {
+            return position;
+        }
+
+        let inserted_end = Self::text_position_after_insert(start_line, start_col, &edit.new_text);
+        if (pos_line, pos_col) <= (end_line, end_col) {
+            return inserted_end;
+        }
+
+        let replaced_line_count = end_line.saturating_sub(start_line);
+        let inserted_line_count = inserted_end.0.saturating_sub(start_line);
+
+        if pos_line == end_line {
+            let trailing_col = pos_col.saturating_sub(end_col);
+            (inserted_end.0, inserted_end.1 + trailing_col)
+        } else {
+            let line = if inserted_line_count >= replaced_line_count {
+                pos_line + (inserted_line_count - replaced_line_count)
+            } else {
+                pos_line.saturating_sub(replaced_line_count - inserted_line_count)
+            };
+            (line, pos_col)
+        }
+    }
+
+    fn completion_cursor_after_edit(
+        &self,
+        main_edit: &TextEdit,
+        additional_edits: &[TextEdit],
+    ) -> (usize, usize) {
+        let ((start_line, start_col), _) = self.text_edit_buffer_range(main_edit);
+        let mut position =
+            Self::text_position_after_insert(start_line, start_col, &main_edit.new_text);
+
+        let mut ordered_edits: Vec<&TextEdit> = additional_edits.iter().collect();
+        ordered_edits.sort_by(|a, b| {
+            let (a_start, _) = self.text_edit_buffer_range(a);
+            let (b_start, _) = self.text_edit_buffer_range(b);
+            a_start.cmp(&b_start)
+        });
+
+        for edit in ordered_edits {
+            position = self.position_after_text_edit(position, edit);
+        }
+
+        position
+    }
+
+    /// Apply LSP completion edits, including auto-import companion edits.
+    /// Returns the main inserted text when the completion had a server edit.
+    pub fn apply_completion_item_edits(&mut self, item: &CompletionItem) -> Option<String> {
+        let main_edit = item.text_edit.as_ref()?;
+        let cursor_after =
+            self.completion_cursor_after_edit(main_edit, &item.additional_text_edits);
+        let mut edits = item.additional_text_edits.clone();
+        edits.push(main_edit.clone());
+        self.apply_text_edits(&edits);
+        self.cursor.line = cursor_after.0;
+        self.cursor.col = cursor_after.1;
+        self.clamp_cursor();
+        self.scroll_to_cursor();
+        Some(main_edit.new_text.clone())
     }
 
     fn lsp_utf16_col_to_buffer_col(&self, line: usize, utf16_col: usize) -> usize {
@@ -7111,7 +7222,9 @@ impl Default for Editor {
 mod tests {
     use super::{Editor, JumpList, Mode};
     use crate::input::Motion;
-    use crate::lsp::types::{CodeActionItem, Diagnostic, DiagnosticSeverity, TextEdit};
+    use crate::lsp::types::{
+        CodeActionItem, CompletionItem, CompletionKind, Diagnostic, DiagnosticSeverity, TextEdit,
+    };
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -7443,6 +7556,91 @@ mod tests {
         ]);
 
         assert_eq!(editor.buffer().content(), "Xb\n");
+    }
+
+    fn completion_item(label: &str, sort_text: &str) -> CompletionItem {
+        CompletionItem {
+            item_id: 0,
+            label: label.to_string(),
+            kind: CompletionKind::Function,
+            detail: None,
+            documentation: None,
+            insert_text: None,
+            filter_text: None,
+            sort_text: Some(sort_text.to_string()),
+            text_edit: None,
+            additional_text_edits: Vec::new(),
+            raw_data: None,
+        }
+    }
+
+    #[test]
+    fn completion_filter_preserves_lsp_sort_order_for_prefix_matches() {
+        let mut completion = super::CompletionState::default();
+        completion.show(
+            vec![
+                completion_item("useElementSize", "02"),
+                completion_item("useEffect", "01"),
+                completion_item("useEmotionCache", "03"),
+                completion_item("useLayoutEffect", "04"),
+            ],
+            0,
+            0,
+            false,
+        );
+
+        completion.update_filter("useE");
+
+        assert_eq!(
+            completion.selected_item().map(|item| item.label.as_str()),
+            Some("useEffect")
+        );
+    }
+
+    #[test]
+    fn completion_edits_apply_auto_import_and_main_text_edit() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("const App = () => {\n  useE\n};\n");
+        editor.mode = Mode::Insert;
+        editor.cursor.line = 1;
+        editor.cursor.col = 6;
+
+        let item = CompletionItem {
+            item_id: 1,
+            label: "useEffect".to_string(),
+            kind: CompletionKind::Function,
+            detail: None,
+            documentation: None,
+            insert_text: None,
+            filter_text: None,
+            sort_text: Some("01".to_string()),
+            text_edit: Some(TextEdit {
+                start_line: 1,
+                start_col: 2,
+                end_line: 1,
+                end_col: 6,
+                new_text: "useEffect".to_string(),
+            }),
+            additional_text_edits: vec![TextEdit {
+                start_line: 0,
+                start_col: 0,
+                end_line: 0,
+                end_col: 0,
+                new_text: "import { useEffect } from 'react';\n".to_string(),
+            }],
+            raw_data: None,
+        };
+
+        let inserted = editor
+            .apply_completion_item_edits(&item)
+            .expect("completion edit applied");
+
+        assert_eq!(inserted, "useEffect");
+        assert_eq!(
+            editor.buffer().content(),
+            "import { useEffect } from 'react';\nconst App = () => {\n  useEffect\n};\n"
+        );
+        assert_eq!((editor.cursor.line, editor.cursor.col), (2, 11));
     }
 
     #[test]
