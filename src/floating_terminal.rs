@@ -28,6 +28,8 @@ const FLOATING_TERMINAL_RATIO: f32 = 0.6;
 const MIN_POPUP_WIDTH: u16 = 40;
 const MIN_POPUP_HEIGHT: u16 = 10;
 const MAX_TITLE_LEN: usize = 120;
+const VISIBLE_OUTPUT_CHUNK_BYTES: usize = 256 * 1024;
+const BACKGROUND_OUTPUT_CHUNK_BYTES: usize = 32 * 1024;
 
 /// Calculate the floating terminal popup size for the editor screen.
 pub fn popup_size_for_screen(screen_width: u16, screen_height: u16) -> (u16, u16) {
@@ -428,7 +430,7 @@ impl TerminalSession {
 
     /// Process output from the terminal and update buffer
     /// Returns true if there was new output to process
-    fn process_output(&mut self) -> bool {
+    fn process_output(&mut self, max_bytes: usize) -> bool {
         // Check if process has exited
         let process_exited = self
             .child
@@ -449,7 +451,12 @@ impl TerminalSession {
             if output.is_empty() {
                 return process_exited;
             }
-            std::mem::take(&mut *output)
+            if output.len() <= max_bytes {
+                std::mem::take(&mut *output)
+            } else {
+                let remaining = output.split_off(max_bytes);
+                std::mem::replace(&mut *output, remaining)
+            }
         };
 
         // Process the output bytes
@@ -896,7 +903,13 @@ impl FloatingTerminal {
 
         for (idx, session) in self.sessions.iter_mut().enumerate() {
             let was_visible = session.is_visible();
-            if session.process_output()
+            let is_active_visible = Some(idx) == active && was_visible;
+            let max_bytes = if is_active_visible {
+                VISIBLE_OUTPUT_CHUNK_BYTES
+            } else {
+                BACKGROUND_OUTPUT_CHUNK_BYTES
+            };
+            if session.process_output(max_bytes)
                 && Some(idx) == active
                 && (was_visible || session.is_visible())
             {
@@ -1101,6 +1114,39 @@ mod tests {
         }
 
         assert_eq!(terminal.get_visible_lines(3, 4).len(), 3);
+    }
+
+    #[test]
+    fn terminal_output_processing_respects_byte_budget() {
+        let mut session =
+            TerminalSession::new(1, "server".to_string(), 3, 20, PathBuf::from("/tmp"));
+        {
+            let mut output = session.output_buffer.lock().unwrap();
+            output.extend_from_slice(b"abcdef");
+        }
+
+        assert!(session.process_output(3));
+        assert_eq!(session.get_visible_lines(1, 20)[0], "abc");
+        assert_eq!(session.output_buffer.lock().unwrap().as_slice(), b"def");
+
+        assert!(session.process_output(3));
+        assert_eq!(session.get_visible_lines(1, 20)[0], "abcdef");
+        assert!(session.output_buffer.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn hidden_terminal_output_is_processed_without_requesting_redraw() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.resize(3, 20);
+        let idx = terminal.ensure_active_index();
+        terminal.sessions[idx].hide();
+        {
+            let mut output = terminal.sessions[idx].output_buffer.lock().unwrap();
+            output.extend_from_slice(b"background");
+        }
+
+        assert!(!terminal.process_output());
+        assert_eq!(terminal.get_visible_lines(1, 20)[0], "background");
     }
 
     #[test]
