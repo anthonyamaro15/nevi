@@ -307,6 +307,25 @@ fn main() -> anyhow::Result<()> {
                             redraw_from_input = true;
                             continue 'main_loop;
                         }
+                        EditorEvent::Mouse(mouse) => {
+                            if editor.floating_terminal.is_visible() {
+                                let terminal_settings = &editor.settings.terminal;
+                                let content_area = nevi::floating_terminal::content_area_for_screen(
+                                    editor.term_width,
+                                    editor.term_height,
+                                    terminal_settings.popup_width_ratio,
+                                    terminal_settings.popup_height_ratio,
+                                );
+                                if editor.floating_terminal.send_mouse_event(mouse, content_area) {
+                                    last_input_at = Some(Instant::now());
+                                }
+                            }
+                            events_processed += 1;
+                            if !terminal.poll_key(Duration::from_millis(0))? {
+                                break;
+                            }
+                            continue;
+                        }
                         EditorEvent::Key(k) => k,
                     };
 

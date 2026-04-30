@@ -14,7 +14,10 @@ use alacritty_terminal::{
         Color as AlacrittyColor, NamedColor, Processor as VteProcessor, Rgb as AlacrittyRgb,
     },
 };
-use crossterm::style::Color as CrosstermColor;
+use crossterm::{
+    event::{KeyModifiers as CrosstermKeyModifiers, MouseButton, MouseEvent, MouseEventKind},
+    style::Color as CrosstermColor,
+};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -32,6 +35,14 @@ const MIN_POPUP_HEIGHT: u16 = 10;
 const MAX_TITLE_LEN: usize = 120;
 const VISIBLE_OUTPUT_CHUNK_BYTES: usize = 256 * 1024;
 const BACKGROUND_OUTPUT_CHUNK_BYTES: usize = 32 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalContentArea {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+}
 
 fn normalize_popup_ratio(ratio: f32) -> f32 {
     if ratio.is_finite() {
@@ -73,6 +84,26 @@ pub fn content_size_for_screen(
     let cols = popup_width.saturating_sub(2).max(1);
 
     (rows.min(BUFFER_ROWS as u16), cols.min(BUFFER_COLS as u16))
+}
+
+/// Calculate the mouse-addressable content area of the floating terminal.
+pub fn content_area_for_screen(
+    screen_width: u16,
+    screen_height: u16,
+    width_ratio: f32,
+    height_ratio: f32,
+) -> TerminalContentArea {
+    let (popup_width, popup_height) =
+        popup_size_for_screen(screen_width, screen_height, width_ratio, height_ratio);
+    let (rows, cols) =
+        content_size_for_screen(screen_width, screen_height, width_ratio, height_ratio);
+
+    TerminalContentArea {
+        x: screen_width.saturating_sub(popup_width) / 2 + 1,
+        y: screen_height.saturating_sub(popup_height) / 2 + 1,
+        width: cols,
+        height: rows,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -140,6 +171,63 @@ fn sanitize_terminal_title(title: &str) -> Option<String> {
     } else {
         Some(sanitized.to_string())
     }
+}
+
+fn mouse_position_in_content(
+    event: MouseEvent,
+    content_area: TerminalContentArea,
+) -> Option<(u16, u16)> {
+    let within_columns = event.column >= content_area.x
+        && event.column < content_area.x.saturating_add(content_area.width);
+    let within_rows = event.row >= content_area.y
+        && event.row < content_area.y.saturating_add(content_area.height);
+
+    if within_columns && within_rows {
+        Some((
+            event.column.saturating_sub(content_area.x) + 1,
+            event.row.saturating_sub(content_area.y) + 1,
+        ))
+    } else {
+        None
+    }
+}
+
+fn mouse_button_code(button: MouseButton) -> Option<u16> {
+    match button {
+        MouseButton::Left => Some(0),
+        MouseButton::Middle => Some(1),
+        MouseButton::Right => Some(2),
+    }
+}
+
+fn mouse_modifier_code(modifiers: CrosstermKeyModifiers) -> u16 {
+    let mut code = 0;
+    if modifiers.contains(CrosstermKeyModifiers::SHIFT) {
+        code += 4;
+    }
+    if modifiers.contains(CrosstermKeyModifiers::ALT) {
+        code += 8;
+    }
+    if modifiers.contains(CrosstermKeyModifiers::CONTROL) {
+        code += 16;
+    }
+    code
+}
+
+fn encode_legacy_mouse_report(button_code: u16, x: u16, y: u16, released: bool) -> Option<Vec<u8>> {
+    let button = if released { 3 } else { button_code };
+    if button > 223 || x > 223 || y > 223 {
+        return None;
+    }
+
+    Some(vec![
+        0x1b,
+        b'[',
+        b'M',
+        (button + 32) as u8,
+        (x + 32) as u8,
+        (y + 32) as u8,
+    ])
 }
 
 /// A renderable terminal cell with the style resolved from Alacritty's grid.
@@ -422,6 +510,48 @@ impl TerminalSession {
         };
 
         self.send_input(&data);
+    }
+
+    fn mouse_input_bytes(
+        &self,
+        event: MouseEvent,
+        content_area: TerminalContentArea,
+    ) -> Option<Vec<u8>> {
+        let mode = self.term.mode();
+        if !mode.intersects(TermMode::MOUSE_MODE) {
+            return None;
+        }
+
+        let (x, y) = mouse_position_in_content(event, content_area)?;
+        let (mut button_code, released) = match event.kind {
+            MouseEventKind::Down(button) => (mouse_button_code(button)?, false),
+            MouseEventKind::Up(button) => (mouse_button_code(button)?, true),
+            MouseEventKind::Drag(button) => {
+                if !(mode.contains(TermMode::MOUSE_DRAG) || mode.contains(TermMode::MOUSE_MOTION)) {
+                    return None;
+                }
+                (mouse_button_code(button)? + 32, false)
+            }
+            MouseEventKind::Moved => {
+                if !mode.contains(TermMode::MOUSE_MOTION) {
+                    return None;
+                }
+                (35, false)
+            }
+            MouseEventKind::ScrollUp => (64, false),
+            MouseEventKind::ScrollDown => (65, false),
+            MouseEventKind::ScrollLeft => (66, false),
+            MouseEventKind::ScrollRight => (67, false),
+        };
+
+        button_code += mouse_modifier_code(event.modifiers);
+
+        if mode.contains(TermMode::SGR_MOUSE) {
+            let suffix = if released { 'm' } else { 'M' };
+            Some(format!("\x1b[<{};{};{}{}", button_code, x, y, suffix).into_bytes())
+        } else {
+            encode_legacy_mouse_report(button_code, x, y, released)
+        }
     }
 
     fn capture_prompt_key_for_metadata(&mut self, key: crossterm::event::KeyEvent) {
@@ -918,6 +1048,27 @@ impl FloatingTerminal {
         }
     }
 
+    /// Forward a mouse event to the active visible terminal when it has enabled mouse reporting.
+    pub fn send_mouse_event(
+        &mut self,
+        event: MouseEvent,
+        content_area: TerminalContentArea,
+    ) -> bool {
+        let Some(active) = self.active_session() else {
+            return false;
+        };
+        if !active.is_visible() {
+            return false;
+        }
+
+        let Some(data) = active.mouse_input_bytes(event, content_area) else {
+            return false;
+        };
+
+        active.send_input(&data);
+        true
+    }
+
     /// Process output for all sessions.
     /// Returns true when the active visible terminal needs a redraw or has just hidden.
     pub fn process_output(&mut self) -> bool {
@@ -1109,6 +1260,15 @@ mod tests {
     fn content_size_matches_popup_inner_area() {
         assert_eq!(popup_size_for_screen(120, 40, 0.9, 0.9), (108, 36));
         assert_eq!(content_size_for_screen(120, 40, 0.9, 0.9), (34, 106));
+        assert_eq!(
+            content_area_for_screen(120, 40, 0.9, 0.9),
+            TerminalContentArea {
+                x: 7,
+                y: 3,
+                width: 106,
+                height: 34,
+            }
+        );
     }
 
     #[test]
@@ -1131,6 +1291,109 @@ mod tests {
         assert_eq!(lines[0], "abcd");
         assert_eq!(lines[1], "e");
         assert_eq!(terminal.get_cursor_pos(), (1, 1));
+    }
+
+    #[test]
+    fn mouse_input_is_ignored_until_terminal_enables_mouse_mode() {
+        let session = TerminalSession::new(1, "server".to_string(), 3, 20, PathBuf::from("/tmp"));
+        let event = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 5,
+            row: 4,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+
+        assert_eq!(
+            session.mouse_input_bytes(
+                event,
+                TerminalContentArea {
+                    x: 2,
+                    y: 3,
+                    width: 10,
+                    height: 5,
+                },
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn sgr_mouse_report_uses_content_relative_coordinates() {
+        let mut session =
+            TerminalSession::new(1, "server".to_string(), 3, 20, PathBuf::from("/tmp"));
+        session.process_bytes(b"\x1b[?1000h\x1b[?1006h");
+        let event = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 6,
+            row: 4,
+            modifiers: crossterm::event::KeyModifiers::SHIFT,
+        };
+
+        assert_eq!(
+            session.mouse_input_bytes(
+                event,
+                TerminalContentArea {
+                    x: 2,
+                    y: 3,
+                    width: 10,
+                    height: 5,
+                },
+            ),
+            Some(b"\x1b[<4;5;2M".to_vec())
+        );
+    }
+
+    #[test]
+    fn drag_mouse_reports_only_when_drag_mode_is_enabled() {
+        let event = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+            column: 2,
+            row: 3,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        let content_area = TerminalContentArea {
+            x: 2,
+            y: 3,
+            width: 10,
+            height: 5,
+        };
+        let mut session =
+            TerminalSession::new(1, "server".to_string(), 3, 20, PathBuf::from("/tmp"));
+        session.process_bytes(b"\x1b[?1000h\x1b[?1006h");
+
+        assert_eq!(session.mouse_input_bytes(event, content_area), None);
+
+        session.process_bytes(b"\x1b[?1002h");
+        assert_eq!(
+            session.mouse_input_bytes(event, content_area),
+            Some(b"\x1b[<32;1;1M".to_vec())
+        );
+    }
+
+    #[test]
+    fn mouse_input_outside_terminal_content_is_ignored() {
+        let mut session =
+            TerminalSession::new(1, "server".to_string(), 3, 20, PathBuf::from("/tmp"));
+        session.process_bytes(b"\x1b[?1000h\x1b[?1006h");
+        let event = crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollDown,
+            column: 1,
+            row: 3,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+
+        assert_eq!(
+            session.mouse_input_bytes(
+                event,
+                TerminalContentArea {
+                    x: 2,
+                    y: 3,
+                    width: 10,
+                    height: 5,
+                },
+            ),
+            None
+        );
     }
 
     #[test]
