@@ -4,7 +4,6 @@ use crossterm::{
     execute, queue,
     style::{
         Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
-        SetUnderlineColor,
     },
     terminal::{self, ClearType},
 };
@@ -616,6 +615,7 @@ impl Terminal {
                 // Set background and foreground for this row
                 execute!(
                     self.stdout,
+                    SetAttribute(Attribute::Reset),
                     SetBackgroundColor(row_bg),
                     SetForegroundColor(editor_fg)
                 )?;
@@ -765,9 +765,6 @@ impl Terminal {
                     selection_bg,
                     search_bg,
                     search_fg,
-                    theme.diagnostic.error,
-                    theme.diagnostic.warning,
-                    theme.diagnostic.info,
                     theme.ui.line_number, // Use grey color for unused code (hint diagnostics)
                 )?;
 
@@ -834,11 +831,12 @@ impl Terminal {
             execute!(self.stdout, cursor::MoveTo(rect.x, screen_y))?;
 
             // Set editor background for empty rows
-            execute!(
-                self.stdout,
-                SetBackgroundColor(editor_bg),
-                SetForegroundColor(editor_fg)
-            )?;
+                execute!(
+                    self.stdout,
+                    SetAttribute(Attribute::Reset),
+                    SetBackgroundColor(editor_bg),
+                    SetForegroundColor(editor_fg)
+                )?;
 
             print!("  "); // Empty sign column
 
@@ -916,6 +914,7 @@ impl Terminal {
                 };
             execute!(
                 self.stdout,
+                SetAttribute(Attribute::Reset),
                 SetBackgroundColor(row_bg),
                 SetForegroundColor(editor_fg)
             )?;
@@ -1098,9 +1097,6 @@ impl Terminal {
                         selection_bg,
                         search_bg,
                         search_fg,
-                        theme.diagnostic.error,
-                        theme.diagnostic.warning,
-                        theme.diagnostic.info,
                         theme.ui.line_number, // Use grey color for unused code (hint diagnostics)
                     )?;
 
@@ -1252,6 +1248,7 @@ impl Terminal {
                     // Fill remaining space in pane with theme background
                     execute!(
                         self.stdout,
+                        SetAttribute(Attribute::Reset),
                         SetBackgroundColor(row_bg),
                         SetForegroundColor(editor_fg)
                     )?;
@@ -1311,9 +1308,6 @@ impl Terminal {
         selection_bg: Color,
         search_match_bg: Color,
         search_match_fg: Color,
-        diagnostic_error_color: Color,
-        diagnostic_warning_color: Color,
-        diagnostic_info_color: Color,
         diagnostic_hint_color: Color,
     ) -> anyhow::Result<()> {
         let chars: Vec<char> = text.chars().collect();
@@ -1369,7 +1363,6 @@ impl Terminal {
 
         let mut current_fg: Option<Color> = None;
         let mut current_bg: Option<Color> = None;
-        let mut current_underline: Option<Color> = None;
         let mut current_bold = false;
         let mut current_italic = false;
 
@@ -1409,14 +1402,7 @@ impl Terminal {
             // Check if in search match
             let is_search = in_search_match(actual_col);
 
-            // Check for diagnostic underline (skip Hint - we grey out text instead)
             let diag_at_col = get_diagnostic_at(actual_col);
-            let diag_underline_color = diag_at_col.and_then(|d| match d.severity {
-                DiagnosticSeverity::Error => Some(diagnostic_error_color),
-                DiagnosticSeverity::Warning => Some(diagnostic_warning_color),
-                DiagnosticSeverity::Information => Some(diagnostic_info_color),
-                DiagnosticSeverity::Hint => None, // No underline for hints - text is greyed out instead
-            });
 
             // Find syntax highlight for this position
             let syntax_style = highlights
@@ -1480,30 +1466,13 @@ impl Terminal {
                 current_italic = desired_italic;
             }
 
-            // Handle underline attribute changes for diagnostics
-            if diag_underline_color != current_underline {
-                if let Some(color) = diag_underline_color {
-                    // Use colored underline (keeps syntax highlighting intact)
-                    execute!(
-                        self.stdout,
-                        SetUnderlineColor(color),
-                        SetAttribute(Attribute::Underlined)
-                    )?;
-                } else {
-                    execute!(self.stdout, SetAttribute(Attribute::NoUnderline))?;
-                }
-                current_underline = diag_underline_color;
-            }
-
             print!("{}", ch);
         }
 
-        // Restore to base background/foreground and reset underline
+        // Restore to base background/foreground and clear text attributes.
         execute!(
             self.stdout,
-            SetAttribute(Attribute::NoUnderline),
-            SetAttribute(Attribute::NoBold),
-            SetAttribute(Attribute::NoItalic),
+            SetAttribute(Attribute::Reset),
             SetBackgroundColor(base_bg),
             SetForegroundColor(editor_fg)
         )?;
@@ -5045,9 +5014,6 @@ impl Terminal {
         selection_bg: Color,
         search_match_bg: Color,
         search_match_fg: Color,
-        diagnostic_error_color: Color,
-        diagnostic_warning_color: Color,
-        diagnostic_info_color: Color,
         diagnostic_hint_color: Color,
     ) -> anyhow::Result<()> {
         let chars: Vec<char> = line.chars().collect();
@@ -5145,7 +5111,6 @@ impl Terminal {
         let mut highlight_idx = 0;
         let mut current_fg: Option<Color> = None;
         let mut current_bg: Option<Color> = None;
-        let mut current_underline: Option<Color> = None;
         let mut current_bold = false;
         let mut current_italic = false;
         for (i, ch) in chars.iter().enumerate() {
@@ -5163,14 +5128,7 @@ impl Terminal {
             // Check if in search match
             let is_search_match = in_search_match(actual_col);
 
-            // Check for diagnostic underline (skip Hint - we grey out text instead)
             let diag_at_col = get_diagnostic_at(actual_col);
-            let diag_underline_color = diag_at_col.and_then(|d| match d.severity {
-                DiagnosticSeverity::Error => Some(diagnostic_error_color),
-                DiagnosticSeverity::Warning => Some(diagnostic_warning_color),
-                DiagnosticSeverity::Information => Some(diagnostic_info_color),
-                DiagnosticSeverity::Hint => None, // No underline for hints - text is greyed out instead
-            });
 
             // Check if within a hint diagnostic (unused variable/import) - grey out the text
             let is_hint_diagnostic =
@@ -5227,21 +5185,6 @@ impl Terminal {
                 current_italic = desired_italic;
             }
 
-            // Handle underline attribute changes for diagnostics
-            if diag_underline_color != current_underline {
-                if let Some(color) = diag_underline_color {
-                    // Use colored underline (keeps syntax highlighting intact)
-                    execute!(
-                        self.stdout,
-                        SetUnderlineColor(color),
-                        SetAttribute(Attribute::Underlined)
-                    )?;
-                } else {
-                    execute!(self.stdout, SetAttribute(Attribute::NoUnderline))?;
-                }
-                current_underline = diag_underline_color;
-            }
-
             print!("{}", ch);
         }
 
@@ -5251,12 +5194,10 @@ impl Terminal {
             print!(" ");
         }
 
-        // Restore to base background/foreground and reset underline
+        // Restore to base background/foreground and clear text attributes.
         execute!(
             self.stdout,
-            SetAttribute(Attribute::NoUnderline),
-            SetAttribute(Attribute::NoBold),
-            SetAttribute(Attribute::NoItalic),
+            SetAttribute(Attribute::Reset),
             SetBackgroundColor(base_bg),
             SetForegroundColor(editor_fg)
         )?;
@@ -6267,6 +6208,40 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
     }
 }
 
+fn completion_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
+fn completion_word_suffix_len(editor: &Editor) -> usize {
+    let Some(line) = editor.buffer().line(editor.cursor.line) else {
+        return 0;
+    };
+    let chars: Vec<char> = line.chars().collect();
+    let mut col = editor.cursor.col;
+    let mut len = 0;
+    while col < chars.len() && completion_word_char(chars[col]) {
+        len += 1;
+        col += 1;
+    }
+    len
+}
+
+fn replace_completion_text(editor: &mut Editor, trigger_col: usize, text: &str) {
+    let chars_after_cursor = completion_word_suffix_len(editor);
+    for _ in 0..chars_after_cursor {
+        editor.delete_char_at();
+    }
+
+    let chars_before_cursor = editor.cursor.col.saturating_sub(trigger_col);
+    for _ in 0..chars_before_cursor {
+        editor.delete_char_before();
+    }
+
+    for ch in text.chars() {
+        editor.insert_char(ch);
+    }
+}
+
 fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
     let t_insert_start = std::time::Instant::now();
 
@@ -6288,36 +6263,28 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
             // Accept completion
             (KeyModifiers::NONE, KeyCode::Enter) | (KeyModifiers::NONE, KeyCode::Tab) => {
                 // Get completion info before modifying state
-                let completion_info = editor.completion.selected_item().map(|item| {
-                    (
-                        item.insert_text
-                            .as_deref()
-                            .unwrap_or(&item.label)
-                            .to_string(),
-                        item.label.clone(),
-                        item.kind,
-                    )
-                });
+                let completion_info = editor.completion.selected_item().cloned();
 
-                if let Some((text, label, kind)) = completion_info {
+                if let Some(item) = completion_info {
                     // Record frecency usage
-                    editor.record_completion_use(&label);
+                    editor.record_completion_use(&item.label);
 
-                    // Delete back to trigger position and insert completion
-                    let chars_to_delete = editor
-                        .cursor
-                        .col
-                        .saturating_sub(editor.completion.trigger_col);
-                    for _ in 0..chars_to_delete {
-                        editor.delete_char_before();
-                    }
-                    for c in text.chars() {
-                        editor.insert_char(c);
-                    }
+                    let text =
+                        if let Some(inserted_text) = editor.apply_completion_item_edits(&item) {
+                            inserted_text
+                        } else {
+                            let text = item
+                                .insert_text
+                                .as_deref()
+                                .unwrap_or(&item.label)
+                                .to_string();
+                            replace_completion_text(editor, editor.completion.trigger_col, &text);
+                            text
+                        };
 
                     // Auto-brackets: add () for functions/methods and position cursor inside
                     let needs_brackets = matches!(
-                        kind,
+                        item.kind,
                         CompletionKind::Function
                             | CompletionKind::Method
                             | CompletionKind::Constructor
@@ -6562,8 +6529,10 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
                         .take(col - trigger_col)
                         .collect();
 
-                    // If isIncomplete and filter text changed, request new completions
-                    if editor.completion.is_incomplete && prefix != editor.completion.filter_text {
+                    // TypeScript auto-import and other server-ranked completions can change as
+                    // the prefix becomes more specific. Ask LSP for a fresh list instead of only
+                    // fuzzy-filtering stale broad results locally.
+                    if prefix != editor.completion.filter_text {
                         editor.needs_completion_refresh = true;
                     }
 
@@ -8604,11 +8573,15 @@ pub fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
 
 #[cfg(test)]
 mod tests {
-    use super::{execute_command, finder_preview_match_ranges, handle_key};
+    use super::{
+        execute_command, finder_preview_match_ranges, handle_insert_mode, handle_key,
+        replace_completion_text,
+    };
     use crate::commands::Command;
     use crate::config::{KeymapEntry, Settings};
     use crate::editor::{Editor, Mode, RegisterContent};
     use crate::input::Motion;
+    use crate::lsp::types::{CompletionItem, CompletionKind};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -8627,6 +8600,22 @@ mod tests {
             .expect("system time")
             .as_nanos();
         std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos))
+    }
+
+    fn completion_item(label: &str) -> CompletionItem {
+        CompletionItem {
+            item_id: 0,
+            label: label.to_string(),
+            kind: CompletionKind::Function,
+            detail: None,
+            documentation: None,
+            insert_text: None,
+            filter_text: None,
+            sort_text: Some(label.to_string()),
+            text_edit: None,
+            additional_text_edits: Vec::new(),
+            raw_data: None,
+        }
     }
 
     #[test]
@@ -8653,6 +8642,24 @@ mod tests {
             .contains("No write since last change"));
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn active_completion_prefix_changes_request_lsp_refresh() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("us\n");
+        editor.mode = Mode::Insert;
+        editor.cursor.line = 0;
+        editor.cursor.col = 2;
+        editor.show_completions(vec![completion_item("useEffect")], 0, 0, false);
+        editor.update_completion_filter("us");
+        editor.needs_completion_refresh = false;
+
+        handle_insert_mode(&mut editor, key('E'));
+
+        assert_eq!(editor.buffer().content(), "usE\n");
+        assert_eq!(editor.completion.filter_text, "usE");
+        assert!(editor.needs_completion_refresh);
     }
 
     #[test]
@@ -8691,6 +8698,19 @@ mod tests {
         handle_key(&mut editor, key('x'));
 
         assert_eq!(editor.buffer().content(), "d\n");
+    }
+
+    #[test]
+    fn completion_replacement_removes_word_suffix_after_cursor() {
+        let mut editor = Editor::default();
+        editor.buffer_mut().insert_str(0, 0, "use std::fs;\n");
+        editor.cursor.line = 0;
+        editor.cursor.col = "use st".chars().count();
+
+        replace_completion_text(&mut editor, "use ".chars().count(), "std");
+
+        assert_eq!(editor.buffer().content(), "use std::fs;\n");
+        assert_eq!(editor.cursor.col, "use std".chars().count());
     }
 
     #[test]

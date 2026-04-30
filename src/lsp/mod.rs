@@ -126,18 +126,34 @@ impl LspManager {
     }
 
     /// Request completions
-    pub fn completion(&self, path: &PathBuf, line: u32, character: u32) -> anyhow::Result<()> {
+    pub fn completion(
+        &self,
+        path: &PathBuf,
+        line: u32,
+        character: u32,
+        buffer_version: u64,
+    ) -> anyhow::Result<()> {
         let uri = path_to_uri(path);
         self.send(LspRequest::Completion {
             uri,
             line,
             character,
+            buffer_version,
         })
     }
 
     /// Resolve a completion item to get full documentation
-    pub fn completion_resolve(&self, item: serde_json::Value, label: String) -> anyhow::Result<()> {
-        self.send(LspRequest::CompletionResolve { item, label })
+    pub fn completion_resolve(
+        &self,
+        item: serde_json::Value,
+        item_id: u64,
+        label: String,
+    ) -> anyhow::Result<()> {
+        self.send(LspRequest::CompletionResolve {
+            item,
+            item_id,
+            label,
+        })
     }
 
     /// Request go-to-definition
@@ -171,9 +187,18 @@ impl LspManager {
     }
 
     /// Request document formatting
-    pub fn formatting(&self, path: &PathBuf, tab_size: u32) -> anyhow::Result<()> {
+    pub fn formatting(
+        &self,
+        path: &PathBuf,
+        tab_size: u32,
+        buffer_version: u64,
+    ) -> anyhow::Result<()> {
         let uri = path_to_uri(path);
-        self.send(LspRequest::Formatting { uri, tab_size })
+        self.send(LspRequest::Formatting {
+            uri,
+            tab_size,
+            buffer_version,
+        })
     }
 
     /// Request find references
@@ -194,6 +219,7 @@ impl LspManager {
         start_character: u32,
         end_line: u32,
         end_character: u32,
+        buffer_version: u64,
         diagnostics: Vec<Diagnostic>,
     ) -> anyhow::Result<()> {
         let uri = path_to_uri(path);
@@ -203,18 +229,27 @@ impl LspManager {
             start_character,
             end_line,
             end_character,
+            buffer_version,
             diagnostics,
         })
     }
 
     /// Request rename symbol
-    pub fn rename(&self, path: &PathBuf, line: u32, character: u32, new_name: String) -> anyhow::Result<()> {
+    pub fn rename(
+        &self,
+        path: &PathBuf,
+        line: u32,
+        character: u32,
+        new_name: String,
+        buffer_version: u64,
+    ) -> anyhow::Result<()> {
         let uri = path_to_uri(path);
         self.send(LspRequest::Rename {
             uri,
             line,
             character,
             new_name,
+            buffer_version,
         })
     }
 }
@@ -334,16 +369,21 @@ fn run_lsp_thread(
                         uri,
                         line,
                         character,
+                        buffer_version,
                     } => {
                         // Request is automatically tracked in pending map
-                        if let Err(e) = client.completion(&uri, line, character) {
+                        if let Err(e) = client.completion(&uri, line, character, buffer_version) {
                             let _ = notification_tx.send(LspNotification::Error {
                                 message: format!("Failed to request completion: {}", e),
                             });
                         }
                     }
-                    LspRequest::CompletionResolve { item, label } => {
-                        if let Err(e) = client.completion_resolve(item, label) {
+                    LspRequest::CompletionResolve {
+                        item,
+                        item_id,
+                        label,
+                    } => {
+                        if let Err(e) = client.completion_resolve(item, item_id, label) {
                             let _ = notification_tx.send(LspNotification::Error {
                                 message: format!("Failed to resolve completion: {}", e),
                             });
@@ -382,8 +422,12 @@ fn run_lsp_thread(
                             });
                         }
                     }
-                    LspRequest::Formatting { uri, tab_size } => {
-                        if let Err(e) = client.formatting(&uri, tab_size) {
+                    LspRequest::Formatting {
+                        uri,
+                        tab_size,
+                        buffer_version,
+                    } => {
+                        if let Err(e) = client.formatting(&uri, tab_size, buffer_version) {
                             let _ = notification_tx.send(LspNotification::Error {
                                 message: format!("Failed to request formatting: {}", e),
                             });
@@ -406,6 +450,7 @@ fn run_lsp_thread(
                         start_character,
                         end_line,
                         end_character,
+                        buffer_version,
                         diagnostics,
                     } => {
                         if let Err(e) = client.code_action(
@@ -414,6 +459,7 @@ fn run_lsp_thread(
                             start_character,
                             end_line,
                             end_character,
+                            buffer_version,
                             &diagnostics,
                         ) {
                             let _ = notification_tx.send(LspNotification::Error {
@@ -426,8 +472,11 @@ fn run_lsp_thread(
                         line,
                         character,
                         new_name,
+                        buffer_version,
                     } => {
-                        if let Err(e) = client.rename(&uri, line, character, &new_name) {
+                        if let Err(e) =
+                            client.rename(&uri, line, character, &new_name, buffer_version)
+                        {
                             let _ = notification_tx.send(LspNotification::Error {
                                 message: format!("Failed to request rename: {}", e),
                             });
@@ -464,9 +513,11 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
 fn detect_language(path: &PathBuf) -> String {
     match path.extension().and_then(|e| e.to_str()) {
         Some("rs") => "rust".to_string(),
-        Some("py") => "python".to_string(),
+        Some("py") | Some("pyi") | Some("pyw") => "python".to_string(),
         Some("js") => "javascript".to_string(),
+        Some("mjs") | Some("cjs") => "javascript".to_string(),
         Some("ts") => "typescript".to_string(),
+        Some("mts") | Some("cts") => "typescript".to_string(),
         Some("tsx") => "typescriptreact".to_string(),
         Some("jsx") => "javascriptreact".to_string(),
         Some("go") => "go".to_string(),
@@ -483,13 +534,44 @@ fn detect_language(path: &PathBuf) -> String {
         Some("zig") => "zig".to_string(),
         Some("toml") => "toml".to_string(),
         Some("json") => "json".to_string(),
+        Some("jsonc") => "jsonc".to_string(),
         Some("yaml") | Some("yml") => "yaml".to_string(),
-        Some("md") => "markdown".to_string(),
-        Some("html") => "html".to_string(),
+        Some("md") | Some("markdown") => "markdown".to_string(),
+        Some("html") | Some("htm") => "html".to_string(),
         Some("css") => "css".to_string(),
         Some("scss") => "scss".to_string(),
+        Some("sass") => "sass".to_string(),
+        Some("less") => "less".to_string(),
         Some("sql") => "sql".to_string(),
         Some("sh") | Some("bash") => "shellscript".to_string(),
         _ => "plaintext".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::detect_language;
+    use std::path::PathBuf;
+
+    #[test]
+    fn detect_language_maps_all_routed_lsp_extensions() {
+        let cases = [
+            ("file.tsx", "typescriptreact"),
+            ("file.mts", "typescript"),
+            ("file.cts", "typescript"),
+            ("file.mjs", "javascript"),
+            ("file.cjs", "javascript"),
+            ("file.jsonc", "jsonc"),
+            ("file.markdown", "markdown"),
+            ("file.htm", "html"),
+            ("file.sass", "sass"),
+            ("file.less", "less"),
+            ("file.pyi", "python"),
+            ("file.pyw", "python"),
+        ];
+
+        for (path, language) in cases {
+            assert_eq!(detect_language(&PathBuf::from(path)), language);
+        }
     }
 }

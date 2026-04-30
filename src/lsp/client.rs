@@ -1,6 +1,8 @@
 //! LSP client implementation using JSON-RPC over stdio
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,11 +11,10 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
 use lsp_types::{
-    ClientCapabilities, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, GotoDefinitionParams,
-    HoverParams, InitializeParams, TextDocumentContentChangeEvent,
-    TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams,
-    VersionedTextDocumentIdentifier, WorkspaceFolder,
+    ClientCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, GotoDefinitionParams, HoverParams, InitializeParams,
+    TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
+    TextDocumentPositionParams, VersionedTextDocumentIdentifier, WorkspaceFolder,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -92,6 +93,7 @@ struct JsonRpcErrorOut {
 pub struct LspClient {
     process: Child,
     stdin: SharedStdin,
+    command: String,
     request_id: AtomicU64,
     /// Shared pending requests map - also used by the response reader thread
     pending_requests: PendingRequests,
@@ -108,7 +110,10 @@ impl LspClient {
             .spawn()
             .map_err(|e| anyhow!("Failed to spawn LSP server '{}': {}", command, e))?;
 
-        let stdin = process.stdin.take().ok_or_else(|| anyhow!("Failed to get stdin"))?;
+        let stdin = process
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("Failed to get stdin"))?;
         let stdin = Arc::new(Mutex::new(stdin));
         let stdin_clone = stdin.clone();
 
@@ -120,6 +125,7 @@ impl LspClient {
             Self {
                 process,
                 stdin,
+                command: command.to_string(),
                 request_id: AtomicU64::new(1),
                 pending_requests,
             },
@@ -140,14 +146,18 @@ impl LspClient {
 
     /// Send initialize request
     pub fn initialize(&mut self, root_path: &std::path::Path) -> Result<u64> {
-        let root_uri = lsp_types::Url::from_file_path(root_path)
-            .map_err(|_| anyhow!("Failed to convert root path to URI: {}", root_path.display()))?;
+        let root_uri = lsp_types::Url::from_file_path(root_path).map_err(|_| {
+            anyhow!(
+                "Failed to convert root path to URI: {}",
+                root_path.display()
+            )
+        })?;
 
         let params = InitializeParams {
             process_id: Some(std::process::id()),
             root_path: Some(root_path.to_string_lossy().to_string()),
             root_uri: Some(root_uri.clone()),
-            initialization_options: None,
+            initialization_options: initialization_options_for_command(&self.command),
             capabilities: ClientCapabilities {
                 text_document: Some(lsp_types::TextDocumentClientCapabilities {
                     completion: Some(lsp_types::CompletionClientCapabilities {
@@ -158,12 +168,15 @@ impl LspClient {
                                 lsp_types::MarkupKind::Markdown,
                             ]),
                             // Tell server we support resolving documentation and detail lazily
-                            resolve_support: Some(lsp_types::CompletionItemCapabilityResolveSupport {
-                                properties: vec![
-                                    "documentation".to_string(),
-                                    "detail".to_string(),
-                                ],
-                            }),
+                            resolve_support: Some(
+                                lsp_types::CompletionItemCapabilityResolveSupport {
+                                    properties: vec![
+                                        "documentation".to_string(),
+                                        "detail".to_string(),
+                                        "additionalTextEdits".to_string(),
+                                    ],
+                                },
+                            ),
                             ..Default::default()
                         }),
                         ..Default::default()
@@ -237,7 +250,11 @@ impl LspClient {
             work_done_progress_params: Default::default(),
         };
 
-        self.send_request("initialize", serde_json::to_value(params)?, RequestKind::Initialize)
+        self.send_request(
+            "initialize",
+            serde_json::to_value(params)?,
+            RequestKind::Initialize,
+        )
     }
 
     /// Send initialized notification (after initialize response)
@@ -256,7 +273,13 @@ impl LspClient {
     }
 
     /// Notify server that a document was opened
-    pub fn did_open(&mut self, uri: &str, language_id: &str, version: i32, text: &str) -> Result<()> {
+    pub fn did_open(
+        &mut self,
+        uri: &str,
+        language_id: &str,
+        version: i32,
+        text: &str,
+    ) -> Result<()> {
         let params = DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
                 uri: lsp_types::Url::parse(uri)?,
@@ -295,7 +318,13 @@ impl LspClient {
     }
 
     /// Request completions at position
-    pub fn completion(&mut self, uri: &str, line: u32, character: u32) -> Result<u64> {
+    pub fn completion(
+        &mut self,
+        uri: &str,
+        line: u32,
+        character: u32,
+        buffer_version: u64,
+    ) -> Result<u64> {
         let params = lsp_types::CompletionParams {
             text_document_position: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier {
@@ -314,6 +343,7 @@ impl LspClient {
                 uri: uri.to_string(),
                 line,
                 character,
+                buffer_version,
             },
         )
     }
@@ -387,7 +417,7 @@ impl LspClient {
     }
 
     /// Request document formatting
-    pub fn formatting(&mut self, uri: &str, tab_size: u32) -> Result<u64> {
+    pub fn formatting(&mut self, uri: &str, tab_size: u32, buffer_version: u64) -> Result<u64> {
         let params = lsp_types::DocumentFormattingParams {
             text_document: TextDocumentIdentifier {
                 uri: lsp_types::Url::parse(uri)?,
@@ -404,6 +434,7 @@ impl LspClient {
             serde_json::to_value(params)?,
             RequestKind::Formatting {
                 uri: uri.to_string(),
+                buffer_version,
             },
         )
     }
@@ -442,40 +473,13 @@ impl LspClient {
         start_character: u32,
         end_line: u32,
         end_character: u32,
+        buffer_version: u64,
         diagnostics: &[Diagnostic],
     ) -> Result<u64> {
         // Convert our diagnostics to LSP diagnostics
         let lsp_diagnostics: Vec<lsp_types::Diagnostic> = diagnostics
             .iter()
-            .map(|d| lsp_types::Diagnostic {
-                range: lsp_types::Range {
-                    start: lsp_types::Position {
-                        line: d.line as u32,
-                        character: d.col_start as u32,
-                    },
-                    end: lsp_types::Position {
-                        line: d.line as u32,
-                        character: d.col_end as u32,
-                    },
-                },
-                severity: Some(match d.severity {
-                    super::types::DiagnosticSeverity::Error => lsp_types::DiagnosticSeverity::ERROR,
-                    super::types::DiagnosticSeverity::Warning => lsp_types::DiagnosticSeverity::WARNING,
-                    super::types::DiagnosticSeverity::Information => lsp_types::DiagnosticSeverity::INFORMATION,
-                    super::types::DiagnosticSeverity::Hint => lsp_types::DiagnosticSeverity::HINT,
-                }),
-                code: d.code.as_ref().map(|c| match c {
-                    super::types::DiagnosticCode::Number(n) => {
-                        lsp_types::NumberOrString::Number(*n as i32)
-                    }
-                    super::types::DiagnosticCode::String(s) => {
-                        lsp_types::NumberOrString::String(s.clone())
-                    }
-                }),
-                message: d.message.clone(),
-                source: d.source.clone(),
-                ..Default::default()
-            })
+            .map(diagnostic_to_lsp_diagnostic)
             .collect();
 
         let params = lsp_types::CodeActionParams {
@@ -509,12 +513,20 @@ impl LspClient {
                 start_character,
                 end_line,
                 end_character,
+                buffer_version,
             },
         )
     }
 
     /// Request rename symbol
-    pub fn rename(&mut self, uri: &str, line: u32, character: u32, new_name: &str) -> Result<u64> {
+    pub fn rename(
+        &mut self,
+        uri: &str,
+        line: u32,
+        character: u32,
+        new_name: &str,
+        buffer_version: u64,
+    ) -> Result<u64> {
         let params = lsp_types::RenameParams {
             text_document_position: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier {
@@ -533,17 +545,18 @@ impl LspClient {
                 line,
                 character,
                 new_name: new_name.to_string(),
+                buffer_version,
             },
         )
     }
 
     /// Resolve a completion item to get full documentation
     /// Takes the raw LSP completion item data and the label for tracking
-    pub fn completion_resolve(&mut self, item: Value, label: String) -> Result<u64> {
+    pub fn completion_resolve(&mut self, item: Value, item_id: u64, label: String) -> Result<u64> {
         self.send_request(
             "completionItem/resolve",
             item,
-            RequestKind::CompletionResolve { label },
+            RequestKind::CompletionResolve { item_id, label },
         )
     }
 
@@ -588,12 +601,66 @@ impl LspClient {
     /// Send a raw message with Content-Length header
     fn send_message(&mut self, content: &str) -> Result<()> {
         let message = format!("Content-Length: {}\r\n\r\n{}", content.len(), content);
-        let mut stdin = self.stdin.lock().map_err(|_| anyhow!("Failed to lock stdin"))?;
+        let mut stdin = self
+            .stdin
+            .lock()
+            .map_err(|_| anyhow!("Failed to lock stdin"))?;
         stdin.write_all(message.as_bytes())?;
         stdin.flush()?;
         Ok(())
     }
+}
 
+fn initialization_options_for_command(command: &str) -> Option<Value> {
+    let command_name = std::path::Path::new(command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(command);
+
+    if command_name != "typescript-language-server"
+        && command_name != "typescript-language-server.cmd"
+    {
+        return None;
+    }
+
+    Some(json!({
+        "preferences": {
+            "includeCompletionsForModuleExports": true,
+            "includeCompletionsForImportStatements": true,
+            "includeCompletionsWithSnippetText": false,
+            "includeAutomaticOptionalChainCompletions": true
+        }
+    }))
+}
+
+fn diagnostic_to_lsp_diagnostic(diagnostic: &Diagnostic) -> lsp_types::Diagnostic {
+    lsp_types::Diagnostic {
+        range: lsp_types::Range {
+            start: lsp_types::Position {
+                line: diagnostic.line as u32,
+                character: diagnostic.col_start as u32,
+            },
+            end: lsp_types::Position {
+                line: diagnostic.end_line as u32,
+                character: diagnostic.col_end as u32,
+            },
+        },
+        severity: Some(match diagnostic.severity {
+            super::types::DiagnosticSeverity::Error => lsp_types::DiagnosticSeverity::ERROR,
+            super::types::DiagnosticSeverity::Warning => lsp_types::DiagnosticSeverity::WARNING,
+            super::types::DiagnosticSeverity::Information => {
+                lsp_types::DiagnosticSeverity::INFORMATION
+            }
+            super::types::DiagnosticSeverity::Hint => lsp_types::DiagnosticSeverity::HINT,
+        }),
+        code: diagnostic.code.as_ref().map(|code| match code {
+            super::types::DiagnosticCode::Number(n) => lsp_types::NumberOrString::Number(*n as i32),
+            super::types::DiagnosticCode::String(s) => lsp_types::NumberOrString::String(s.clone()),
+        }),
+        message: diagnostic.message.clone(),
+        source: diagnostic.source.clone(),
+        ..Default::default()
+    }
 }
 
 impl Drop for LspClient {
@@ -757,9 +824,12 @@ fn handle_message(
         if let Ok(mut pending_map) = pending.lock() {
             pending_map.remove(&id_num);
         }
-        return (Some(LspNotification::Error {
-            message: format!("LSP error ({}): {}", error.code, error.message),
-        }), None);
+        return (
+            Some(LspNotification::Error {
+                message: format!("LSP error ({}): {}", error.code, error.message),
+            }),
+            None,
+        );
     }
 
     // Look up what kind of request this was (and remove it from pending)
@@ -779,83 +849,135 @@ fn handle_message(
 
     // Dispatch based on request kind
     let notification = match kind {
-        RequestKind::Initialize => {
-            Some(LspNotification::Initialized)
-        }
+        RequestKind::Initialize => Some(LspNotification::Initialized),
         RequestKind::Shutdown => {
             // Shutdown response - nothing to notify
             None
         }
-        RequestKind::Completion { uri, line, character } => {
-            match msg.result {
-                Some(result) if !result.is_null() => handle_completion_response(result, uri, line, character),
-                _ => Some(LspNotification::Completions {
-                    items: vec![],
-                    is_incomplete: false,
-                    request_uri: uri,
-                    request_line: line,
-                    request_character: character,
-                }),
+        RequestKind::Completion {
+            uri,
+            line,
+            character,
+            buffer_version,
+        } => match msg.result {
+            Some(result) if !result.is_null() => {
+                handle_completion_response(result, uri, line, character, buffer_version)
             }
-        }
-        RequestKind::Definition { uri, line: _, character: _ } => {
-            match msg.result {
-                Some(result) if !result.is_null() => handle_definition_response(result, uri),
-                _ => Some(LspNotification::Definition { locations: vec![], request_uri: uri }),
+            _ => Some(LspNotification::Completions {
+                items: vec![],
+                is_incomplete: false,
+                request_uri: uri,
+                request_line: line,
+                request_character: character,
+                request_version: buffer_version,
+            }),
+        },
+        RequestKind::Definition {
+            uri,
+            line: _,
+            character: _,
+        } => match msg.result {
+            Some(result) if !result.is_null() => handle_definition_response(result, uri),
+            _ => Some(LspNotification::Definition {
+                locations: vec![],
+                request_uri: uri,
+            }),
+        },
+        RequestKind::Hover {
+            uri,
+            line,
+            character,
+        } => match msg.result {
+            Some(result) if !result.is_null() => {
+                handle_hover_response(result, uri, line, character)
             }
-        }
-        RequestKind::Hover { uri, line, character } => {
-            match msg.result {
-                Some(result) if !result.is_null() => handle_hover_response(result, uri, line, character),
-                _ => Some(LspNotification::Hover {
-                    contents: None,
-                    request_uri: uri,
-                    request_line: line,
-                    request_character: character,
-                }),
+            _ => Some(LspNotification::Hover {
+                contents: None,
+                request_uri: uri,
+                request_line: line,
+                request_character: character,
+            }),
+        },
+        RequestKind::SignatureHelp {
+            uri,
+            line,
+            character,
+        } => match msg.result {
+            Some(result) if !result.is_null() => {
+                handle_signature_help_response(result, uri, line, character)
             }
-        }
-        RequestKind::SignatureHelp { uri, line, character } => {
-            match msg.result {
-                Some(result) if !result.is_null() => handle_signature_help_response(result, uri, line, character),
-                _ => Some(LspNotification::SignatureHelp {
-                    help: None,
-                    request_uri: uri,
-                    request_line: line,
-                    request_character: character,
-                }),
+            _ => Some(LspNotification::SignatureHelp {
+                help: None,
+                request_uri: uri,
+                request_line: line,
+                request_character: character,
+            }),
+        },
+        RequestKind::Formatting {
+            uri,
+            buffer_version,
+        } => match msg.result {
+            Some(result) if !result.is_null() => {
+                handle_formatting_response(result, uri, buffer_version)
             }
-        }
-        RequestKind::Formatting { uri } => {
-            match msg.result {
-                Some(result) if !result.is_null() => handle_formatting_response(result, uri),
-                _ => Some(LspNotification::Formatting { edits: vec![], request_uri: uri }),
+            _ => Some(LspNotification::Formatting {
+                edits: vec![],
+                request_uri: uri,
+                request_version: buffer_version,
+            }),
+        },
+        RequestKind::References {
+            uri,
+            line: _,
+            character: _,
+        } => match msg.result {
+            Some(result) if !result.is_null() => handle_references_response(result, uri),
+            _ => Some(LspNotification::References {
+                locations: vec![],
+                request_uri: uri,
+            }),
+        },
+        RequestKind::CodeAction {
+            uri,
+            buffer_version,
+            ..
+        } => match msg.result {
+            Some(result) if !result.is_null() => {
+                handle_code_action_response(result, uri, buffer_version)
             }
-        }
-        RequestKind::References { uri, line: _, character: _ } => {
-            match msg.result {
-                Some(result) if !result.is_null() => handle_references_response(result, uri),
-                _ => Some(LspNotification::References { locations: vec![], request_uri: uri }),
+            _ => Some(LspNotification::CodeActions {
+                actions: vec![],
+                request_uri: uri,
+                request_version: buffer_version,
+            }),
+        },
+        RequestKind::Rename {
+            uri,
+            buffer_version,
+            ..
+        } => match msg.result {
+            Some(result) if !result.is_null() => {
+                handle_rename_response(result, uri, buffer_version)
             }
-        }
-        RequestKind::CodeAction { uri, .. } => {
-            match msg.result {
-                Some(result) if !result.is_null() => handle_code_action_response(result, uri),
-                _ => Some(LspNotification::CodeActions { actions: vec![], request_uri: uri }),
+            _ => Some(LspNotification::RenameResult {
+                edits: vec![],
+                request_uri: uri,
+                request_version: buffer_version,
+            }),
+        },
+        RequestKind::CompletionResolve { item_id, label } => match msg.result {
+            Some(result) if !result.is_null() => {
+                handle_completion_resolve_response(result, item_id, label)
             }
-        }
-        RequestKind::Rename { uri, .. } => {
-            match msg.result {
-                Some(result) if !result.is_null() => handle_rename_response(result, uri),
-                _ => Some(LspNotification::RenameResult { edits: vec![], request_uri: uri }),
-            }
-        }
-        RequestKind::CompletionResolve { label } => {
-            match msg.result {
-                Some(result) if !result.is_null() => handle_completion_resolve_response(result, label),
-                _ => Some(LspNotification::CompletionResolved { label, documentation: None, detail: None }),
-            }
-        }
+            _ => Some(LspNotification::CompletionResolved {
+                item_id,
+                label,
+                documentation: None,
+                detail: None,
+                text_edit: None,
+                additional_text_edits: Vec::new(),
+            }),
+        },
     };
 
     (notification, None)
@@ -1041,7 +1163,10 @@ fn handle_notification(method: &str, params: Option<Value>) -> Option<LspNotific
                         col_end: end.get("character")?.as_u64()? as usize,
                         severity,
                         message: d.get("message")?.as_str()?.to_string(),
-                        source: d.get("source").and_then(|s| s.as_str()).map(|s| s.to_string()),
+                        source: d
+                            .get("source")
+                            .and_then(|s| s.as_str())
+                            .map(|s| s.to_string()),
                         code: diagnostic_code,
                     })
                 })
@@ -1058,16 +1183,64 @@ fn handle_notification(method: &str, params: Option<Value>) -> Option<LspNotific
     }
 }
 
+fn parse_lsp_text_edit(edit: &Value) -> Option<TextEdit> {
+    let range = edit
+        .get("range")
+        .or_else(|| edit.get("replace"))
+        .or_else(|| edit.get("insert"))?;
+    let start = range.get("start")?;
+    let end = range.get("end")?;
+
+    Some(TextEdit {
+        start_line: start.get("line")?.as_u64()? as usize,
+        start_col: start.get("character")?.as_u64()? as usize,
+        end_line: end.get("line")?.as_u64()? as usize,
+        end_col: end.get("character")?.as_u64()? as usize,
+        new_text: edit.get("newText")?.as_str()?.to_string(),
+    })
+}
+
+fn parse_lsp_text_edits(value: Option<&Value>) -> Vec<TextEdit> {
+    value
+        .and_then(Value::as_array)
+        .map(|edits| edits.iter().filter_map(parse_lsp_text_edit).collect())
+        .unwrap_or_default()
+}
+
+fn completion_item_id(
+    request_uri: &str,
+    request_line: u32,
+    request_character: u32,
+    request_version: u64,
+    index: usize,
+    label: &str,
+    sort_text: Option<&str>,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    request_uri.hash(&mut hasher);
+    request_line.hash(&mut hasher);
+    request_character.hash(&mut hasher);
+    request_version.hash(&mut hasher);
+    index.hash(&mut hasher);
+    label.hash(&mut hasher);
+    sort_text.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Handle completion response
 fn handle_completion_response(
     result: Value,
     request_uri: String,
     request_line: u32,
     request_character: u32,
+    request_version: u64,
 ) -> Option<LspNotification> {
     // Parse isIncomplete flag (defaults to false for array format)
     let is_incomplete = if result.is_object() {
-        result.get("isIncomplete").and_then(|v| v.as_bool()).unwrap_or(false)
+        result
+            .get("isIncomplete")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
     } else {
         false
     };
@@ -1080,7 +1253,8 @@ fn handle_completion_response(
 
     let items: Vec<CompletionItem> = items_json
         .iter()
-        .filter_map(|item| {
+        .enumerate()
+        .filter_map(|(index, item)| {
             let label = item.get("label")?.as_str()?.to_string();
 
             let kind = item
@@ -1116,17 +1290,20 @@ fn handle_completion_response(
                 })
                 .unwrap_or(CompletionKind::Text);
 
-            let detail = item.get("detail").and_then(|d| d.as_str()).map(|s| s.to_string());
+            let detail = item
+                .get("detail")
+                .and_then(|d| d.as_str())
+                .map(|s| s.to_string());
 
-            let documentation = item
-                .get("documentation")
-                .and_then(|d| {
-                    if d.is_string() {
-                        d.as_str().map(|s| s.to_string())
-                    } else {
-                        d.get("value").and_then(|v| v.as_str()).map(|s| s.to_string())
-                    }
-                });
+            let documentation = item.get("documentation").and_then(|d| {
+                if d.is_string() {
+                    d.as_str().map(|s| s.to_string())
+                } else {
+                    d.get("value")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                }
+            });
 
             let insert_text = item
                 .get("insertText")
@@ -1143,7 +1320,20 @@ fn handle_completion_response(
                 .and_then(|t| t.as_str())
                 .map(|s| s.to_string());
 
+            let text_edit = item.get("textEdit").and_then(parse_lsp_text_edit);
+            let additional_text_edits = parse_lsp_text_edits(item.get("additionalTextEdits"));
+            let item_id = completion_item_id(
+                &request_uri,
+                request_line,
+                request_character,
+                request_version,
+                index,
+                &label,
+                sort_text.as_deref(),
+            );
+
             Some(CompletionItem {
+                item_id,
                 label,
                 kind,
                 detail,
@@ -1151,6 +1341,8 @@ fn handle_completion_response(
                 insert_text,
                 filter_text,
                 sort_text,
+                text_edit,
+                additional_text_edits,
                 raw_data: Some(item.clone()),
             })
         })
@@ -1162,6 +1354,7 @@ fn handle_completion_response(
         request_uri,
         request_line,
         request_character,
+        request_version,
     })
 }
 
@@ -1178,13 +1371,13 @@ fn handle_definition_response(result: Value, request_uri: String) -> Option<LspN
         .iter()
         .filter_map(|loc| {
             // Handle both Location and LocationLink formats
-            let uri = loc.get("uri")
+            let uri = loc
+                .get("uri")
                 .or_else(|| loc.get("targetUri"))
                 .and_then(|u| u.as_str())?
                 .to_string();
 
-            let range = loc.get("range")
-                .or_else(|| loc.get("targetRange"))?;
+            let range = loc.get("range").or_else(|| loc.get("targetRange"))?;
             let start = range.get("start")?;
             let line = start.get("line")?.as_u64()? as usize;
             let col = start.get("character")?.as_u64()? as usize;
@@ -1193,7 +1386,10 @@ fn handle_definition_response(result: Value, request_uri: String) -> Option<LspN
         })
         .collect();
 
-    Some(LspNotification::Definition { locations, request_uri })
+    Some(LspNotification::Definition {
+        locations,
+        request_uri,
+    })
 }
 
 /// Handle hover response
@@ -1215,7 +1411,9 @@ fn handle_hover_response(
                 if c.is_string() {
                     c.as_str().map(|s| s.to_string())
                 } else {
-                    c.get("value").and_then(|v| v.as_str()).map(|s| s.to_string())
+                    c.get("value")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
                 }
             })
             .collect::<Vec<_>>()
@@ -1275,7 +1473,9 @@ fn handle_signature_help_response(
                 if d.is_string() {
                     d.as_str().map(|s| s.to_string())
                 } else {
-                    d.get("value").and_then(|v| v.as_str()).map(|s| s.to_string())
+                    d.get("value")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
                 }
             });
 
@@ -1303,7 +1503,8 @@ fn handle_signature_help_response(
                                 // Label is a string
                                 let text = param_label.as_str()?.to_string();
                                 // Find the offsets in the signature label
-                                let offsets = label.find(&text).map(|start| (start, start + text.len()));
+                                let offsets =
+                                    label.find(&text).map(|start| (start, start + text.len()));
                                 (offsets, text)
                             };
 
@@ -1311,7 +1512,9 @@ fn handle_signature_help_response(
                                 if d.is_string() {
                                     d.as_str().map(|s| s.to_string())
                                 } else {
-                                    d.get("value").and_then(|v| v.as_str()).map(|s| s.to_string())
+                                    d.get("value")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string())
                                 }
                             });
 
@@ -1355,7 +1558,11 @@ fn handle_signature_help_response(
 }
 
 /// Handle formatting response
-fn handle_formatting_response(result: Value, request_uri: String) -> Option<LspNotification> {
+fn handle_formatting_response(
+    result: Value,
+    request_uri: String,
+    request_version: u64,
+) -> Option<LspNotification> {
     // Result is an array of TextEdits or null
     let edits_json = result.as_array()?;
 
@@ -1376,7 +1583,11 @@ fn handle_formatting_response(result: Value, request_uri: String) -> Option<LspN
         })
         .collect();
 
-    Some(LspNotification::Formatting { edits, request_uri })
+    Some(LspNotification::Formatting {
+        edits,
+        request_uri,
+        request_version,
+    })
 }
 
 /// Handle references response
@@ -1397,11 +1608,18 @@ fn handle_references_response(result: Value, request_uri: String) -> Option<LspN
         })
         .collect();
 
-    Some(LspNotification::References { locations, request_uri })
+    Some(LspNotification::References {
+        locations,
+        request_uri,
+    })
 }
 
 /// Handle code action response
-fn handle_code_action_response(result: Value, request_uri: String) -> Option<LspNotification> {
+fn handle_code_action_response(
+    result: Value,
+    request_uri: String,
+    request_version: u64,
+) -> Option<LspNotification> {
     // Result is an array of CodeAction or Command
     let actions_json = result.as_array()?;
 
@@ -1410,8 +1628,14 @@ fn handle_code_action_response(result: Value, request_uri: String) -> Option<Lsp
         .filter_map(|action| {
             // Can be either a Command or a CodeAction
             let title = action.get("title")?.as_str()?.to_string();
-            let kind = action.get("kind").and_then(|k| k.as_str()).map(|s| s.to_string());
-            let is_preferred = action.get("isPreferred").and_then(|p| p.as_bool()).unwrap_or(false);
+            let kind = action
+                .get("kind")
+                .and_then(|k| k.as_str())
+                .map(|s| s.to_string());
+            let is_preferred = action
+                .get("isPreferred")
+                .and_then(|p| p.as_bool())
+                .unwrap_or(false);
 
             // Parse workspace edit if present
             let mut edits: Vec<(String, Vec<TextEdit>)> = Vec::new();
@@ -1422,18 +1646,7 @@ fn handle_code_action_response(result: Value, request_uri: String) -> Option<Lsp
                         if let Some(file_edits_arr) = file_edits.as_array() {
                             let text_edits: Vec<TextEdit> = file_edits_arr
                                 .iter()
-                                .filter_map(|e| {
-                                    let range = e.get("range")?;
-                                    let start = range.get("start")?;
-                                    let end = range.get("end")?;
-                                    Some(TextEdit {
-                                        start_line: start.get("line")?.as_u64()? as usize,
-                                        start_col: start.get("character")?.as_u64()? as usize,
-                                        end_line: end.get("line")?.as_u64()? as usize,
-                                        end_col: end.get("character")?.as_u64()? as usize,
-                                        new_text: e.get("newText")?.as_str()?.to_string(),
-                                    })
-                                })
+                                .filter_map(parse_lsp_text_edit)
                                 .collect();
                             if !text_edits.is_empty() {
                                 edits.push((uri.clone(), text_edits));
@@ -1451,18 +1664,7 @@ fn handle_code_action_response(result: Value, request_uri: String) -> Option<Lsp
                             let uri = text_document.get("uri")?.as_str()?.to_string();
                             let text_edits: Vec<TextEdit> = file_edits_arr
                                 .iter()
-                                .filter_map(|e| {
-                                    let range = e.get("range")?;
-                                    let start = range.get("start")?;
-                                    let end = range.get("end")?;
-                                    Some(TextEdit {
-                                        start_line: start.get("line")?.as_u64()? as usize,
-                                        start_col: start.get("character")?.as_u64()? as usize,
-                                        end_line: end.get("line")?.as_u64()? as usize,
-                                        end_col: end.get("character")?.as_u64()? as usize,
-                                        new_text: e.get("newText")?.as_str()?.to_string(),
-                                    })
-                                })
+                                .filter_map(parse_lsp_text_edit)
                                 .collect();
                             if !text_edits.is_empty() {
                                 edits.push((uri, text_edits));
@@ -1472,7 +1674,11 @@ fn handle_code_action_response(result: Value, request_uri: String) -> Option<Lsp
                 }
             }
 
-            let command = action.get("command").and_then(|c| c.get("command")).and_then(|t| t.as_str()).map(|s| s.to_string());
+            let command = action
+                .get("command")
+                .and_then(|c| c.get("command"))
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string());
 
             Some(CodeActionItem {
                 title,
@@ -1484,11 +1690,19 @@ fn handle_code_action_response(result: Value, request_uri: String) -> Option<Lsp
         })
         .collect();
 
-    Some(LspNotification::CodeActions { actions, request_uri })
+    Some(LspNotification::CodeActions {
+        actions,
+        request_uri,
+        request_version,
+    })
 }
 
 /// Handle rename response
-fn handle_rename_response(result: Value, request_uri: String) -> Option<LspNotification> {
+fn handle_rename_response(
+    result: Value,
+    request_uri: String,
+    request_version: u64,
+) -> Option<LspNotification> {
     // Result is a WorkspaceEdit
     let mut edits: Vec<(String, Vec<TextEdit>)> = Vec::new();
 
@@ -1498,18 +1712,7 @@ fn handle_rename_response(result: Value, request_uri: String) -> Option<LspNotif
             if let Some(file_edits_arr) = file_edits.as_array() {
                 let text_edits: Vec<TextEdit> = file_edits_arr
                     .iter()
-                    .filter_map(|e| {
-                        let range = e.get("range")?;
-                        let start = range.get("start")?;
-                        let end = range.get("end")?;
-                        Some(TextEdit {
-                            start_line: start.get("line")?.as_u64()? as usize,
-                            start_col: start.get("character")?.as_u64()? as usize,
-                            end_line: end.get("line")?.as_u64()? as usize,
-                            end_col: end.get("character")?.as_u64()? as usize,
-                            new_text: e.get("newText")?.as_str()?.to_string(),
-                        })
-                    })
+                    .filter_map(parse_lsp_text_edit)
                     .collect();
                 if !text_edits.is_empty() {
                     edits.push((uri.clone(), text_edits));
@@ -1528,18 +1731,7 @@ fn handle_rename_response(result: Value, request_uri: String) -> Option<LspNotif
                 if let Some(uri) = text_document.get("uri").and_then(|u| u.as_str()) {
                     let text_edits: Vec<TextEdit> = file_edits_arr
                         .iter()
-                        .filter_map(|e| {
-                            let range = e.get("range")?;
-                            let start = range.get("start")?;
-                            let end = range.get("end")?;
-                            Some(TextEdit {
-                                start_line: start.get("line")?.as_u64()? as usize,
-                                start_col: start.get("character")?.as_u64()? as usize,
-                                end_line: end.get("line")?.as_u64()? as usize,
-                                end_col: end.get("character")?.as_u64()? as usize,
-                                new_text: e.get("newText")?.as_str()?.to_string(),
-                            })
-                        })
+                        .filter_map(parse_lsp_text_edit)
                         .collect();
                     if !text_edits.is_empty() {
                         edits.push((uri.to_string(), text_edits));
@@ -1549,22 +1741,30 @@ fn handle_rename_response(result: Value, request_uri: String) -> Option<LspNotif
         }
     }
 
-    Some(LspNotification::RenameResult { edits, request_uri })
+    Some(LspNotification::RenameResult {
+        edits,
+        request_uri,
+        request_version,
+    })
 }
 
 /// Handle completionItem/resolve response
-fn handle_completion_resolve_response(result: Value, label: String) -> Option<LspNotification> {
+fn handle_completion_resolve_response(
+    result: Value,
+    item_id: u64,
+    label: String,
+) -> Option<LspNotification> {
     // Extract documentation from the resolved item
-    let documentation = result
-        .get("documentation")
-        .and_then(|d| {
-            if d.is_string() {
-                d.as_str().map(|s| s.to_string())
-            } else {
-                // MarkupContent format: { kind: "markdown"|"plaintext", value: "..." }
-                d.get("value").and_then(|v| v.as_str()).map(|s| s.to_string())
-            }
-        });
+    let documentation = result.get("documentation").and_then(|d| {
+        if d.is_string() {
+            d.as_str().map(|s| s.to_string())
+        } else {
+            // MarkupContent format: { kind: "markdown"|"plaintext", value: "..." }
+            d.get("value")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        }
+    });
 
     // Also extract detail if it was updated
     let detail = result
@@ -1572,9 +1772,71 @@ fn handle_completion_resolve_response(result: Value, label: String) -> Option<Ls
         .and_then(|d| d.as_str())
         .map(|s| s.to_string());
 
+    let text_edit = result.get("textEdit").and_then(parse_lsp_text_edit);
+    let additional_text_edits = parse_lsp_text_edits(result.get("additionalTextEdits"));
+
     Some(LspNotification::CompletionResolved {
+        item_id,
         label,
         documentation,
         detail,
+        text_edit,
+        additional_text_edits,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lsp::types::{DiagnosticCode, DiagnosticSeverity};
+
+    #[test]
+    fn code_action_diagnostic_conversion_preserves_multiline_end_line() {
+        let diagnostic = Diagnostic {
+            line: 2,
+            end_line: 4,
+            col_start: 1,
+            col_end: 7,
+            severity: DiagnosticSeverity::Error,
+            message: "multi-line problem".to_string(),
+            source: Some("test".to_string()),
+            code: Some(DiagnosticCode::Number(123)),
+        };
+
+        let converted = diagnostic_to_lsp_diagnostic(&diagnostic);
+
+        assert_eq!(converted.range.start.line, 2);
+        assert_eq!(converted.range.end.line, 4);
+        assert_eq!(converted.range.end.character, 7);
+    }
+
+    #[test]
+    fn typescript_server_gets_auto_import_completion_preferences() {
+        let options =
+            initialization_options_for_command("/usr/local/bin/typescript-language-server")
+                .expect("typescript init options");
+
+        let preferences = options
+            .get("preferences")
+            .and_then(|value| value.as_object())
+            .expect("preferences object");
+
+        assert_eq!(
+            preferences
+                .get("includeCompletionsForModuleExports")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            preferences
+                .get("includeCompletionsForImportStatements")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn non_typescript_servers_do_not_get_typescript_initialization_options() {
+        assert!(initialization_options_for_command("rust-analyzer").is_none());
+    }
 }

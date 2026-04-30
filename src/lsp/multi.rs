@@ -82,6 +82,37 @@ pub struct MultiLspManager {
 }
 
 impl MultiLspManager {
+    pub fn language_for_path(&self, path: &Path) -> Option<LanguageId> {
+        let ext = path.extension().and_then(|ext| ext.to_str())?;
+        if let Some(lang) = LanguageId::from_extension(ext) {
+            return Some(lang);
+        }
+
+        [
+            LanguageId::Rust,
+            LanguageId::TypeScript,
+            LanguageId::JavaScript,
+            LanguageId::Css,
+            LanguageId::Json,
+            LanguageId::Toml,
+            LanguageId::Markdown,
+            LanguageId::Html,
+            LanguageId::Python,
+        ]
+        .into_iter()
+        .find(|lang| {
+            self.configs
+                .get(lang)
+                .map(|config| {
+                    config
+                        .file_extensions
+                        .iter()
+                        .any(|configured| configured.eq_ignore_ascii_case(ext))
+                })
+                .unwrap_or(false)
+        })
+    }
+
     fn resolve_server_root(&self, lang: LanguageId, file_path: Option<&Path>) -> PathBuf {
         let Some(path) = file_path else {
             return self.workspace_root.clone();
@@ -175,9 +206,10 @@ impl MultiLspManager {
 
         // Get config data without holding the borrow across server startup.
         let (enabled, command, args) = {
-            let config = self.configs.get(&lang).ok_or_else(|| {
-                anyhow::anyhow!("No config for language {:?}", lang)
-            })?;
+            let config = self
+                .configs
+                .get(&lang)
+                .ok_or_else(|| anyhow::anyhow!("No config for language {:?}", lang))?;
             (
                 config.enabled,
                 config.effective_command().to_string(),
@@ -195,12 +227,15 @@ impl MultiLspManager {
         // Try to start the server (using effective command/args which resolve presets)
         match LspManager::start(&command, &args, root_path) {
             Ok(manager) => {
-                self.instances.insert(lang, LspInstance {
-                    manager,
-                    ready: false,
-                    current_file: None,
-                    document_version: 1,
-                });
+                self.instances.insert(
+                    lang,
+                    LspInstance {
+                        manager,
+                        ready: false,
+                        current_file: None,
+                        document_version: 1,
+                    },
+                );
                 Ok(true)
             }
             Err(e) => Err(e),
@@ -209,7 +244,13 @@ impl MultiLspManager {
 
     /// Start a server for a file if needed
     pub fn ensure_server_for_file(&mut self, path: &Path) -> anyhow::Result<Option<LanguageId>> {
-        if let Some(lang) = LanguageId::from_path(path) {
+        if let Some(lang) = self.language_for_path(path) {
+            let Some(config) = self.configs.get(&lang) else {
+                return Ok(None);
+            };
+            if !config.enabled {
+                return Ok(None);
+            }
             self.ensure_server_for_language_with_file(lang, Some(path))?;
             Ok(Some(lang))
         } else {
@@ -224,7 +265,7 @@ impl MultiLspManager {
 
     /// Check if any server is ready for the given file
     pub fn is_ready_for_file(&self, path: &Path) -> bool {
-        LanguageId::from_path(path)
+        self.language_for_path(path)
             .map_or(false, |lang| self.is_ready(lang))
     }
 
@@ -259,7 +300,8 @@ impl MultiLspManager {
 
     /// Send did_open notification to appropriate server
     pub fn did_open(&mut self, path: &PathBuf, text: &str) -> anyhow::Result<()> {
-        let lang = LanguageId::from_path(path)
+        let lang = self
+            .language_for_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
         if let Some(instance) = self.get_instance_mut(lang) {
@@ -274,13 +316,16 @@ impl MultiLspManager {
 
     /// Send did_change notification to appropriate server
     pub fn did_change(&mut self, path: &PathBuf, text: &str) -> anyhow::Result<()> {
-        let lang = LanguageId::from_path(path)
+        let lang = self
+            .language_for_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
         if let Some(instance) = self.get_instance_mut(lang) {
             if instance.ready {
                 instance.document_version += 1;
-                instance.manager.did_change(path, instance.document_version, text)?;
+                instance
+                    .manager
+                    .did_change(path, instance.document_version, text)?;
             }
         }
         Ok(())
@@ -288,7 +333,8 @@ impl MultiLspManager {
 
     /// Send did_close notification to appropriate server
     pub fn did_close(&mut self, path: &PathBuf) -> anyhow::Result<()> {
-        let lang = LanguageId::from_path(path)
+        let lang = self
+            .language_for_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
         if let Some(instance) = self.get_instance_mut(lang) {
@@ -303,26 +349,42 @@ impl MultiLspManager {
     }
 
     /// Request completions for a file
-    pub fn completion(&mut self, path: &PathBuf, line: u32, character: u32) -> anyhow::Result<()> {
-        let lang = LanguageId::from_path(path)
+    pub fn completion(
+        &mut self,
+        path: &PathBuf,
+        line: u32,
+        character: u32,
+        buffer_version: u64,
+    ) -> anyhow::Result<()> {
+        let lang = self
+            .language_for_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
         if let Some(instance) = self.get_instance_mut(lang) {
             if instance.ready {
-                instance.manager.completion(path, line, character)?;
+                instance
+                    .manager
+                    .completion(path, line, character, buffer_version)?;
             }
         }
         Ok(())
     }
 
     /// Resolve a completion item to get full documentation
-    pub fn completion_resolve(&mut self, path: &PathBuf, item: serde_json::Value, label: String) -> anyhow::Result<()> {
-        let lang = LanguageId::from_path(path)
+    pub fn completion_resolve(
+        &mut self,
+        path: &PathBuf,
+        item: serde_json::Value,
+        item_id: u64,
+        label: String,
+    ) -> anyhow::Result<()> {
+        let lang = self
+            .language_for_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
         if let Some(instance) = self.get_instance_mut(lang) {
             if instance.ready {
-                instance.manager.completion_resolve(item, label)?;
+                instance.manager.completion_resolve(item, item_id, label)?;
             }
         }
         Ok(())
@@ -330,7 +392,8 @@ impl MultiLspManager {
 
     /// Request hover information for a file
     pub fn hover(&mut self, path: &PathBuf, line: u32, character: u32) -> anyhow::Result<()> {
-        let lang = LanguageId::from_path(path)
+        let lang = self
+            .language_for_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
         if let Some(instance) = self.get_instance_mut(lang) {
@@ -342,8 +405,14 @@ impl MultiLspManager {
     }
 
     /// Request go-to-definition for a file
-    pub fn goto_definition(&mut self, path: &PathBuf, line: u32, character: u32) -> anyhow::Result<()> {
-        let lang = LanguageId::from_path(path)
+    pub fn goto_definition(
+        &mut self,
+        path: &PathBuf,
+        line: u32,
+        character: u32,
+    ) -> anyhow::Result<()> {
+        let lang = self
+            .language_for_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
         if let Some(instance) = self.get_instance_mut(lang) {
@@ -356,7 +425,8 @@ impl MultiLspManager {
 
     /// Request references for a symbol
     pub fn references(&mut self, path: &PathBuf, line: u32, character: u32) -> anyhow::Result<()> {
-        let lang = LanguageId::from_path(path)
+        let lang = self
+            .language_for_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
         if let Some(instance) = self.get_instance_mut(lang) {
@@ -368,8 +438,14 @@ impl MultiLspManager {
     }
 
     /// Request signature help
-    pub fn signature_help(&mut self, path: &PathBuf, line: u32, character: u32) -> anyhow::Result<()> {
-        let lang = LanguageId::from_path(path)
+    pub fn signature_help(
+        &mut self,
+        path: &PathBuf,
+        line: u32,
+        character: u32,
+    ) -> anyhow::Result<()> {
+        let lang = self
+            .language_for_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
         if let Some(instance) = self.get_instance_mut(lang) {
@@ -381,13 +457,21 @@ impl MultiLspManager {
     }
 
     /// Request document formatting
-    pub fn formatting(&mut self, path: &PathBuf, tab_size: u32) -> anyhow::Result<()> {
-        let lang = LanguageId::from_path(path)
+    pub fn formatting(
+        &mut self,
+        path: &PathBuf,
+        tab_size: u32,
+        buffer_version: u64,
+    ) -> anyhow::Result<()> {
+        let lang = self
+            .language_for_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
         if let Some(instance) = self.get_instance_mut(lang) {
             if instance.ready {
-                instance.manager.formatting(path, tab_size)?;
+                instance
+                    .manager
+                    .formatting(path, tab_size, buffer_version)?;
             }
         }
         Ok(())
@@ -401,9 +485,11 @@ impl MultiLspManager {
         start_character: u32,
         end_line: u32,
         end_character: u32,
+        buffer_version: u64,
         diagnostics: Vec<crate::lsp::types::Diagnostic>,
     ) -> anyhow::Result<()> {
-        let lang = LanguageId::from_path(path)
+        let lang = self
+            .language_for_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
         if let Some(instance) = self.get_instance_mut(lang) {
@@ -414,6 +500,7 @@ impl MultiLspManager {
                     start_character,
                     end_line,
                     end_character,
+                    buffer_version,
                     diagnostics,
                 )?;
             }
@@ -422,13 +509,23 @@ impl MultiLspManager {
     }
 
     /// Request rename
-    pub fn rename(&mut self, path: &PathBuf, line: u32, character: u32, new_name: String) -> anyhow::Result<()> {
-        let lang = LanguageId::from_path(path)
+    pub fn rename(
+        &mut self,
+        path: &PathBuf,
+        line: u32,
+        character: u32,
+        new_name: String,
+        buffer_version: u64,
+    ) -> anyhow::Result<()> {
+        let lang = self
+            .language_for_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
 
         if let Some(instance) = self.get_instance_mut(lang) {
             if instance.ready {
-                instance.manager.rename(path, line, character, new_name)?;
+                instance
+                    .manager
+                    .rename(path, line, character, new_name, buffer_version)?;
             }
         }
         Ok(())
@@ -445,10 +542,12 @@ impl MultiLspManager {
     /// Get status string for display
     pub fn status(&self, path: Option<&Path>) -> String {
         if let Some(p) = path {
-            if let Some(lang) = LanguageId::from_path(p) {
+            if let Some(lang) = self.language_for_path(p) {
                 if let Some(instance) = self.instances.get(&lang) {
                     // Get the server name from config
-                    let server_name = self.configs.get(&lang)
+                    let server_name = self
+                        .configs
+                        .get(&lang)
                         .map(|c| c.effective_command())
                         .unwrap_or("unknown");
 
