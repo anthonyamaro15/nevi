@@ -138,6 +138,8 @@ pub enum KeyAction {
     DeleteChar(usize),
     /// Delete character before cursor (X)
     DeleteCharBefore(usize),
+    /// Substitute character(s) under cursor and enter insert mode
+    SubstituteChars(usize),
     /// Replace character at cursor with given char (r)
     ReplaceChar(char, usize),
     /// Toggle case of count chars starting at cursor (~)
@@ -951,6 +953,14 @@ impl InputState {
             (KeyModifiers::SHIFT, KeyCode::Char('X')) => {
                 self.reset();
                 KeyAction::DeleteCharBefore(count)
+            }
+            (KeyModifiers::NONE, KeyCode::Char('s')) => {
+                self.reset();
+                KeyAction::SubstituteChars(count)
+            }
+            (KeyModifiers::SHIFT, KeyCode::Char('S')) => {
+                self.reset();
+                KeyAction::OperatorLine(Operator::Change, count)
             }
             (KeyModifiers::NONE, KeyCode::Char('r')) => {
                 // r - replace character (wait for replacement char)

@@ -5828,6 +5828,14 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.delete_chars_before_normal(count);
         }
 
+        KeyAction::SubstituteChars(count) => {
+            let register = editor
+                .input_state
+                .take_register()
+                .or(register_before_action);
+            editor.substitute_chars_at(count, register);
+        }
+
         KeyAction::PasteAfter(count) => {
             let register = editor
                 .input_state
@@ -8594,6 +8602,10 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)
     }
 
+    fn esc_key() -> KeyEvent {
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+    }
+
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -8720,6 +8732,186 @@ mod tests {
 
         assert_eq!(editor.mode, Mode::Normal);
         assert_eq!(editor.cursor.col, prefix.chars().count() - 1);
+    }
+
+    #[test]
+    fn normal_shift_d_deletes_to_eol_and_stays_on_last_remaining_char() {
+        let mut editor = Editor::default();
+        let prefix = "EXPO_PUBLIC_API_URL=";
+        editor.replace_buffer_content(&format!("{prefix}https://example.test\n"));
+        editor.cursor.col = prefix.chars().count();
+
+        handle_key(&mut editor, shift_key('D'));
+
+        assert_eq!(editor.buffer().content(), format!("{prefix}\n"));
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.cursor.col, prefix.chars().count() - 1);
+    }
+
+    #[test]
+    fn normal_c_dollar_keeps_insert_point_at_eol_without_trailing_newline() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("abc");
+        editor.cursor.col = 2;
+
+        handle_key(&mut editor, key('c'));
+        handle_key(&mut editor, key('$'));
+
+        assert_eq!(editor.buffer().content(), "ab");
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor.col, 2);
+
+        handle_key(&mut editor, esc_key());
+
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.cursor.col, 1);
+    }
+
+    #[test]
+    fn normal_s_substitutes_counted_chars_and_enters_insert() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("abcdef\n");
+        editor.cursor.col = 2;
+
+        handle_key(&mut editor, key('3'));
+        handle_key(&mut editor, key('s'));
+
+        assert_eq!(editor.buffer().content(), "abf\n");
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor.col, 2);
+
+        handle_key(&mut editor, key('X'));
+        handle_key(&mut editor, esc_key());
+
+        assert_eq!(editor.buffer().content(), "abXf\n");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.cursor.col, 2);
+    }
+
+    #[test]
+    fn normal_s_on_empty_line_enters_insert() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("\n");
+
+        handle_key(&mut editor, key('s'));
+        handle_key(&mut editor, key('x'));
+        handle_key(&mut editor, esc_key());
+
+        assert_eq!(editor.buffer().content(), "x\n");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.cursor.col, 0);
+    }
+
+    #[test]
+    fn normal_shift_s_changes_current_line() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("abc\nnext\n");
+        editor.cursor.col = 1;
+
+        handle_key(&mut editor, shift_key('S'));
+
+        assert_eq!(editor.buffer().content(), "\nnext\n");
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor.col, 0);
+
+        handle_key(&mut editor, key('X'));
+        handle_key(&mut editor, esc_key());
+
+        assert_eq!(editor.buffer().content(), "X\nnext\n");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.cursor.col, 0);
+    }
+
+    #[test]
+    fn normal_insert_entry_commands_keep_expected_positions() {
+        let mut append = Editor::default();
+        append.replace_buffer_content("  abc\n");
+        handle_key(&mut append, shift_key('A'));
+        assert_eq!(append.mode, Mode::Insert);
+        assert_eq!(append.cursor.col, 5);
+        handle_key(&mut append, esc_key());
+        assert_eq!(append.cursor.col, 4);
+
+        let mut insert = Editor::default();
+        insert.replace_buffer_content("  abc\n");
+        insert.cursor.col = 4;
+        handle_key(&mut insert, shift_key('I'));
+        assert_eq!(insert.mode, Mode::Insert);
+        assert_eq!(insert.cursor.col, 2);
+
+        let mut below = Editor::default();
+        below.replace_buffer_content("  abc\nnext\n");
+        handle_key(&mut below, key('o'));
+        assert_eq!(below.buffer().content(), "  abc\n  \nnext\n");
+        assert_eq!(below.mode, Mode::Insert);
+        assert_eq!((below.cursor.line, below.cursor.col), (1, 2));
+
+        let mut above = Editor::default();
+        above.replace_buffer_content("  abc\nnext\n");
+        above.cursor.line = 1;
+        handle_key(&mut above, shift_key('O'));
+        assert_eq!(above.buffer().content(), "  abc\n\nnext\n");
+        assert_eq!(above.mode, Mode::Insert);
+        assert_eq!((above.cursor.line, above.cursor.col), (1, 0));
+    }
+
+    #[test]
+    fn visual_change_keeps_insert_point_at_selection_start() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("foo bar\n");
+        editor.cursor.col = 4;
+
+        editor.enter_visual_mode();
+        editor.apply_motion(Motion::WordEnd, 1);
+        handle_key(&mut editor, key('c'));
+
+        assert_eq!(editor.buffer().content(), "foo \n");
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor.col, 4);
+
+        handle_key(&mut editor, key('X'));
+        handle_key(&mut editor, esc_key());
+
+        assert_eq!(editor.buffer().content(), "foo X\n");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.cursor.col, 4);
+    }
+
+    #[test]
+    fn visual_s_changes_selection_like_c() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("foo bar\n");
+        editor.cursor.col = 4;
+
+        editor.enter_visual_mode();
+        editor.apply_motion(Motion::WordEnd, 1);
+        handle_key(&mut editor, key('s'));
+
+        assert_eq!(editor.buffer().content(), "foo \n");
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor.col, 4);
+    }
+
+    #[test]
+    fn change_text_object_keeps_insert_point_at_deleted_word_start() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("foo bar\n");
+        editor.cursor.col = 5;
+
+        handle_key(&mut editor, key('c'));
+        handle_key(&mut editor, key('i'));
+        handle_key(&mut editor, key('w'));
+
+        assert_eq!(editor.buffer().content(), "foo \n");
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor.col, 4);
+
+        handle_key(&mut editor, key('X'));
+        handle_key(&mut editor, esc_key());
+
+        assert_eq!(editor.buffer().content(), "foo X\n");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.cursor.col, 4);
     }
 
     #[test]
