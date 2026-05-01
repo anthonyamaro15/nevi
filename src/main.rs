@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use nevi::copilot::{
     utf16_to_utf8_col, utf8_to_utf16_col, AuthStatus, CopilotCompletion, CopilotManager,
     CopilotNotification, CopilotStatus,
@@ -12,9 +12,14 @@ use nevi::editor::{CopilotAction, CopilotGhostText, LspAction};
 use nevi::lsp;
 use nevi::terminal::{execute_leader_action, handle_key, EditorEvent};
 use nevi::{
-    load_config, AutosaveMode, Editor, LanguageId, LspNotification, Mode, MultiLspManager, Terminal,
+    editor::RegisterContent,
+    floating_terminal::{
+        is_terminal_selection_clear_key, is_terminal_selection_copy_key,
+        is_terminal_selection_platform_copy_key, TerminalMouseEventResult,
+    },
+    load_config, AutosaveMode, Editor, LanguageId, LspNotification, Mode, MultiLspManager,
+    Terminal,
 };
-
 
 fn profile_enabled_from_env() -> bool {
     profile_enabled_from_value(env::var("NEVI_PROFILE").ok().as_deref())
@@ -370,12 +375,43 @@ fn main() -> anyhow::Result<()> {
                                     terminal_settings.popup_width_ratio,
                                     terminal_settings.popup_height_ratio,
                                 );
-                                if editor
+                                match editor
                                     .floating_terminal
                                     .send_mouse_event(mouse, content_area)
                                 {
-                                    last_input_at = Some(Instant::now());
+                                    TerminalMouseEventResult::Ignored => {}
+                                    TerminalMouseEventResult::Handled => {
+                                        last_input_at = Some(Instant::now());
+                                        terminal_redraw_pending = true;
+                                    }
                                 }
+                            }
+                            events_processed += 1;
+                            if !terminal.poll_key(Duration::from_millis(0))? {
+                                break;
+                            }
+                            continue;
+                        }
+                        EditorEvent::Paste(text) => {
+                            if editor.floating_terminal.is_visible() {
+                                if editor.floating_terminal.send_paste(&text) {
+                                    last_input_at = Some(Instant::now());
+                                    terminal_redraw_pending = true;
+                                }
+                            } else {
+                                for ch in text.chars() {
+                                    let paste_key = match ch {
+                                        '\n' | '\r' => {
+                                            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+                                        }
+                                        '\t' => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+                                        ch => KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                                    };
+                                    handle_key(&mut editor, paste_key);
+                                }
+                                last_input_at = Some(Instant::now());
+                                needs_redraw = true;
+                                redraw_from_input = true;
                             }
                             events_processed += 1;
                             if !terminal.poll_key(Duration::from_millis(0))? {
@@ -390,6 +426,40 @@ fn main() -> anyhow::Result<()> {
                     editor.hover_content = None;
                     // Dismiss diagnostic float on any key press (it can be reopened with gl)
                     editor.show_diagnostic_float = false;
+
+                    if editor.floating_terminal.is_visible() {
+                        let has_selection = editor.floating_terminal.has_selection();
+                        let platform_copy = is_terminal_selection_platform_copy_key(key);
+                        let selection_copy = has_selection && is_terminal_selection_copy_key(key);
+                        if platform_copy || selection_copy {
+                            if let Some(text) = editor.floating_terminal.copy_selection() {
+                                editor.registers.yank(None, RegisterContent::Chars(text));
+                                editor.check_clipboard_error();
+                                editor.set_status("Terminal selection copied");
+                            } else {
+                                editor.set_status("No terminal selection");
+                            }
+                            last_input_at = Some(Instant::now());
+                            needs_redraw = true;
+                            redraw_from_input = true;
+                            events_processed += 1;
+                            if !terminal.poll_key(Duration::from_millis(0))? {
+                                break;
+                            }
+                            continue;
+                        }
+
+                        if has_selection && is_terminal_selection_clear_key(key) {
+                            editor.floating_terminal.clear_selection();
+                            last_input_at = Some(Instant::now());
+                            terminal_redraw_pending = true;
+                            events_processed += 1;
+                            if !terminal.poll_key(Duration::from_millis(0))? {
+                                break;
+                            }
+                            continue;
+                        }
+                    }
 
                     // Check for manual completion trigger (Ctrl+Space) in insert mode
                     let manual_completion = editor.mode == Mode::Insert
@@ -466,7 +536,9 @@ fn main() -> anyhow::Result<()> {
                                     if let Err(e) = mlsp.ensure_server_for_file(&path) {
                                         let message = mlsp
                                             .language_for_path(&path)
-                                            .map(|lang| mlsp.user_facing_error(lang, &e.to_string()))
+                                            .map(|lang| {
+                                                mlsp.user_facing_error(lang, &e.to_string())
+                                            })
                                             .unwrap_or_else(|| e.to_string());
                                         editor.set_status(format!("LSP: {}", message));
                                     } else {
@@ -618,7 +690,9 @@ fn main() -> anyhow::Result<()> {
                                     Err(e) => {
                                         let message = mlsp
                                             .language_for_path(new_path)
-                                            .map(|lang| mlsp.user_facing_error(lang, &e.to_string()))
+                                            .map(|lang| {
+                                                mlsp.user_facing_error(lang, &e.to_string())
+                                            })
                                             .unwrap_or_else(|| e.to_string());
                                         editor.set_lsp_status(format!("LSP: {}", message));
                                     }

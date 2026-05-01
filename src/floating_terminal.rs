@@ -4,7 +4,7 @@
 
 use alacritty_terminal::{
     event::{Event, EventListener},
-    grid::Dimensions,
+    grid::{Dimensions, Scroll},
     term::{
         cell::{Cell, Flags},
         color::Colors,
@@ -15,7 +15,10 @@ use alacritty_terminal::{
     },
 };
 use crossterm::{
-    event::{KeyModifiers as CrosstermKeyModifiers, MouseButton, MouseEvent, MouseEventKind},
+    event::{
+        KeyCode, KeyEvent, KeyModifiers as CrosstermKeyModifiers, MouseButton, MouseEvent,
+        MouseEventKind,
+    },
     style::Color as CrosstermColor,
 };
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -35,6 +38,7 @@ const MIN_POPUP_HEIGHT: u16 = 10;
 const MAX_TITLE_LEN: usize = 120;
 const VISIBLE_OUTPUT_CHUNK_BYTES: usize = 256 * 1024;
 const BACKGROUND_OUTPUT_CHUNK_BYTES: usize = 32 * 1024;
+const MOUSE_SCROLL_LINES: i32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalContentArea {
@@ -42,6 +46,78 @@ pub struct TerminalContentArea {
     pub y: u16,
     pub width: u16,
     pub height: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalMouseEventResult {
+    Ignored,
+    Handled,
+}
+
+impl TerminalMouseEventResult {
+    pub fn is_handled(&self) -> bool {
+        !matches!(self, Self::Ignored)
+    }
+}
+
+pub fn is_terminal_selection_platform_copy_key(key: KeyEvent) -> bool {
+    let is_c = matches!(key.code, KeyCode::Char('c' | 'C'));
+    is_c && ((key.modifiers.contains(CrosstermKeyModifiers::CONTROL)
+        && key.modifiers.contains(CrosstermKeyModifiers::SHIFT))
+        || key.modifiers.contains(CrosstermKeyModifiers::SUPER))
+}
+
+pub fn is_terminal_selection_copy_key(key: KeyEvent) -> bool {
+    is_terminal_selection_platform_copy_key(key)
+        || (matches!(key.code, KeyCode::Char('y' | 'Y'))
+            && key.modifiers == CrosstermKeyModifiers::NONE)
+}
+
+pub fn is_terminal_selection_clear_key(key: KeyEvent) -> bool {
+    matches!(
+        (key.modifiers, key.code),
+        (CrosstermKeyModifiers::NONE, KeyCode::Esc)
+            | (CrosstermKeyModifiers::CONTROL, KeyCode::Char('['))
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TerminalSelectionPoint {
+    row: usize,
+    col: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TerminalSelection {
+    anchor: TerminalSelectionPoint,
+    active: TerminalSelectionPoint,
+}
+
+impl TerminalSelection {
+    fn normalized(&self) -> (TerminalSelectionPoint, TerminalSelectionPoint) {
+        let anchor_key = (self.anchor.row, self.anchor.col);
+        let active_key = (self.active.row, self.active.col);
+        if anchor_key <= active_key {
+            (self.anchor, self.active)
+        } else {
+            (self.active, self.anchor)
+        }
+    }
+
+    fn contains(&self, row: usize, col: usize) -> bool {
+        let (start, end) = self.normalized();
+        if row < start.row || row > end.row {
+            return false;
+        }
+
+        let start_col = if row == start.row { start.col } else { 0 };
+        let end_col = if row == end.row { end.col } else { usize::MAX };
+        col >= start_col && col <= end_col
+    }
+
+    fn is_empty(&self) -> bool {
+        self.anchor == self.active
+    }
 }
 
 fn normalize_popup_ratio(ratio: f32) -> f32 {
@@ -138,6 +214,7 @@ impl Dimensions for TerminalDimensions {
 #[derive(Clone)]
 struct TerminalEventListener {
     title: Arc<Mutex<Option<String>>>,
+    pty_write_buffer: Arc<Mutex<Vec<u8>>>,
 }
 
 impl EventListener for TerminalEventListener {
@@ -151,6 +228,11 @@ impl EventListener for TerminalEventListener {
             Event::ResetTitle => {
                 if let Ok(mut current_title) = self.title.lock() {
                     *current_title = None;
+                }
+            }
+            Event::PtyWrite(text) => {
+                if let Ok(mut pending) = self.pty_write_buffer.lock() {
+                    pending.extend_from_slice(text.as_bytes());
                 }
             }
             _ => {}
@@ -190,6 +272,16 @@ fn mouse_position_in_content(
     } else {
         None
     }
+}
+
+fn mouse_position_in_content_zero_based(
+    event: MouseEvent,
+    content_area: TerminalContentArea,
+) -> Option<TerminalSelectionPoint> {
+    mouse_position_in_content(event, content_area).map(|(col, row)| TerminalSelectionPoint {
+        row: row.saturating_sub(1) as usize,
+        col: col.saturating_sub(1) as usize,
+    })
 }
 
 fn mouse_button_code(button: MouseButton) -> Option<u16> {
@@ -247,6 +339,7 @@ pub struct TerminalCell {
     pub inverse: bool,
     pub hidden: bool,
     pub strikeout: bool,
+    pub selected: bool,
 }
 
 impl Default for TerminalCell {
@@ -266,6 +359,7 @@ impl Default for TerminalCell {
             inverse: false,
             hidden: false,
             strikeout: false,
+            selected: false,
         }
     }
 }
@@ -297,23 +391,28 @@ struct TerminalSession {
     child: Option<Box<dyn Child + Send + Sync>>,
     /// Reader thread output buffer
     output_buffer: Arc<Mutex<Vec<u8>>>,
+    /// Terminal emulator responses that must be written back to the PTY
+    pty_write_buffer: Arc<Mutex<Vec<u8>>>,
     /// Reader thread handle (for joining on close)
     reader_thread: Option<JoinHandle<()>>,
     /// Working directory
     working_dir: PathBuf,
     /// Whether terminal process has exited
     process_exited: bool,
+    /// Current mouse selection in viewport-relative terminal coordinates
+    selection: Option<TerminalSelection>,
 }
 
 impl TerminalSession {
     /// Create a new terminal session (not yet spawned)
     fn new(id: usize, name: String, rows: u16, cols: u16, working_dir: PathBuf) -> Self {
         let terminal_title = Arc::new(Mutex::new(None));
+        let pty_write_buffer = Arc::new(Mutex::new(Vec::new()));
         Self {
             id,
             name,
             visible: false,
-            term: Self::new_term(rows, cols, terminal_title.clone()),
+            term: Self::new_term(rows, cols, terminal_title.clone(), pty_write_buffer.clone()),
             processor: VteProcessor::new(),
             terminal_title,
             pending_command: String::new(),
@@ -324,9 +423,11 @@ impl TerminalSession {
             pty_writer: None,
             child: None,
             output_buffer: Arc::new(Mutex::new(Vec::new())),
+            pty_write_buffer,
             reader_thread: None,
             working_dir,
             process_exited: false,
+            selection: None,
         }
     }
 
@@ -334,6 +435,7 @@ impl TerminalSession {
         rows: u16,
         cols: u16,
         terminal_title: Arc<Mutex<Option<String>>>,
+        pty_write_buffer: Arc<Mutex<Vec<u8>>>,
     ) -> Term<TerminalEventListener> {
         let mut config = Config::default();
         config.scrolling_history = BUFFER_ROWS;
@@ -342,6 +444,7 @@ impl TerminalSession {
             &TerminalDimensions::new(rows, cols),
             TerminalEventListener {
                 title: terminal_title,
+                pty_write_buffer,
             },
         )
     }
@@ -415,6 +518,9 @@ impl TerminalSession {
         if let Ok(mut output) = self.output_buffer.lock() {
             output.clear();
         }
+        if let Ok(mut pending) = self.pty_write_buffer.lock() {
+            pending.clear();
+        }
 
         // Clear emulator state for a fresh shell.
         if let Ok(mut title) = self.terminal_title.lock() {
@@ -422,7 +528,12 @@ impl TerminalSession {
         }
         self.pending_command.clear();
         self.last_command = None;
-        self.term = Self::new_term(self.rows, self.cols, self.terminal_title.clone());
+        self.term = Self::new_term(
+            self.rows,
+            self.cols,
+            self.terminal_title.clone(),
+            self.pty_write_buffer.clone(),
+        );
         self.processor = VteProcessor::new();
 
         Ok(())
@@ -512,6 +623,18 @@ impl TerminalSession {
         self.send_input(&data);
     }
 
+    fn send_paste(&mut self, text: &str) {
+        if self.term.mode().contains(TermMode::BRACKETED_PASTE) {
+            let mut data = Vec::with_capacity(text.len() + 12);
+            data.extend_from_slice(b"\x1b[200~");
+            data.extend_from_slice(text.as_bytes());
+            data.extend_from_slice(b"\x1b[201~");
+            self.send_input(&data);
+        } else {
+            self.send_input(text.as_bytes());
+        }
+    }
+
     fn mouse_input_bytes(
         &self,
         event: MouseEvent,
@@ -552,6 +675,128 @@ impl TerminalSession {
         } else {
             encode_legacy_mouse_report(button_code, x, y, released)
         }
+    }
+
+    fn handle_local_mouse_scroll(
+        &mut self,
+        event: MouseEvent,
+        content_area: TerminalContentArea,
+    ) -> TerminalMouseEventResult {
+        if mouse_position_in_content(event, content_area).is_none() {
+            return TerminalMouseEventResult::Ignored;
+        }
+
+        let scroll = match event.kind {
+            MouseEventKind::ScrollUp => Scroll::Delta(MOUSE_SCROLL_LINES),
+            MouseEventKind::ScrollDown => Scroll::Delta(-MOUSE_SCROLL_LINES),
+            _ => return TerminalMouseEventResult::Ignored,
+        };
+
+        if self.scroll_display(scroll) {
+            TerminalMouseEventResult::Handled
+        } else {
+            TerminalMouseEventResult::Ignored
+        }
+    }
+
+    fn handle_local_mouse_selection(
+        &mut self,
+        event: MouseEvent,
+        content_area: TerminalContentArea,
+    ) -> TerminalMouseEventResult {
+        let Some(point) = mouse_position_in_content_zero_based(event, content_area) else {
+            return TerminalMouseEventResult::Ignored;
+        };
+
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.selection = Some(TerminalSelection {
+                    anchor: point,
+                    active: point,
+                });
+                TerminalMouseEventResult::Handled
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(selection) = self.selection.as_mut() {
+                    selection.active = point;
+                    TerminalMouseEventResult::Handled
+                } else {
+                    TerminalMouseEventResult::Ignored
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(selection) = self.selection.as_mut() {
+                    selection.active = point;
+                }
+                if self
+                    .selection
+                    .map(|selection| selection.is_empty())
+                    .unwrap_or(false)
+                {
+                    self.selection = None;
+                }
+                TerminalMouseEventResult::Handled
+            }
+            _ => TerminalMouseEventResult::Ignored,
+        }
+    }
+
+    fn has_selection(&self) -> bool {
+        self.selection.is_some()
+    }
+
+    fn clear_selection(&mut self) -> bool {
+        self.selection.take().is_some()
+    }
+
+    fn copy_selection(&mut self) -> Option<String> {
+        let selected = self
+            .selected_text(self.rows as usize, self.cols as usize)
+            .filter(|text| !text.is_empty());
+        self.selection = None;
+        selected
+    }
+
+    fn scroll_display(&mut self, scroll: Scroll) -> bool {
+        let before = self.display_offset();
+        self.term.scroll_display(scroll);
+        self.display_offset() != before
+    }
+
+    fn display_offset(&self) -> usize {
+        self.term.renderable_content().display_offset
+    }
+
+    fn selected_text(&self, rows: usize, cols: usize) -> Option<String> {
+        let selection = self.selection?;
+        let (start, end) = selection.normalized();
+        let cells = self.get_visible_cells(rows, cols);
+        let mut selected_lines = Vec::new();
+
+        for row in start.row..=end.row.min(rows.saturating_sub(1)) {
+            let row_cells = cells.get(row)?;
+            let start_col = if row == start.row { start.col } else { 0 };
+            let end_col = if row == end.row {
+                end.col.min(cols.saturating_sub(1))
+            } else {
+                cols.saturating_sub(1)
+            };
+
+            if start_col > end_col || start_col >= row_cells.len() {
+                selected_lines.push(String::new());
+                continue;
+            }
+
+            let line: String = row_cells[start_col..=end_col.min(row_cells.len() - 1)]
+                .iter()
+                .map(|cell| if cell.hidden { ' ' } else { cell.ch })
+                .collect::<String>()
+                .trim_end()
+                .to_string();
+            selected_lines.push(line);
+        }
+
+        Some(selected_lines.join("\n"))
     }
 
     fn capture_prompt_key_for_metadata(&mut self, key: crossterm::event::KeyEvent) {
@@ -629,6 +874,26 @@ impl TerminalSession {
     /// Process bytes and update terminal buffer
     fn process_bytes(&mut self, data: &[u8]) {
         self.processor.advance(&mut self.term, data);
+        self.flush_pending_pty_writes();
+    }
+
+    fn flush_pending_pty_writes(&mut self) {
+        if self.pty_writer.is_none() {
+            return;
+        }
+
+        let data = {
+            let mut pending = self
+                .pty_write_buffer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if pending.is_empty() {
+                return;
+            }
+            std::mem::take(&mut *pending)
+        };
+
+        self.send_input(&data);
     }
 
     fn terminal_title(&self) -> Option<String> {
@@ -654,7 +919,12 @@ impl TerminalSession {
             let row = point.line;
             let col = point.column.0;
             if row < rows && col < cols {
-                lines[row][col] = Self::terminal_cell_from_alacritty(&indexed.cell, content.colors);
+                let mut cell = Self::terminal_cell_from_alacritty(&indexed.cell, content.colors);
+                cell.selected = self
+                    .selection
+                    .map(|selection| selection.contains(row, col))
+                    .unwrap_or(false);
+                lines[row][col] = cell;
             }
         }
 
@@ -729,6 +999,7 @@ impl TerminalSession {
             inverse: flags.contains(Flags::INVERSE),
             hidden,
             strikeout: flags.contains(Flags::STRIKEOUT),
+            selected: false,
         }
     }
 
@@ -1043,17 +1314,13 @@ impl FloatingTerminal {
     pub fn send_key(&mut self, key: crossterm::event::KeyEvent) {
         if let Some(active) = self.active_session() {
             if active.is_visible() {
+                active.clear_selection();
                 active.send_key(key);
             }
         }
     }
 
-    /// Forward a mouse event to the active visible terminal when it has enabled mouse reporting.
-    pub fn send_mouse_event(
-        &mut self,
-        event: MouseEvent,
-        content_area: TerminalContentArea,
-    ) -> bool {
+    pub fn send_paste(&mut self, text: &str) -> bool {
         let Some(active) = self.active_session() else {
             return false;
         };
@@ -1061,12 +1328,50 @@ impl FloatingTerminal {
             return false;
         }
 
+        active.send_paste(text);
+        true
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.active
+            .and_then(|idx| self.sessions.get(idx))
+            .is_some_and(TerminalSession::has_selection)
+    }
+
+    pub fn clear_selection(&mut self) -> bool {
+        self.active_session()
+            .is_some_and(TerminalSession::clear_selection)
+    }
+
+    pub fn copy_selection(&mut self) -> Option<String> {
+        self.active_session()
+            .and_then(TerminalSession::copy_selection)
+    }
+
+    /// Forward a mouse event to the active visible terminal when it has enabled mouse reporting.
+    pub fn send_mouse_event(
+        &mut self,
+        event: MouseEvent,
+        content_area: TerminalContentArea,
+    ) -> TerminalMouseEventResult {
+        let Some(active) = self.active_session() else {
+            return TerminalMouseEventResult::Ignored;
+        };
+        if !active.is_visible() {
+            return TerminalMouseEventResult::Ignored;
+        }
+
         let Some(data) = active.mouse_input_bytes(event, content_area) else {
-            return false;
+            let selection_result = active.handle_local_mouse_selection(event, content_area);
+            if selection_result.is_handled() {
+                return selection_result;
+            }
+
+            return active.handle_local_mouse_scroll(event, content_area);
         };
 
         active.send_input(&data);
-        true
+        TerminalMouseEventResult::Handled
     }
 
     /// Process output for all sessions.
@@ -1244,6 +1549,16 @@ impl FloatingTerminal {
         let idx = self.ensure_active_index();
         self.sessions[idx].process_bytes(data);
     }
+
+    #[cfg(test)]
+    fn take_pending_pty_write_for_test(&mut self) -> Vec<u8> {
+        let idx = self.ensure_active_index();
+        let mut pending = self.sessions[idx]
+            .pty_write_buffer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *pending)
+    }
 }
 
 impl Default for FloatingTerminal {
@@ -1255,6 +1570,25 @@ impl Default for FloatingTerminal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    struct TestWriter {
+        data: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl std::io::Write for TestWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.data
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn content_size_matches_popup_inner_area() {
@@ -1393,6 +1727,310 @@ mod tests {
                 },
             ),
             None
+        );
+    }
+
+    #[test]
+    fn scroll_wheel_scrolls_scrollback_when_mouse_reporting_is_off() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.resize(3, 20);
+        terminal.process_bytes(b"line-1\r\nline-2\r\nline-3\r\nline-4\r\nline-5\r\n");
+        terminal.sessions[0].visible = true;
+
+        let before = terminal.get_visible_lines(3, 20);
+        let handled = terminal.send_mouse_event(
+            crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::ScrollUp,
+                column: 2,
+                row: 3,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            TerminalContentArea {
+                x: 2,
+                y: 3,
+                width: 20,
+                height: 3,
+            },
+        );
+
+        assert_eq!(handled, TerminalMouseEventResult::Handled);
+        assert_ne!(terminal.get_visible_lines(3, 20), before);
+    }
+
+    #[test]
+    fn mouse_release_keeps_visible_terminal_selection_without_copying() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.resize(3, 20);
+        terminal.process_bytes(b"alpha\r\nbeta\r\ngamma");
+        terminal.sessions[0].visible = true;
+        let content_area = TerminalContentArea {
+            x: 2,
+            y: 3,
+            width: 20,
+            height: 3,
+        };
+
+        assert_eq!(
+            terminal.send_mouse_event(
+                crossterm::event::MouseEvent {
+                    kind: crossterm::event::MouseEventKind::Down(
+                        crossterm::event::MouseButton::Left,
+                    ),
+                    column: 2,
+                    row: 3,
+                    modifiers: crossterm::event::KeyModifiers::NONE,
+                },
+                content_area,
+            ),
+            TerminalMouseEventResult::Handled
+        );
+        assert_eq!(
+            terminal.send_mouse_event(
+                crossterm::event::MouseEvent {
+                    kind: crossterm::event::MouseEventKind::Drag(
+                        crossterm::event::MouseButton::Left,
+                    ),
+                    column: 6,
+                    row: 3,
+                    modifiers: crossterm::event::KeyModifiers::NONE,
+                },
+                content_area,
+            ),
+            TerminalMouseEventResult::Handled
+        );
+
+        assert_eq!(
+            terminal.send_mouse_event(
+                crossterm::event::MouseEvent {
+                    kind: crossterm::event::MouseEventKind::Up(
+                        crossterm::event::MouseButton::Left,
+                    ),
+                    column: 6,
+                    row: 3,
+                    modifiers: crossterm::event::KeyModifiers::NONE,
+                },
+                content_area,
+            ),
+            TerminalMouseEventResult::Handled
+        );
+        assert!(terminal
+            .get_visible_cells(3, 20)
+            .iter()
+            .flatten()
+            .any(|cell| cell.selected));
+    }
+
+    #[test]
+    fn mouse_click_without_drag_does_not_leave_terminal_selection() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.resize(3, 20);
+        terminal.process_bytes(b"alpha\r\nbeta\r\ngamma");
+        terminal.sessions[0].visible = true;
+        let content_area = TerminalContentArea {
+            x: 2,
+            y: 3,
+            width: 20,
+            height: 3,
+        };
+
+        terminal.send_mouse_event(
+            crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 10,
+                row: 4,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            content_area,
+        );
+        terminal.send_mouse_event(
+            crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+                column: 10,
+                row: 4,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            content_area,
+        );
+
+        assert!(!terminal
+            .get_visible_cells(3, 20)
+            .iter()
+            .flatten()
+            .any(|cell| cell.selected));
+    }
+
+    #[test]
+    fn cursor_position_query_queues_pty_response() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.resize(3, 20);
+
+        terminal.process_bytes(b"\x1b[6n");
+
+        assert_eq!(terminal.take_pending_pty_write_for_test(), b"\x1b[1;1R");
+    }
+
+    #[test]
+    fn explicit_terminal_selection_copy_returns_text_and_clears_selection() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.resize(3, 20);
+        terminal.process_bytes(b"alpha\r\nbeta\r\ngamma");
+        terminal.sessions[0].visible = true;
+        let content_area = TerminalContentArea {
+            x: 2,
+            y: 3,
+            width: 20,
+            height: 3,
+        };
+
+        terminal.send_mouse_event(
+            crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 2,
+                row: 3,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            content_area,
+        );
+        terminal.send_mouse_event(
+            crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+                column: 6,
+                row: 3,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            content_area,
+        );
+
+        assert!(terminal
+            .get_visible_cells(3, 20)
+            .iter()
+            .flatten()
+            .any(|cell| cell.selected));
+
+        terminal.send_mouse_event(
+            crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+                column: 6,
+                row: 3,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            content_area,
+        );
+
+        assert_eq!(terminal.copy_selection(), Some("alpha".to_string()));
+        assert!(!terminal
+            .get_visible_cells(3, 20)
+            .iter()
+            .flatten()
+            .any(|cell| cell.selected));
+    }
+
+    #[test]
+    fn typing_clears_active_terminal_selection() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut terminal = FloatingTerminal::new();
+        terminal.resize(3, 20);
+        terminal.process_bytes(b"alpha\r\nbeta\r\ngamma");
+        terminal.sessions[0].visible = true;
+        let content_area = TerminalContentArea {
+            x: 2,
+            y: 3,
+            width: 20,
+            height: 3,
+        };
+
+        terminal.send_mouse_event(
+            crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 2,
+                row: 3,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            content_area,
+        );
+        terminal.send_mouse_event(
+            crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+                column: 6,
+                row: 3,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            content_area,
+        );
+
+        assert!(terminal.has_selection());
+
+        terminal.send_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+
+        assert!(!terminal.has_selection());
+    }
+
+    #[test]
+    fn terminal_selection_copy_key_matches_common_copy_shortcuts() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        assert!(is_terminal_selection_copy_key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
+        assert!(is_terminal_selection_copy_key(KeyEvent::new(
+            KeyCode::Char('C'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
+        assert!(is_terminal_selection_copy_key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::SUPER
+        )));
+        assert!(is_terminal_selection_copy_key(KeyEvent::new(
+            KeyCode::Char('y'),
+            KeyModifiers::NONE
+        )));
+        assert!(!is_terminal_selection_copy_key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL
+        )));
+    }
+
+    #[test]
+    fn paste_uses_bracketed_paste_when_child_terminal_enabled_it() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.process_bytes(b"\x1b[?2004h");
+        terminal.sessions[0].visible = true;
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        terminal.sessions[0].pty_writer = Some(Box::new(TestWriter {
+            data: captured.clone(),
+        }));
+
+        assert!(terminal.send_paste("total 40\n"));
+        assert_eq!(
+            captured
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_slice(),
+            b"\x1b[200~total 40\n\x1b[201~"
+        );
+    }
+
+    #[test]
+    fn paste_uses_raw_text_when_child_terminal_has_not_enabled_bracketed_paste() {
+        let mut terminal = FloatingTerminal::new();
+        let idx = terminal.ensure_active_index();
+        terminal.sessions[idx].visible = true;
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        terminal.sessions[idx].pty_writer = Some(Box::new(TestWriter {
+            data: captured.clone(),
+        }));
+
+        assert!(terminal.send_paste("plain text"));
+        assert_eq!(
+            captured
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_slice(),
+            b"plain text"
         );
     }
 

@@ -8,7 +8,7 @@ repository = "https://github.com/anthonyamaro15/nevi"
 
 [dependencies]
 # Terminal handling
-crossterm = "0.28"
+crossterm = { version = "0.28", features = ["bracketed-paste"] }
 
 # Text storage (rope data structure)
 ropey = "1.6"

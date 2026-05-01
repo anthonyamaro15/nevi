@@ -563,6 +563,21 @@ The leader key is `Space` by default. Press `Space` followed by these keys:
 | `<leader>ft` | Theme picker |
 | `<leader>tt` | Terminal picker |
 
+### Floating Terminal
+
+| Key / Mouse | Action |
+|-------------|--------|
+| `Ctrl+\` | Toggle the active floating terminal |
+| Mouse wheel | Scroll terminal scrollback when the shell app is not using mouse reporting |
+| Drag with mouse | Select visible terminal text |
+| `y` | Copy the current terminal selection |
+| `Ctrl+Shift+C` | Copy the current terminal selection |
+| `Cmd+C` | Copy the current terminal selection when the outer terminal forwards the key to Nevi |
+| `Esc` / `Ctrl+[` | Clear the current terminal selection |
+| Terminal paste (`Cmd+V`, `Ctrl+Shift+V`, or terminal menu) | Paste into the shell; bracketed paste is used when the shell requests it |
+
+> **Note:** Some terminal apps reserve `Cmd+C` for their own native Copy command, so Nevi may never receive that key. Use `y` or `Ctrl+Shift+C` when copying from a floating terminal selection.
+
 > **Tip:** In the file finder or grep, press `Ctrl+t` to toggle a preview panel showing file contents.
 
 ### LSP
