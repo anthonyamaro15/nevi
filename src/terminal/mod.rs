@@ -1,10 +1,12 @@
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent},
-    execute, queue,
-    style::{
-        Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
+    event::{
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyModifiers,
+        KeyboardEnhancementFlags, MouseEvent, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
     },
+    execute, queue,
+    style::{Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor},
     terminal::{self, ClearType},
 };
 use std::io::{self, Stdout, Write};
@@ -65,6 +67,8 @@ use crate::syntax::{HighlightSpan, SyntaxStyle};
 pub enum EditorEvent {
     /// A key press
     Key(KeyEvent),
+    /// A bracketed paste payload
+    Paste(String),
     /// A mouse event
     Mouse(MouseEvent),
     /// Terminal gained focus (for autoread)
@@ -257,7 +261,8 @@ impl Terminal {
             stdout,
             terminal::EnterAlternateScreen,
             cursor::Hide,
-            event::EnableFocusChange
+            event::EnableFocusChange,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         )?;
 
         Ok(Self {
@@ -272,9 +277,13 @@ impl Terminal {
         }
 
         if enabled {
-            execute!(self.stdout, event::EnableMouseCapture)?;
+            execute!(self.stdout, event::EnableMouseCapture, EnableBracketedPaste)?;
         } else {
-            execute!(self.stdout, event::DisableMouseCapture)?;
+            execute!(
+                self.stdout,
+                event::DisableMouseCapture,
+                DisableBracketedPaste
+            )?;
         }
         self.mouse_capture_enabled = enabled;
         Ok(())
@@ -299,7 +308,12 @@ impl Terminal {
         self.set_mouse_capture(false)?;
 
         // Leave alternate screen and show cursor
-        execute!(self.stdout, cursor::Show, terminal::LeaveAlternateScreen)?;
+        execute!(
+            self.stdout,
+            PopKeyboardEnhancementFlags,
+            cursor::Show,
+            terminal::LeaveAlternateScreen
+        )?;
         self.stdout.flush()?;
 
         // Disable raw mode so the external process can use normal terminal
@@ -319,7 +333,8 @@ impl Terminal {
             self.stdout,
             terminal::EnterAlternateScreen,
             cursor::Hide,
-            event::EnableFocusChange
+            event::EnableFocusChange,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         )?;
         if restore_mouse_capture {
             self.set_mouse_capture(true)?;
@@ -831,12 +846,12 @@ impl Terminal {
             execute!(self.stdout, cursor::MoveTo(rect.x, screen_y))?;
 
             // Set editor background for empty rows
-                execute!(
-                    self.stdout,
-                    SetAttribute(Attribute::Reset),
-                    SetBackgroundColor(editor_bg),
-                    SetForegroundColor(editor_fg)
-                )?;
+            execute!(
+                self.stdout,
+                SetAttribute(Attribute::Reset),
+                SetBackgroundColor(editor_bg),
+                SetForegroundColor(editor_fg)
+            )?;
 
             print!("  "); // Empty sign column
 
@@ -4143,7 +4158,10 @@ impl Terminal {
 
             let mut active_style = None;
             for cell in line {
-                let style = TerminalRenderStyle::from_terminal_cell(cell, text_color, bg_color);
+                let mut style = TerminalRenderStyle::from_terminal_cell(cell, text_color, bg_color);
+                if cell.selected {
+                    style.bg = theme.ui.selection;
+                }
                 if active_style != Some(style) {
                     self.apply_terminal_cell_style(style)?;
                     active_style = Some(style);
@@ -4194,9 +4212,17 @@ impl Terminal {
         execute!(self.stdout, ResetColor)?;
 
         // Position cursor inside the terminal
-        let cursor_x = term_x + 1 + cursor_col.min(content_width.saturating_sub(1)) as u16;
-        let cursor_y = term_y + 1 + cursor_row.min(content_height.saturating_sub(1)) as u16;
-        execute!(self.stdout, cursor::MoveTo(cursor_x, cursor_y))?;
+        if editor.floating_terminal.has_selection() {
+            execute!(self.stdout, cursor::Hide)?;
+        } else {
+            let cursor_x = term_x + 1 + cursor_col.min(content_width.saturating_sub(1)) as u16;
+            let cursor_y = term_y + 1 + cursor_row.min(content_height.saturating_sub(1)) as u16;
+            execute!(
+                self.stdout,
+                cursor::MoveTo(cursor_x, cursor_y),
+                cursor::Show
+            )?;
+        }
 
         Ok(())
     }
@@ -5242,6 +5268,7 @@ impl Terminal {
     pub fn read_event(&self) -> anyhow::Result<Option<EditorEvent>> {
         match event::read()? {
             Event::Key(key_event) => Ok(Some(EditorEvent::Key(key_event))),
+            Event::Paste(text) => Ok(Some(EditorEvent::Paste(text))),
             Event::Mouse(mouse_event) => Ok(Some(EditorEvent::Mouse(mouse_event))),
             Event::FocusGained => Ok(Some(EditorEvent::FocusGained)),
             Event::Resize(cols, rows) => Ok(Some(EditorEvent::Resize(cols, rows))),
@@ -5273,6 +5300,8 @@ impl Drop for Terminal {
             self.stdout,
             event::DisableMouseCapture,
             event::DisableFocusChange,
+            DisableBracketedPaste,
+            PopKeyboardEnhancementFlags,
             cursor::SetCursorStyle::DefaultUserShape,
             cursor::Show,
             terminal::LeaveAlternateScreen
@@ -8725,10 +8754,7 @@ mod tests {
         assert_eq!(editor.mode, Mode::Insert);
         assert_eq!(editor.cursor.col, prefix.chars().count());
 
-        handle_key(
-            &mut editor,
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-        );
+        handle_key(&mut editor, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
         assert_eq!(editor.mode, Mode::Normal);
         assert_eq!(editor.cursor.col, prefix.chars().count() - 1);

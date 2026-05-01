@@ -975,6 +975,17 @@ fn default_config_template() -> &'static str {
 # <leader>fb       - Find buffers
 # <leader>ft       - Theme picker
 # <leader>tt       - Terminal picker
+#
+# Floating terminal:
+# Ctrl+\           - Toggle active terminal
+# Mouse wheel      - Scroll terminal scrollback
+# Mouse drag       - Select visible terminal text
+# y                - Copy terminal selection
+# Ctrl+Shift+C     - Copy terminal selection
+# Cmd+C            - Copy terminal selection if your terminal forwards the key
+# Esc/Ctrl+[       - Clear terminal selection
+# Cmd+V/Ctrl+Shift+V - Paste via your terminal app; bracketed paste is used when supported
+#
 # <leader>ca       - Code actions
 # <leader>rn       - Rename symbol
 # <leader>d        - Search diagnostics
