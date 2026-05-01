@@ -1675,3 +1675,534 @@ impl InputState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn shift(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn run(keys: &[KeyEvent]) -> KeyAction {
+        let mut input = InputState::new();
+        let mut action = KeyAction::Pending;
+        for key in keys {
+            action = input.process_normal_key(*key);
+        }
+        action
+    }
+
+    fn assert_motion(keys: &[KeyEvent], expected_motion: Motion, expected_count: usize) {
+        match run(keys) {
+            KeyAction::Motion(motion, count) => {
+                assert_eq!(motion, expected_motion);
+                assert_eq!(count, expected_count);
+            }
+            other => panic!("expected motion, got {:?}", other),
+        }
+    }
+
+    fn assert_operator_motion(
+        keys: &[KeyEvent],
+        expected_operator: Operator,
+        expected_motion: Motion,
+        expected_count: usize,
+    ) {
+        match run(keys) {
+            KeyAction::OperatorMotion(operator, motion, count) => {
+                assert_eq!(operator, expected_operator);
+                assert_eq!(motion, expected_motion);
+                assert_eq!(count, expected_count);
+            }
+            other => panic!("expected operator motion, got {:?}", other),
+        }
+    }
+
+    fn assert_operator_line(keys: &[KeyEvent], expected_operator: Operator, expected_count: usize) {
+        match run(keys) {
+            KeyAction::OperatorLine(operator, count) => {
+                assert_eq!(operator, expected_operator);
+                assert_eq!(count, expected_count);
+            }
+            other => panic!("expected operator line, got {:?}", other),
+        }
+    }
+
+    fn assert_insert(keys: &[KeyEvent], expected_position: InsertPosition) {
+        match run(keys) {
+            KeyAction::EnterInsert(position) => {
+                assert!(
+                    matches!(
+                        (position, expected_position),
+                        (InsertPosition::AtCursor, InsertPosition::AtCursor)
+                            | (InsertPosition::AfterCursor, InsertPosition::AfterCursor)
+                            | (InsertPosition::LineStart, InsertPosition::LineStart)
+                            | (InsertPosition::LineEnd, InsertPosition::LineEnd)
+                            | (InsertPosition::NewLineBelow, InsertPosition::NewLineBelow)
+                            | (InsertPosition::NewLineAbove, InsertPosition::NewLineAbove)
+                    ),
+                    "expected insert position {:?}, got {:?}",
+                    expected_position,
+                    position
+                );
+            }
+            other => panic!("expected insert action, got {:?}", other),
+        }
+    }
+
+    fn assert_text_object(
+        keys: &[KeyEvent],
+        expected_operator: Operator,
+        expected_modifier: TextObjectModifier,
+        expected_object_type: TextObjectType,
+    ) {
+        match run(keys) {
+            KeyAction::OperatorTextObject(operator, text_object) => {
+                assert_eq!(operator, expected_operator);
+                assert_eq!(text_object.modifier, expected_modifier);
+                assert_eq!(text_object.object_type, expected_object_type);
+            }
+            other => panic!("expected text object action, got {:?}", other),
+        }
+    }
+
+    fn assert_case_motion(
+        keys: &[KeyEvent],
+        expected_case: CaseOperator,
+        expected_motion: Motion,
+        expected_count: usize,
+    ) {
+        match run(keys) {
+            KeyAction::CaseMotion(case, motion, count) => {
+                assert_eq!(case, expected_case);
+                assert_eq!(motion, expected_motion);
+                assert_eq!(count, expected_count);
+            }
+            other => panic!("expected case motion, got {:?}", other),
+        }
+    }
+
+    fn assert_case_line(keys: &[KeyEvent], expected_case: CaseOperator, expected_count: usize) {
+        match run(keys) {
+            KeyAction::CaseLine(case, count) => {
+                assert_eq!(case, expected_case);
+                assert_eq!(count, expected_count);
+            }
+            other => panic!("expected case line, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn documented_basic_word_line_file_and_screen_motions_map_to_actions() {
+        assert_motion(&[key('h')], Motion::Left, 1);
+        assert_motion(&[key('j')], Motion::Down, 1);
+        assert_motion(&[key('k')], Motion::Up, 1);
+        assert_motion(&[key('l')], Motion::Right, 1);
+        assert_motion(&[key('3'), key('j')], Motion::Down, 3);
+
+        assert_motion(&[key('w')], Motion::WordForward, 1);
+        assert_motion(&[shift('W')], Motion::BigWordForward, 1);
+        assert_motion(&[key('b')], Motion::WordBackward, 1);
+        assert_motion(&[shift('B')], Motion::BigWordBackward, 1);
+        assert_motion(&[key('e')], Motion::WordEnd, 1);
+        assert_motion(&[shift('E')], Motion::BigWordEnd, 1);
+        assert_motion(&[key('g'), key('e')], Motion::WordEndBackward, 1);
+        assert_motion(&[key('g'), shift('E')], Motion::BigWordEndBackward, 1);
+
+        assert_motion(&[key('0')], Motion::LineStart, 1);
+        assert_motion(&[key('^')], Motion::FirstNonBlank, 1);
+        assert_motion(&[key('$')], Motion::LineEnd, 1);
+        assert_motion(&[key('{')], Motion::ParagraphBackward, 1);
+        assert_motion(&[key('}')], Motion::ParagraphForward, 1);
+
+        assert_motion(&[key('g'), key('g')], Motion::FileStart, 1);
+        assert_motion(&[shift('G')], Motion::FileEnd, 1);
+        assert_motion(&[key('4'), key('2'), shift('G')], Motion::GotoLine(42), 1);
+        assert_motion(&[key('%')], Motion::MatchingBracket, 1);
+
+        assert_motion(&[shift('H')], Motion::ScreenTop, 1);
+        assert_motion(&[shift('M')], Motion::ScreenMiddle, 1);
+        assert_motion(&[shift('L')], Motion::ScreenBottom, 1);
+    }
+
+    #[test]
+    fn documented_find_scroll_jump_and_change_list_keys_map_to_actions() {
+        assert_motion(&[key('f'), key('a')], Motion::FindChar('a'), 1);
+        assert_motion(&[shift('F'), key('a')], Motion::FindCharBack('a'), 1);
+        assert_motion(&[key('t'), key('a')], Motion::TillChar('a'), 1);
+        assert_motion(&[shift('T'), key('a')], Motion::TillCharBack('a'), 1);
+        assert_motion(&[key('f'), key('a'), key(';')], Motion::FindChar('a'), 1);
+        assert_motion(
+            &[key('f'), key('a'), key(',')],
+            Motion::FindCharBack('a'),
+            1,
+        );
+
+        assert_motion(&[ctrl('f')], Motion::PageDown, 1);
+        assert_motion(&[ctrl('b')], Motion::PageUp, 1);
+        assert_motion(&[ctrl('d')], Motion::HalfPageDown, 1);
+        assert_motion(&[ctrl('u')], Motion::HalfPageUp, 1);
+
+        match run(&[key('z'), key('z')]) {
+            KeyAction::ScrollCenter => {}
+            other => panic!("expected ScrollCenter, got {:?}", other),
+        }
+        match run(&[key('z'), key('t')]) {
+            KeyAction::ScrollTop => {}
+            other => panic!("expected ScrollTop, got {:?}", other),
+        }
+        match run(&[key('z'), key('b')]) {
+            KeyAction::ScrollBottom => {}
+            other => panic!("expected ScrollBottom, got {:?}", other),
+        }
+
+        match run(&[ctrl('o')]) {
+            KeyAction::JumpBack => {}
+            other => panic!("expected JumpBack, got {:?}", other),
+        }
+        match run(&[ctrl('i')]) {
+            KeyAction::JumpForward => {}
+            other => panic!("expected JumpForward, got {:?}", other),
+        }
+        match run(&[key('g'), key(';')]) {
+            KeyAction::ChangeListOlder => {}
+            other => panic!("expected ChangeListOlder, got {:?}", other),
+        }
+        match run(&[key('g'), key(',')]) {
+            KeyAction::ChangeListNewer => {}
+            other => panic!("expected ChangeListNewer, got {:?}", other),
+        }
+        match run(&[key('g'), key('i')]) {
+            KeyAction::GotoLastInsert => {}
+            other => panic!("expected GotoLastInsert, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn documented_editing_operator_and_insert_keys_map_to_actions() {
+        assert_operator_motion(
+            &[key('d'), key('w')],
+            Operator::Delete,
+            Motion::WordForward,
+            1,
+        );
+        assert_operator_motion(
+            &[key('2'), key('d'), key('3'), key('w')],
+            Operator::Delete,
+            Motion::WordForward,
+            6,
+        );
+        assert_operator_line(&[key('d'), key('d')], Operator::Delete, 1);
+        assert_operator_motion(&[shift('D')], Operator::Delete, Motion::LineEnd, 1);
+        assert_operator_line(&[key('c'), key('c')], Operator::Change, 1);
+        assert_operator_motion(&[shift('C')], Operator::Change, Motion::LineEnd, 1);
+        assert_operator_line(&[key('y'), key('y')], Operator::Yank, 1);
+        assert_operator_line(&[shift('Y')], Operator::Yank, 1);
+        assert_operator_line(&[key('>'), key('>')], Operator::Indent, 1);
+        assert_operator_motion(&[key('>'), key('j')], Operator::Indent, Motion::Down, 1);
+        assert_operator_line(&[key('<'), key('<')], Operator::Dedent, 1);
+        assert_operator_motion(&[key('<'), key('j')], Operator::Dedent, Motion::Down, 1);
+
+        match run(&[key('x')]) {
+            KeyAction::DeleteChar(1) => {}
+            other => panic!("expected DeleteChar, got {:?}", other),
+        }
+        match run(&[shift('X')]) {
+            KeyAction::DeleteCharBefore(1) => {}
+            other => panic!("expected DeleteCharBefore, got {:?}", other),
+        }
+        match run(&[key('3'), key('s')]) {
+            KeyAction::SubstituteChars(3) => {}
+            other => panic!("expected SubstituteChars, got {:?}", other),
+        }
+        assert_operator_line(&[key('2'), shift('S')], Operator::Change, 2);
+        match run(&[key('p')]) {
+            KeyAction::PasteAfter(1) => {}
+            other => panic!("expected PasteAfter, got {:?}", other),
+        }
+        match run(&[shift('P')]) {
+            KeyAction::PasteBefore(1) => {}
+            other => panic!("expected PasteBefore, got {:?}", other),
+        }
+        match run(&[key('r'), key('x')]) {
+            KeyAction::ReplaceChar('x', 1) => {}
+            other => panic!("expected ReplaceChar, got {:?}", other),
+        }
+        match run(&[key('.')]) {
+            KeyAction::RepeatLastChange => {}
+            other => panic!("expected RepeatLastChange, got {:?}", other),
+        }
+        match run(&[key('u')]) {
+            KeyAction::Undo => {}
+            other => panic!("expected Undo, got {:?}", other),
+        }
+        match run(&[ctrl('r')]) {
+            KeyAction::Redo => {}
+            other => panic!("expected Redo, got {:?}", other),
+        }
+
+        assert_insert(&[key('i')], InsertPosition::AtCursor);
+        assert_insert(&[key('a')], InsertPosition::AfterCursor);
+        assert_insert(&[shift('I')], InsertPosition::LineStart);
+        assert_insert(&[shift('A')], InsertPosition::LineEnd);
+        assert_insert(&[key('o')], InsertPosition::NewLineBelow);
+        assert_insert(&[shift('O')], InsertPosition::NewLineAbove);
+        match run(&[shift('R')]) {
+            KeyAction::EnterReplace => {}
+            other => panic!("expected EnterReplace, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn documented_case_join_search_visual_and_lsp_keys_map_to_actions() {
+        match run(&[shift('~')]) {
+            KeyAction::ToggleCaseChars(1) => {}
+            other => panic!("expected ToggleCaseChars, got {:?}", other),
+        }
+        assert_case_motion(
+            &[key('g'), key('u'), key('w')],
+            CaseOperator::Lowercase,
+            Motion::WordForward,
+            1,
+        );
+        assert_case_line(&[key('g'), key('u'), key('u')], CaseOperator::Lowercase, 1);
+        assert_case_motion(
+            &[key('g'), shift('U'), key('w')],
+            CaseOperator::Uppercase,
+            Motion::WordForward,
+            1,
+        );
+        assert_case_line(
+            &[key('g'), shift('U'), shift('U')],
+            CaseOperator::Uppercase,
+            1,
+        );
+        assert_case_motion(
+            &[key('g'), shift('~'), key('w')],
+            CaseOperator::ToggleCase,
+            Motion::WordForward,
+            1,
+        );
+        assert_case_line(
+            &[key('g'), shift('~'), shift('~')],
+            CaseOperator::ToggleCase,
+            1,
+        );
+
+        match run(&[shift('J')]) {
+            KeyAction::JoinLines(1) => {}
+            other => panic!("expected JoinLines, got {:?}", other),
+        }
+        match run(&[key('g'), shift('J')]) {
+            KeyAction::JoinLinesNoSpace(1) => {}
+            other => panic!("expected JoinLinesNoSpace, got {:?}", other),
+        }
+
+        match run(&[key('/')]) {
+            KeyAction::EnterSearchForward => {}
+            other => panic!("expected EnterSearchForward, got {:?}", other),
+        }
+        match run(&[key('?')]) {
+            KeyAction::EnterSearchBackward => {}
+            other => panic!("expected EnterSearchBackward, got {:?}", other),
+        }
+        match run(&[key('n')]) {
+            KeyAction::SearchNext => {}
+            other => panic!("expected SearchNext, got {:?}", other),
+        }
+        match run(&[shift('N')]) {
+            KeyAction::SearchPrev => {}
+            other => panic!("expected SearchPrev, got {:?}", other),
+        }
+        match run(&[key('*')]) {
+            KeyAction::SearchWordForward => {}
+            other => panic!("expected SearchWordForward, got {:?}", other),
+        }
+        match run(&[key('#')]) {
+            KeyAction::SearchWordBackward => {}
+            other => panic!("expected SearchWordBackward, got {:?}", other),
+        }
+
+        match run(&[key('v')]) {
+            KeyAction::EnterVisual => {}
+            other => panic!("expected EnterVisual, got {:?}", other),
+        }
+        match run(&[shift('V')]) {
+            KeyAction::EnterVisualLine => {}
+            other => panic!("expected EnterVisualLine, got {:?}", other),
+        }
+        match run(&[ctrl('v')]) {
+            KeyAction::EnterVisualBlock => {}
+            other => panic!("expected EnterVisualBlock, got {:?}", other),
+        }
+        match run(&[key('g'), key('v')]) {
+            KeyAction::ReselectVisual => {}
+            other => panic!("expected ReselectVisual, got {:?}", other),
+        }
+
+        match run(&[key('g'), key('d')]) {
+            KeyAction::GotoDefinition => {}
+            other => panic!("expected GotoDefinition, got {:?}", other),
+        }
+        match run(&[key('g'), key('r')]) {
+            KeyAction::FindReferences => {}
+            other => panic!("expected FindReferences, got {:?}", other),
+        }
+        match run(&[shift('K')]) {
+            KeyAction::Hover => {}
+            other => panic!("expected Hover, got {:?}", other),
+        }
+        match run(&[key('g'), key('l')]) {
+            KeyAction::ShowDiagnosticFloat => {}
+            other => panic!("expected ShowDiagnosticFloat, got {:?}", other),
+        }
+        match run(&[key(']'), key('d')]) {
+            KeyAction::NextDiagnostic => {}
+            other => panic!("expected NextDiagnostic, got {:?}", other),
+        }
+        match run(&[key('['), key('d')]) {
+            KeyAction::PrevDiagnostic => {}
+            other => panic!("expected PrevDiagnostic, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn documented_text_object_surround_comment_mark_macro_window_and_harpoon_keys_map_to_actions() {
+        assert_text_object(
+            &[key('d'), key('i'), key('w')],
+            Operator::Delete,
+            TextObjectModifier::Inner,
+            TextObjectType::Word,
+        );
+        assert_text_object(
+            &[key('c'), key('a'), key('(')],
+            Operator::Change,
+            TextObjectModifier::Around,
+            TextObjectType::Paren,
+        );
+        assert_text_object(
+            &[key('y'), key('i'), key('"')],
+            Operator::Yank,
+            TextObjectModifier::Inner,
+            TextObjectType::DoubleQuote,
+        );
+
+        match run(&[key('d'), key('s'), key('"')]) {
+            KeyAction::DeleteSurround('"') => {}
+            other => panic!("expected DeleteSurround, got {:?}", other),
+        }
+        match run(&[key('c'), key('s'), key('"'), key('\'')]) {
+            KeyAction::ChangeSurround('"', '\'') => {}
+            other => panic!("expected ChangeSurround, got {:?}", other),
+        }
+        match run(&[key('y'), key('s'), key('i'), key('w'), key('"')]) {
+            KeyAction::AddSurround(text_object, '"') => {
+                assert_eq!(text_object.modifier, TextObjectModifier::Inner);
+                assert_eq!(text_object.object_type, TextObjectType::Word);
+            }
+            other => panic!("expected AddSurround, got {:?}", other),
+        }
+        match run(&[key('y'), key('s'), key('s'), key(')')]) {
+            KeyAction::AddSurroundLine(')') => {}
+            other => panic!("expected AddSurroundLine, got {:?}", other),
+        }
+
+        match run(&[key('g'), key('c'), key('c')]) {
+            KeyAction::ToggleCommentLine => {}
+            other => panic!("expected ToggleCommentLine, got {:?}", other),
+        }
+        match run(&[key('g'), key('c'), key('j')]) {
+            KeyAction::ToggleCommentMotion(Motion::Down, 1) => {}
+            other => panic!("expected ToggleCommentMotion, got {:?}", other),
+        }
+
+        match run(&[key('m'), key('a')]) {
+            KeyAction::SetMark('a') => {}
+            other => panic!("expected SetMark, got {:?}", other),
+        }
+        match run(&[key('\''), key('a')]) {
+            KeyAction::GotoMarkLine('a') => {}
+            other => panic!("expected GotoMarkLine, got {:?}", other),
+        }
+        match run(&[key('`'), key('a')]) {
+            KeyAction::GotoMarkExact('a') => {}
+            other => panic!("expected GotoMarkExact, got {:?}", other),
+        }
+        match run(&[key('\''), key('\'')]) {
+            KeyAction::JumpToPreviousPosition => {}
+            other => panic!("expected JumpToPreviousPosition, got {:?}", other),
+        }
+
+        match run(&[key('q'), key('a')]) {
+            KeyAction::StartRecordMacro('a') => {}
+            other => panic!("expected StartRecordMacro, got {:?}", other),
+        }
+        match run(&[key('@'), key('a')]) {
+            KeyAction::PlayMacro('a', 1) => {}
+            other => panic!("expected PlayMacro, got {:?}", other),
+        }
+        match run(&[key('3'), key('@'), key('@')]) {
+            KeyAction::ReplayLastMacro(3) => {}
+            other => panic!("expected ReplayLastMacro, got {:?}", other),
+        }
+
+        match run(&[ctrl('w'), key('v')]) {
+            KeyAction::WindowSplitVertical => {}
+            other => panic!("expected WindowSplitVertical, got {:?}", other),
+        }
+        match run(&[ctrl('w'), key('s')]) {
+            KeyAction::WindowSplitHorizontal => {}
+            other => panic!("expected WindowSplitHorizontal, got {:?}", other),
+        }
+        match run(&[ctrl('w'), key('q')]) {
+            KeyAction::WindowClose => {}
+            other => panic!("expected WindowClose, got {:?}", other),
+        }
+        match run(&[ctrl('w'), key('o')]) {
+            KeyAction::WindowCloseOthers => {}
+            other => panic!("expected WindowCloseOthers, got {:?}", other),
+        }
+        match run(&[ctrl('w'), key('w')]) {
+            KeyAction::WindowNext => {}
+            other => panic!("expected WindowNext, got {:?}", other),
+        }
+        match run(&[ctrl('w'), shift('W')]) {
+            KeyAction::WindowPrev => {}
+            other => panic!("expected WindowPrev, got {:?}", other),
+        }
+        match run(&[ctrl('h')]) {
+            KeyAction::WindowLeft => {}
+            other => panic!("expected WindowLeft, got {:?}", other),
+        }
+        match run(&[ctrl('j')]) {
+            KeyAction::WindowDown => {}
+            other => panic!("expected WindowDown, got {:?}", other),
+        }
+        match run(&[ctrl('k')]) {
+            KeyAction::WindowUp => {}
+            other => panic!("expected WindowUp, got {:?}", other),
+        }
+        match run(&[ctrl('l')]) {
+            KeyAction::WindowRight => {}
+            other => panic!("expected WindowRight, got {:?}", other),
+        }
+
+        match run(&[key(']'), key('h')]) {
+            KeyAction::HarpoonNext => {}
+            other => panic!("expected HarpoonNext, got {:?}", other),
+        }
+        match run(&[key('['), key('h')]) {
+            KeyAction::HarpoonPrev => {}
+            other => panic!("expected HarpoonPrev, got {:?}", other),
+        }
+    }
+}

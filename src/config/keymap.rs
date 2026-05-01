@@ -517,16 +517,48 @@ mod tests {
     }
 
     #[test]
-    fn default_keymap_includes_terminal_picker_mapping() {
+    fn default_keymap_includes_documented_leader_mappings() {
         use super::super::KeymapSettings;
 
         let (lookup, errors) = KeymapLookup::from_settings(&KeymapSettings::default());
 
         assert!(errors.is_empty(), "Should have no errors");
-        match lookup.get_leader_action("tt") {
-            Some(LeaderAction::Command(command)) => assert_eq!(command, "Terminals"),
-            _ => panic!("Expected <leader>tt to open the terminal picker"),
+        let expected = [
+            ("ca", "codeaction"),
+            ("rn", "rn"),
+            ("w", "w"),
+            ("q", "q"),
+            ("e", "Explorer"),
+            ("ff", "FindFiles"),
+            ("fg", "LiveGrep"),
+            ("sw", "SearchWord"),
+            ("fb", "FindBuffers"),
+            ("ft", "Themes"),
+            ("tt", "Terminals"),
+            ("d", "FindDiagnostics"),
+            ("D", "DiagnosticFloat"),
+            ("gg", "LazyGit"),
+            ("m", "HarpoonAdd"),
+            ("h", "HarpoonMenu"),
+            ("1", "Harpoon1"),
+            ("2", "Harpoon2"),
+            ("3", "Harpoon3"),
+            ("4", "Harpoon4"),
+        ];
+
+        for (sequence, expected_command) in expected {
+            match lookup.get_leader_action(sequence) {
+                Some(LeaderAction::Command(command)) => assert_eq!(command, expected_command),
+                other => panic!(
+                    "Expected <leader>{} to run :{}, got {:?}",
+                    sequence, expected_command, other
+                ),
+            }
         }
+
+        assert!(lookup.is_leader_prefix("f"));
+        assert!(lookup.is_leader_prefix("t"));
+        assert!(lookup.is_leader_prefix("g"));
     }
 
     #[test]
