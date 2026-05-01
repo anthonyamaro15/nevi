@@ -2638,6 +2638,10 @@ impl Editor {
 
             // Enter insert mode (don't start new undo group, reuse the one from change)
             self.mode = Mode::Insert;
+            self.cursor.line = start_line;
+            self.cursor.col =
+                start_col.min(self.buffers[self.current_buffer_idx].line_len(start_line));
+            self.clamp_cursor();
         }
     }
 
