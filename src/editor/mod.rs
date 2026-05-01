@@ -2383,6 +2383,21 @@ impl Editor {
         }
     }
 
+    fn enter_insert_mode_at_change(&mut self, line: usize, col: usize) {
+        self.mode = Mode::Insert;
+        self.cursor.line = line.min(
+            self.buffers[self.current_buffer_idx]
+                .len_lines()
+                .saturating_sub(1),
+        );
+        self.cursor.col = col.min(
+            self.buffers[self.current_buffer_idx].line_len(self.cursor.line),
+        );
+        self.last_insert_position = Some((self.cursor.line, self.cursor.col));
+        self.clamp_cursor();
+        self.scroll_to_cursor();
+    }
+
     /// Ensure cursor is visible by adjusting viewport
     pub fn scroll_to_cursor(&mut self) {
         let text_rows = self.text_rows();
@@ -2637,12 +2652,37 @@ impl Editor {
                 .delete(register, RegisterContent::Chars(deleted), is_small);
 
             // Enter insert mode (don't start new undo group, reuse the one from change)
-            self.mode = Mode::Insert;
-            self.cursor.line = start_line;
-            self.cursor.col =
-                start_col.min(self.buffers[self.current_buffer_idx].line_len(start_line));
-            self.clamp_cursor();
+            self.enter_insert_mode_at_change(start_line, start_col);
         }
+    }
+
+    /// Substitute count characters under the cursor and enter insert mode.
+    pub fn substitute_chars_at(&mut self, count: usize, register: Option<char>) {
+        let line = self.cursor.line;
+        let line_len = self.buffers[self.current_buffer_idx].line_len(line);
+        let start_col = self.cursor.col.min(line_len.saturating_sub(1));
+
+        self.begin_change();
+
+        if line_len > 0 {
+            let end_col = (start_col + count.max(1) - 1).min(line_len.saturating_sub(1));
+            let deleted = self.get_range_text(line, start_col, line, end_col);
+
+            if !deleted.is_empty() {
+                self.undo_stack
+                    .record_change(Change::delete(line, start_col, deleted.clone()));
+                self.buffers[self.current_buffer_idx].delete_range(
+                    line,
+                    start_col,
+                    line,
+                    end_col + 1,
+                );
+                self.registers
+                    .delete(register, RegisterContent::Chars(deleted), true);
+            }
+        }
+
+        self.enter_insert_mode_at_change(line, start_col);
     }
 
     /// Change count lines (cc operation)
@@ -2683,9 +2723,8 @@ impl Editor {
             );
         }
 
-        self.cursor.col = 0;
         // Enter insert mode (don't start new undo group, reuse the one from change)
-        self.mode = Mode::Insert;
+        self.enter_insert_mode_at_change(self.cursor.line, 0);
     }
 
     /// Paste after cursor from a register
@@ -4748,9 +4787,7 @@ impl Editor {
                         .delete_range(start_line, 0, start_line, line_len);
                 }
 
-                self.cursor.line = start_line;
-                self.cursor.col = 0;
-                self.mode = Mode::Insert;
+                self.enter_insert_mode_at_change(start_line, 0);
             }
             Mode::Visual => {
                 // Character-wise change
@@ -4768,14 +4805,11 @@ impl Editor {
                     end_col + 1,
                 );
 
-                self.cursor.line = start_line;
-                self.cursor.col = start_col;
-
                 let is_small = !text.contains('\n');
                 self.registers
                     .delete(None, RegisterContent::Chars(text), is_small);
 
-                self.mode = Mode::Insert;
+                self.enter_insert_mode_at_change(start_line, start_col);
             }
             Mode::VisualBlock => {
                 // Block-wise change: delete the block and enter insert mode
@@ -4822,14 +4856,10 @@ impl Editor {
                 deleted_lines.reverse();
                 let block_text = deleted_lines.join("\n");
 
-                self.cursor.line = top;
-                self.cursor.col = left;
-                self.clamp_cursor();
-
                 self.registers
                     .delete(None, RegisterContent::Chars(block_text), false);
 
-                self.mode = Mode::Insert;
+                self.enter_insert_mode_at_change(top, left);
             }
             _ => {}
         }
@@ -5378,14 +5408,8 @@ impl Editor {
             self.registers
                 .delete(register, RegisterContent::Chars(text), is_small);
 
-            // Move cursor to start
-            self.cursor.line = start_line;
-            self.cursor.col = start_col;
-            self.clamp_cursor();
-
             // Enter insert mode (undo group stays open)
-            self.mode = Mode::Insert;
-            self.scroll_to_cursor();
+            self.enter_insert_mode_at_change(start_line, start_col);
         }
     }
 

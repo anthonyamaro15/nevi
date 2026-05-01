@@ -242,6 +242,8 @@ Operators are commands that wait for a motion. For example, `d` (delete) + `w` (
 | `Y` | Yank entire line |
 | `x` / `{n}x` | Delete character(s) under cursor |
 | `X` / `{n}X` | Delete character(s) before cursor |
+| `s` / `{n}s` | Substitute character(s) under cursor |
+| `S` / `{n}S` | Substitute entire line(s) |
 | `p` / `{n}p` | Paste after cursor |
 | `P` / `{n}P` | Paste before cursor |
 | `r{char}` / `{n}r{char}` | Replace character(s) under cursor |
