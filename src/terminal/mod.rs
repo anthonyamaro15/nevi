@@ -8701,6 +8701,28 @@ mod tests {
     }
 
     #[test]
+    fn normal_shift_c_keeps_insert_point_at_deleted_range_start() {
+        let mut editor = Editor::default();
+        let prefix = "EXPO_PUBLIC_API_URL=";
+        editor.replace_buffer_content(&format!("{prefix}https://example.test\n"));
+        editor.cursor.col = prefix.chars().count();
+
+        handle_key(&mut editor, shift_key('C'));
+
+        assert_eq!(editor.buffer().content(), format!("{prefix}\n"));
+        assert_eq!(editor.mode, Mode::Insert);
+        assert_eq!(editor.cursor.col, prefix.chars().count());
+
+        handle_key(
+            &mut editor,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        );
+
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.cursor.col, prefix.chars().count() - 1);
+    }
+
+    #[test]
     fn completion_replacement_removes_word_suffix_after_cursor() {
         let mut editor = Editor::default();
         editor.buffer_mut().insert_str(0, 0, "use std::fs;\n");
