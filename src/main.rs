@@ -15,7 +15,7 @@ use nevi::{
     editor::RegisterContent,
     floating_terminal::{
         is_terminal_selection_clear_key, is_terminal_selection_copy_key,
-        is_terminal_selection_platform_copy_key, TerminalMouseEventResult,
+        is_terminal_selection_platform_copy_key, TerminalClipboard, TerminalMouseEventResult,
     },
     load_config, AutosaveMode, Editor, LanguageId, LspNotification, Mode, MultiLspManager,
     Terminal,
@@ -1530,6 +1530,16 @@ fn main() -> anyhow::Result<()> {
                 terminal_redraw_pending = false;
                 needs_redraw = true;
                 redraw_from_input = true;
+            }
+        }
+        for store in editor.floating_terminal.take_pending_clipboard_stores() {
+            match store.clipboard {
+                TerminalClipboard::Clipboard | TerminalClipboard::Selection => {
+                    editor
+                        .registers
+                        .set_clipboard(&RegisterContent::Chars(store.text));
+                    editor.check_clipboard_error();
+                }
             }
         }
 

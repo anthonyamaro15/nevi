@@ -8,7 +8,7 @@ use alacritty_terminal::{
     term::{
         cell::{Cell, Flags},
         color::Colors,
-        point_to_viewport, Config, Term, TermMode,
+        point_to_viewport, ClipboardType, Config, Term, TermMode,
     },
     vte::ansi::{
         Color as AlacrittyColor, CursorShape as AlacrittyCursorShape, NamedColor,
@@ -216,6 +216,7 @@ impl Dimensions for TerminalDimensions {
 struct TerminalEventListener {
     title: Arc<Mutex<Option<String>>>,
     pty_write_buffer: Arc<Mutex<Vec<u8>>>,
+    clipboard_store_buffer: Arc<Mutex<Vec<TerminalClipboardStore>>>,
 }
 
 impl EventListener for TerminalEventListener {
@@ -234,6 +235,14 @@ impl EventListener for TerminalEventListener {
             Event::PtyWrite(text) => {
                 if let Ok(mut pending) = self.pty_write_buffer.lock() {
                     pending.extend_from_slice(text.as_bytes());
+                }
+            }
+            Event::ClipboardStore(clipboard_type, text) => {
+                if let Ok(mut pending) = self.clipboard_store_buffer.lock() {
+                    pending.push(TerminalClipboardStore {
+                        clipboard: terminal_clipboard_type(clipboard_type),
+                        text,
+                    });
                 }
             }
             _ => {}
@@ -366,6 +375,18 @@ pub struct TerminalCursorInfo {
     pub blinking: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalClipboard {
+    Clipboard,
+    Selection,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalClipboardStore {
+    pub clipboard: TerminalClipboard,
+    pub text: String,
+}
+
 impl Default for TerminalCell {
     fn default() -> Self {
         Self {
@@ -417,6 +438,8 @@ struct TerminalSession {
     output_buffer: Arc<Mutex<Vec<u8>>>,
     /// Terminal emulator responses that must be written back to the PTY
     pty_write_buffer: Arc<Mutex<Vec<u8>>>,
+    /// OSC52 clipboard writes requested by terminal applications
+    clipboard_store_buffer: Arc<Mutex<Vec<TerminalClipboardStore>>>,
     /// Reader thread handle (for joining on close)
     reader_thread: Option<JoinHandle<()>>,
     /// Working directory
@@ -432,11 +455,18 @@ impl TerminalSession {
     fn new(id: usize, name: String, rows: u16, cols: u16, working_dir: PathBuf) -> Self {
         let terminal_title = Arc::new(Mutex::new(None));
         let pty_write_buffer = Arc::new(Mutex::new(Vec::new()));
+        let clipboard_store_buffer = Arc::new(Mutex::new(Vec::new()));
         Self {
             id,
             name,
             visible: false,
-            term: Self::new_term(rows, cols, terminal_title.clone(), pty_write_buffer.clone()),
+            term: Self::new_term(
+                rows,
+                cols,
+                terminal_title.clone(),
+                pty_write_buffer.clone(),
+                clipboard_store_buffer.clone(),
+            ),
             processor: VteProcessor::new(),
             terminal_title,
             pending_command: String::new(),
@@ -448,6 +478,7 @@ impl TerminalSession {
             child: None,
             output_buffer: Arc::new(Mutex::new(Vec::new())),
             pty_write_buffer,
+            clipboard_store_buffer,
             reader_thread: None,
             working_dir,
             process_exited: false,
@@ -460,6 +491,7 @@ impl TerminalSession {
         cols: u16,
         terminal_title: Arc<Mutex<Option<String>>>,
         pty_write_buffer: Arc<Mutex<Vec<u8>>>,
+        clipboard_store_buffer: Arc<Mutex<Vec<TerminalClipboardStore>>>,
     ) -> Term<TerminalEventListener> {
         let mut config = Config::default();
         config.scrolling_history = BUFFER_ROWS;
@@ -469,6 +501,7 @@ impl TerminalSession {
             TerminalEventListener {
                 title: terminal_title,
                 pty_write_buffer,
+                clipboard_store_buffer,
             },
         )
     }
@@ -545,6 +578,9 @@ impl TerminalSession {
         if let Ok(mut pending) = self.pty_write_buffer.lock() {
             pending.clear();
         }
+        if let Ok(mut pending) = self.clipboard_store_buffer.lock() {
+            pending.clear();
+        }
 
         // Clear emulator state for a fresh shell.
         if let Ok(mut title) = self.terminal_title.lock() {
@@ -557,6 +593,7 @@ impl TerminalSession {
             self.cols,
             self.terminal_title.clone(),
             self.pty_write_buffer.clone(),
+            self.clipboard_store_buffer.clone(),
         );
         self.processor = VteProcessor::new();
 
@@ -965,6 +1002,14 @@ impl TerminalSession {
         self.send_input(&data);
     }
 
+    fn take_pending_clipboard_stores(&mut self) -> Vec<TerminalClipboardStore> {
+        let mut pending = self
+            .clipboard_store_buffer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *pending)
+    }
+
     fn terminal_title(&self) -> Option<String> {
         self.terminal_title
             .lock()
@@ -1257,6 +1302,13 @@ fn terminal_cursor_shape(shape: AlacrittyCursorShape) -> TerminalCursorShape {
     }
 }
 
+fn terminal_clipboard_type(clipboard_type: ClipboardType) -> TerminalClipboard {
+    match clipboard_type {
+        ClipboardType::Clipboard => TerminalClipboard::Clipboard,
+        ClipboardType::Selection => TerminalClipboard::Selection,
+    }
+}
+
 /// Lightweight metadata for rendering terminal sessions outside the terminal UI.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerminalSessionInfo {
@@ -1491,6 +1543,13 @@ impl FloatingTerminal {
     pub fn copy_selection(&mut self) -> Option<String> {
         self.active_session()
             .and_then(TerminalSession::copy_selection)
+    }
+
+    pub fn take_pending_clipboard_stores(&mut self) -> Vec<TerminalClipboardStore> {
+        self.sessions
+            .iter_mut()
+            .flat_map(TerminalSession::take_pending_clipboard_stores)
+            .collect()
     }
 
     /// Forward a mouse event to the active visible terminal when it has enabled mouse reporting.
@@ -2355,6 +2414,46 @@ mod tests {
             terminal.session_infos()[0].metadata.as_deref(),
             Some("npm run dev")
         );
+    }
+
+    #[test]
+    fn osc52_clipboard_store_is_queued_for_editor_clipboard() {
+        let mut terminal = FloatingTerminal::new();
+
+        terminal.process_bytes(b"\x1b]52;c;aGVsbG8gdGVybWluYWw=\x07");
+
+        assert_eq!(
+            terminal.take_pending_clipboard_stores(),
+            vec![TerminalClipboardStore {
+                clipboard: TerminalClipboard::Clipboard,
+                text: "hello terminal".to_string(),
+            }]
+        );
+        assert!(terminal.take_pending_clipboard_stores().is_empty());
+    }
+
+    #[test]
+    fn osc52_selection_store_is_queued_for_editor_clipboard() {
+        let mut terminal = FloatingTerminal::new();
+
+        terminal.process_bytes(b"\x1b]52;p;c2VsZWN0aW9u\x07");
+
+        assert_eq!(
+            terminal.take_pending_clipboard_stores(),
+            vec![TerminalClipboardStore {
+                clipboard: TerminalClipboard::Selection,
+                text: "selection".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn osc52_invalid_payload_is_ignored() {
+        let mut terminal = FloatingTerminal::new();
+
+        terminal.process_bytes(b"\x1b]52;c;not-valid-base64!\x07");
+
+        assert!(terminal.take_pending_clipboard_stores().is_empty());
     }
 
     #[test]
