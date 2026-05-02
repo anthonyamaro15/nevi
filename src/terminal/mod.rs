@@ -8631,6 +8631,10 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)
     }
 
+    fn ctrl_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
     fn esc_key() -> KeyEvent {
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
     }
@@ -8717,6 +8721,124 @@ mod tests {
             finder_preview_match_ranges("aaaa", "aa"),
             vec![(0, 2), (2, 4)]
         );
+    }
+
+    #[test]
+    fn finder_insert_mode_navigation_escape_and_close_keys_follow_documented_behavior() {
+        let mut editor = Editor::default();
+        editor.finder.open_buffers(vec![
+            (0, "alpha.rs".to_string(), PathBuf::from("alpha.rs")),
+            (1, "beta.rs".to_string(), PathBuf::from("beta.rs")),
+            (2, "gamma.rs".to_string(), PathBuf::from("gamma.rs")),
+        ]);
+        editor.mode = Mode::Finder;
+
+        handle_key(&mut editor, ctrl_key('k'));
+        assert_eq!(editor.finder.selected, 1);
+        handle_key(&mut editor, ctrl_key('j'));
+        assert_eq!(editor.finder.selected, 0);
+
+        handle_key(&mut editor, ctrl_key('n'));
+        assert_eq!(editor.finder.selected, 0);
+        handle_key(&mut editor, ctrl_key('p'));
+        assert_eq!(editor.finder.selected, 1);
+
+        handle_key(&mut editor, key('b'));
+        assert_eq!(editor.finder.query, "b");
+        assert_eq!(editor.finder.cursor, 1);
+        assert_eq!(editor.finder.selected, 0);
+        assert_eq!(
+            editor.finder.selected_item().map(|item| item.display.as_str()),
+            Some("2: beta.rs")
+        );
+
+        handle_key(&mut editor, esc_key());
+        assert!(editor.finder.is_normal_mode());
+        assert_eq!(editor.mode, Mode::Finder);
+
+        handle_key(&mut editor, ctrl_key('c'));
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn finder_normal_mode_navigation_preview_and_insert_keys_follow_documented_behavior() {
+        let mut editor = Editor::default();
+        editor.finder.open_buffers(vec![
+            (0, "alpha.rs".to_string(), PathBuf::from("alpha.rs")),
+            (1, "beta.rs".to_string(), PathBuf::from("beta.rs")),
+            (2, "gamma.rs".to_string(), PathBuf::from("gamma.rs")),
+        ]);
+        editor.mode = Mode::Finder;
+        editor.finder.enter_normal_mode();
+
+        handle_key(&mut editor, shift_key('G'));
+        assert_eq!(editor.finder.selected, 2);
+        handle_key(&mut editor, key('j'));
+        assert_eq!(editor.finder.selected, 1);
+        handle_key(&mut editor, key('k'));
+        assert_eq!(editor.finder.selected, 2);
+        handle_key(&mut editor, key('g'));
+        assert_eq!(editor.finder.selected, 0);
+
+        assert!(!editor.finder.preview_enabled);
+        handle_key(&mut editor, key('p'));
+        assert!(editor.finder.preview_enabled);
+
+        handle_key(&mut editor, key('i'));
+        assert!(!editor.finder.is_normal_mode());
+
+        handle_key(&mut editor, esc_key());
+        assert!(editor.finder.is_normal_mode());
+        handle_key(&mut editor, esc_key());
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn finder_enter_opens_selected_buffer_item() {
+        let tmp = unique_temp_dir("nevi_finder_buffer_select");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let first = tmp.join("first.rs");
+        let second = tmp.join("second.rs");
+        std::fs::write(&first, "fn first() {}\n").expect("write first");
+        std::fs::write(&second, "fn second() {}\n").expect("write second");
+
+        let mut editor = Editor::default();
+        editor.open_file(first).expect("open first");
+        editor.open_file(second).expect("open second");
+        assert_eq!(editor.current_buffer_index(), 1);
+
+        editor.open_finder_buffers();
+        handle_key(&mut editor, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.current_buffer_index(), 0);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn harpoon_finder_delete_and_reorder_keys_follow_documented_behavior() {
+        let mut editor = Editor::default();
+        let one = PathBuf::from("/tmp/one.rs");
+        let two = PathBuf::from("/tmp/two.rs");
+        let three = PathBuf::from("/tmp/three.rs");
+        editor.harpoon.add_file(&one);
+        editor.harpoon.add_file(&two);
+        editor.harpoon.add_file(&three);
+
+        editor.open_finder_harpoon();
+        editor.finder.selected = 1;
+        handle_key(&mut editor, shift_key('K'));
+        assert_eq!(editor.harpoon.files(), [two.clone(), one.clone(), three.clone()]);
+        assert_eq!(editor.finder.selected, 0);
+
+        handle_key(&mut editor, shift_key('J'));
+        assert_eq!(editor.harpoon.files(), [one.clone(), two.clone(), three.clone()]);
+        assert_eq!(editor.finder.selected, 1);
+
+        handle_key(&mut editor, key('d'));
+        assert_eq!(editor.harpoon.files(), [one, three]);
+        assert_eq!(editor.mode, Mode::Finder);
     }
 
     #[test]
