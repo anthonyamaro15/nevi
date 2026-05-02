@@ -11,7 +11,8 @@ use alacritty_terminal::{
         point_to_viewport, Config, Term, TermMode,
     },
     vte::ansi::{
-        Color as AlacrittyColor, NamedColor, Processor as VteProcessor, Rgb as AlacrittyRgb,
+        Color as AlacrittyColor, CursorShape as AlacrittyCursorShape, NamedColor,
+        Processor as VteProcessor, Rgb as AlacrittyRgb,
     },
 };
 use crossterm::{
@@ -342,6 +343,29 @@ pub struct TerminalCell {
     pub selected: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalCursorShape {
+    Block,
+    Underline,
+    Beam,
+    HollowBlock,
+    Hidden,
+}
+
+impl Default for TerminalCursorShape {
+    fn default() -> Self {
+        Self::Block
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TerminalCursorInfo {
+    pub row: usize,
+    pub col: usize,
+    pub shape: TerminalCursorShape,
+    pub blinking: bool,
+}
+
 impl Default for TerminalCell {
     fn default() -> Self {
         Self {
@@ -577,11 +601,23 @@ impl TerminalSession {
         self.capture_prompt_key_for_metadata(key);
 
         let app_cursor = self.term.mode().contains(TermMode::APP_CURSOR);
+        let modifier_param = key_modifier_param(key.modifiers);
         let cursor_sequence = |normal: u8, app: u8| {
             if app_cursor {
                 vec![0x1b, b'O', app]
             } else {
                 vec![0x1b, b'[', normal]
+            }
+        };
+        let modified_cursor_sequence = |final_byte: u8| {
+            modifier_param
+                .map(|modifier| format!("\x1b[1;{}{}", modifier, final_byte as char).into_bytes())
+        };
+        let tilde_sequence = |code: u8| {
+            if let Some(modifier) = modifier_param {
+                format!("\x1b[{};{}~", code, modifier).into_bytes()
+            } else {
+                format!("\x1b[{}~", code).into_bytes()
             }
         };
 
@@ -595,17 +631,34 @@ impl TerminalSession {
             (_, KeyCode::Enter) => vec![b'\r'],
             (_, KeyCode::Backspace) => vec![127],
             (_, KeyCode::Tab) => vec![b'\t'],
+            (_, KeyCode::BackTab) => b"\x1b[Z".to_vec(),
             (_, KeyCode::Esc) => vec![0x1b],
-            (_, KeyCode::Up) => cursor_sequence(b'A', b'A'),
-            (_, KeyCode::Down) => cursor_sequence(b'B', b'B'),
-            (_, KeyCode::Right) => cursor_sequence(b'C', b'C'),
-            (_, KeyCode::Left) => cursor_sequence(b'D', b'D'),
-            (_, KeyCode::Home) => cursor_sequence(b'H', b'H'),
-            (_, KeyCode::End) => cursor_sequence(b'F', b'F'),
-            (_, KeyCode::PageUp) => vec![0x1b, b'[', b'5', b'~'],
-            (_, KeyCode::PageDown) => vec![0x1b, b'[', b'6', b'~'],
-            (_, KeyCode::Delete) => vec![0x1b, b'[', b'3', b'~'],
-            (_, KeyCode::Insert) => vec![0x1b, b'[', b'2', b'~'],
+            (_, KeyCode::Up) => {
+                modified_cursor_sequence(b'A').unwrap_or_else(|| cursor_sequence(b'A', b'A'))
+            }
+            (_, KeyCode::Down) => {
+                modified_cursor_sequence(b'B').unwrap_or_else(|| cursor_sequence(b'B', b'B'))
+            }
+            (_, KeyCode::Right) => {
+                modified_cursor_sequence(b'C').unwrap_or_else(|| cursor_sequence(b'C', b'C'))
+            }
+            (_, KeyCode::Left) => {
+                modified_cursor_sequence(b'D').unwrap_or_else(|| cursor_sequence(b'D', b'D'))
+            }
+            (_, KeyCode::Home) => {
+                modified_cursor_sequence(b'H').unwrap_or_else(|| cursor_sequence(b'H', b'H'))
+            }
+            (_, KeyCode::End) => {
+                modified_cursor_sequence(b'F').unwrap_or_else(|| cursor_sequence(b'F', b'F'))
+            }
+            (_, KeyCode::PageUp) => tilde_sequence(5),
+            (_, KeyCode::PageDown) => tilde_sequence(6),
+            (_, KeyCode::Delete) => tilde_sequence(3),
+            (_, KeyCode::Insert) => tilde_sequence(2),
+            (_, KeyCode::F(n)) => match function_key_sequence(n, modifier_param) {
+                Some(data) => data,
+                None => return,
+            },
             // Regular characters
             (KeyModifiers::ALT, KeyCode::Char(c)) => {
                 let mut data = vec![0x1b];
@@ -691,6 +744,22 @@ impl TerminalSession {
             MouseEventKind::ScrollDown => Scroll::Delta(-MOUSE_SCROLL_LINES),
             _ => return TerminalMouseEventResult::Ignored,
         };
+
+        if self
+            .term
+            .mode()
+            .contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL)
+        {
+            let key_code = match event.kind {
+                MouseEventKind::ScrollUp => KeyCode::Up,
+                MouseEventKind::ScrollDown => KeyCode::Down,
+                _ => return TerminalMouseEventResult::Ignored,
+            };
+            for _ in 0..MOUSE_SCROLL_LINES {
+                self.send_key(KeyEvent::new(key_code, CrosstermKeyModifiers::NONE));
+            }
+            return TerminalMouseEventResult::Handled;
+        }
 
         if self.scroll_display(scroll) {
             TerminalMouseEventResult::Handled
@@ -953,6 +1022,22 @@ impl TerminalSession {
             .unwrap_or((0, 0))
     }
 
+    fn get_cursor_info(&self) -> TerminalCursorInfo {
+        let content = self.term.renderable_content();
+        let (row, col) = point_to_viewport(content.display_offset, content.cursor.point)
+            .map(|point| (point.line, point.column.0))
+            .unwrap_or((0, 0));
+        let style = self.term.cursor_style();
+        let shape = terminal_cursor_shape(content.cursor.shape);
+
+        TerminalCursorInfo {
+            row,
+            col,
+            shape,
+            blinking: shape != TerminalCursorShape::Hidden && style.blinking,
+        }
+    }
+
     /// Check if terminal is visible
     fn is_visible(&self) -> bool {
         self.visible
@@ -1109,6 +1194,66 @@ impl TerminalSession {
         } else {
             55 + component * 40
         }
+    }
+}
+
+fn key_modifier_param(modifiers: CrosstermKeyModifiers) -> Option<u8> {
+    let mut modifier = 1;
+    if modifiers.contains(CrosstermKeyModifiers::SHIFT) {
+        modifier += 1;
+    }
+    if modifiers.contains(CrosstermKeyModifiers::ALT) {
+        modifier += 2;
+    }
+    if modifiers.contains(CrosstermKeyModifiers::CONTROL) {
+        modifier += 4;
+    }
+
+    (modifier > 1).then_some(modifier)
+}
+
+fn function_key_sequence(key: u8, modifier_param: Option<u8>) -> Option<Vec<u8>> {
+    if (1..=4).contains(&key) {
+        let final_byte = match key {
+            1 => 'P',
+            2 => 'Q',
+            3 => 'R',
+            4 => 'S',
+            _ => unreachable!(),
+        };
+        return Some(if let Some(modifier) = modifier_param {
+            format!("\x1b[1;{}{}", modifier, final_byte).into_bytes()
+        } else {
+            format!("\x1bO{}", final_byte).into_bytes()
+        });
+    }
+
+    let code = match key {
+        5 => 15,
+        6 => 17,
+        7 => 18,
+        8 => 19,
+        9 => 20,
+        10 => 21,
+        11 => 23,
+        12 => 24,
+        _ => return None,
+    };
+
+    Some(if let Some(modifier) = modifier_param {
+        format!("\x1b[{};{}~", code, modifier).into_bytes()
+    } else {
+        format!("\x1b[{}~", code).into_bytes()
+    })
+}
+
+fn terminal_cursor_shape(shape: AlacrittyCursorShape) -> TerminalCursorShape {
+    match shape {
+        AlacrittyCursorShape::Block => TerminalCursorShape::Block,
+        AlacrittyCursorShape::Underline => TerminalCursorShape::Underline,
+        AlacrittyCursorShape::Beam => TerminalCursorShape::Beam,
+        AlacrittyCursorShape::HollowBlock => TerminalCursorShape::HollowBlock,
+        AlacrittyCursorShape::Hidden => TerminalCursorShape::Hidden,
     }
 }
 
@@ -1421,6 +1566,13 @@ impl FloatingTerminal {
             .and_then(|idx| self.sessions.get(idx))
             .map(|session| session.get_cursor_pos())
             .unwrap_or((0, 0))
+    }
+
+    pub fn get_cursor_info(&self) -> TerminalCursorInfo {
+        self.active
+            .and_then(|idx| self.sessions.get(idx))
+            .map(|session| session.get_cursor_info())
+            .unwrap_or_default()
     }
 
     /// Check if the active terminal is visible.
@@ -1990,6 +2142,95 @@ mod tests {
             KeyCode::Char('c'),
             KeyModifiers::CONTROL
         )));
+    }
+
+    #[test]
+    fn cursor_info_tracks_child_terminal_cursor_style() {
+        let mut terminal = FloatingTerminal::new();
+
+        terminal.process_bytes(b"\x1b[3 q");
+        assert_eq!(
+            terminal.get_cursor_info().shape,
+            TerminalCursorShape::Underline
+        );
+        assert!(terminal.get_cursor_info().blinking);
+
+        terminal.process_bytes(b"\x1b[6 q");
+        assert_eq!(terminal.get_cursor_info().shape, TerminalCursorShape::Beam);
+        assert!(!terminal.get_cursor_info().blinking);
+
+        terminal.process_bytes(b"\x1b[?25l");
+        assert_eq!(
+            terminal.get_cursor_info().shape,
+            TerminalCursorShape::Hidden
+        );
+    }
+
+    #[test]
+    fn alt_screen_scroll_sends_arrow_keys_when_mouse_reporting_is_off() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.resize(3, 20);
+        terminal.process_bytes(b"\x1b[?1049h\x1b[?1h");
+        terminal.sessions[0].visible = true;
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        terminal.sessions[0].pty_writer = Some(Box::new(TestWriter {
+            data: captured.clone(),
+        }));
+
+        let handled = terminal.send_mouse_event(
+            crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::ScrollUp,
+                column: 2,
+                row: 3,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            TerminalContentArea {
+                x: 2,
+                y: 3,
+                width: 20,
+                height: 3,
+            },
+        );
+
+        assert_eq!(handled, TerminalMouseEventResult::Handled);
+        assert_eq!(
+            captured
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_slice(),
+            b"\x1bOA\x1bOA\x1bOA"
+        );
+    }
+
+    #[test]
+    fn common_special_keys_encode_terminal_sequences() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut terminal = FloatingTerminal::new();
+        let idx = terminal.ensure_active_index();
+        terminal.sessions[idx].visible = true;
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        terminal.sessions[idx].pty_writer = Some(Box::new(TestWriter {
+            data: captured.clone(),
+        }));
+
+        terminal.send_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        terminal.send_key(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE));
+        terminal.send_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        terminal.send_key(KeyEvent::new(
+            KeyCode::Delete,
+            KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+        ));
+
+        assert_eq!(
+            captured
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_slice(),
+            b"\x1b[Z\x1b[15~\x1b[1;5C\x1b[3;6~"
+        );
     }
 
     #[test]

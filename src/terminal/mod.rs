@@ -149,6 +149,26 @@ impl TerminalRenderStyle {
     }
 }
 
+fn terminal_cursor_style(
+    cursor_info: crate::floating_terminal::TerminalCursorInfo,
+) -> cursor::SetCursorStyle {
+    use crate::floating_terminal::TerminalCursorShape;
+
+    match (cursor_info.shape, cursor_info.blinking) {
+        (TerminalCursorShape::Block | TerminalCursorShape::HollowBlock, true) => {
+            cursor::SetCursorStyle::BlinkingBlock
+        }
+        (TerminalCursorShape::Block | TerminalCursorShape::HollowBlock, false) => {
+            cursor::SetCursorStyle::SteadyBlock
+        }
+        (TerminalCursorShape::Underline, true) => cursor::SetCursorStyle::BlinkingUnderScore,
+        (TerminalCursorShape::Underline, false) => cursor::SetCursorStyle::SteadyUnderScore,
+        (TerminalCursorShape::Beam, true) => cursor::SetCursorStyle::BlinkingBar,
+        (TerminalCursorShape::Beam, false) => cursor::SetCursorStyle::SteadyBar,
+        (TerminalCursorShape::Hidden, _) => cursor::SetCursorStyle::DefaultUserShape,
+    }
+}
+
 /// Dim a color by reducing its brightness (for hidden files, etc.)
 fn dim_color(color: Color) -> Color {
     match color {
@@ -4144,7 +4164,7 @@ impl Terminal {
         let cells = editor
             .floating_terminal
             .get_visible_cells(content_height, content_width);
-        let (cursor_row, cursor_col) = editor.floating_terminal.get_cursor_pos();
+        let cursor_info = editor.floating_terminal.get_cursor_info();
 
         // Draw terminal content
         for (row, line) in cells.iter().enumerate() {
@@ -4212,14 +4232,18 @@ impl Terminal {
         execute!(self.stdout, ResetColor)?;
 
         // Position cursor inside the terminal
-        if editor.floating_terminal.has_selection() {
+        if editor.floating_terminal.has_selection()
+            || cursor_info.shape == crate::floating_terminal::TerminalCursorShape::Hidden
+        {
             execute!(self.stdout, cursor::Hide)?;
         } else {
-            let cursor_x = term_x + 1 + cursor_col.min(content_width.saturating_sub(1)) as u16;
-            let cursor_y = term_y + 1 + cursor_row.min(content_height.saturating_sub(1)) as u16;
+            let cursor_x = term_x + 1 + cursor_info.col.min(content_width.saturating_sub(1)) as u16;
+            let cursor_y =
+                term_y + 1 + cursor_info.row.min(content_height.saturating_sub(1)) as u16;
             execute!(
                 self.stdout,
                 cursor::MoveTo(cursor_x, cursor_y),
+                terminal_cursor_style(cursor_info),
                 cursor::Show
             )?;
         }
