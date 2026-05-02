@@ -5,6 +5,7 @@
 use alacritty_terminal::{
     event::{Event, EventListener},
     grid::{Dimensions, Scroll},
+    index::{Column, Line},
     term::{
         cell::{Cell, Flags},
         color::Colors,
@@ -119,6 +120,47 @@ impl TerminalSelection {
     fn is_empty(&self) -> bool {
         self.anchor == self.active
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TerminalSearchMatch {
+    line: i32,
+    start_col: usize,
+    end_col: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TerminalSearchState {
+    active: bool,
+    query: String,
+    matches: Vec<TerminalSearchMatch>,
+    active_match: Option<usize>,
+}
+
+impl TerminalSearchState {
+    fn clear(&mut self) {
+        self.active = false;
+        self.query.clear();
+        self.matches.clear();
+        self.active_match = None;
+    }
+
+    fn status(&self) -> Option<TerminalSearchStatus> {
+        (self.active || !self.query.is_empty()).then(|| TerminalSearchStatus {
+            active: self.active,
+            query: self.query.clone(),
+            match_count: self.matches.len(),
+            active_match: self.active_match.map(|idx| idx + 1),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalSearchStatus {
+    pub active: bool,
+    pub query: String,
+    pub match_count: usize,
+    pub active_match: Option<usize>,
 }
 
 fn normalize_popup_ratio(ratio: f32) -> f32 {
@@ -332,6 +374,43 @@ fn encode_legacy_mouse_report(button_code: u16, x: u16, y: u16, released: bool) 
     ])
 }
 
+fn searchable_char_from_cell(cell: &Cell) -> char {
+    let flags = cell.flags;
+    if flags.contains(Flags::HIDDEN)
+        || flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+    {
+        ' '
+    } else {
+        cell.c
+    }
+}
+
+fn search_ranges_in_line(line: &str, query: &str) -> Vec<(usize, usize)> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+
+    let line_lower = line.to_ascii_lowercase();
+    let query_lower = query.to_ascii_lowercase();
+    let mut ranges = Vec::new();
+    let mut start_byte = 0;
+
+    while let Some(relative_idx) = line_lower[start_byte..].find(&query_lower) {
+        let match_start = start_byte + relative_idx;
+        let match_end = match_start + query_lower.len();
+        ranges.push((
+            line[..match_start].chars().count(),
+            line[..match_end].chars().count(),
+        ));
+        start_byte = match_end.max(match_start + 1);
+        if start_byte >= line.len() {
+            break;
+        }
+    }
+
+    ranges
+}
+
 /// A renderable terminal cell with the style resolved from Alacritty's grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerminalCell {
@@ -350,6 +429,8 @@ pub struct TerminalCell {
     pub hidden: bool,
     pub strikeout: bool,
     pub selected: bool,
+    pub search_match: bool,
+    pub active_search_match: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -405,6 +486,8 @@ impl Default for TerminalCell {
             hidden: false,
             strikeout: false,
             selected: false,
+            search_match: false,
+            active_search_match: false,
         }
     }
 }
@@ -448,6 +531,8 @@ struct TerminalSession {
     process_exited: bool,
     /// Current mouse selection in viewport-relative terminal coordinates
     selection: Option<TerminalSelection>,
+    /// Floating-terminal scrollback search state
+    search: TerminalSearchState,
 }
 
 impl TerminalSession {
@@ -483,6 +568,7 @@ impl TerminalSession {
             working_dir,
             process_exited: false,
             selection: None,
+            search: TerminalSearchState::default(),
         }
     }
 
@@ -588,6 +674,7 @@ impl TerminalSession {
         }
         self.pending_command.clear();
         self.last_command = None;
+        self.clear_search();
         self.term = Self::new_term(
             self.rows,
             self.cols,
@@ -611,6 +698,9 @@ impl TerminalSession {
         self.rows = rows;
         self.cols = cols;
         self.term.resize(TerminalDimensions::new(rows, cols));
+        if self.search.active && !self.search.query.is_empty() {
+            self.recompute_search_matches();
+        }
 
         if let Some(ref master) = self.pty_master {
             let _ = master.resize(PtySize {
@@ -714,6 +804,11 @@ impl TerminalSession {
     }
 
     fn send_paste(&mut self, text: &str) {
+        if self.search.active {
+            self.insert_search_text(text);
+            return;
+        }
+
         if self.term.mode().contains(TermMode::BRACKETED_PASTE) {
             let mut data = Vec::with_capacity(text.len() + 12);
             data.extend_from_slice(b"\x1b[200~");
@@ -905,6 +1000,220 @@ impl TerminalSession {
         Some(selected_lines.join("\n"))
     }
 
+    fn start_search(&mut self) -> bool {
+        self.selection = None;
+        self.search.active = true;
+        self.recompute_search_matches();
+        true
+    }
+
+    fn clear_search(&mut self) {
+        self.search.clear();
+    }
+
+    fn handle_search_key(&mut self, key: KeyEvent) -> bool {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        if !self.search.active {
+            let starts_find_search = matches!(key.code, KeyCode::Char('f' | 'F'))
+                && !key.modifiers.contains(KeyModifiers::ALT)
+                && (key.modifiers.contains(KeyModifiers::CONTROL)
+                    || key.modifiers.contains(KeyModifiers::SUPER));
+
+            if starts_find_search {
+                return self.start_search();
+            }
+
+            return false;
+        }
+
+        match (key.modifiers, key.code) {
+            (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
+                self.clear_search();
+            }
+            (_, KeyCode::Backspace) => {
+                if self.search.query.is_empty() {
+                    self.clear_search();
+                } else {
+                    self.search.query.pop();
+                    self.recompute_search_matches();
+                }
+            }
+            (KeyModifiers::SHIFT, KeyCode::Enter) | (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
+                self.previous_search_match();
+            }
+            (_, KeyCode::Enter) | (KeyModifiers::CONTROL, KeyCode::Char('n')) => {
+                self.next_search_match();
+            }
+            (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(ch)) => {
+                self.search.query.push(ch);
+                self.recompute_search_matches();
+            }
+            _ => {}
+        }
+
+        true
+    }
+
+    fn search_status(&self) -> Option<TerminalSearchStatus> {
+        self.search.status()
+    }
+
+    fn is_searching(&self) -> bool {
+        self.search.active
+    }
+
+    fn insert_search_text(&mut self, text: &str) {
+        if !self.search.active {
+            return;
+        }
+
+        self.search
+            .query
+            .extend(text.chars().filter(|ch| !ch.is_control()));
+        self.recompute_search_matches();
+    }
+
+    fn recompute_search_matches(&mut self) {
+        self.search.matches = self.find_search_matches(&self.search.query);
+        if self.search.matches.is_empty() {
+            self.search.active_match = None;
+            return;
+        }
+
+        let active_match = self.first_search_match_index_from_viewport();
+        self.search.active_match = Some(active_match);
+        self.scroll_to_active_search_match();
+    }
+
+    fn find_search_matches(&self, query: &str) -> Vec<TerminalSearchMatch> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+
+        let grid = self.term.grid();
+        let mut matches = Vec::new();
+        for line in grid.topmost_line().0..=grid.bottommost_line().0 {
+            let line_text = self.grid_line_text(Line(line));
+            for (start_col, end_col) in search_ranges_in_line(&line_text, query) {
+                matches.push(TerminalSearchMatch {
+                    line,
+                    start_col,
+                    end_col,
+                });
+            }
+        }
+
+        matches
+    }
+
+    fn grid_line_text(&self, line: Line) -> String {
+        let grid = self.term.grid();
+        (0..grid.columns())
+            .map(|col| searchable_char_from_cell(&grid[line][Column(col)]))
+            .collect()
+    }
+
+    fn first_search_match_index_from_viewport(&self) -> usize {
+        let viewport_top = -(self.display_offset() as i32);
+        self.search
+            .matches
+            .iter()
+            .position(|search_match| search_match.line >= viewport_top)
+            .unwrap_or_else(|| self.search.matches.len().saturating_sub(1))
+    }
+
+    fn next_search_match(&mut self) -> bool {
+        if self.search.matches.is_empty() {
+            self.search.active_match = None;
+            return false;
+        }
+
+        let next = self
+            .search
+            .active_match
+            .map(|idx| (idx + 1) % self.search.matches.len())
+            .unwrap_or(0);
+        self.search.active_match = Some(next);
+        self.scroll_to_active_search_match();
+        true
+    }
+
+    fn previous_search_match(&mut self) -> bool {
+        if self.search.matches.is_empty() {
+            self.search.active_match = None;
+            return false;
+        }
+
+        let previous = self
+            .search
+            .active_match
+            .map(|idx| {
+                if idx == 0 {
+                    self.search.matches.len() - 1
+                } else {
+                    idx - 1
+                }
+            })
+            .unwrap_or_else(|| self.search.matches.len() - 1);
+        self.search.active_match = Some(previous);
+        self.scroll_to_active_search_match();
+        true
+    }
+
+    fn scroll_to_active_search_match(&mut self) {
+        let Some(search_match) = self
+            .search
+            .active_match
+            .and_then(|idx| self.search.matches.get(idx))
+            .copied()
+        else {
+            return;
+        };
+
+        let rows = self.rows.max(1) as i32;
+        let current_offset = self.display_offset() as i32;
+        let viewport_top = -current_offset;
+        let viewport_bottom = viewport_top + rows - 1;
+        let target_offset = if search_match.line < viewport_top {
+            -search_match.line
+        } else if search_match.line > viewport_bottom {
+            -(search_match.line - rows + 1)
+        } else {
+            return;
+        };
+        let delta = target_offset - current_offset;
+        if delta != 0 {
+            self.term.scroll_display(Scroll::Delta(delta));
+        }
+    }
+
+    fn search_flags_for_cell(&self, line: i32, col: usize) -> (bool, bool) {
+        if self.search.query.is_empty() {
+            return (false, false);
+        }
+
+        let start = self
+            .search
+            .matches
+            .partition_point(|search_match| search_match.line < line);
+        let end = self
+            .search
+            .matches
+            .partition_point(|search_match| search_match.line <= line);
+
+        for (idx, search_match) in self.search.matches[start..end].iter().enumerate() {
+            let contains = search_match.line == line
+                && col >= search_match.start_col
+                && col < search_match.end_col;
+            if contains {
+                return (true, self.search.active_match == Some(start + idx));
+            }
+        }
+
+        (false, false)
+    }
+
     fn capture_prompt_key_for_metadata(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -981,6 +1290,9 @@ impl TerminalSession {
     fn process_bytes(&mut self, data: &[u8]) {
         self.processor.advance(&mut self.term, data);
         self.flush_pending_pty_writes();
+        if self.search.active && !self.search.query.is_empty() {
+            self.recompute_search_matches();
+        }
     }
 
     fn flush_pending_pty_writes(&mut self) {
@@ -1038,6 +1350,10 @@ impl TerminalSession {
                     .selection
                     .map(|selection| selection.contains(row, col))
                     .unwrap_or(false);
+                let (search_match, active_search_match) =
+                    self.search_flags_for_cell(indexed.point.line.0, col);
+                cell.search_match = search_match;
+                cell.active_search_match = active_search_match;
                 lines[row][col] = cell;
             }
         }
@@ -1130,6 +1446,8 @@ impl TerminalSession {
             hidden,
             strikeout: flags.contains(Flags::STRIKEOUT),
             selected: false,
+            search_match: false,
+            active_search_match: false,
         }
     }
 
@@ -1488,6 +1806,17 @@ impl FloatingTerminal {
         self.active
             .and_then(|idx| self.sessions.get(idx).map(|session| (idx, session)))
             .map(|(idx, session)| {
+                if let Some(status) = session.search_status().filter(|status| status.active) {
+                    let match_count = if status.query.is_empty() {
+                        String::new()
+                    } else if let Some(active_match) = status.active_match {
+                        format!(" {}/{}", active_match, status.match_count)
+                    } else {
+                        " 0/0".to_string()
+                    };
+                    return format!(" Terminal Search: /{}{} ", status.query, match_count);
+                }
+
                 format!(
                     " Terminal {}/{}: {} ",
                     idx + 1,
@@ -1515,6 +1844,29 @@ impl FloatingTerminal {
                 active.send_key(key);
             }
         }
+    }
+
+    pub fn handle_search_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        let Some(active) = self.active_session() else {
+            return false;
+        };
+        if !active.is_visible() {
+            return false;
+        }
+
+        active.handle_search_key(key)
+    }
+
+    pub fn is_searching(&self) -> bool {
+        self.active
+            .and_then(|idx| self.sessions.get(idx))
+            .is_some_and(TerminalSession::is_searching)
+    }
+
+    pub fn search_status(&self) -> Option<TerminalSearchStatus> {
+        self.active
+            .and_then(|idx| self.sessions.get(idx))
+            .and_then(TerminalSession::search_status)
     }
 
     pub fn send_paste(&mut self, text: &str) -> bool {
@@ -2175,6 +2527,159 @@ mod tests {
         terminal.send_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
 
         assert!(!terminal.has_selection());
+    }
+
+    #[test]
+    fn terminal_search_highlights_visible_matches() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut terminal = FloatingTerminal::new();
+        terminal.resize(3, 20);
+        terminal.process_bytes(b"alpha beta beta");
+        terminal.sessions[0].visible = true;
+
+        assert!(
+            terminal.handle_search_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL))
+        );
+        for ch in "beta".chars() {
+            assert!(
+                terminal.handle_search_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE,))
+            );
+        }
+
+        let cells = terminal.get_visible_cells(3, 20);
+        let highlighted = cells[0]
+            .iter()
+            .enumerate()
+            .filter_map(|(col, cell)| cell.search_match.then_some((col, cell.ch)))
+            .collect::<Vec<_>>();
+        let active = cells[0]
+            .iter()
+            .enumerate()
+            .filter_map(|(col, cell)| cell.active_search_match.then_some((col, cell.ch)))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            highlighted,
+            vec![
+                (6, 'b'),
+                (7, 'e'),
+                (8, 't'),
+                (9, 'a'),
+                (11, 'b'),
+                (12, 'e'),
+                (13, 't'),
+                (14, 'a'),
+            ]
+        );
+        assert_eq!(active, vec![(6, 'b'), (7, 'e'), (8, 't'), (9, 'a')]);
+        assert_eq!(
+            terminal.search_status(),
+            Some(TerminalSearchStatus {
+                active: true,
+                query: "beta".to_string(),
+                match_count: 2,
+                active_match: Some(1),
+            })
+        );
+    }
+
+    #[test]
+    fn terminal_search_scrolls_to_scrollback_match() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut terminal = FloatingTerminal::new();
+        terminal.resize(3, 20);
+        terminal.process_bytes(
+            b"line one\r\nneedle old\r\nline three\r\nline four\r\nline five\r\nline six\r\n",
+        );
+        terminal.sessions[0].visible = true;
+
+        assert!(!terminal
+            .get_visible_lines(3, 20)
+            .iter()
+            .any(|line| line.contains("needle old")));
+
+        assert!(
+            terminal.handle_search_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL))
+        );
+        for ch in "needle".chars() {
+            assert!(
+                terminal.handle_search_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE,))
+            );
+        }
+
+        assert!(terminal.sessions[0].display_offset() > 0);
+        assert!(terminal
+            .get_visible_lines(3, 20)
+            .iter()
+            .any(|line| line.contains("needle old")));
+    }
+
+    #[test]
+    fn terminal_search_consumes_keys_without_writing_to_pty() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut terminal = FloatingTerminal::new();
+        let idx = terminal.ensure_active_index();
+        terminal.sessions[idx].visible = true;
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        terminal.sessions[idx].pty_writer = Some(Box::new(TestWriter {
+            data: captured.clone(),
+        }));
+
+        assert!(
+            terminal.handle_search_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL))
+        );
+        assert!(terminal.handle_search_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)));
+        assert!(terminal.handle_search_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+
+        assert_eq!(
+            captured
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_slice(),
+            b""
+        );
+        assert_eq!(terminal.search_status(), None);
+    }
+
+    #[test]
+    fn terminal_search_does_not_intercept_literal_slash() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut terminal = FloatingTerminal::new();
+        let idx = terminal.ensure_active_index();
+        terminal.sessions[idx].visible = true;
+
+        assert!(!terminal.handle_search_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)));
+    }
+
+    #[test]
+    fn terminal_search_enter_cycles_active_match() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut terminal = FloatingTerminal::new();
+        terminal.resize(3, 20);
+        terminal.process_bytes(b"needle one\r\nneedle two\r\nneedle three");
+        terminal.sessions[0].visible = true;
+
+        assert!(
+            terminal.handle_search_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL))
+        );
+        for ch in "needle".chars() {
+            assert!(
+                terminal.handle_search_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE,))
+            );
+        }
+        assert_eq!(terminal.search_status().unwrap().active_match, Some(1));
+
+        assert!(terminal.handle_search_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert_eq!(terminal.search_status().unwrap().active_match, Some(2));
+
+        assert!(terminal.handle_search_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)));
+        assert_eq!(terminal.search_status().unwrap().active_match, Some(1));
     }
 
     #[test]

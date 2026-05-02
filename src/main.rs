@@ -428,6 +428,16 @@ fn main() -> anyhow::Result<()> {
                     editor.show_diagnostic_float = false;
 
                     if editor.floating_terminal.is_visible() {
+                        if editor.floating_terminal.handle_search_key(key) {
+                            last_input_at = Some(Instant::now());
+                            terminal_redraw_pending = true;
+                            events_processed += 1;
+                            if !terminal.poll_key(Duration::from_millis(0))? {
+                                break;
+                            }
+                            continue;
+                        }
+
                         let has_selection = editor.floating_terminal.has_selection();
                         let platform_copy = is_terminal_selection_platform_copy_key(key);
                         let selection_copy = has_selection && is_terminal_selection_copy_key(key);

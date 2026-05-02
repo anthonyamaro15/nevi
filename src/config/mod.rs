@@ -980,10 +980,14 @@ fn default_config_template() -> &'static str {
 # Ctrl+\           - Toggle active terminal
 # Mouse wheel      - Scroll terminal scrollback
 # Mouse drag       - Select visible terminal text
+# Ctrl+F/Ctrl+Shift+F - Search terminal scrollback
+# Cmd+F            - Search terminal scrollback if your terminal forwards the key
+# Enter            - Next terminal search match
+# Shift+Enter      - Previous terminal search match
 # y                - Copy terminal selection
 # Ctrl+Shift+C     - Copy terminal selection
 # Cmd+C            - Copy terminal selection if your terminal forwards the key
-# Esc/Ctrl+[       - Clear terminal selection
+# Esc/Ctrl+[       - Clear terminal selection/search
 # Cmd+V/Ctrl+Shift+V - Paste via your terminal app; bracketed paste is used when supported
 #
 # <leader>ca       - Code actions
