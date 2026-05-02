@@ -4179,6 +4179,14 @@ impl Terminal {
             let mut active_style = None;
             for cell in line {
                 let mut style = TerminalRenderStyle::from_terminal_cell(cell, text_color, bg_color);
+                if cell.search_match {
+                    style.fg = theme.ui.search_match_fg;
+                    style.bg = theme.ui.search_match_bg;
+                }
+                if cell.active_search_match {
+                    style.fg = text_color;
+                    style.bg = theme.ui.popup_selection;
+                }
                 if cell.selected {
                     style.bg = theme.ui.selection;
                 }
@@ -4233,6 +4241,7 @@ impl Terminal {
 
         // Position cursor inside the terminal
         if editor.floating_terminal.has_selection()
+            || editor.floating_terminal.is_searching()
             || cursor_info.shape == crate::floating_terminal::TerminalCursorShape::Hidden
         {
             execute!(self.stdout, cursor::Hide)?;
