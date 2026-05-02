@@ -1648,6 +1648,37 @@ pub struct FloatingTerminal {
     next_id: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalSessionControlAction {
+    New,
+    Next,
+    Previous,
+    Close,
+}
+
+fn terminal_session_control_action(key: KeyEvent) -> Option<TerminalSessionControlAction> {
+    let has_ctrl = key.modifiers.contains(CrosstermKeyModifiers::CONTROL);
+    let has_shift = key.modifiers.contains(CrosstermKeyModifiers::SHIFT);
+    let has_alt = key.modifiers.contains(CrosstermKeyModifiers::ALT);
+
+    if has_alt || !has_ctrl {
+        return None;
+    }
+
+    match key.code {
+        KeyCode::Char('t' | 'T') if has_shift || matches!(key.code, KeyCode::Char('T')) => {
+            Some(TerminalSessionControlAction::New)
+        }
+        KeyCode::Char('w' | 'W') if has_shift || matches!(key.code, KeyCode::Char('W')) => {
+            Some(TerminalSessionControlAction::Close)
+        }
+        KeyCode::Tab if has_shift => Some(TerminalSessionControlAction::Previous),
+        KeyCode::BackTab => Some(TerminalSessionControlAction::Previous),
+        KeyCode::Tab => Some(TerminalSessionControlAction::Next),
+        _ => None,
+    }
+}
+
 impl FloatingTerminal {
     /// Create a new floating terminal manager.
     pub fn new() -> Self {
@@ -1857,6 +1888,23 @@ impl FloatingTerminal {
         active.handle_search_key(key)
     }
 
+    pub fn handle_session_control_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        if !self.is_visible() {
+            return false;
+        }
+
+        let Some(action) = terminal_session_control_action(key) else {
+            return false;
+        };
+
+        match action {
+            TerminalSessionControlAction::New => self.create_session(None).is_ok(),
+            TerminalSessionControlAction::Next => self.next_session().is_ok(),
+            TerminalSessionControlAction::Previous => self.previous_session().is_ok(),
+            TerminalSessionControlAction::Close => self.close_active_session_and_show_next(),
+        }
+    }
+
     pub fn is_searching(&self) -> bool {
         self.active
             .and_then(|idx| self.sessions.get(idx))
@@ -1999,6 +2047,19 @@ impl FloatingTerminal {
         if let Some(idx) = self.active {
             let _ = self.close_session(idx + 1);
         }
+    }
+
+    fn close_active_session_and_show_next(&mut self) -> bool {
+        let Some(idx) = self.active else {
+            return false;
+        };
+        if self.close_session(idx + 1).is_err() {
+            return false;
+        }
+        if !self.sessions.is_empty() {
+            let _ = self.show_active();
+        }
+        true
     }
 
     /// Kill and remove a terminal session by its 1-based list position.
@@ -2654,6 +2715,62 @@ mod tests {
         terminal.sessions[idx].visible = true;
 
         assert!(!terminal.handle_search_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)));
+    }
+
+    #[test]
+    fn terminal_session_control_shortcuts_manage_sessions() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut terminal = FloatingTerminal::new();
+        terminal.push_session(Some("server".to_string()));
+        terminal.push_session(Some("logs".to_string()));
+        terminal.active = Some(0);
+        terminal.sessions[0].visible = true;
+
+        assert!(
+            terminal.handle_session_control_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL))
+        );
+        assert_eq!(terminal.session_infos()[1].active, true);
+
+        assert!(terminal.handle_session_control_key(KeyEvent::new(
+            KeyCode::BackTab,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
+        assert_eq!(terminal.session_infos()[0].active, true);
+
+        assert!(terminal.handle_session_control_key(KeyEvent::new(
+            KeyCode::Char('t'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
+        assert_eq!(terminal.session_infos().len(), 3);
+        assert_eq!(terminal.session_infos()[2].name, "term-3");
+        assert!(terminal.session_infos()[2].active);
+
+        assert!(terminal.handle_session_control_key(KeyEvent::new(
+            KeyCode::Char('w'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
+        assert_eq!(terminal.session_infos().len(), 2);
+        assert!(terminal.session_infos()[1].active);
+        assert_eq!(terminal.session_infos()[1].state, "visible");
+    }
+
+    #[test]
+    fn terminal_session_control_ignores_regular_terminal_input() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut terminal = FloatingTerminal::new();
+        terminal.push_session(Some("server".to_string()));
+        terminal.active = Some(0);
+        terminal.sessions[0].visible = true;
+
+        assert!(!terminal
+            .handle_session_control_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)));
+        assert!(!terminal
+            .handle_session_control_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)));
+        assert!(
+            !terminal.handle_session_control_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+        );
     }
 
     #[test]
