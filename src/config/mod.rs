@@ -978,6 +978,10 @@ fn default_config_template() -> &'static str {
 #
 # Floating terminal:
 # Ctrl+\           - Toggle active terminal
+# Ctrl+Shift+T     - New terminal session
+# Ctrl+Tab         - Next terminal session
+# Ctrl+Shift+Tab   - Previous terminal session
+# Ctrl+Shift+W     - Close current terminal session
 # Mouse wheel      - Scroll terminal scrollback
 # Mouse drag       - Select visible terminal text
 # Ctrl+F/Ctrl+Shift+F - Search terminal scrollback

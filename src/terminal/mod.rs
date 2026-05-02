@@ -4127,7 +4127,13 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        let close_hint = " [<C-\\>] ";
+        let full_hint = " [C-\\ hide  C-S-t new  C-Tab next] ";
+        let compact_hint = " [<C-\\>] ";
+        let close_hint = if term_width as usize >= full_hint.len() + 24 {
+            full_hint
+        } else {
+            compact_hint
+        };
         let title_start = 2usize;
         let close_start = (term_width as usize).saturating_sub(close_hint.len() + 2);
         let max_title_width = close_start.saturating_sub(title_start).saturating_sub(1);
@@ -5559,6 +5565,10 @@ pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
 
     // If floating terminal is visible, handle its keys
     if editor.floating_terminal.is_visible() {
+        if editor.floating_terminal.handle_session_control_key(key) {
+            return;
+        }
+
         // Terminal apps need Escape; Ctrl-\ is the dedicated toggle key.
         editor.floating_terminal.send_key(key);
         return;
