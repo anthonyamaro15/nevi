@@ -8631,6 +8631,10 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)
     }
 
+    fn ctrl_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
     fn esc_key() -> KeyEvent {
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
     }
@@ -8882,6 +8886,74 @@ mod tests {
     }
 
     #[test]
+    fn visual_mode_entry_toggle_exit_and_reselect_keys_manage_selection_modes() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("abc\ndef\n");
+
+        handle_key(&mut editor, key('v'));
+        assert_eq!(editor.mode, Mode::Visual);
+        assert_eq!((editor.visual.anchor_line, editor.visual.anchor_col), (0, 0));
+
+        handle_key(&mut editor, key('l'));
+        assert_eq!(editor.get_visual_range(), (0, 0, 0, 1));
+
+        handle_key(&mut editor, key('o'));
+        assert_eq!((editor.cursor.line, editor.cursor.col), (0, 0));
+        assert_eq!((editor.visual.anchor_line, editor.visual.anchor_col), (0, 1));
+        assert_eq!(editor.get_visual_range(), (0, 0, 0, 1));
+
+        handle_key(&mut editor, esc_key());
+        assert_eq!(editor.mode, Mode::Normal);
+
+        handle_key(&mut editor, key('g'));
+        handle_key(&mut editor, key('v'));
+        assert_eq!(editor.mode, Mode::Visual);
+        assert_eq!(editor.get_visual_range(), (0, 0, 0, 1));
+
+        handle_key(&mut editor, key('v'));
+        assert_eq!(editor.mode, Mode::Normal);
+
+        handle_key(&mut editor, shift_key('V'));
+        assert_eq!(editor.mode, Mode::VisualLine);
+        handle_key(&mut editor, shift_key('V'));
+        assert_eq!(editor.mode, Mode::Normal);
+
+        handle_key(&mut editor, ctrl_key('v'));
+        assert_eq!(editor.mode, Mode::VisualBlock);
+        handle_key(&mut editor, ctrl_key('v'));
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn visual_yank_and_delete_keys_update_registers_and_buffer() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("hello world\n");
+
+        handle_key(&mut editor, key('v'));
+        handle_key(&mut editor, key('e'));
+        handle_key(&mut editor, key('y'));
+
+        assert_eq!(editor.buffer().content(), "hello world\n");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(
+            editor.registers.get(None),
+            Some(&RegisterContent::Chars("hello".to_string()))
+        );
+
+        editor.cursor.col = 6;
+        handle_key(&mut editor, key('v'));
+        handle_key(&mut editor, key('e'));
+        handle_key(&mut editor, key('d'));
+
+        assert_eq!(editor.buffer().content(), "hello \n");
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(
+            editor.registers.get(None),
+            Some(&RegisterContent::Chars("world".to_string()))
+        );
+    }
+
+    #[test]
     fn visual_change_keeps_insert_point_at_selection_start() {
         let mut editor = Editor::default();
         editor.replace_buffer_content("foo bar\n");
@@ -8916,6 +8988,85 @@ mod tests {
         assert_eq!(editor.buffer().content(), "foo \n");
         assert_eq!(editor.mode, Mode::Insert);
         assert_eq!(editor.cursor.col, 4);
+    }
+
+    #[test]
+    fn visual_indent_dedent_and_comment_keys_operate_on_selected_lines() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("one\ntwo\nthree\n");
+
+        handle_key(&mut editor, shift_key('V'));
+        handle_key(&mut editor, key('j'));
+        handle_key(&mut editor, key('>'));
+
+        assert_eq!(editor.buffer().content(), "    one\n    two\nthree\n");
+        assert_eq!(editor.mode, Mode::Normal);
+
+        handle_key(&mut editor, shift_key('V'));
+        handle_key(&mut editor, key('j'));
+        handle_key(&mut editor, key('<'));
+
+        assert_eq!(editor.buffer().content(), "one\ntwo\nthree\n");
+        assert_eq!(editor.mode, Mode::Normal);
+
+        let mut comments = Editor::default();
+        comments.replace_buffer_content("one\ntwo\nthree\n");
+
+        handle_key(&mut comments, shift_key('V'));
+        handle_key(&mut comments, key('j'));
+        handle_key(&mut comments, key('g'));
+        handle_key(&mut comments, key('c'));
+
+        assert_eq!(comments.buffer().content(), "// one\n// two\nthree\n");
+        assert_eq!(comments.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn visual_case_keys_transform_selection_and_exit_to_normal() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("FOO Bar\n");
+
+        handle_key(&mut editor, key('v'));
+        handle_key(&mut editor, key('e'));
+        handle_key(&mut editor, key('u'));
+
+        assert_eq!(editor.buffer().content(), "foo Bar\n");
+        assert_eq!(editor.mode, Mode::Normal);
+
+        editor.cursor.col = 4;
+        handle_key(&mut editor, key('v'));
+        handle_key(&mut editor, key('e'));
+        handle_key(&mut editor, shift_key('U'));
+
+        assert_eq!(editor.buffer().content(), "foo BAR\n");
+        assert_eq!(editor.mode, Mode::Normal);
+
+        editor.cursor.col = 0;
+        handle_key(&mut editor, key('v'));
+        handle_key(&mut editor, key('e'));
+        handle_key(&mut editor, shift_key('~'));
+
+        assert_eq!(editor.buffer().content(), "FOO BAR\n");
+        assert_eq!(editor.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn visual_text_object_keys_select_and_yank_documented_objects() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("foo (bar baz) qux\n");
+        editor.cursor.col = 6;
+
+        handle_key(&mut editor, key('v'));
+        handle_key(&mut editor, key('i'));
+        handle_key(&mut editor, key('('));
+        assert_eq!(editor.get_visual_range(), (0, 5, 0, 11));
+
+        handle_key(&mut editor, key('y'));
+        assert_eq!(
+            editor.registers.get(None),
+            Some(&RegisterContent::Chars("bar baz".to_string()))
+        );
+        assert_eq!(editor.mode, Mode::Normal);
     }
 
     #[test]
