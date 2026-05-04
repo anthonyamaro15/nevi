@@ -1115,6 +1115,16 @@ impl Editor {
         }
     }
 
+    /// Refresh editor state that can change while the terminal is unfocused.
+    pub fn handle_focus_gained(&mut self) -> Option<String> {
+        let reload_result = self.check_and_reload_external_changes();
+        if self.explorer.visible {
+            self.explorer.refresh();
+        }
+        self.refresh_git_state();
+        reload_result
+    }
+
     /// Set the project root directory
     pub fn set_project_root(&mut self, path: std::path::PathBuf) {
         self.project_root = Some(path.clone());
@@ -7515,6 +7525,40 @@ mod tests {
         editor.update_all_git_diffs();
 
         assert_eq!(editor.git_status_for_line(0), None);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn focus_gained_refreshes_visible_explorer_tree() {
+        let tmp = unique_temp_dir("nevi_explorer_focus_refresh");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let root = tmp.canonicalize().expect("canonical temp dir");
+        std::fs::create_dir(root.join("existing")).expect("create existing dir");
+
+        let mut editor = Editor::default();
+        editor.set_project_root(root.clone());
+        editor.open_explorer();
+        assert!(editor
+            .explorer
+            .flat_view
+            .iter()
+            .any(|node| node.name == "existing"));
+        assert!(!editor
+            .explorer
+            .flat_view
+            .iter()
+            .any(|node| node.name == "created-outside"));
+
+        std::fs::create_dir(root.join("created-outside")).expect("create external dir");
+
+        let _ = editor.handle_focus_gained();
+
+        assert!(editor
+            .explorer
+            .flat_view
+            .iter()
+            .any(|node| node.name == "created-outside"));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

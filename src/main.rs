@@ -351,9 +351,8 @@ fn main() -> anyhow::Result<()> {
                     // Handle focus gained for autoread
                     let key = match event {
                         EditorEvent::FocusGained => {
-                            // Check all open buffers for external changes
-                            let reload_result = editor.check_and_reload_external_changes();
-                            editor.refresh_git_state();
+                            // Refresh state that may have changed while unfocused.
+                            let reload_result = editor.handle_focus_gained();
                             if let Some(msg) = reload_result {
                                 editor.set_status(msg);
                             }
