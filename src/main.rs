@@ -351,9 +351,8 @@ fn main() -> anyhow::Result<()> {
                     // Handle focus gained for autoread
                     let key = match event {
                         EditorEvent::FocusGained => {
-                            // Check all open buffers for external changes
-                            let reload_result = editor.check_and_reload_external_changes();
-                            editor.refresh_git_state();
+                            // Refresh state that may have changed while unfocused.
+                            let reload_result = editor.handle_focus_gained();
                             if let Some(msg) = reload_result {
                                 editor.set_status(msg);
                             }
@@ -1563,7 +1562,9 @@ fn main() -> anyhow::Result<()> {
             if let Err(e) = terminal.run_external_process(&cmd) {
                 editor.set_status(format!("Error running command: {}", e));
             }
-            editor.refresh_git_state();
+            if let Some(msg) = editor.handle_external_process_finished() {
+                editor.set_status(msg);
+            }
             needs_redraw = true;
             continue;
         }

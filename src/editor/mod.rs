@@ -1115,6 +1115,21 @@ impl Editor {
         }
     }
 
+    /// Refresh editor state that can change while the terminal is unfocused.
+    pub fn handle_focus_gained(&mut self) -> Option<String> {
+        let reload_result = self.check_and_reload_external_changes();
+        if self.explorer.visible {
+            self.explorer.refresh();
+        }
+        self.refresh_git_state();
+        reload_result
+    }
+
+    /// Refresh editor state after returning from an external terminal command.
+    pub fn handle_external_process_finished(&mut self) -> Option<String> {
+        self.handle_focus_gained()
+    }
+
     /// Set the project root directory
     pub fn set_project_root(&mut self, path: std::path::PathBuf) {
         self.project_root = Some(path.clone());
@@ -7515,6 +7530,78 @@ mod tests {
         editor.update_all_git_diffs();
 
         assert_eq!(editor.git_status_for_line(0), None);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn focus_gained_refreshes_visible_explorer_tree() {
+        let tmp = unique_temp_dir("nevi_explorer_focus_refresh");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let root = tmp.canonicalize().expect("canonical temp dir");
+        std::fs::create_dir(root.join("existing")).expect("create existing dir");
+
+        let mut editor = Editor::default();
+        editor.set_project_root(root.clone());
+        editor.open_explorer();
+        assert!(editor
+            .explorer
+            .flat_view
+            .iter()
+            .any(|node| node.name == "existing"));
+        assert!(!editor
+            .explorer
+            .flat_view
+            .iter()
+            .any(|node| node.name == "created-outside"));
+
+        std::fs::create_dir(root.join("created-outside")).expect("create external dir");
+
+        let _ = editor.handle_focus_gained();
+
+        assert!(editor
+            .explorer
+            .flat_view
+            .iter()
+            .any(|node| node.name == "created-outside"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn external_process_return_removes_deleted_files_from_visible_explorer_tree() {
+        let tmp = unique_temp_dir("nevi_explorer_external_refresh");
+        let examples = tmp.join("examples");
+        std::fs::create_dir_all(&examples).expect("create examples dir");
+        let removed_file = examples.join("dump_toml_nodes.rs");
+        std::fs::write(&removed_file, "fn main() {}\n").expect("write file");
+        let root = tmp.clone();
+
+        let mut editor = Editor::default();
+        editor.set_project_root(root.clone());
+        editor.open_explorer();
+        editor.explorer.selected = editor
+            .explorer
+            .flat_view
+            .iter()
+            .position(|node| node.path == root.join("examples"))
+            .expect("examples dir should be visible");
+        editor.explorer.expand();
+        assert!(editor
+            .explorer
+            .flat_view
+            .iter()
+            .any(|node| node.path == removed_file));
+
+        std::fs::remove_file(&removed_file).expect("remove external file");
+
+        let _ = editor.handle_external_process_finished();
+
+        assert!(!editor
+            .explorer
+            .flat_view
+            .iter()
+            .any(|node| node.path == removed_file));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
