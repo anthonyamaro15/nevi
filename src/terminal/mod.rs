@@ -265,6 +265,58 @@ fn apply_diagnostic_underline<W: Write>(
     }
 }
 
+fn editor_char_display_width(ch: char, tab_width: usize) -> usize {
+    if ch == '\t' {
+        tab_width.max(1)
+    } else {
+        1
+    }
+}
+
+fn text_display_width(text: &str, tab_width: usize) -> usize {
+    text.chars()
+        .filter(|ch| *ch != '\n')
+        .map(|ch| editor_char_display_width(ch, tab_width))
+        .sum()
+}
+
+fn take_display_width(text: &str, start_col: usize, max_width: usize, tab_width: usize) -> String {
+    let mut width = 0;
+    let mut out = String::new();
+
+    for ch in text.chars().skip(start_col) {
+        if ch == '\n' {
+            break;
+        }
+
+        let ch_width = editor_char_display_width(ch, tab_width);
+        if width + ch_width > max_width {
+            break;
+        }
+
+        out.push(ch);
+        width += ch_width;
+    }
+
+    out
+}
+
+fn print_editor_char(ch: char, tab_width: usize) -> usize {
+    let width = editor_char_display_width(ch, tab_width);
+    if ch == '\t' {
+        for _ in 0..width {
+            print!(" ");
+        }
+        width
+    } else if ch.is_control() {
+        print!(" ");
+        1
+    } else {
+        print!("{}", ch);
+        1
+    }
+}
+
 /// Dim a color by reducing its brightness (for hidden files, etc.)
 fn dim_color(color: Color) -> Color {
     match color {
@@ -284,6 +336,7 @@ fn calculate_wrap_segments(
     line: &str,
     max_width: usize,
     preserve_indent: bool,
+    tab_width: usize,
 ) -> Vec<WrapSegment> {
     if max_width == 0 {
         return vec![WrapSegment {
@@ -296,7 +349,7 @@ fn calculate_wrap_segments(
     let line = line.trim_end_matches('\n');
     let chars: Vec<char> = line.chars().collect();
 
-    if chars.len() <= max_width {
+    if text_display_width(line, tab_width) <= max_width {
         return vec![WrapSegment {
             start_col: 0,
             text: line.to_string(),
@@ -305,12 +358,22 @@ fn calculate_wrap_segments(
     }
 
     // Calculate the indentation of the original line
-    let indent_len = if preserve_indent {
-        chars.iter().take_while(|c| c.is_whitespace()).count()
+    let indent: String = if preserve_indent {
+        let mut width = 0;
+        let mut indent = String::new();
+        for ch in chars.iter().take_while(|c| c.is_whitespace()) {
+            let ch_width = editor_char_display_width(*ch, tab_width);
+            if width + ch_width >= max_width {
+                break;
+            }
+            indent.push(*ch);
+            width += ch_width;
+        }
+        indent
     } else {
-        0
+        String::new()
     };
-    let indent: String = chars.iter().take(indent_len).collect();
+    let indent_width = text_display_width(&indent, tab_width);
 
     let mut segments = Vec::new();
     let mut current_col = 0;
@@ -321,7 +384,7 @@ fn calculate_wrap_segments(
         let available_width = if is_first {
             max_width
         } else {
-            max_width.saturating_sub(indent_len)
+            max_width.saturating_sub(indent_width)
         };
 
         if available_width == 0 {
@@ -334,11 +397,24 @@ fn calculate_wrap_segments(
             });
             current_col += 1;
         } else {
-            let remaining = chars.len() - current_col;
-            let take_count = remaining.min(available_width);
-            let text: String = chars[current_col..current_col + take_count]
-                .iter()
-                .collect();
+            let mut take_count = 0;
+            let mut segment_width = 0;
+
+            while current_col + take_count < chars.len() {
+                let ch = chars[current_col + take_count];
+                let ch_width = editor_char_display_width(ch, tab_width);
+                if segment_width + ch_width > available_width {
+                    if take_count == 0 {
+                        take_count = 1;
+                    }
+                    break;
+                }
+
+                segment_width += ch_width;
+                take_count += 1;
+            }
+
+            let text: String = chars[current_col..current_col + take_count].iter().collect();
 
             segments.push(WrapSegment {
                 start_col: current_col,
@@ -675,6 +751,7 @@ impl Terminal {
         let selection_bg = theme.ui.selection;
         let search_bg = theme.ui.search_match_bg;
         let search_fg = theme.ui.search_match_fg;
+        let tab_width = editor.get_effective_tab_width();
 
         // Pre-compute URI for diagnostic lookups (avoids repeated string allocations)
         let cached_uri = if is_active {
@@ -696,7 +773,7 @@ impl Terminal {
                 .unwrap_or_default();
 
             // Calculate wrapped segments
-            let segments = calculate_wrap_segments(&line_content, wrap_width, true);
+            let segments = calculate_wrap_segments(&line_content, wrap_width, true, tab_width);
 
             // Get syntax highlights for this line
             let highlights = if is_active {
@@ -880,7 +957,7 @@ impl Terminal {
                 // Render segment content with syntax highlighting
                 let segment_text = segment.text.trim_end_matches('\n');
 
-                self.render_line_segment_with_highlights(
+                let rendered_cols = self.render_line_segment_with_highlights(
                     segment_text,
                     file_line,
                     segment.start_col,
@@ -898,6 +975,7 @@ impl Terminal {
                     search_fg,
                     theme.diagnostic.error,
                     theme.ui.line_number, // Use grey color for unused code (hint diagnostics)
+                    tab_width,
                 )?;
 
                 // Fill remaining space (sign column = 2)
@@ -906,7 +984,7 @@ impl Terminal {
                         line_num_width + 1
                     } else {
                         0
-                    } + segment_text.chars().count();
+                    } + rendered_cols;
 
                 // Render inline diagnostic on first segment only
                 if segment.is_first && is_active {
@@ -1020,6 +1098,7 @@ impl Terminal {
         let cursor_line_bg = theme.ui.cursor_line;
         let editor_bg = theme.ui.background;
         let editor_fg = theme.ui.foreground;
+        let tab_width = editor.get_effective_tab_width();
 
         // Pre-compute URI for diagnostic lookups (avoids repeated string allocations)
         let cached_uri = if is_active {
@@ -1196,10 +1275,10 @@ impl Terminal {
                 // Line content with syntax highlighting and visual selection
                 if let Some(line) = buffer.line(file_line) {
                     let h_offset = pane.h_offset;
-                    let full_line_len = line.chars().filter(|c| *c != '\n').count();
-                    let line_str: String =
-                        line.chars().skip(h_offset).take(effective_width).collect();
-                    let line_str = line_str.trim_end_matches('\n');
+                    let line_content = line.to_string();
+                    let full_line_len = line_content.chars().filter(|c| *c != '\n').count();
+                    let line_str =
+                        take_display_width(&line_content, h_offset, effective_width, tab_width);
 
                     // Get syntax highlights for this line (only for active pane)
                     let highlights = if is_active {
@@ -1213,8 +1292,8 @@ impl Terminal {
                     let search_bg = theme.ui.search_match_bg;
                     let search_fg = theme.ui.search_match_fg;
 
-                    self.render_line_with_highlights(
-                        line_str,
+                    let rendered_cols = self.render_line_with_highlights(
+                        &line_str,
                         file_line,
                         h_offset,
                         &highlights,
@@ -1231,6 +1310,7 @@ impl Terminal {
                         search_fg,
                         theme.diagnostic.error,
                         theme.ui.line_number, // Use grey color for unused code (hint diagnostics)
+                        tab_width,
                     )?;
 
                     // Track characters printed for fill calculation (sign column = 2)
@@ -1239,7 +1319,7 @@ impl Terminal {
                             line_num_width + 1
                         } else {
                             0
-                        } + line_str.chars().count();
+                        } + rendered_cols;
 
                     // Render ghost text on cursor line when completion is active
                     if is_cursor_line
@@ -1443,7 +1523,8 @@ impl Terminal {
         search_match_fg: Color,
         diagnostic_error_color: Color,
         diagnostic_hint_color: Color,
-    ) -> anyhow::Result<()> {
+        tab_width: usize,
+    ) -> anyhow::Result<usize> {
         let chars: Vec<char> = text.chars().collect();
 
         // Determine the base background for this line
@@ -1465,6 +1546,7 @@ impl Terminal {
         let mut current_bold = false;
         let mut current_italic = false;
         let mut current_underline_color: Option<Color> = None;
+        let mut rendered_cols = 0;
 
         for (i, ch) in chars.iter().enumerate() {
             // Calculate the actual column in the original line
@@ -1580,7 +1662,7 @@ impl Terminal {
                 current_underline_color = desired_underline_color;
             }
 
-            print!("{}", ch);
+            rendered_cols += print_editor_char(*ch, tab_width);
         }
 
         // Restore to base background/foreground and clear text attributes.
@@ -1591,7 +1673,7 @@ impl Terminal {
             SetForegroundColor(editor_fg)
         )?;
 
-        Ok(())
+        Ok(rendered_cols)
     }
 
     /// Draw separator lines between panes
@@ -2057,6 +2139,7 @@ impl Terminal {
                 let active_pane = &editor.panes()[editor.active_pane_idx()];
                 let wrap_enabled = editor.settings.editor.wrap;
                 let wrap_width = editor.settings.editor.wrap_width;
+                let tab_width = editor.get_effective_tab_width();
 
                 let (cursor_row, cursor_col) = if wrap_enabled {
                     // Calculate visual position with wrapping
@@ -2077,8 +2160,12 @@ impl Terminal {
                                 .line(line_idx)
                                 .map(|l| l.to_string())
                                 .unwrap_or_default();
-                            let segments =
-                                calculate_wrap_segments(&line_content, effective_wrap_width, true);
+                            let segments = calculate_wrap_segments(
+                                &line_content,
+                                effective_wrap_width,
+                                true,
+                                tab_width,
+                            );
                             visual_row += segments.len();
                         }
                     }
@@ -2088,8 +2175,12 @@ impl Terminal {
                         .line(editor.cursor.line)
                         .map(|l| l.to_string())
                         .unwrap_or_default();
-                    let segments =
-                        calculate_wrap_segments(&cursor_line_content, effective_wrap_width, true);
+                    let segments = calculate_wrap_segments(
+                        &cursor_line_content,
+                        effective_wrap_width,
+                        true,
+                        tab_width,
+                    );
 
                     let mut cursor_visual_row = visual_row;
                     let mut cursor_visual_col = editor.cursor.col;
@@ -5201,7 +5292,8 @@ impl Terminal {
         search_match_fg: Color,
         diagnostic_error_color: Color,
         diagnostic_hint_color: Color,
-    ) -> anyhow::Result<()> {
+        tab_width: usize,
+    ) -> anyhow::Result<usize> {
         let chars: Vec<char> = line.chars().collect();
         let line_len = chars.len();
 
@@ -5265,6 +5357,7 @@ impl Terminal {
         let mut current_bold = false;
         let mut current_italic = false;
         let mut current_underline_color: Option<Color> = None;
+        let mut rendered_cols = 0;
         for (i, ch) in chars.iter().enumerate() {
             // Map display column to actual buffer column
             let actual_col = col_offset + i;
@@ -5351,13 +5444,14 @@ impl Terminal {
                 current_underline_color = desired_underline_color;
             }
 
-            print!("{}", ch);
+            rendered_cols += print_editor_char(*ch, tab_width);
         }
 
         // Handle selection extending past line end
         if in_selection && sel_end > line_len {
             execute!(self.stdout, SetBackgroundColor(selection_bg))?;
             print!(" ");
+            rendered_cols += 1;
         }
 
         // Restore to base background/foreground and clear text attributes.
@@ -5368,7 +5462,7 @@ impl Terminal {
             SetForegroundColor(editor_fg)
         )?;
 
-        Ok(())
+        Ok(rendered_cols)
     }
 
     /// Get the syntax color at a given column position
@@ -8783,6 +8877,33 @@ mod tests {
 
     fn esc_key() -> KeyEvent {
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn editor_char_display_width_expands_tabs_and_sanitizes_controls() {
+        assert_eq!(super::editor_char_display_width('\t', 4), 4);
+        assert_eq!(super::editor_char_display_width('\t', 0), 1);
+        assert_eq!(super::editor_char_display_width('\u{0007}', 4), 1);
+        assert_eq!(super::editor_char_display_width('a', 4), 1);
+    }
+
+    #[test]
+    fn take_display_width_stops_before_expanded_tab_overflows() {
+        assert_eq!(super::take_display_width("ab\tcd", 0, 5, 4), "ab");
+        assert_eq!(super::take_display_width("ab\tcd", 0, 6, 4), "ab\t");
+    }
+
+    #[test]
+    fn wrap_segments_measure_tabs_by_display_width() {
+        let segments = super::calculate_wrap_segments("ab\tcd", 5, true, 4);
+
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[0].text, "ab");
+        assert_eq!(segments[1].text, "\tc");
+        assert_eq!(segments[2].text, "d");
+        assert!(segments
+            .iter()
+            .all(|segment| super::text_display_width(&segment.text, 4) <= 5));
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
