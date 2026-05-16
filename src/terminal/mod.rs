@@ -665,6 +665,11 @@ impl Terminal {
             self.render_code_actions_picker(editor)?;
         }
 
+        // Render Markdown preview if active
+        if editor.markdown_preview.is_some() {
+            self.render_markdown_preview(editor)?;
+        }
+
         // Render theme picker if active
         if editor.theme_picker.is_some() {
             self.render_theme_picker(editor)?;
@@ -673,6 +678,8 @@ impl Terminal {
         // Position cursor
         if editor.floating_terminal.is_visible() {
             self.render_floating_terminal(editor)?;
+        } else if editor.markdown_preview.is_some() {
+            execute!(self.stdout, cursor::Hide)?;
         } else {
             self.position_cursor(editor)?;
         }
@@ -3648,6 +3655,24 @@ impl Terminal {
         (popup_x, popup_y)
     }
 
+    fn markdown_preview_rect(editor: &Editor) -> crate::editor::Rect {
+        let max_width = editor.term_width.saturating_sub(4).min(100);
+        let width = max_width.max(editor.term_width.min(20));
+        let max_height = editor.term_height.saturating_sub(4);
+        let height = max_height.max(editor.term_height.min(5));
+
+        crate::editor::Rect::new(
+            (editor.term_width.saturating_sub(width)) / 2,
+            (editor.term_height.saturating_sub(height)) / 2,
+            width,
+            height,
+        )
+    }
+
+    fn markdown_preview_visible_rows(editor: &Editor) -> usize {
+        Self::markdown_preview_rect(editor).height.saturating_sub(3) as usize
+    }
+
     /// Render the diagnostic floating popup (like vim.diagnostic.open_float())
     fn render_diagnostic_float(&mut self, editor: &Editor) -> anyhow::Result<()> {
         let diagnostics = editor.diagnostics_for_line(editor.cursor.line);
@@ -3779,6 +3804,170 @@ impl Terminal {
         print!("╯");
 
         execute!(self.stdout, ResetColor)?;
+        Ok(())
+    }
+
+    fn render_markdown_preview(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        let Some(preview) = &editor.markdown_preview else {
+            return Ok(());
+        };
+
+        let rect = Self::markdown_preview_rect(editor);
+        let visible_rows = rect.height.saturating_sub(3) as usize;
+        let inner_width = rect.width.saturating_sub(2) as usize;
+        let theme = editor.theme();
+
+        execute!(
+            self.stdout,
+            SetForegroundColor(theme.ui.popup_border),
+            SetBackgroundColor(theme.ui.popup_bg),
+            cursor::MoveTo(rect.x, rect.y)
+        )?;
+        print!("╭");
+        let title = " Markdown Preview ";
+        let title_start = (rect.width as usize).saturating_sub(title.len()) / 2;
+        for i in 1..rect.width.saturating_sub(1) {
+            if i as usize == title_start {
+                print!("{title}");
+            } else if i as usize > title_start && (i as usize) < title_start + title.len() {
+                continue;
+            } else {
+                print!("─");
+            }
+        }
+        print!("╮");
+
+        for row in 0..visible_rows {
+            execute!(
+                self.stdout,
+                cursor::MoveTo(rect.x, rect.y + 1 + row as u16),
+                SetForegroundColor(theme.ui.popup_border),
+                SetBackgroundColor(theme.ui.popup_bg)
+            )?;
+            print!("│");
+
+            if let Some(line) = preview.lines.get(preview.scroll + row) {
+                Self::render_markdown_preview_line(&mut self.stdout, line, inner_width, editor)?;
+            } else {
+                print!("{:width$}", "", width = inner_width);
+            }
+
+            execute!(
+                self.stdout,
+                SetForegroundColor(theme.ui.popup_border),
+                SetBackgroundColor(theme.ui.popup_bg)
+            )?;
+            print!("│");
+        }
+
+        execute!(
+            self.stdout,
+            cursor::MoveTo(rect.x, rect.y + rect.height.saturating_sub(2)),
+            SetForegroundColor(theme.ui.line_number),
+            SetBackgroundColor(theme.ui.popup_bg)
+        )?;
+        print!("│");
+        let footer = " j/k scroll • Ctrl-d/u page • q close ";
+        print!("{:^width$}", footer, width = inner_width);
+        execute!(self.stdout, SetForegroundColor(theme.ui.popup_border))?;
+        print!("│");
+
+        execute!(
+            self.stdout,
+            cursor::MoveTo(rect.x, rect.y + rect.height.saturating_sub(1)),
+            SetForegroundColor(theme.ui.popup_border),
+            SetBackgroundColor(theme.ui.popup_bg)
+        )?;
+        print!("╰");
+        for _ in 1..rect.width.saturating_sub(1) {
+            print!("─");
+        }
+        print!("╯");
+
+        execute!(self.stdout, ResetColor)?;
+        Ok(())
+    }
+
+    fn render_markdown_preview_line<W: Write>(
+        output: &mut W,
+        line: &crate::markdown_preview::PreviewLine,
+        width: usize,
+        editor: &Editor,
+    ) -> anyhow::Result<()> {
+        use crate::markdown_preview::{PreviewLineKind, PreviewSpanStyle};
+
+        let theme = editor.theme();
+        let mut written = 0usize;
+
+        if line.kind == PreviewLineKind::Rule {
+            execute!(output, SetForegroundColor(theme.ui.line_number))?;
+            write!(output, "{}", "─".repeat(width))?;
+            return Ok(());
+        }
+
+        for span in &line.spans {
+            let remaining = width.saturating_sub(written);
+            if remaining == 0 {
+                break;
+            }
+            let display: String = span.text.chars().take(remaining).collect();
+            let char_count = display.chars().count();
+
+            match span.style {
+                PreviewSpanStyle::Plain => {
+                    let fg = match line.kind {
+                        PreviewLineKind::Heading(_) => theme.syntax.function.fg,
+                        PreviewLineKind::Quote => theme.syntax.comment.fg,
+                        PreviewLineKind::CodeBlock => theme.syntax.string.fg,
+                        PreviewLineKind::Placeholder => theme.ui.line_number,
+                        _ => theme.ui.foreground,
+                    };
+                    execute!(
+                        output,
+                        SetForegroundColor(fg),
+                        SetAttribute(Attribute::Reset)
+                    )?;
+                }
+                PreviewSpanStyle::Emphasis => {
+                    execute!(
+                        output,
+                        SetForegroundColor(theme.ui.foreground),
+                        SetAttribute(Attribute::Italic)
+                    )?;
+                }
+                PreviewSpanStyle::Strong => {
+                    execute!(
+                        output,
+                        SetForegroundColor(theme.ui.foreground),
+                        SetAttribute(Attribute::Bold)
+                    )?;
+                }
+                PreviewSpanStyle::InlineCode => {
+                    execute!(
+                        output,
+                        SetForegroundColor(theme.syntax.string.fg),
+                        SetAttribute(Attribute::Reset)
+                    )?;
+                }
+                PreviewSpanStyle::Link => {
+                    execute!(
+                        output,
+                        SetForegroundColor(theme.syntax.function.fg),
+                        SetAttribute(Attribute::Underlined)
+                    )?;
+                }
+            }
+
+            write!(output, "{display}")?;
+            written += char_count;
+        }
+
+        execute!(
+            output,
+            SetAttribute(Attribute::Reset),
+            SetForegroundColor(theme.ui.foreground)
+        )?;
+        write!(output, "{:width$}", "", width = width.saturating_sub(written))?;
         Ok(())
     }
 
@@ -5755,6 +5944,30 @@ fn handle_theme_picker_key(editor: &mut Editor, key: KeyEvent) {
     }
 }
 
+fn handle_markdown_preview_key(editor: &mut Editor, key: KeyEvent) {
+    let visible_rows = Terminal::markdown_preview_visible_rows(editor).max(1);
+    let half_page = (visible_rows / 2).max(1) as isize;
+
+    match (key.modifiers, key.code) {
+        (KeyModifiers::NONE, KeyCode::Esc)
+        | (KeyModifiers::NONE, KeyCode::Char('q'))
+        | (KeyModifiers::CONTROL, KeyCode::Char('[')) => editor.close_markdown_preview(),
+        (KeyModifiers::NONE, KeyCode::Char('j')) | (KeyModifiers::NONE, KeyCode::Down) => {
+            editor.scroll_markdown_preview(1, visible_rows)
+        }
+        (KeyModifiers::NONE, KeyCode::Char('k')) | (KeyModifiers::NONE, KeyCode::Up) => {
+            editor.scroll_markdown_preview(-1, visible_rows)
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('d')) => {
+            editor.scroll_markdown_preview(half_page, visible_rows)
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+            editor.scroll_markdown_preview(-half_page, visible_rows)
+        }
+        _ => {}
+    }
+}
+
 /// Play a macro from a register
 fn play_macro(editor: &mut Editor, register: char, count: usize) {
     // Get the macro keys (clone to avoid borrow issues)
@@ -5814,6 +6027,12 @@ pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
 
         // Terminal apps need Escape; Ctrl-\ is the dedicated toggle key.
         editor.floating_terminal.send_key(key);
+        return;
+    }
+
+    // If Markdown preview is visible, it owns input until closed.
+    if editor.markdown_preview.is_some() {
+        handle_markdown_preview_key(editor, key);
         return;
     }
 
@@ -9109,6 +9328,46 @@ mod tests {
             rust.status_message.as_deref(),
             Some("Markdown preview is only available for Markdown buffers")
         );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn markdown_preview_rect_is_centered_and_sized_for_reading() {
+        let mut editor = Editor::default();
+        editor.set_size(140, 50);
+
+        let rect = Terminal::markdown_preview_rect(&editor);
+
+        assert_eq!(rect.width, 100);
+        assert_eq!(rect.height, 46);
+        assert_eq!(rect.x, 20);
+        assert_eq!(rect.y, 2);
+    }
+
+    #[test]
+    fn markdown_preview_keys_scroll_and_close_the_overlay() {
+        let tmp = unique_temp_dir("nevi_markdown_preview_keys");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let markdown_path = tmp.join("notes.md");
+        std::fs::write(&markdown_path, "# Notes\n").expect("write markdown");
+
+        let mut editor = Editor::default();
+        editor.open_file(markdown_path).expect("open markdown");
+        editor.replace_buffer_content(&(0..30).map(|i| format!("line {i}\n")).collect::<String>());
+        editor.open_markdown_preview().expect("open preview");
+
+        handle_key(&mut editor, KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(editor.markdown_preview.as_ref().unwrap().scroll, 1);
+
+        handle_key(
+            &mut editor,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        );
+        assert!(editor.markdown_preview.as_ref().unwrap().scroll > 1);
+
+        handle_key(&mut editor, KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(editor.markdown_preview.is_none());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
