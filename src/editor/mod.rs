@@ -810,6 +810,8 @@ pub struct Editor {
     pub theme_manager: ThemeManager,
     /// Theme picker state (Some if picker is open)
     pub theme_picker: Option<ThemePicker>,
+    /// Floating rendered Markdown preview state.
+    pub markdown_preview: Option<crate::markdown_preview::MarkdownPreviewState>,
     /// Marks for navigation (m{a-z}, '{a-z}, `{a-z})
     pub marks: Marks,
     /// Last visual selection for gv command
@@ -1093,6 +1095,7 @@ impl Editor {
             git_repo: None,
             theme_manager,
             theme_picker: None,
+            markdown_preview: None,
             marks: Marks::new(),
             last_visual_selection: None,
             macros: MacroState::new(),
@@ -1243,6 +1246,43 @@ impl Editor {
         if self.theme_manager.preview_theme(name) {
             self.syntax.sync_theme(self.theme_manager.theme());
         }
+    }
+
+    /// Open a snapshot-based Markdown preview for the active buffer.
+    pub fn open_markdown_preview(&mut self) -> Result<(), &'static str> {
+        let is_markdown = self
+            .buffer()
+            .path
+            .as_deref()
+            .and_then(crate::lsp::LanguageId::from_path)
+            == Some(crate::lsp::LanguageId::Markdown);
+
+        if !is_markdown {
+            return Err("Markdown preview is only available for Markdown buffers");
+        }
+
+        let rendered = crate::markdown_preview::render_markdown(&self.buffer().content());
+        self.markdown_preview = Some(crate::markdown_preview::MarkdownPreviewState::new(rendered));
+        Ok(())
+    }
+
+    /// Close the floating Markdown preview.
+    pub fn close_markdown_preview(&mut self) {
+        self.markdown_preview = None;
+    }
+
+    /// Scroll the Markdown preview while clamping to its visible content range.
+    pub fn scroll_markdown_preview(&mut self, delta: isize, visible_rows: usize) {
+        let Some(preview) = &mut self.markdown_preview else {
+            return;
+        };
+
+        let next = if delta.is_negative() {
+            preview.scroll.saturating_sub(delta.unsigned_abs())
+        } else {
+            preview.scroll.saturating_add(delta as usize)
+        };
+        preview.scroll = next.min(preview.max_scroll(visible_rows));
     }
 
     /// Get the project root or current working directory
@@ -7328,6 +7368,85 @@ mod tests {
         assert!(editor.switch_to_buffer(0));
         editor.undo();
         assert_eq!(editor.buffer().content(), "abc\n");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn markdown_preview_opens_for_markdown_buffers_and_snapshots_content() {
+        let tmp = unique_temp_dir("nevi_markdown_preview_snapshot");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let markdown = tmp.join("notes.md");
+        std::fs::write(&markdown, "# Seed\n").expect("write markdown");
+
+        let mut editor = Editor::default();
+        editor
+            .open_file(markdown)
+            .expect("open markdown buffer");
+        editor.replace_buffer_content("# Before\n");
+
+        editor.open_markdown_preview().expect("open preview");
+        assert_eq!(
+            editor
+                .markdown_preview
+                .as_ref()
+                .expect("preview")
+                .lines[0]
+                .plain_text(),
+            "Before"
+        );
+
+        editor.replace_buffer_content("# After\n");
+        assert_eq!(
+            editor
+                .markdown_preview
+                .as_ref()
+                .expect("preview")
+                .lines[0]
+                .plain_text(),
+            "Before"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn markdown_preview_rejects_non_markdown_buffers() {
+        let tmp = unique_temp_dir("nevi_markdown_preview_non_markdown");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let rust = tmp.join("main.rs");
+        std::fs::write(&rust, "fn main() {}\n").expect("write rust");
+
+        let mut editor = Editor::default();
+        editor.open_file(rust).expect("open rust buffer");
+
+        let result = editor.open_markdown_preview();
+
+        assert!(result.is_err());
+        assert!(editor.markdown_preview.is_none());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn markdown_preview_scroll_is_clamped_to_visible_content() {
+        let tmp = unique_temp_dir("nevi_markdown_preview_scroll");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let markdown = tmp.join("notes.md");
+        std::fs::write(&markdown, "# Seed\n").expect("write markdown");
+
+        let mut editor = Editor::default();
+        editor
+            .open_file(markdown)
+            .expect("open markdown buffer");
+        editor.replace_buffer_content(&(0..20).map(|i| format!("line {i}\n")).collect::<String>());
+        editor.open_markdown_preview().expect("open preview");
+
+        editor.scroll_markdown_preview(100, 5);
+        assert_eq!(editor.markdown_preview.as_ref().unwrap().scroll, 15);
+
+        editor.scroll_markdown_preview(-100, 5);
+        assert_eq!(editor.markdown_preview.as_ref().unwrap().scroll, 0);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

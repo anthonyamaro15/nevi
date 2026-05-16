@@ -62,6 +62,25 @@ pub struct MarkdownPreview {
     pub lines: Vec<PreviewLine>,
 }
 
+#[derive(Debug, Clone)]
+pub struct MarkdownPreviewState {
+    pub lines: Vec<PreviewLine>,
+    pub scroll: usize,
+}
+
+impl MarkdownPreviewState {
+    pub fn new(preview: MarkdownPreview) -> Self {
+        Self {
+            lines: preview.lines,
+            scroll: 0,
+        }
+    }
+
+    pub fn max_scroll(&self, visible_rows: usize) -> usize {
+        self.lines.len().saturating_sub(visible_rows)
+    }
+}
+
 pub fn render_markdown(source: &str) -> MarkdownPreview {
     if source.trim().is_empty() {
         return MarkdownPreview {

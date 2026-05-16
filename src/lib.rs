@@ -29,7 +29,8 @@ pub use finder::{FuzzyFinder, FinderMode, FloatingWindow};
 pub use frecency::FrecencyDb;
 pub use lsp::{LspManager, LspNotification, LspStatus, MultiLspManager, LanguageId};
 pub use markdown_preview::{
-    render_markdown, MarkdownPreview, PreviewLine, PreviewLineKind, PreviewSpan, PreviewSpanStyle,
+    render_markdown, MarkdownPreview, MarkdownPreviewState, PreviewLine, PreviewLineKind,
+    PreviewSpan, PreviewSpanStyle,
 };
 pub use terminal::Terminal;
 pub use theme::{Theme, ThemeManager};
