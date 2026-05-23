@@ -2154,11 +2154,8 @@ impl Terminal {
                 } else {
                     // Cursor in finder input line (at bottom of finder window)
                     // Must use same window calculation as render_finder
-                    let preview_enabled = editor.finder.preview_enabled
-                        && (editor.finder.mode == crate::finder::FinderMode::Files
-                            || editor.finder.mode == crate::finder::FinderMode::Grep
-                            || editor.finder.mode == crate::finder::FinderMode::Harpoon
-                            || editor.finder.mode == crate::finder::FinderMode::Marks);
+                    let preview_enabled =
+                        editor.finder.preview_enabled && editor.finder.mode_supports_preview();
                     let win = crate::finder::FloatingWindow::centered_with_preview(
                         editor.term_width,
                         editor.term_height,
@@ -4833,11 +4830,8 @@ impl Terminal {
         let t_start = Instant::now();
         use crate::finder::FuzzyFinder;
 
-        let preview_enabled = editor.finder.preview_enabled
-            && (editor.finder.mode == crate::finder::FinderMode::Files
-                || editor.finder.mode == crate::finder::FinderMode::Grep
-                || editor.finder.mode == crate::finder::FinderMode::Harpoon
-                || editor.finder.mode == crate::finder::FinderMode::Marks);
+        let preview_enabled =
+            editor.finder.preview_enabled && editor.finder.mode_supports_preview();
         let win = crate::finder::FloatingWindow::centered_with_preview(
             editor.term_width,
             editor.term_height,
@@ -4888,6 +4882,7 @@ impl Terminal {
             crate::finder::FinderMode::Diagnostics => " Diagnostics ",
             crate::finder::FinderMode::Harpoon => " Harpoon ",
             crate::finder::FinderMode::Marks => " Marks ",
+            crate::finder::FinderMode::GitChanges => " Git Changes ",
             crate::finder::FinderMode::Terminals => " Terminals ",
         };
 
@@ -7694,11 +7689,8 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
 
     // Helper to adjust scroll after navigation
     let adjust_scroll = |editor: &mut Editor| {
-        let preview_enabled = editor.finder.preview_enabled
-            && (editor.finder.mode == crate::finder::FinderMode::Files
-                || editor.finder.mode == crate::finder::FinderMode::Grep
-                || editor.finder.mode == crate::finder::FinderMode::Harpoon
-                || editor.finder.mode == crate::finder::FinderMode::Marks);
+        let preview_enabled =
+            editor.finder.preview_enabled && editor.finder.mode_supports_preview();
         let win = crate::finder::FloatingWindow::centered_with_preview(
             editor.term_width,
             editor.term_height,
@@ -7712,7 +7704,7 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
         // Toggle preview panel - Ctrl+t (works in both modes)
         (KeyModifiers::CONTROL, KeyCode::Char('t')) => {
             editor.finder.toggle_preview();
-            if editor.finder.preview_enabled {
+            if editor.finder.preview_enabled && editor.finder.mode_supports_preview() {
                 // Mark preview as needing immediate update (skip debounce on toggle)
                 editor.update_finder_preview();
             }
@@ -7746,6 +7738,12 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
                     if !editor.switch_to_buffer(buf_idx) {
                         editor.set_status("Buffer not found");
                     }
+                } else if item
+                    .git_status
+                    .map(|status| status.is_deleted())
+                    .unwrap_or(false)
+                {
+                    editor.set_status("File was deleted");
                 } else {
                     // Open the selected file
                     let target_line = item.line;
@@ -7806,7 +7804,7 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
         // Normal mode: 'p' to toggle preview
         (KeyModifiers::NONE, KeyCode::Char('p')) if is_normal_mode => {
             editor.finder.toggle_preview();
-            if editor.finder.preview_enabled {
+            if editor.finder.preview_enabled && editor.finder.mode_supports_preview() {
                 editor.update_finder_preview();
             }
         }
@@ -8005,7 +8003,7 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
 
     // Mark preview as needing update (debounced in main loop)
     // This avoids the 10-40ms tree-sitter parsing on every keystroke
-    if selection_changed && editor.finder.preview_enabled {
+    if selection_changed && editor.finder.preview_enabled && editor.finder.mode_supports_preview() {
         editor.finder.preview_update_pending = true;
     }
 
@@ -8828,6 +8826,11 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
 
         Command::FindDiagnostics => {
             editor.open_finder_diagnostics();
+            CommandResult::Ok
+        }
+
+        Command::GitChanges => {
+            editor.open_finder_git_changes();
             CommandResult::Ok
         }
 
@@ -9765,6 +9768,49 @@ mod tests {
 
         assert_eq!(editor.mode, Mode::Normal);
         assert_eq!(editor.current_buffer_index(), 0);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn git_changes_enter_opens_existing_file() {
+        let tmp = unique_temp_dir("nevi_git_changes_enter_open");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("changed.rs");
+        std::fs::write(&path, "fn changed() {}\n").expect("write file");
+
+        let mut editor = Editor::default();
+        editor.finder.open_git_changes(vec![
+            crate::finder::FinderItem::new("M changed.rs".to_string(), path.clone())
+                .with_git_status(crate::git::GitFileStatus::Modified),
+        ]);
+        editor.mode = Mode::Finder;
+
+        handle_key(&mut editor, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.buffer().path.as_ref(), Some(&path));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn git_changes_enter_refuses_deleted_file() {
+        let tmp = unique_temp_dir("nevi_git_changes_enter_deleted");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("deleted.rs");
+
+        let mut editor = Editor::default();
+        editor.finder.open_git_changes(vec![
+            crate::finder::FinderItem::new("D deleted.rs".to_string(), path)
+                .with_git_status(crate::git::GitFileStatus::Deleted),
+        ]);
+        editor.mode = Mode::Finder;
+
+        handle_key(&mut editor, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.status_message.as_deref(), Some("File was deleted"));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

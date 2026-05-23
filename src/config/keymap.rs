@@ -538,6 +538,7 @@ mod tests {
             ("d", "FindDiagnostics"),
             ("D", "DiagnosticFloat"),
             ("gg", "LazyGit"),
+            ("gc", "GitChanges"),
             ("m", "HarpoonAdd"),
             ("h", "HarpoonMenu"),
             ("1", "Harpoon1"),

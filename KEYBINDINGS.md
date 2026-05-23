@@ -594,6 +594,7 @@ The leader key is `Space` by default. Press `Space` followed by these keys:
 | Key | Action |
 |-----|--------|
 | `<leader>gg` | Open lazygit |
+| `<leader>gc` | Open Git changes picker |
 
 ### Harpoon-like Quick Files
 
@@ -723,6 +724,7 @@ Type `:` to enter command mode. Implemented commands include:
 | `:FindBuffers` / `:fb` / `:buffers` | Open buffer finder |
 | `:FindDiagnostics` / `:diag` / `:fd` | Open diagnostics finder |
 | `:DiagnosticFloat` / `:df` | Show diagnostics for cursor line |
+| `:GitChanges` / `:gitchanges` / `:changes` / `:gc` | Open changed Git files picker with diff preview; `Enter` opens the selected file |
 | `:Explorer` / `:ex` | Toggle file explorer |
 | `:Explore` / `:Ex` | Open file explorer |
 

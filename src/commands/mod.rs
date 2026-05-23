@@ -57,6 +57,8 @@ pub enum Command {
     SearchWord,
     /// :FindDiagnostics - Open fuzzy finder for LSP diagnostics
     FindDiagnostics,
+    /// :GitChanges - Open fuzzy finder for changed Git files
+    GitChanges,
     /// :DiagnosticFloat - Show diagnostic floating popup at cursor line
     DiagnosticFloat,
     /// :MarkdownPreview - Open a rendered floating Markdown preview
@@ -332,6 +334,12 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         command: "FindDiagnostics",
         aliases: &["finddiagnostics", "diagnostics", "diag", "fd"],
         description: "Open diagnostics finder",
+        takes_args: false,
+    },
+    CommandSpec {
+        command: "GitChanges",
+        aliases: &["gitchanges", "changes", "gc"],
+        description: "Open Git changes finder",
         takes_args: false,
     },
     CommandSpec {
@@ -831,10 +839,9 @@ pub fn parse_command(input: &str) -> Command {
         "FindDiagnostics" | "finddiagnostics" | "diagnostics" | "diag" | "fd" => {
             Command::FindDiagnostics
         }
+        "GitChanges" | "gitchanges" | "changes" | "gc" => Command::GitChanges,
         "DiagnosticFloat" | "diagnosticfloat" | "df" | "linediag" => Command::DiagnosticFloat,
-        "MarkdownPreview" | "markdownpreview" | "mdpreview" | "mdp" => {
-            Command::MarkdownPreview
-        }
+        "MarkdownPreview" | "markdownpreview" | "mdpreview" | "mdp" => Command::MarkdownPreview,
 
         // Clear search highlight
         "noh" | "nohlsearch" => Command::NoHighlight,
@@ -1482,6 +1489,22 @@ mod tests {
                 .any(|item| item.command == "FindFiles" || item.matched_alias == "ff"),
             "expected FindFiles to match alias 'ff'"
         );
+    }
+
+    #[test]
+    fn git_changes_command_suggestions_match_aliases() {
+        let suggestions = command_suggestions_for_token("gc", 10);
+
+        assert!(
+            suggestions
+                .iter()
+                .any(|item| item.command == "GitChanges" && item.matched_alias == "gc"),
+            "expected GitChanges to match alias 'gc'"
+        );
+
+        assert!(matches!(parse_command("GitChanges"), Command::GitChanges));
+        assert!(matches!(parse_command("changes"), Command::GitChanges));
+        assert!(matches!(parse_command("gc"), Command::GitChanges));
     }
 
     #[test]

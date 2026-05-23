@@ -6799,6 +6799,53 @@ impl Editor {
         self.update_finder_preview();
     }
 
+    /// Open the fuzzy finder in git changes mode
+    pub fn open_finder_git_changes(&mut self) {
+        use crate::finder::FinderItem;
+
+        let Some(repo) = &self.git_repo else {
+            self.set_status("Not in a Git repository");
+            return;
+        };
+
+        let Some(workdir) = repo.workdir() else {
+            self.set_status("Not in a Git repository");
+            return;
+        };
+
+        let mut statuses: Vec<_> = repo.file_statuses().into_iter().collect();
+        statuses.sort_by(|(left_path, left_status), (right_path, right_status)| {
+            left_status
+                .picker_sort_rank()
+                .cmp(&right_status.picker_sort_rank())
+                .then_with(|| left_path.cmp(right_path))
+        });
+
+        let items: Vec<_> = statuses
+            .into_iter()
+            .map(|(path, status)| {
+                let relative_path = path.strip_prefix(workdir).unwrap_or(&path);
+                let display = format!(
+                    "{} {}",
+                    status.picker_prefix(),
+                    relative_path.to_string_lossy()
+                );
+                FinderItem::new(display, path)
+                    .with_git_status(status)
+                    .with_icon("GT")
+            })
+            .collect();
+
+        if items.is_empty() {
+            self.set_status("No Git changes");
+            return;
+        }
+
+        self.finder.open_git_changes(items);
+        self.mode = Mode::Finder;
+        self.update_finder_preview();
+    }
+
     /// Open the fuzzy finder in buffer mode
     pub fn open_finder_buffers(&mut self) {
         let buffer_info: Vec<(usize, String, std::path::PathBuf)> = self
@@ -7014,13 +7061,12 @@ impl Editor {
 
     /// Update the preview syntax highlighting for the currently selected finder item
     pub fn update_finder_preview(&mut self) {
-        // Only for Files, Grep, Harpoon, and Marks modes with preview enabled
-        if !self.finder.preview_enabled
-            || (self.finder.mode != crate::finder::FinderMode::Files
-                && self.finder.mode != crate::finder::FinderMode::Grep
-                && self.finder.mode != crate::finder::FinderMode::Harpoon
-                && self.finder.mode != crate::finder::FinderMode::Marks)
-        {
+        if !self.finder.preview_enabled || !self.finder.mode_supports_preview() {
+            return;
+        }
+
+        if self.finder.mode == crate::finder::FinderMode::GitChanges {
+            self.update_git_changes_preview();
             return;
         }
 
@@ -7060,6 +7106,39 @@ impl Editor {
         // Parse the content
         let content = self.finder.preview_content.join("\n");
         self.preview_syntax.parse_string(&content);
+    }
+
+    fn update_git_changes_preview(&mut self) {
+        let Some(item) = self.finder.selected_item().cloned() else {
+            self.finder.clear_preview_cache();
+            self.reset_preview_syntax();
+            return;
+        };
+        let Some(status) = item.git_status else {
+            self.finder.clear_preview_cache();
+            self.reset_preview_syntax();
+            return;
+        };
+
+        if self.finder.preview_path.as_ref() == Some(&item.path) {
+            return;
+        }
+
+        self.reset_preview_syntax();
+
+        const GIT_CHANGES_PREVIEW_LINES: usize = 150;
+        let content = self
+            .git_repo
+            .as_ref()
+            .map(|repo| repo.diff_preview(&item.path, status, GIT_CHANGES_PREVIEW_LINES))
+            .unwrap_or_else(|| vec!["Not in a Git repository".to_string()]);
+
+        self.finder.set_preview_content(item.path, content);
+    }
+
+    fn reset_preview_syntax(&mut self) {
+        self.preview_syntax = SyntaxManager::new();
+        self.preview_syntax.sync_theme(self.theme_manager.theme());
     }
 
     // === File Explorer Methods ===
@@ -7669,6 +7748,134 @@ mod tests {
         editor.update_all_git_diffs();
 
         assert_eq!(editor.git_status_for_line(0), None);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn git_changes_picker_reports_missing_repository() {
+        let tmp = unique_temp_dir("nevi_git_changes_no_repo");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+
+        let mut editor = Editor::default();
+        editor.set_project_root(tmp.clone());
+        editor.init_git();
+        editor.open_finder_git_changes();
+
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Not in a Git repository")
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn git_changes_picker_reports_clean_repository() {
+        let tmp = unique_temp_dir("nevi_git_changes_clean");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let root = tmp.canonicalize().expect("canonical temp dir");
+        let path = root.join("tracked.rs");
+        std::fs::write(&path, "clean\n").expect("write tracked");
+        let repo = git2::Repository::init(&root).expect("init repo");
+        commit_file(&repo, Path::new("tracked.rs"), "initial");
+
+        let mut editor = Editor::default();
+        editor.set_project_root(root.clone());
+        editor.init_git();
+        editor.open_finder_git_changes();
+
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.status_message.as_deref(), Some("No Git changes"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn git_changes_picker_lists_modified_files_and_loads_diff_preview() {
+        let tmp = unique_temp_dir("nevi_git_changes_modified");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let root = tmp.canonicalize().expect("canonical temp dir");
+        let path = root.join("tracked.rs");
+        std::fs::write(&path, "old\n").expect("write original");
+        let repo = git2::Repository::init(&root).expect("init repo");
+        commit_file(&repo, Path::new("tracked.rs"), "initial");
+        std::fs::write(&path, "new\n").expect("write modified");
+
+        let mut editor = Editor::default();
+        editor.set_project_root(root.clone());
+        editor.init_git();
+        editor.open_finder_git_changes();
+
+        assert_eq!(editor.mode, Mode::Finder);
+        assert_eq!(editor.finder.mode, crate::finder::FinderMode::GitChanges);
+        assert!(editor.finder.preview_enabled);
+        assert_eq!(editor.finder.items.len(), 1);
+        assert!(editor.finder.items[0].display.contains("M tracked.rs"));
+
+        editor.update_finder_preview();
+        let preview = editor.finder.preview_content.join("\n");
+        assert!(preview.contains("diff --git"));
+        assert!(preview.contains("-old"));
+        assert!(preview.contains("+new"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn git_changes_picker_clears_diff_preview_when_filter_has_no_selection() {
+        let tmp = unique_temp_dir("nevi_git_changes_filter_empty");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let root = tmp.canonicalize().expect("canonical temp dir");
+        let path = root.join("tracked.rs");
+        std::fs::write(&path, "old\n").expect("write original");
+        let repo = git2::Repository::init(&root).expect("init repo");
+        commit_file(&repo, Path::new("tracked.rs"), "initial");
+        std::fs::write(&path, "new\n").expect("write modified");
+
+        let mut editor = Editor::default();
+        editor.set_project_root(root.clone());
+        editor.init_git();
+        editor.open_finder_git_changes();
+
+        assert!(!editor.finder.preview_content.is_empty());
+        assert_eq!(editor.finder.preview_path.as_deref(), Some(path.as_path()));
+
+        for ch in "ZZZZZZZZ".chars() {
+            editor.finder.insert_char(ch);
+        }
+        assert!(editor.finder.selected_item().is_none());
+
+        editor.update_finder_preview();
+
+        assert!(editor.finder.preview_content.is_empty());
+        assert_eq!(editor.finder.preview_path, None);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn git_changes_picker_resets_stale_preview_syntax_for_diff_preview() {
+        let tmp = unique_temp_dir("nevi_git_changes_preview_syntax");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let root = tmp.canonicalize().expect("canonical temp dir");
+        let path = root.join("tracked.rs");
+        std::fs::write(&path, "old\n").expect("write original");
+        let repo = git2::Repository::init(&root).expect("init repo");
+        commit_file(&repo, Path::new("tracked.rs"), "initial");
+        std::fs::write(&path, "new\n").expect("write modified");
+
+        let mut editor = Editor::default();
+        editor.preview_syntax.set_language_from_path(&path);
+        editor.preview_syntax.parse_string("fn main() {}\n");
+        assert!(editor.preview_syntax.has_highlighting());
+
+        editor.set_project_root(root.clone());
+        editor.init_git();
+        editor.open_finder_git_changes();
+
+        assert!(!editor.preview_syntax.has_highlighting());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

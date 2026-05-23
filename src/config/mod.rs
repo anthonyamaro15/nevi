@@ -295,6 +295,11 @@ impl Default for KeymapSettings {
                     action: ":LazyGit".to_string(),
                     desc: Some("Open lazygit".to_string()),
                 },
+                LeaderMapping {
+                    key: "gc".to_string(),
+                    action: ":GitChanges".to_string(),
+                    desc: Some("Git changes picker".to_string()),
+                },
                 // Harpoon
                 LeaderMapping {
                     key: "m".to_string(),
@@ -999,6 +1004,7 @@ fn default_config_template() -> &'static str {
 # <leader>d        - Search diagnostics
 # <leader>D        - Show line diagnostic
 # <leader>gg       - Open lazygit
+# <leader>gc       - Git changes picker
 # <leader>m        - Add to harpoon
 # <leader>h        - Harpoon menu
 # <leader>1-4      - Jump to harpoon slot 1-4

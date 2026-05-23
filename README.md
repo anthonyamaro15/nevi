@@ -78,6 +78,7 @@ nevi file1.rs file2.rs
 - `:MarkdownPreview` - Open rendered Markdown reader for `.md` files (`j/k`, `Ctrl-d/u`, `g/G`, `q`)
 - `<Space>ff` - Find files
 - `<Space>fg` - Live grep
+- `<Space>gc` - Git changes picker
 - `<Space>e` - File explorer
 - `<Space>tt` - Terminal picker
 
@@ -206,6 +207,7 @@ Nevi aims for full vim/neovim keybind compatibility. Most common keybindings are
 | `w` | Save file |
 | `q` | Quit |
 | `gg` | Open lazygit |
+| `gc` | Git changes picker |
 | `m` | Add to harpoon |
 | `h` | Harpoon menu |
 | `1-4` | Jump to harpoon slot |

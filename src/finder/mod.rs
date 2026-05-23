@@ -33,6 +33,7 @@ pub enum FinderMode {
     Diagnostics,
     Harpoon,
     Marks,
+    GitChanges,
     Terminals,
 }
 
@@ -63,6 +64,8 @@ pub struct FinderItem {
     pub terminal_session_position: Option<usize>,
     /// Optional 2-character icon override
     pub icon: Option<&'static str>,
+    /// Git status metadata for git changes finder results
+    pub git_status: Option<crate::git::GitFileStatus>,
     /// Match score for sorting
     pub score: u32,
     /// Indices of matched characters (for highlighting)
@@ -79,6 +82,7 @@ impl FinderItem {
             buffer_idx: None,
             terminal_session_position: None,
             icon: None,
+            git_status: None,
             score: 0,
             match_indices: Vec::new(),
         }
@@ -109,6 +113,11 @@ impl FinderItem {
         self
     }
 
+    pub fn with_git_status(mut self, status: crate::git::GitFileStatus) -> Self {
+        self.git_status = Some(status);
+        self
+    }
+
     pub fn with_score(mut self, score: u32) -> Self {
         self.score = score;
         self
@@ -128,6 +137,27 @@ pub struct MarkInfo {
     pub file_path: Option<PathBuf>,
     /// Display file name
     pub file_name: String,
+}
+
+fn git_changes_display_path(display: &str) -> (usize, &str) {
+    if let Some((prefix, path)) = display.split_once(' ') {
+        (prefix.chars().count() + 1, path)
+    } else {
+        (0, display)
+    }
+}
+
+fn offset_match_indices(
+    matcher: &mut FuzzyMatcher,
+    query: &str,
+    match_text: &str,
+    char_start: usize,
+) -> Vec<usize> {
+    matcher
+        .match_indices(query, match_text)
+        .into_iter()
+        .map(|idx| char_start + idx)
+        .collect()
 }
 
 /// Floating window dimensions
@@ -392,6 +422,23 @@ impl FuzzyFinder {
         self.cancel_grep_search();
 
         self.items = terminal_items;
+        self.filtered = (0..self.items.len()).collect();
+        self.populated = true;
+    }
+
+    /// Open the finder in git changes mode
+    pub fn open_git_changes(&mut self, items: Vec<FinderItem>) {
+        self.mode = FinderMode::GitChanges;
+        self.input_mode = FinderInputMode::Insert;
+        self.query.clear();
+        self.cursor = 0;
+        self.selected = 0;
+        self.scroll_offset = 0;
+        self.clear_preview_cache();
+        self.cancel_grep_search();
+        self.preview_enabled = true;
+
+        self.items = items;
         self.filtered = (0..self.items.len()).collect();
         self.populated = true;
     }
@@ -681,18 +728,28 @@ impl FuzzyFinder {
                     self.filtered = (0..self.items.len()).collect();
                 } else {
                     // Filter and sort by match score, and get match indices
+                    let mode = self.mode;
+                    let query = self.query.clone();
+                    let matcher = &mut self.matcher;
                     let mut scored: Vec<(usize, u32, Vec<usize>)> = self
                         .items
                         .iter()
                         .enumerate()
                         .filter_map(|(idx, item)| {
-                            self.matcher
-                                .match_score(&self.query, &item.display)
-                                .map(|score| {
-                                    let indices =
-                                        self.matcher.match_indices(&self.query, &item.display);
-                                    (idx, score, indices)
-                                })
+                            let (match_start, match_text) = if mode == FinderMode::GitChanges {
+                                git_changes_display_path(&item.display)
+                            } else {
+                                (0, item.display.as_str())
+                            };
+                            matcher.match_score(&query, match_text).map(|score| {
+                                let indices = offset_match_indices(
+                                    matcher,
+                                    &query,
+                                    match_text,
+                                    match_start,
+                                );
+                                (idx, score, indices)
+                            })
                         })
                         .collect();
 
@@ -853,6 +910,26 @@ impl FuzzyFinder {
         self.preview_update_pending = false;
     }
 
+    pub fn mode_supports_preview(&self) -> bool {
+        matches!(
+            self.mode,
+            FinderMode::Files
+                | FinderMode::Grep
+                | FinderMode::Harpoon
+                | FinderMode::Marks
+                | FinderMode::GitChanges
+        )
+    }
+
+    pub fn set_preview_content(&mut self, path: PathBuf, content: Vec<String>) {
+        self.preview_content = content;
+        self.preview_scroll = 0;
+        self.preview_line_offset = 0;
+        self.preview_path = Some(path);
+        self.preview_line = None;
+        self.preview_update_pending = false;
+    }
+
     /// Update preview content if the selected file changed
     /// Returns the current preview path and content for rendering
     pub fn update_preview_content(&mut self) -> Option<(PathBuf, &[String])> {
@@ -860,12 +937,7 @@ impl FuzzyFinder {
             return None;
         }
 
-        // Only show preview for Files, Grep, Harpoon, and Marks modes
-        if self.mode != FinderMode::Files
-            && self.mode != FinderMode::Grep
-            && self.mode != FinderMode::Harpoon
-            && self.mode != FinderMode::Marks
-        {
+        if !self.mode_supports_preview() || self.mode == FinderMode::GitChanges {
             return None;
         }
 
@@ -1049,7 +1121,7 @@ impl Default for FuzzyFinder {
 mod tests {
     use super::{FinderInputMode, FinderItem, FinderMode, FuzzyFinder, GrepSearchMessage};
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::mpsc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -1081,6 +1153,117 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         panic!("async grep search did not finish");
+    }
+
+    #[test]
+    fn git_changes_finder_opens_with_preview_and_status_metadata() {
+        let mut finder = FuzzyFinder::new();
+        let item = FinderItem::new("M src/main.rs".to_string(), PathBuf::from("src/main.rs"))
+            .with_git_status(crate::git::GitFileStatus::Modified);
+
+        finder.open_git_changes(vec![item]);
+
+        assert_eq!(finder.mode, FinderMode::GitChanges);
+        assert!(finder.preview_enabled);
+        assert!(finder.mode_supports_preview());
+        assert_eq!(finder.items.len(), 1);
+        assert_eq!(
+            finder.selected_item().and_then(|item| item.git_status),
+            Some(crate::git::GitFileStatus::Modified)
+        );
+    }
+
+    #[test]
+    fn git_changes_finder_fuzzy_filters_paths() {
+        let mut finder = FuzzyFinder::new();
+        finder.open_git_changes(vec![
+            FinderItem::new("M src/main.rs".to_string(), PathBuf::from("src/main.rs"))
+                .with_git_status(crate::git::GitFileStatus::Modified),
+            FinderItem::new("A README.md".to_string(), PathBuf::from("README.md"))
+                .with_git_status(crate::git::GitFileStatus::Added),
+        ]);
+
+        finder.insert_char('r');
+        finder.insert_char('e');
+        finder.insert_char('a');
+        finder.insert_char('d');
+
+        assert_eq!(finder.filtered.len(), 1);
+        assert_eq!(
+            finder.selected_item().map(|item| item.path.as_path()),
+            Some(Path::new("README.md"))
+        );
+    }
+
+    #[test]
+    fn git_changes_finder_highlights_path_matches_in_display_text() {
+        let mut finder = FuzzyFinder::new();
+        finder.open_git_changes(vec![
+            FinderItem::new(
+                "M src/lib/types.ts".to_string(),
+                PathBuf::from("/repo/src/lib/types.ts"),
+            )
+            .with_git_status(crate::git::GitFileStatus::Modified),
+        ]);
+
+        for ch in "type".chars() {
+            finder.insert_char(ch);
+        }
+
+        let item = finder.selected_item().expect("matching item");
+        let highlighted: String = item
+            .match_indices
+            .iter()
+            .map(|&idx| item.display.chars().nth(idx).expect("matched char"))
+            .collect();
+        assert_eq!(highlighted, "type");
+    }
+
+    #[test]
+    fn git_changes_finder_does_not_filter_by_status_prefix() {
+        let mut finder = FuzzyFinder::new();
+        finder.open_git_changes(vec![
+            FinderItem::new("! src/main.rs".to_string(), PathBuf::from("src/main.rs"))
+                .with_git_status(crate::git::GitFileStatus::Conflicted),
+            FinderItem::new("? README.md".to_string(), PathBuf::from("README.md"))
+                .with_git_status(crate::git::GitFileStatus::Untracked),
+        ]);
+
+        finder.insert_char('!');
+
+        assert!(finder.filtered.is_empty());
+    }
+
+    #[test]
+    fn git_changes_update_preview_waits_for_injected_content() {
+        let mut finder = FuzzyFinder::new();
+        finder.open_git_changes(vec![FinderItem::new(
+            "M src/main.rs".to_string(),
+            PathBuf::from("src/main.rs"),
+        )
+        .with_git_status(crate::git::GitFileStatus::Modified)]);
+
+        assert_eq!(finder.update_preview_content(), None);
+    }
+
+    #[test]
+    fn set_preview_content_replaces_pending_preview_state() {
+        let mut finder = FuzzyFinder::new();
+        finder.preview_content = vec!["old".to_string()];
+        finder.preview_scroll = 3;
+        finder.preview_line_offset = 9;
+        finder.preview_path = Some(PathBuf::from("old.rs"));
+        finder.preview_line = Some(12);
+        finder.preview_update_pending = true;
+
+        finder.set_preview_content(PathBuf::from("src/main.rs"), vec!["diff".to_string()]);
+
+        assert_eq!(finder.preview_content, vec!["diff"]);
+        assert_eq!(finder.preview_scroll, 0);
+        assert_eq!(finder.preview_line_offset, 0);
+        assert_eq!(finder.preview_path, Some(PathBuf::from("src/main.rs")));
+        assert_eq!(finder.preview_line, None);
+        assert!(!finder.preview_update_pending);
     }
 
     #[test]
