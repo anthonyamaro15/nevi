@@ -220,7 +220,7 @@ Nevi aims for full vim/neovim keybind compatibility. Most common keybindings are
 ### And More
 Visual mode (`v/V/Ctrl+v`), macros (`q{a-z}/@{a-z}`), marks (`m{a-z}/'`), registers (`"{a-z}/"+`), replace mode (`R`)
 
-> **Missing a keybind?** Check [KEYBINDINGS.md](KEYBINDINGS.md) for the full list, or [open an issue](https://github.com/anthonyamaro15/nevi/issues) to request one!
+> **Missing a keybind?** Check [KEYBINDINGS.md](KEYBINDINGS.md) for the full list of what's implemented. If you don't see the one you want, take a look at the [keybind roadmap](KEYBINDS_ROADMAP.md) to see if it's already planned — and if it's not, [open an issue](https://github.com/anthonyamaro15/nevi/issues) to request it (PRs welcome too).
 
 ## Language Support
 
