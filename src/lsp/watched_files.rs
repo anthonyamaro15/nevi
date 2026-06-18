@@ -29,7 +29,6 @@ const WATCHER_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
 #[derive(Debug)]
 pub(crate) enum WatcherRequestError {
     InvalidParams(String),
-    #[allow(dead_code)] // Used by later registration routing when watcher setup can fail.
     Setup(String),
 }
 
@@ -136,7 +135,6 @@ pub(crate) enum WatcherCommand {
         registrations: Vec<WatchedFileRegistration>,
         reply: SyncSender<std::result::Result<(), WatcherRequestError>>,
     },
-    #[allow(dead_code)] // Constructed by dynamic-registration routing in Task 5.
     Unregister {
         registration_ids: Vec<String>,
         reply: SyncSender<std::result::Result<(), WatcherRequestError>>,
@@ -434,15 +432,12 @@ fn write_notification(stdin: &SharedStdin, changes: Vec<FileEvent>) -> Result<()
 type EventSink = Box<dyn Fn(Vec<FileEvent>) -> Result<()> + Send>;
 type ErrorSink = Box<dyn Fn(String) + Send>;
 
-#[allow(dead_code)] // Started by the LSP client wiring in Task 5.
 pub(crate) struct WatchedFilesHandle {
     tx: Sender<WatcherCommand>,
     join: Option<JoinHandle<()>>,
 }
 
-#[allow(dead_code)] // Methods are wired into the LSP client in Task 5.
 impl WatchedFilesHandle {
-    #[allow(dead_code)] // Started by the LSP client wiring in Task 5.
     pub(crate) fn start(
         workspace_root: PathBuf,
         stdin: SharedStdin,
@@ -482,11 +477,11 @@ impl WatchedFilesHandle {
         })
     }
 
-    #[allow(dead_code)] // Used by dynamic-registration routing in Task 5.
     pub(crate) fn command_sender(&self) -> Sender<WatcherCommand> {
         self.tx.clone()
     }
 
+    #[cfg(test)]
     fn request(
         &self,
         build: impl FnOnce(SyncSender<std::result::Result<(), WatcherRequestError>>) -> WatcherCommand,
@@ -499,6 +494,7 @@ impl WatchedFilesHandle {
             .map_err(|error| anyhow!(error.to_string()))
     }
 
+    #[cfg(test)]
     fn register(&self, registrations: Vec<WatchedFileRegistration>) -> Result<()> {
         self.request(|reply| WatcherCommand::Register {
             registrations,
@@ -668,7 +664,6 @@ fn sync_roots(
     Ok(())
 }
 
-// Task 5 wires these staged APIs into the LSP client and request router.
 const _: fn(
     Option<serde_json::Value>,
 ) -> std::result::Result<Vec<WatchedFileRegistration>, WatcherRequestError> = parse_register_params;
