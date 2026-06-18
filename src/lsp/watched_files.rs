@@ -1,29 +1,18 @@
-use std::collections::{HashMap, HashSet};
-use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use globset::{GlobBuilder, GlobMatcher};
 use lsp_types::{
-    DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions, FileChangeType,
-    FileEvent, GlobPattern, OneOf, RegistrationParams, RelativePattern, UnregistrationParams, Url,
-    WatchKind,
+    DidChangeWatchedFilesRegistrationOptions, FileChangeType, GlobPattern, OneOf,
+    RegistrationParams, RelativePattern, UnregistrationParams, WatchKind,
 };
-use notify::event::{ModifyKind, RenameMode};
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use serde_json::json;
-
-use super::client::SharedStdin;
-use super::types::LspNotification;
 
 pub(crate) const WATCHED_FILES_METHOD: &str = "workspace/didChangeWatchedFiles";
 
 #[derive(Debug)]
 pub(crate) enum WatcherRequestError {
     InvalidParams(String),
+    #[allow(dead_code)] // Used by later registration routing when watcher setup can fail.
     Setup(String),
 }
 
@@ -37,22 +26,10 @@ impl std::fmt::Display for WatcherRequestError {
 
 #[derive(Debug)]
 pub(crate) struct WatchedFileRegistration {
+    #[allow(dead_code)] // Read by later unregister/register lifecycle routing.
     pub(crate) id: String,
+    #[allow(dead_code)] // Compiled into watchers when registration lifecycle lands.
     pub(crate) options: DidChangeWatchedFilesRegistrationOptions,
-}
-
-#[derive(Debug)]
-pub(crate) enum WatcherCommand {
-    Register {
-        registrations: Vec<WatchedFileRegistration>,
-        reply: SyncSender<std::result::Result<(), WatcherRequestError>>,
-    },
-    Unregister {
-        registration_ids: Vec<String>,
-        reply: SyncSender<std::result::Result<(), WatcherRequestError>>,
-    },
-    Event(notify::Result<Event>),
-    Shutdown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,15 +41,11 @@ enum MatchInput {
 #[derive(Clone)]
 struct CompiledWatcher {
     base: PathBuf,
+    #[allow(dead_code)] // Read by registration lifecycle when syncing watch roots.
     root: PathBuf,
     matcher: GlobMatcher,
     input: MatchInput,
     kind: WatchKind,
-}
-
-#[derive(Clone, Default)]
-struct RegistrationState {
-    registrations: HashMap<String, Vec<CompiledWatcher>>,
 }
 
 fn normalized_match_path(path: &Path) -> String {
@@ -242,16 +215,126 @@ impl CompiledWatcher {
     }
 }
 
+// Task 2 intentionally lands parser/matcher foundations before Tasks 4 and 5
+// wire them into the runtime watcher and dynamic-registration routing.
+const _: fn(
+    Option<serde_json::Value>,
+) -> std::result::Result<Vec<WatchedFileRegistration>, WatcherRequestError> =
+    parse_register_params;
+const _: fn(Option<serde_json::Value>) -> std::result::Result<Vec<String>, WatcherRequestError> =
+    parse_unregister_params;
+const _: fn(&lsp_types::FileSystemWatcher, &Path) -> Result<CompiledWatcher> = compile_watcher;
+const _: fn(&CompiledWatcher, &Path, FileChangeType) -> bool = CompiledWatcher::matches;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lsp_types::{FileSystemWatcher, WorkspaceFolder};
+    use lsp_types::{
+        FileSystemWatcher, Registration, RegistrationParams, Unregistration, UnregistrationParams,
+        Url, WorkspaceFolder,
+    };
+    use serde_json::json;
 
     fn workspace_folder(path: &Path) -> WorkspaceFolder {
         WorkspaceFolder {
             uri: Url::from_file_path(path).expect("workspace URI"),
             name: "workspace".to_string(),
         }
+    }
+
+    fn register_params(registrations: Vec<Registration>) -> Option<serde_json::Value> {
+        Some(serde_json::to_value(RegistrationParams { registrations }).unwrap())
+    }
+
+    fn unregister_params(unregisterations: Vec<Unregistration>) -> Option<serde_json::Value> {
+        Some(serde_json::to_value(UnregistrationParams { unregisterations }).unwrap())
+    }
+
+    fn watched_file_registration(id: &str, register_options: serde_json::Value) -> Registration {
+        Registration {
+            id: id.to_string(),
+            method: WATCHED_FILES_METHOD.to_string(),
+            register_options: Some(register_options),
+        }
+    }
+
+    #[test]
+    fn parse_register_params_returns_watched_file_registration_options() {
+        let params = register_params(vec![watched_file_registration(
+            "rust-files",
+            json!({
+                "watchers": [
+                    {
+                        "globPattern": "**/*.rs",
+                        "kind": 3
+                    }
+                ]
+            }),
+        )]);
+
+        let registrations = parse_register_params(params).expect("registration params");
+
+        assert_eq!(registrations.len(), 1);
+        assert_eq!(registrations[0].id, "rust-files");
+        assert_eq!(registrations[0].options.watchers.len(), 1);
+        assert_eq!(
+            registrations[0].options.watchers[0].glob_pattern,
+            GlobPattern::String("**/*.rs".to_string())
+        );
+        assert_eq!(
+            registrations[0].options.watchers[0].kind,
+            Some(WatchKind::Create | WatchKind::Change)
+        );
+    }
+
+    #[test]
+    fn parse_register_params_filters_unrelated_registration_methods() {
+        let params = register_params(vec![Registration {
+            id: "configuration".to_string(),
+            method: "workspace/didChangeConfiguration".to_string(),
+            register_options: None,
+        }]);
+
+        let registrations = parse_register_params(params).expect("registration params");
+
+        assert!(registrations.is_empty());
+    }
+
+    #[test]
+    fn parse_register_params_rejects_missing_params_or_malformed_watched_file_options() {
+        assert!(matches!(
+            parse_register_params(None),
+            Err(WatcherRequestError::InvalidParams(message))
+                if message == "missing registration params"
+        ));
+
+        let malformed = register_params(vec![watched_file_registration(
+            "rust-files",
+            json!({ "watchers": "not an array" }),
+        )]);
+
+        assert!(matches!(
+            parse_register_params(malformed),
+            Err(WatcherRequestError::InvalidParams(_))
+        ));
+    }
+
+    #[test]
+    fn parse_unregister_params_filters_to_watched_file_registration_ids() {
+        let params = unregister_params(vec![
+            Unregistration {
+                id: "rust-files".to_string(),
+                method: WATCHED_FILES_METHOD.to_string(),
+            },
+            Unregistration {
+                id: "configuration".to_string(),
+                method: "workspace/didChangeConfiguration".to_string(),
+            },
+        ]);
+
+        let registration_ids = parse_unregister_params(params).expect("unregistration params");
+
+        assert_eq!(registration_ids, vec!["rust-files".to_string()]);
     }
 
     #[test]
@@ -271,6 +354,31 @@ mod tests {
         assert!(!compiled.matches(&root.join("README.md"), FileChangeType::CHANGED));
         assert!(!compiled.matches(
             Path::new("/tmp/other/src/main.rs"),
+            FileChangeType::CHANGED
+        ));
+    }
+
+    #[test]
+    fn relative_pattern_accepts_base_uri_as_url() {
+        let workspace_root = PathBuf::from("/tmp/nevi-watch-workspace");
+        let base = PathBuf::from("/tmp/nevi-watch-base");
+        let watcher = FileSystemWatcher {
+            glob_pattern: GlobPattern::Relative(RelativePattern {
+                base_uri: OneOf::Right(Url::from_file_path(&base).expect("base URI")),
+                pattern: "src/**/*.rs".to_string(),
+            }),
+            kind: None,
+        };
+
+        let compiled = compile_watcher(&watcher, &workspace_root).expect("compiled watcher");
+
+        assert_eq!(compiled.root, base);
+        assert!(compiled.matches(
+            Path::new("/tmp/nevi-watch-base/src/nested/lib.rs"),
+            FileChangeType::CHANGED
+        ));
+        assert!(!compiled.matches(
+            Path::new("/tmp/nevi-watch-workspace/src/nested/lib.rs"),
             FileChangeType::CHANGED
         ));
     }
@@ -304,6 +412,24 @@ mod tests {
         assert_eq!(compiled.root, root);
         assert!(compiled.matches(&manifest, FileChangeType::CHANGED));
         assert!(!compiled.matches(&root.join("Cargo.lock"), FileChangeType::CHANGED));
+    }
+
+    #[test]
+    fn absolute_string_glob_pattern_watches_static_prefix_and_matches_descendants() {
+        let root = std::env::temp_dir().join("nevi-watch-root");
+        let src = root.join("src");
+        let pattern = format!("{}/**/*.rs", normalized_match_path(&src));
+        let watcher = FileSystemWatcher {
+            glob_pattern: GlobPattern::String(pattern),
+            kind: None,
+        };
+
+        let compiled = compile_watcher(&watcher, &root).expect("compiled watcher");
+
+        assert_eq!(compiled.root, src);
+        assert!(compiled.matches(&root.join("src/nested/lib.rs"), FileChangeType::CHANGED));
+        assert!(!compiled.matches(&root.join("tests/nested/lib.rs"), FileChangeType::CHANGED));
+        assert!(!compiled.matches(&root.join("src/nested/lib.toml"), FileChangeType::CHANGED));
     }
 
     #[test]
