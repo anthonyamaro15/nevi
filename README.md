@@ -6,6 +6,8 @@ A fast, Neovim-inspired terminal editor written in Rust.
 
 ![Nevi demo — fuzzy file finder with preview, vim motions, Harpoon quick-switch, live grep, and live theme switching](nevi-demo.gif)
 
+> **Tip:** To see every keybinding available in Nevi, run `:Keymaps` (or press `<Space>fk`) — a searchable list with a description for each one.
+
 ## Why Nevi?
 
 **The Problem:**
@@ -32,6 +34,7 @@ A fast, native terminal editor where your existing vim/neovim muscle memory just
 - **Tree-sitter syntax highlighting** - Fast, accurate highlighting for Rust, TypeScript, JavaScript, Python, CSS, JSON, TOML, HTML, Markdown
 - **Theme selection** - Multiple built-in colorschemes with easy switching
 - **Fuzzy file finder** - Telescope-style file and content search
+- **Keybinding cheatsheet** - Searchable `:Keymaps` picker (`<Space>fk`) listing every binding with a description
 - **GitHub Copilot integration** - AI-powered completions
 - **File explorer** - Built-in tree view
 - **Git signs** - Gutter indicators for added/modified/deleted lines
@@ -83,6 +86,7 @@ nevi file1.rs file2.rs
 - `<Space>gc` - Git changes picker
 - `<Space>e` - File explorer
 - `<Space>tt` - Terminal picker
+- `<Space>fk` - Search keymaps (keybinding cheatsheet)
 
 ## Configuration
 
@@ -200,6 +204,7 @@ Nevi aims for full vim/neovim keybind compatibility. Most common keybindings are
 | `sw` | Search word under cursor |
 | `fb` | Find buffers |
 | `ft` | Theme picker |
+| `fk` | Search keymaps |
 | `tt` | Terminal picker |
 | `e` | File explorer |
 | `ca` | Code actions |
