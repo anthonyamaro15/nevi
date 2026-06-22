@@ -13,6 +13,7 @@ pub mod indent;
 pub mod input;
 pub mod lsp;
 pub mod markdown_preview;
+pub mod perf;
 pub mod syntax;
 pub mod terminal;
 pub mod theme;

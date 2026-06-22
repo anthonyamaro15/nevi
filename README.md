@@ -264,6 +264,20 @@ Contributions are welcome! Please feel free to submit issues and pull requests.
 - [Report a bug](https://github.com/anthonyamaro15/nevi/issues)
 - [Request a feature](https://github.com/anthonyamaro15/nevi/issues)
 
+### Performance Profiling
+
+Profiling is opt-in and disabled by default. To capture hot-path timings while
+using Nevi locally:
+
+```bash
+NEVI_PROFILE=1 cargo run --release -- path/to/file
+```
+
+Nevi writes raw timing events and a summary to `/tmp/nevi_profile.log`. The
+summary includes count, retained sample count, total, average, p50, p95, and max
+microseconds for metrics such as key handling, syntax updates, full renders, and
+terminal-only renders.
+
 ## License
 
 MIT License

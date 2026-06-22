@@ -10,6 +10,7 @@ use nevi::copilot::{
 };
 use nevi::editor::{CopilotAction, CopilotGhostText, LspAction};
 use nevi::lsp;
+use nevi::perf::PerfStats;
 use nevi::terminal::{execute_leader_action, handle_key, EditorEvent};
 
 use nevi::{
@@ -139,6 +140,11 @@ fn main() -> anyhow::Result<()> {
     } else {
         None
     };
+    let mut profile_stats = if profile_enabled {
+        Some(PerfStats::default())
+    } else {
+        None
+    };
 
     // Helper macro for profiling
     macro_rules! profile {
@@ -149,6 +155,19 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         };
+    }
+    macro_rules! profile_metric {
+        ($stats:expr, $file:expr, $name:literal, $duration:expr) => {{
+            let elapsed = $duration;
+            if profile_enabled {
+                if let Some(ref mut stats) = $stats {
+                    stats.record($name, elapsed);
+                }
+                if let Some(Some(ref mut f)) = $file {
+                    let _ = writeln!(f, "{}: {:?}", $name, elapsed);
+                }
+            }
+        }};
     }
 
     // Load configuration
@@ -349,7 +368,7 @@ fn main() -> anyhow::Result<()> {
         // Track loop cycle time
         let cycle_time = loop_start.elapsed();
         if cycle_time.as_millis() > 100 {
-            profile!(profile_file, "SLOW_CYCLE: {:?}", cycle_time);
+            profile_metric!(profile_stats, profile_file, "slow_cycle", cycle_time);
         }
         loop_start = Instant::now();
 
@@ -512,6 +531,7 @@ fn main() -> anyhow::Result<()> {
                         key_went_to_terminal =
                             terminal_visible_before_key && editor.floating_terminal.is_visible();
                         let elapsed = t_handle_key.elapsed();
+                        profile_metric!(profile_stats, profile_file, "handle_key", elapsed);
                         // Only log slow handle_key operations (>1ms) with details
                         if elapsed.as_micros() > 1000 {
                             profile!(
@@ -521,8 +541,6 @@ fn main() -> anyhow::Result<()> {
                                 mode_before,
                                 key.code
                             );
-                        } else {
-                            profile!(profile_file, "handle_key: {:?}", elapsed);
                         }
                     }
                     last_input_at = Some(Instant::now());
@@ -989,7 +1007,12 @@ fn main() -> anyhow::Result<()> {
             let t_syntax = Instant::now();
             let syntax_updated = editor.maybe_update_syntax_debounced(debounce);
             if syntax_updated {
-                profile!(profile_file, "syntax_update: {:?}", t_syntax.elapsed());
+                profile_metric!(
+                    profile_stats,
+                    profile_file,
+                    "syntax_update",
+                    t_syntax.elapsed()
+                );
                 needs_redraw = true;
             }
         }
@@ -1744,7 +1767,7 @@ fn main() -> anyhow::Result<()> {
                 }
                 let t_render = Instant::now();
                 terminal.render(&editor)?;
-                profile!(profile_file, "render: {:?}", t_render.elapsed());
+                profile_metric!(profile_stats, profile_file, "render", t_render.elapsed());
                 needs_redraw = false;
                 terminal_redraw_pending = false;
                 last_render = now;
@@ -1756,11 +1779,24 @@ fn main() -> anyhow::Result<()> {
                 editor.sync_floating_terminal_size();
                 let t_render = Instant::now();
                 terminal.render_terminal_only(&editor)?;
-                profile!(profile_file, "terminal_render: {:?}", t_render.elapsed());
+                profile_metric!(
+                    profile_stats,
+                    profile_file,
+                    "terminal_render",
+                    t_render.elapsed()
+                );
                 terminal_redraw_pending = false;
                 last_render = now;
                 redraw_from_input = false;
             }
+        }
+    }
+
+    if profile_enabled {
+        if let (Some(stats), Some(Some(ref mut file))) =
+            (profile_stats.as_ref(), profile_file.as_mut())
+        {
+            let _ = stats.write_summary(file);
         }
     }
 
