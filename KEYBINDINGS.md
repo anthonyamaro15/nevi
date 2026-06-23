@@ -67,7 +67,7 @@ For example, the terminal picker is mapped to `<Space>tt` by default and can be 
 
 ```toml
 [[keymap.leader_mappings]]
-key = "t"
+key = "tt"
 action = ":Terminals"
 desc = "Terminal picker"
 ```
@@ -77,6 +77,7 @@ desc = "Terminal picker"
 When specifying keys, use these formats:
 - Regular keys: `"a"`, `"H"`, `";"`, `"0"`
 - Control: `"<C-s>"` (Ctrl+s)
+- Combined modifiers: `"<C-S-t>"` (Ctrl+Shift+t), `"<C-Tab>"`
 - Special keys: `"<CR>"` (Enter), `"<Esc>"`, `"<Tab>"`, `"<Space>"`, `"<BS>"` (Backspace)
 
 > **Tip:** The config file at `~/.config/nevi/config.toml` is auto-generated on first run and contains a full reference with all options commented out.
@@ -618,12 +619,22 @@ the popup, or press `Esc` to cancel.
 | `<leader>fb` | Find buffers |
 | `<leader>ft` | Theme picker |
 | `<leader>tt` | Terminal picker |
+| `<leader>tn` | New terminal session |
+| `<leader>tj` | Next terminal session |
+| `<leader>tk` | Previous terminal session |
+| `<leader>tr` | Rename active terminal session |
+| `<leader>tx` | Kill active terminal session |
+| `<leader>t1` - `<leader>t4` | Jump to terminal session 1-4 |
 
 ### Floating Terminal
 
 | Key / Mouse | Action |
 |-------------|--------|
 | `Ctrl+\` | Toggle the active floating terminal |
+| `Ctrl+Shift+T` | New terminal session |
+| `Ctrl+Tab` | Next terminal session |
+| `Ctrl+Shift+Tab` | Previous terminal session |
+| `Ctrl+Shift+W` | Close current terminal session |
 | Mouse wheel | Scroll terminal scrollback when the shell app is not using mouse reporting |
 | Drag with mouse | Select visible terminal text |
 | `y` | Copy the current terminal selection |
@@ -632,7 +643,7 @@ the popup, or press `Esc` to cancel.
 | `Esc` / `Ctrl+[` | Clear the current terminal selection |
 | Terminal paste (`Cmd+V`, `Ctrl+Shift+V`, or terminal menu) | Paste into the shell; bracketed paste is used when the shell requests it |
 
-> **Note:** Some terminal apps reserve `Cmd+C` for their own native Copy command, so Nevi may never receive that key. Use `y` or `Ctrl+Shift+C` when copying from a floating terminal selection.
+> **Note:** Some terminal apps reserve `Cmd+C` for their own native Copy command, so Nevi may never receive that key. Use `y` or `Ctrl+Shift+C` when copying from a floating terminal selection. Terminal-focused session shortcuts can be remapped under `[terminal.shortcuts]`; set a shortcut to `"none"` to disable it.
 
 > **Tip:** In the file finder or grep, press `Ctrl+t` to toggle a preview panel showing file contents.
 
@@ -837,6 +848,7 @@ Type `:` to enter command mode. Implemented commands include:
 | `:TerminalList` / `:termls` | List floating terminal sessions |
 | `:Terminals` / `:termmenu` | Open floating terminal session picker (`Enter` selects, `d` kills, `n` creates, `r` renames) |
 | `:TerminalSelect {n}` / `:termsel {n}` | Select floating terminal session |
+| `:TerminalRename` / `:termrename` | Prefill a rename command for the active terminal session |
 | `:TerminalRename [n] {name}` / `:termrename [n] {name}` | Rename active terminal or terminal session `n` |
 | `:TerminalKill` / `:termkill` | Kill floating terminal |
 | `:CopilotAuth` / `:Copilot` | Sign in to Copilot |

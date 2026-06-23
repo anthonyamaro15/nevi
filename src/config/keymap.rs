@@ -412,62 +412,66 @@ pub fn parse_key_notation(s: &str) -> Option<KeyEvent> {
 
 /// Parse special notation (content inside < >)
 fn parse_special_notation(inner: &str) -> Option<KeyEvent> {
-    let inner_lower = inner.to_lowercase();
+    let parts = inner.split('-').collect::<Vec<_>>();
+    let (modifier_parts, key_part) = parts.split_at(parts.len().saturating_sub(1));
+    let key_part = key_part.first().copied()?;
+    let mut modifiers = KeyModifiers::NONE;
 
-    // Control key: <C-x>
-    if inner_lower.starts_with("c-") && inner.len() == 3 {
-        let c = inner.chars().nth(2)?;
-        return Some(KeyEvent::new(
-            KeyCode::Char(c.to_ascii_lowercase()),
-            KeyModifiers::CONTROL,
-        ));
+    for modifier in modifier_parts {
+        match modifier.to_lowercase().as_str() {
+            "c" | "ctrl" | "control" => modifiers |= KeyModifiers::CONTROL,
+            "a" | "alt" | "m" | "meta" => modifiers |= KeyModifiers::ALT,
+            "s" | "shift" => modifiers |= KeyModifiers::SHIFT,
+            _ => return None,
+        }
     }
 
-    // Alt/Meta key: <A-x> or <M-x>
-    if (inner_lower.starts_with("a-") || inner_lower.starts_with("m-")) && inner.len() == 3 {
-        let c = inner.chars().nth(2)?;
-        return Some(KeyEvent::new(
-            KeyCode::Char(c.to_ascii_lowercase()),
-            KeyModifiers::ALT,
-        ));
+    let code = parse_special_key_code(key_part, modifiers.contains(KeyModifiers::SHIFT))?;
+    if matches!(code, KeyCode::BackTab) {
+        modifiers |= KeyModifiers::SHIFT;
     }
 
-    // Shift key: <S-x>
-    if inner_lower.starts_with("s-") && inner.len() == 3 {
-        let c = inner.chars().nth(2)?;
-        return Some(KeyEvent::new(
-            KeyCode::Char(c.to_ascii_uppercase()),
-            KeyModifiers::SHIFT,
-        ));
-    }
+    Some(KeyEvent::new(code, modifiers))
+}
 
-    // Function keys: <F1> through <F12>
-    if inner_lower.starts_with('f') {
-        if let Ok(n) = inner[1..].parse::<u8>() {
+fn parse_special_key_code(key: &str, shifted: bool) -> Option<KeyCode> {
+    let key_lower = key.to_lowercase();
+
+    if key_lower.starts_with('f') {
+        if let Ok(n) = key[1..].parse::<u8>() {
             if (1..=12).contains(&n) {
-                return Some(KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE));
+                return Some(KeyCode::F(n));
             }
         }
     }
 
-    // Special named keys
-    match inner_lower.as_str() {
-        "cr" | "enter" | "return" => Some(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        "esc" | "escape" => Some(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
-        "tab" => Some(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
-        "backtab" => Some(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
-        "bs" | "backspace" => Some(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
-        "del" | "delete" => Some(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE)),
-        "space" => Some(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
-        "up" => Some(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
-        "down" => Some(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
-        "left" => Some(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
-        "right" => Some(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
-        "home" => Some(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
-        "end" => Some(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
-        "pageup" => Some(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)),
-        "pagedown" => Some(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
-        "insert" => Some(KeyEvent::new(KeyCode::Insert, KeyModifiers::NONE)),
+    match key_lower.as_str() {
+        "cr" | "enter" | "return" => Some(KeyCode::Enter),
+        "esc" | "escape" => Some(KeyCode::Esc),
+        "tab" if shifted => Some(KeyCode::BackTab),
+        "tab" => Some(KeyCode::Tab),
+        "backtab" => Some(KeyCode::BackTab),
+        "bs" | "backspace" => Some(KeyCode::Backspace),
+        "del" | "delete" => Some(KeyCode::Delete),
+        "space" => Some(KeyCode::Char(' ')),
+        "up" => Some(KeyCode::Up),
+        "down" => Some(KeyCode::Down),
+        "left" => Some(KeyCode::Left),
+        "right" => Some(KeyCode::Right),
+        "home" => Some(KeyCode::Home),
+        "end" => Some(KeyCode::End),
+        "pageup" => Some(KeyCode::PageUp),
+        "pagedown" => Some(KeyCode::PageDown),
+        "insert" => Some(KeyCode::Insert),
+        _ if key.chars().count() == 1 => {
+            let ch = key.chars().next()?;
+            let ch = if shifted {
+                ch.to_ascii_uppercase()
+            } else {
+                ch.to_ascii_lowercase()
+            };
+            Some(KeyCode::Char(ch))
+        }
         _ => None,
     }
 }
@@ -506,6 +510,21 @@ mod tests {
         let key = parse_key_notation("<C-r>").unwrap();
         assert_eq!(key.code, KeyCode::Char('r'));
         assert_eq!(key.modifiers, KeyModifiers::CONTROL);
+    }
+
+    #[test]
+    fn test_parse_combined_modifiers_for_terminal_shortcuts() {
+        let key = parse_key_notation("<C-S-t>").unwrap();
+        assert_eq!(key.code, KeyCode::Char('T'));
+        assert_eq!(key.modifiers, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+
+        let key = parse_key_notation("<C-Tab>").unwrap();
+        assert_eq!(key.code, KeyCode::Tab);
+        assert_eq!(key.modifiers, KeyModifiers::CONTROL);
+
+        let key = parse_key_notation("<C-S-Tab>").unwrap();
+        assert_eq!(key.code, KeyCode::BackTab);
+        assert_eq!(key.modifiers, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
     }
 
     #[test]
@@ -625,6 +644,15 @@ mod tests {
             ("fb", "FindBuffers"),
             ("ft", "Themes"),
             ("tt", "Terminals"),
+            ("tn", "TerminalNew"),
+            ("tj", "TerminalNext"),
+            ("tk", "TerminalPrev"),
+            ("tr", "TerminalRename"),
+            ("tx", "TerminalKill"),
+            ("t1", "TerminalSelect 1"),
+            ("t2", "TerminalSelect 2"),
+            ("t3", "TerminalSelect 3"),
+            ("t4", "TerminalSelect 4"),
             ("d", "FindDiagnostics"),
             ("D", "DiagnosticFloat"),
             ("gg", "LazyGit"),

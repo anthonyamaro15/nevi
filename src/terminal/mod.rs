@@ -6235,7 +6235,10 @@ pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
 
     // If floating terminal is visible, handle its keys
     if editor.floating_terminal.is_visible() {
-        if editor.floating_terminal.handle_session_control_key(key) {
+        if editor
+            .floating_terminal
+            .handle_session_control_key(key, &editor.settings.terminal)
+        {
             return;
         }
 
@@ -9409,6 +9412,22 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
                 Err(e) => CommandResult::Error(format!("Terminal rename failed: {}", e)),
             }
         }
+        Command::TerminalRenamePrompt => {
+            if let Some(session) = editor
+                .floating_terminal
+                .session_infos()
+                .into_iter()
+                .find(|session| session.active)
+            {
+                editor.enter_command_mode_with_input(format!(
+                    "termrename {} {}",
+                    session.position, session.name
+                ));
+                CommandResult::Ok
+            } else {
+                CommandResult::Error("Terminal rename failed: No terminal session".to_string())
+            }
+        }
         Command::TerminalKill => {
             editor.floating_terminal.close();
             CommandResult::Message("Terminal killed".to_string())
@@ -11691,6 +11710,21 @@ mod tests {
         assert_eq!(editor.finder.mode, FinderMode::Files);
         assert!(editor.leader_sequence.is_none());
         assert!(editor.leader_popup_items().is_empty());
+    }
+
+    #[test]
+    fn leader_terminal_rename_prefills_active_session_command() {
+        let mut editor = Editor::default();
+        editor
+            .floating_terminal
+            .create_session(Some("server".to_string()))
+            .unwrap();
+
+        let action = editor.keymap.get_leader_action("tr").cloned().unwrap();
+        execute_leader_action(&mut editor, &action);
+
+        assert_eq!(editor.mode, Mode::Command);
+        assert_eq!(editor.command_line.input, "termrename 1 server");
     }
 
     #[test]

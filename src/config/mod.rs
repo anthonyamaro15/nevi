@@ -134,6 +134,8 @@ pub struct TerminalSettings {
     pub popup_width_ratio: f32,
     /// Floating terminal height as a ratio of the editor height (default: 0.9)
     pub popup_height_ratio: f32,
+    /// Floating terminal shortcut settings.
+    pub shortcuts: TerminalShortcutSettings,
 }
 
 impl Default for TerminalSettings {
@@ -141,6 +143,34 @@ impl Default for TerminalSettings {
         Self {
             popup_width_ratio: 0.9,
             popup_height_ratio: 0.9,
+            shortcuts: TerminalShortcutSettings::default(),
+        }
+    }
+}
+
+/// Floating terminal focused shortcut settings.
+///
+/// Set any shortcut to "none" to disable it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct TerminalShortcutSettings {
+    /// Create a new terminal session while the floating terminal is focused.
+    pub new_session: String,
+    /// Switch to the next terminal session while the floating terminal is focused.
+    pub next_session: String,
+    /// Switch to the previous terminal session while the floating terminal is focused.
+    pub previous_session: String,
+    /// Close the current terminal session while the floating terminal is focused.
+    pub close_session: String,
+}
+
+impl Default for TerminalShortcutSettings {
+    fn default() -> Self {
+        Self {
+            new_session: "<C-S-t>".to_string(),
+            next_session: "<C-Tab>".to_string(),
+            previous_session: "<C-S-Tab>".to_string(),
+            close_session: "<C-S-w>".to_string(),
         }
     }
 }
@@ -345,6 +375,51 @@ impl Default for KeymapSettings {
                     key: "tt".to_string(),
                     action: ":Terminals".to_string(),
                     desc: Some("Open terminal picker".to_string()),
+                },
+                LeaderMapping {
+                    key: "tn".to_string(),
+                    action: ":TerminalNew".to_string(),
+                    desc: Some("New terminal session".to_string()),
+                },
+                LeaderMapping {
+                    key: "tj".to_string(),
+                    action: ":TerminalNext".to_string(),
+                    desc: Some("Next terminal session".to_string()),
+                },
+                LeaderMapping {
+                    key: "tk".to_string(),
+                    action: ":TerminalPrev".to_string(),
+                    desc: Some("Previous terminal session".to_string()),
+                },
+                LeaderMapping {
+                    key: "tr".to_string(),
+                    action: ":TerminalRename".to_string(),
+                    desc: Some("Rename terminal session".to_string()),
+                },
+                LeaderMapping {
+                    key: "tx".to_string(),
+                    action: ":TerminalKill".to_string(),
+                    desc: Some("Kill terminal session".to_string()),
+                },
+                LeaderMapping {
+                    key: "t1".to_string(),
+                    action: ":TerminalSelect 1".to_string(),
+                    desc: Some("Terminal session 1".to_string()),
+                },
+                LeaderMapping {
+                    key: "t2".to_string(),
+                    action: ":TerminalSelect 2".to_string(),
+                    desc: Some("Terminal session 2".to_string()),
+                },
+                LeaderMapping {
+                    key: "t3".to_string(),
+                    action: ":TerminalSelect 3".to_string(),
+                    desc: Some("Terminal session 3".to_string()),
+                },
+                LeaderMapping {
+                    key: "t4".to_string(),
+                    action: ":TerminalSelect 4".to_string(),
+                    desc: Some("Terminal session 4".to_string()),
                 },
                 // Keymap cheatsheet
                 LeaderMapping {
@@ -726,6 +801,12 @@ fn default_config_template() -> &'static str {
 # [terminal]
 # popup_width_ratio = 0.9     # Width as a fraction of the screen (0.2 to 1.0)
 # popup_height_ratio = 0.9    # Height as a fraction of the screen (0.2 to 1.0)
+#
+# [terminal.shortcuts]
+# new_session = "<C-S-t>"       # Set to "none" to disable
+# next_session = "<C-Tab>"
+# previous_session = "<C-S-Tab>"
+# close_session = "<C-S-w>"
 
 # ============================================================================
 # FINDER (Fuzzy file picker, grep)
@@ -1020,6 +1101,12 @@ fn default_config_template() -> &'static str {
 # <leader>fb       - Find buffers
 # <leader>ft       - Theme picker
 # <leader>tt       - Terminal picker
+# <leader>tn       - New terminal session
+# <leader>tj       - Next terminal session
+# <leader>tk       - Previous terminal session
+# <leader>tr       - Rename terminal session
+# <leader>tx       - Kill terminal session
+# <leader>t1..t4   - Jump to terminal session 1..4
 # <leader>fk       - Search keymaps
 #
 # Floating terminal:
@@ -1365,6 +1452,30 @@ mod tests {
         .expect("parse settings");
 
         assert!(!settings.keymap.show_leader_popup);
+    }
+
+    #[test]
+    fn terminal_shortcuts_have_defaults_and_are_partially_configurable() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.terminal.shortcuts.new_session, "<C-S-t>");
+        assert_eq!(settings.terminal.shortcuts.next_session, "<C-Tab>");
+        assert_eq!(settings.terminal.shortcuts.previous_session, "<C-S-Tab>");
+        assert_eq!(settings.terminal.shortcuts.close_session, "<C-S-w>");
+
+        let settings: Settings = toml::from_str(
+            r#"
+            [terminal.shortcuts]
+            next_session = "<F6>"
+            close_session = "none"
+            "#,
+        )
+        .expect("parse settings");
+
+        assert_eq!(settings.terminal.shortcuts.new_session, "<C-S-t>");
+        assert_eq!(settings.terminal.shortcuts.next_session, "<F6>");
+        assert_eq!(settings.terminal.shortcuts.previous_session, "<C-S-Tab>");
+        assert_eq!(settings.terminal.shortcuts.close_session, "none");
     }
 }
 

@@ -87,6 +87,8 @@ nevi file1.rs file2.rs
 - `<Space>gc` - Git changes picker
 - `<Space>e` - File explorer
 - `<Space>tt` - Terminal picker
+- `<Space>tn` / `<Space>tj` / `<Space>tk` - New / next / previous terminal session
+- `<Space>tr` - Rename active terminal session
 - `<Space>fk` - Search keymaps (keybinding cheatsheet)
 
 ## Configuration

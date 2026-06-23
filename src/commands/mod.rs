@@ -122,6 +122,8 @@ pub enum Command {
     TerminalSelect(usize),
     /// :TerminalRename [index] {name} - Rename a floating terminal session
     TerminalRename(Option<usize>, String),
+    /// :TerminalRename - Prompt to rename the active floating terminal session
+    TerminalRenamePrompt,
     /// :TerminalKill - Kill the floating terminal process
     TerminalKill,
     /// :CopilotAuth - Initiate Copilot sign-in
@@ -1003,7 +1005,7 @@ pub fn parse_command(input: &str) -> Command {
 
 fn parse_terminal_rename_args(args: Option<&str>) -> Command {
     let Some(args) = args.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Command::Unknown("termrename: missing name".to_string());
+        return Command::TerminalRenamePrompt;
     };
 
     let mut parts = args.splitn(2, char::is_whitespace);
@@ -1682,6 +1684,10 @@ mod tests {
         assert!(matches!(
             parse_command("termrename server"),
             Command::TerminalRename(None, name) if name == "server"
+        ));
+        assert!(matches!(
+            parse_command("termrename"),
+            Command::TerminalRenamePrompt
         ));
         assert!(matches!(
             parse_command("termrename 2 test runner"),
