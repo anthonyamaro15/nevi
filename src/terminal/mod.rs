@@ -7653,6 +7653,11 @@ fn handle_command_mode(editor: &mut Editor, key: KeyEvent) {
             editor.command_line.delete_char_at();
         }
 
+        // Delete word before cursor
+        (KeyModifiers::CONTROL, KeyCode::Char('w')) => {
+            editor.command_line.delete_word_before();
+        }
+
         // Cursor movement
         (KeyModifiers::NONE, KeyCode::Left) => {
             editor.command_line.move_left();
@@ -9645,6 +9650,30 @@ mod tests {
         assert_eq!(editor.mode, Mode::Command);
         assert_eq!(editor.command_line.input, "write buffer");
         assert_eq!(editor.command_line.cursor, "write buffer".chars().count());
+    }
+
+    #[test]
+    fn command_ctrl_w_deletes_word_before_command_line_cursor() {
+        let mut editor = Editor::default();
+        editor.enter_command_mode_with_input("write foo bar");
+
+        handle_key(&mut editor, ctrl_key('w'));
+
+        assert_eq!(editor.mode, Mode::Command);
+        assert_eq!(editor.command_line.input, "write foo ");
+        assert_eq!(editor.command_line.cursor, "write foo ".chars().count());
+    }
+
+    #[test]
+    fn command_ctrl_w_skips_trailing_spaces_before_deleting_word() {
+        let mut editor = Editor::default();
+        editor.enter_command_mode_with_input("write foo   ");
+
+        handle_key(&mut editor, ctrl_key('w'));
+
+        assert_eq!(editor.mode, Mode::Command);
+        assert_eq!(editor.command_line.input, "write ");
+        assert_eq!(editor.command_line.cursor, "write ".chars().count());
     }
 
     #[test]
