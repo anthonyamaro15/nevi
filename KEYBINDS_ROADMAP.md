@@ -4,7 +4,7 @@ Nevi aims for full vim/neovim keybind compatibility. Defaults follow Neovim, and
 keybinds are configurable — sensible defaults out of the box, overridable to your
 own taste.
 
-**Status: 286 keybinds implemented, 81 planned Vim/Neovim parity defaults.**
+**Status: 287 keybinds implemented, 80 planned Vim/Neovim parity defaults.**
 
 This file tracks what's **planned** (not yet implemented). For the full list of
 keybinds that already work, see [KEYBINDINGS.md](KEYBINDINGS.md).
@@ -28,7 +28,6 @@ These apply while editing the command prompt after `:`.
 
 | Keybind | Planned behavior |
 |---------|------------------|
-| `Ctrl+w` | Delete the word before the cursor |
 | `Ctrl+u` | Delete from cursor back to the start of the command line |
 | `Ctrl+r {reg}` | Insert register contents into the command line |
 | `Ctrl+d` | List command-line completions |

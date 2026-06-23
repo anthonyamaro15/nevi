@@ -391,6 +391,14 @@ vim_default = true
             }),
             "command-line Ctrl+e should appear in :Keymaps"
         );
+        assert!(
+            items.iter().any(|item| {
+                item.display.contains("cmdline")
+                    && item.display.contains("<C-w>")
+                    && item.display.contains("Delete word")
+            }),
+            "command-line Ctrl+w should appear in :Keymaps"
+        );
     }
 
     #[test]

@@ -1197,6 +1197,48 @@ impl CommandLine {
         }
     }
 
+    /// Delete the word before the cursor, matching Vim command-line Ctrl+w.
+    pub fn delete_word_before(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+
+        let chars: Vec<char> = self.input.chars().collect();
+        let start_cursor = self.cursor.min(chars.len());
+        let mut cursor = start_cursor;
+
+        while cursor > 0 && chars[cursor - 1].is_whitespace() {
+            cursor -= 1;
+        }
+
+        if cursor > 0 {
+            let delete_word_chars = chars[cursor - 1].is_alphanumeric() || chars[cursor - 1] == '_';
+            if delete_word_chars {
+                while cursor > 0
+                    && (chars[cursor - 1].is_alphanumeric() || chars[cursor - 1] == '_')
+                {
+                    cursor -= 1;
+                }
+            } else {
+                while cursor > 0 {
+                    let ch = chars[cursor - 1];
+                    if ch.is_whitespace() || ch.is_alphanumeric() || ch == '_' {
+                        break;
+                    }
+                    cursor -= 1;
+                }
+            }
+        }
+
+        if cursor < start_cursor {
+            let start_byte = self.char_to_byte_index(cursor);
+            let end_byte = self.char_to_byte_index(start_cursor);
+            self.input.replace_range(start_byte..end_byte, "");
+            self.cursor = cursor;
+            self.on_input_edited();
+        }
+    }
+
     /// Move cursor left
     pub fn move_left(&mut self) {
         if self.cursor > 0 {

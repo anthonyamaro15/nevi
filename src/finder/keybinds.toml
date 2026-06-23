@@ -1946,6 +1946,13 @@ desc = "Move to end of command line"
 status = "implemented"
 vim_default = true
 
+[[cmdline.editing]]
+key = "<C-w>"
+action = "command_line_delete_word_before"
+desc = "Delete word before cursor"
+status = "implemented"
+vim_default = true
+
 # ============================================================================
 # COMMAND MODE (Ex commands)
 # ============================================================================
