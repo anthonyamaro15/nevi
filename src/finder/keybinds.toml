@@ -1967,6 +1967,13 @@ desc = "Insert register contents"
 status = "implemented"
 vim_default = true
 
+[[cmdline.editing]]
+key = "<C-d>"
+action = "command_line_list_completions"
+desc = "List command-line completions"
+status = "implemented"
+vim_default = true
+
 # ============================================================================
 # COMMAND MODE (Ex commands)
 # ============================================================================

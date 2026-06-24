@@ -1353,6 +1353,21 @@ impl CommandLine {
         self.refresh_history_popup();
     }
 
+    /// Show available command-line completions without accepting one.
+    pub fn list_completions(&mut self) -> bool {
+        self.refresh_command_suggestions();
+        self.history_popup_items.clear();
+        self.history_popup_index = 0;
+
+        if self.suggestions.is_empty() {
+            self.popup_mode = CommandPopupMode::None;
+            false
+        } else {
+            self.popup_mode = CommandPopupMode::Completion;
+            true
+        }
+    }
+
     /// Move selection down in current popup.
     pub fn popup_next(&mut self) {
         match self.popup_mode {

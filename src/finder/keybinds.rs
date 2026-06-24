@@ -376,6 +376,12 @@ vim_default = true
                 .any(|item| item.display.contains("<A-r>") && item.display.contains("history")),
             "command-line UX mappings (e.g. <A-r> history) should appear"
         );
+        assert!(
+            items.iter().any(|item| {
+                item.display.contains("<C-d>") && item.display.contains("completions")
+            }),
+            "command-line UX mappings (e.g. <C-d> completions) should appear"
+        );
     }
 
     #[test]

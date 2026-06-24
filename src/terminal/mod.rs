@@ -7589,6 +7589,9 @@ fn execute_command_mode_action(editor: &mut Editor, action: CommandModeAction) {
         CommandModeAction::InsertRegister => {
             editor.command_line.pending_register = true;
         }
+        CommandModeAction::ListCompletions => {
+            editor.command_line.list_completions();
+        }
         CommandModeAction::Complete => {
             if editor.command_line.popup_mode == CommandPopupMode::History {
                 editor.command_line.accept_history_popup_selection();
@@ -9723,6 +9726,25 @@ mod tests {
         assert_eq!(editor.mode, Mode::Command);
         assert_eq!(editor.command_line.input, "write nevi.txtbar");
         assert_eq!(editor.command_line.cursor, "write nevi.txt".chars().count());
+    }
+
+    #[test]
+    fn command_ctrl_d_lists_command_line_completions_without_accepting() {
+        let mut editor = Editor::default();
+        editor.enter_command_mode_with_input("w");
+        editor.command_line.popup_mode = CommandPopupMode::None;
+
+        handle_key(&mut editor, ctrl_key('d'));
+
+        assert_eq!(editor.mode, Mode::Command);
+        assert_eq!(editor.command_line.input, "w");
+        assert_eq!(editor.command_line.cursor, 1);
+        assert_eq!(editor.command_line.popup_mode, CommandPopupMode::Completion);
+        assert!(editor
+            .command_line
+            .suggestions
+            .iter()
+            .any(|item| item.command == "w"));
     }
 
     #[test]

@@ -247,6 +247,11 @@ impl Default for KeymapSettings {
                     desc: Some("Toggle command history window".to_string()),
                 },
                 CommandModeMapping {
+                    key: "<C-d>".to_string(),
+                    action: "list_completions".to_string(),
+                    desc: Some("List command-line completions".to_string()),
+                },
+                CommandModeMapping {
                     key: "<Tab>".to_string(),
                     action: "complete".to_string(),
                     desc: Some("Accept selected command completion".to_string()),
@@ -463,7 +468,7 @@ pub struct LeaderMapping {
 pub struct CommandModeMapping {
     /// Key notation (e.g., "<C-r>", "<A-r>", "<Tab>", "<BackTab>")
     pub key: String,
-    /// Action name (insert_register, history_toggle, complete, complete_prev, popup_next, popup_prev)
+    /// Action name (insert_register, history_toggle, list_completions, complete, complete_prev, popup_next, popup_prev)
     pub action: String,
     /// Optional description for docs/which-key style UIs
     #[serde(default)]
@@ -1150,6 +1155,7 @@ fn default_config_template() -> &'static str {
 # Ctrl+w           - Delete word before cursor
 # Ctrl+u           - Delete from cursor to beginning of command line
 # Ctrl+r {reg}     - Insert register contents
+# Ctrl+d           - List command-line completions
 # Alt+r            - Toggle command history window
 # Tab              - Accept selected command completion
 # Shift+Tab        - Accept previous completion
