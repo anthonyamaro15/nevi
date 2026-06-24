@@ -2696,8 +2696,8 @@ impl Terminal {
         }
 
         let header_text = match command_line.popup_mode {
-            CommandPopupMode::Completion => "[COMMANDS] Tab:accept  Shift+Tab:prev  Ctrl+r:history",
-            CommandPopupMode::History => "[HISTORY] Enter/Tab:use  Ctrl+n/p:move  Ctrl+r:close",
+            CommandPopupMode::Completion => "[COMMANDS] Tab:accept  Shift+Tab:prev  Alt+r:history",
+            CommandPopupMode::History => "[HISTORY] Enter/Tab:use  Ctrl+n/p:move  Alt+r:close",
             CommandPopupMode::None => "",
         };
 
@@ -7586,6 +7586,9 @@ fn execute_command_mode_action(editor: &mut Editor, action: CommandModeAction) {
         CommandModeAction::HistoryToggle => {
             editor.command_line.toggle_history_popup();
         }
+        CommandModeAction::InsertRegister => {
+            editor.command_line.pending_register = true;
+        }
         CommandModeAction::Complete => {
             if editor.command_line.popup_mode == CommandPopupMode::History {
                 editor.command_line.accept_history_popup_selection();
@@ -7611,6 +7614,18 @@ fn execute_command_mode_action(editor: &mut Editor, action: CommandModeAction) {
 }
 
 fn handle_command_mode(editor: &mut Editor, key: KeyEvent) {
+    if editor.command_line.pending_register {
+        editor.command_line.pending_register = false;
+        match (key.modifiers, key.code) {
+            (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('[')) => {}
+            (_, KeyCode::Char(register)) => {
+                editor.insert_register_text_into_command_line(register);
+            }
+            _ => {}
+        }
+        return;
+    }
+
     if let Some(action) = editor.keymap.get_command_action(key) {
         execute_command_mode_action(editor, action);
         return;
@@ -9596,7 +9611,7 @@ mod tests {
         execute_leader_action, finder_preview_match_ranges, handle_insert_mode, handle_key,
         replace_completion_text, Terminal,
     };
-    use crate::commands::Command;
+    use crate::commands::{Command, CommandPopupMode};
     use crate::config::{KeymapEntry, Settings};
     use crate::editor::{Editor, Mode, RegisterContent};
     use crate::finder::FinderMode;
@@ -9617,6 +9632,10 @@ mod tests {
 
     fn ctrl_key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn alt_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
     }
 
     fn esc_key() -> KeyEvent {
@@ -9687,6 +9706,39 @@ mod tests {
         assert_eq!(editor.mode, Mode::Command);
         assert_eq!(editor.command_line.input, "bar");
         assert_eq!(editor.command_line.cursor, 0);
+    }
+
+    #[test]
+    fn command_ctrl_r_inserts_named_register_text_at_command_cursor() {
+        let mut editor = Editor::default();
+        editor
+            .registers
+            .yank(Some('a'), RegisterContent::Chars("nevi.txt".to_string()));
+        editor.enter_command_mode_with_input("write bar");
+        editor.command_line.cursor = "write ".chars().count();
+
+        handle_key(&mut editor, ctrl_key('r'));
+        handle_key(&mut editor, key('a'));
+
+        assert_eq!(editor.mode, Mode::Command);
+        assert_eq!(editor.command_line.input, "write nevi.txtbar");
+        assert_eq!(editor.command_line.cursor, "write nevi.txt".chars().count());
+    }
+
+    #[test]
+    fn command_alt_r_toggles_command_history_popup() {
+        let mut editor = Editor::default();
+        editor.command_line.history = vec!["write".to_string()];
+        editor.enter_command_mode();
+
+        handle_key(&mut editor, alt_key('r'));
+
+        assert_eq!(editor.mode, Mode::Command);
+        assert_eq!(editor.command_line.popup_mode, CommandPopupMode::History);
+
+        handle_key(&mut editor, alt_key('r'));
+
+        assert_ne!(editor.command_line.popup_mode, CommandPopupMode::History);
     }
 
     #[test]

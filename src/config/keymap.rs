@@ -40,6 +40,8 @@ struct LeaderMetadata {
 pub enum CommandModeAction {
     /// Toggle history popup window
     HistoryToggle,
+    /// Insert the next typed register into the command line
+    InsertRegister,
     /// Accept current completion/history selection
     Complete,
     /// Move selection backward and accept completion
@@ -368,6 +370,7 @@ fn parse_action(action: &str) -> LeaderAction {
 fn parse_command_mode_action(action: &str) -> Option<CommandModeAction> {
     match action.trim().to_lowercase().as_str() {
         "history_toggle" => Some(CommandModeAction::HistoryToggle),
+        "insert_register" => Some(CommandModeAction::InsertRegister),
         "complete" => Some(CommandModeAction::Complete),
         "complete_prev" => Some(CommandModeAction::CompletePrev),
         "popup_next" => Some(CommandModeAction::PopupNext),

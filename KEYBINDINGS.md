@@ -772,7 +772,8 @@ While typing an Ex command after `:`.
 | `Ctrl+e` | Move to end of command line |
 | `Ctrl+w` | Delete word before cursor |
 | `Ctrl+u` | Delete from cursor to beginning of command line |
-| `Ctrl+r` | Toggle command history window |
+| `Ctrl+r {reg}` | Insert register contents |
+| `Alt+r` | Toggle command history window |
 | `Tab` | Accept selected command completion |
 | `Shift+Tab` | Accept previous completion |
 | `Ctrl+n` / `Ctrl+p` | Select next / previous popup item |

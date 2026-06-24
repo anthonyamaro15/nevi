@@ -240,7 +240,7 @@ fn leader_entries(leader_mappings: &[LeaderMapping]) -> Vec<KeybindEntry> {
 }
 
 /// Rows for the command-line UX mappings (keys active while typing a `:`
-/// command, e.g. `<C-r>` for history), from the live config.
+/// command, e.g. `<A-r>` for history), from the live config.
 fn command_mode_entries(keymap: &KeymapSettings) -> Vec<KeybindEntry> {
     keymap
         .command_mappings
@@ -367,8 +367,14 @@ vim_default = true
         assert!(
             items
                 .iter()
-                .any(|item| item.display.contains("<C-r>") && item.display.contains("history")),
-            "command-line UX mappings (e.g. <C-r> history) should appear"
+                .any(|item| item.display.contains("<C-r>") && item.display.contains("register")),
+            "command-line UX mappings (e.g. <C-r> register insertion) should appear"
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| item.display.contains("<A-r>") && item.display.contains("history")),
+            "command-line UX mappings (e.g. <A-r> history) should appear"
         );
     }
 

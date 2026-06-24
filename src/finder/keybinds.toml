@@ -1960,6 +1960,13 @@ desc = "Delete from cursor to beginning of command line"
 status = "implemented"
 vim_default = true
 
+[[cmdline.editing]]
+key = "<C-r>{reg}"
+action = "command_line_insert_register"
+desc = "Insert register contents"
+status = "implemented"
+vim_default = true
+
 # ============================================================================
 # COMMAND MODE (Ex commands)
 # ============================================================================

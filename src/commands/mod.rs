@@ -1120,6 +1120,8 @@ pub struct CommandLine {
     pub history_popup_items: Vec<String>,
     /// Selected item in history popup
     pub history_popup_index: usize,
+    /// Waiting for a register name after command-line Ctrl+r
+    pub pending_register: bool,
 }
 
 impl CommandLine {
@@ -1154,6 +1156,7 @@ impl CommandLine {
         self.suggestion_index = 0;
         self.history_popup_items.clear();
         self.history_popup_index = 0;
+        self.pending_register = false;
     }
 
     /// Convert char index to byte index
@@ -1175,6 +1178,18 @@ impl CommandLine {
         let byte_idx = self.char_to_byte_index(self.cursor);
         self.input.insert(byte_idx, ch);
         self.cursor += 1;
+        self.on_input_edited();
+    }
+
+    /// Insert text at the command-line cursor.
+    pub fn insert_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+
+        let byte_idx = self.char_to_byte_index(self.cursor);
+        self.input.insert_str(byte_idx, text);
+        self.cursor += text.chars().count();
         self.on_input_edited();
     }
 

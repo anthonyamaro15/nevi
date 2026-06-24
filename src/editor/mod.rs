@@ -3695,6 +3695,22 @@ impl Editor {
         true
     }
 
+    /// Insert text from a register at the command-line cursor.
+    pub fn insert_register_text_into_command_line(&mut self, register: char) -> bool {
+        let Some(content) = self.register_content_for_paste(Some(register)) else {
+            return false;
+        };
+        let text = match content {
+            RegisterContent::Chars(text) | RegisterContent::Lines(text) => text,
+        };
+        if text.is_empty() {
+            return false;
+        }
+
+        self.command_line.insert_text(&text);
+        true
+    }
+
     /// Begin collecting expression-register input.
     pub fn start_expression_register(&mut self, target: ExpressionRegisterTarget) {
         self.pending_expression_register = Some(target);

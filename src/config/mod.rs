@@ -238,6 +238,11 @@ impl Default for KeymapSettings {
             command_mappings: vec![
                 CommandModeMapping {
                     key: "<C-r>".to_string(),
+                    action: "insert_register".to_string(),
+                    desc: Some("Insert register contents".to_string()),
+                },
+                CommandModeMapping {
+                    key: "<A-r>".to_string(),
                     action: "history_toggle".to_string(),
                     desc: Some("Toggle command history window".to_string()),
                 },
@@ -456,9 +461,9 @@ pub struct LeaderMapping {
 /// A command-mode mapping for command-line UX actions
 #[derive(Debug, Clone, Deserialize)]
 pub struct CommandModeMapping {
-    /// Key notation (e.g., "<C-r>", "<Tab>", "<BackTab>")
+    /// Key notation (e.g., "<C-r>", "<A-r>", "<Tab>", "<BackTab>")
     pub key: String,
-    /// Action name (history_toggle, complete, complete_prev, popup_next, popup_prev)
+    /// Action name (insert_register, history_toggle, complete, complete_prev, popup_next, popup_prev)
     pub action: String,
     /// Optional description for docs/which-key style UIs
     #[serde(default)]
@@ -1144,7 +1149,8 @@ fn default_config_template() -> &'static str {
 # Ctrl+e           - Move to end of command line
 # Ctrl+w           - Delete word before cursor
 # Ctrl+u           - Delete from cursor to beginning of command line
-# Ctrl+r           - Toggle command history window
+# Ctrl+r {reg}     - Insert register contents
+# Alt+r            - Toggle command history window
 # Tab              - Accept selected command completion
 # Shift+Tab        - Accept previous completion
 # Ctrl+n / Ctrl+p  - Next / previous popup item
