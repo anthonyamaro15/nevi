@@ -1434,6 +1434,33 @@ impl CommandLine {
         true
     }
 
+    /// Insert every matching command completion into the command line.
+    pub fn insert_all_matching_completions(&mut self) -> bool {
+        self.history_popup_items.clear();
+        self.history_popup_index = 0;
+
+        let (prefix, token, suffix) = split_input_segments(&self.input);
+        let matches = command_suggestions_for_token(token, COMMAND_SPECS.len());
+        if matches.is_empty() {
+            self.suggestions.clear();
+            self.popup_mode = CommandPopupMode::None;
+            return false;
+        }
+
+        let inserted = matches
+            .iter()
+            .map(|suggestion| suggestion.command)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let prefix = prefix.to_string();
+        let suffix = suffix.to_string();
+        self.input = format!("{prefix}{inserted}{suffix}");
+        self.cursor = prefix.chars().count() + inserted.chars().count();
+        self.suggestions.clear();
+        self.popup_mode = CommandPopupMode::None;
+        true
+    }
+
     /// Move selection down in current popup.
     pub fn popup_next(&mut self) {
         match self.popup_mode {

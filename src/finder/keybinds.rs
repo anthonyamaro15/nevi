@@ -388,6 +388,12 @@ vim_default = true
             }),
             "command-line UX mappings (e.g. <C-l> common prefix completion) should appear"
         );
+        assert!(
+            items.iter().any(|item| {
+                item.display.contains("<C-a>") && item.display.contains("all matching")
+            }),
+            "command-line UX mappings (e.g. <C-a> all completions) should appear"
+        );
     }
 
     #[test]
