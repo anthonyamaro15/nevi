@@ -1981,6 +1981,13 @@ desc = "Complete longest common command prefix"
 status = "implemented"
 vim_default = true
 
+[[cmdline.editing]]
+key = "<C-a>"
+action = "command_line_insert_all_completions"
+desc = "Insert all matching command completions"
+status = "implemented"
+vim_default = true
+
 # ============================================================================
 # COMMAND MODE (Ex commands)
 # ============================================================================

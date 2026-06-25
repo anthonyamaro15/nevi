@@ -775,6 +775,7 @@ While typing an Ex command after `:`.
 | `Ctrl+r {reg}` | Insert register contents |
 | `Ctrl+d` | List command-line completions |
 | `Ctrl+l` | Complete longest common command prefix |
+| `Ctrl+a` | Insert all matching command completions |
 | `Alt+r` | Toggle command history window |
 | `Tab` | Accept selected command completion |
 | `Shift+Tab` | Accept previous completion |

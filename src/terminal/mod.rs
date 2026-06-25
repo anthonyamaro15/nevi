@@ -7633,6 +7633,9 @@ fn execute_command_mode_action(editor: &mut Editor, action: CommandModeAction) {
         CommandModeAction::CompleteLongestCommonPrefix => {
             editor.command_line.complete_longest_common_prefix();
         }
+        CommandModeAction::InsertAllCompletions => {
+            editor.command_line.insert_all_matching_completions();
+        }
         CommandModeAction::Complete => {
             if editor.command_line.popup_mode == CommandPopupMode::History {
                 editor.command_line.accept_history_popup_selection();
@@ -9799,6 +9802,20 @@ mod tests {
         assert_eq!(editor.command_line.input, "Terminal");
         assert_eq!(editor.command_line.cursor, "Terminal".chars().count());
         assert_eq!(editor.command_line.popup_mode, CommandPopupMode::Completion);
+    }
+
+    #[test]
+    fn command_ctrl_a_inserts_all_matching_command_completions() {
+        let mut editor = Editor::default();
+        editor.enter_command_mode_with_input("Term");
+
+        handle_key(&mut editor, ctrl_key('a'));
+
+        let expected = "Terminal TerminalList TerminalNew TerminalSelect TerminalKill TerminalNext TerminalPrev Terminals TerminalRename";
+        assert_eq!(editor.mode, Mode::Command);
+        assert_eq!(editor.command_line.input, expected);
+        assert_eq!(editor.command_line.cursor, expected.chars().count());
+        assert_eq!(editor.command_line.popup_mode, CommandPopupMode::None);
     }
 
     #[test]
