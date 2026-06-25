@@ -46,6 +46,44 @@ A fast, native terminal editor where your existing vim/neovim muscle memory just
 
 ## Installation
 
+### Requirements
+
+Nevi is currently macOS-only.
+
+Required to build from source:
+
+- Rust toolchain with `cargo`
+- Git, if cloning the repository with `git clone`
+- Xcode Command Line Tools if your Rust setup prompts for native build tools
+
+Required at runtime:
+
+- A terminal emulator
+
+Not required:
+
+- `ripgrep`, `grep`, `fd`, `fzf`, or the `tree-sitter` CLI. Nevi's file finder,
+  live grep, fuzzy matching, and syntax highlighting are built into the binary.
+
+Optional tools unlock optional features:
+
+| Feature | Optional tool | Install hint |
+|---------|---------------|--------------|
+| `:LazyGit` / `<Space>gg` | `lazygit` | `brew install lazygit` |
+| Rust LSP | `rust-analyzer` | `rustup component add rust-analyzer` |
+| TypeScript / JavaScript LSP | `typescript-language-server` and `typescript` | `npm install -g typescript typescript-language-server` |
+| CSS / JSON / HTML LSP | `vscode-langservers-extracted` | `npm install -g vscode-langservers-extracted` |
+| TOML LSP | `taplo` | `cargo install taplo-cli --locked` |
+| Python LSP | `pyright` | `npm install -g pyright` |
+| Markdown LSP | `marksman` | Optional and disabled by default |
+| External formatters | Whatever formatter you configure | Examples: `biome`, `prettier`, `black`, `gofmt` |
+| Git signs / `:GitChanges` | A Git repository | No external `git` CLI required |
+| GitHub Copilot completions | GitHub account and network access | No local Copilot binary required |
+
+If an optional tool is missing, the rest of Nevi still works. Run
+`:checkhealth` or `:Health` inside Nevi to inspect config paths, LSP settings,
+profiling status, and common setup issues.
+
 ### From Source
 
 ```bash
@@ -249,6 +287,9 @@ Visual mode (`v/V/Ctrl+v`), macros (`q{a-z}/@{a-z}`), marks (`m{a-z}/'`), read-o
 
 LSP servers are auto-detected when installed. See [`~/.config/nevi/config.toml`](#configuration) for LSP configuration options.
 
+If a server is missing, Nevi shows an install hint in the LSP status/error
+message. You can also run `:checkhealth` to review the active LSP configuration.
+
 > **Missing a language?** Open a [GitHub issue](https://github.com/anthonyamaro15/nevi/issues) and we'll work on adding support!
 
 ### External Formatters
@@ -259,6 +300,9 @@ Configure formatters in `~/.config/nevi/languages.toml`:
 [typescript]
 formatter = { command = "biome", args = ["format", "--stdin-file-path", "{file}"] }
 ```
+
+Formatters are external commands. Nevi only runs a formatter if you configure
+one; otherwise it falls back to LSP formatting when available.
 
 ## Contributing
 
