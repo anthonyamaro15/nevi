@@ -431,18 +431,23 @@ impl FuzzyFinder {
 
     /// Open the finder in keymaps (cheatsheet) mode — read-only, no preview pane.
     pub fn open_keymaps(&mut self, items: Vec<FinderItem>) {
+        self.open_keymaps_with_query(items, "");
+    }
+
+    /// Open the finder in keymaps mode with a pre-filled query.
+    pub fn open_keymaps_with_query(&mut self, items: Vec<FinderItem>, query: &str) {
         self.mode = FinderMode::Keymaps;
         self.input_mode = FinderInputMode::Insert;
-        self.query.clear();
-        self.cursor = 0;
+        self.query = query.to_string();
+        self.cursor = query.chars().count();
         self.selected = 0;
         self.scroll_offset = 0;
         self.clear_preview_cache();
         self.cancel_grep_search();
 
         self.items = items;
-        self.filtered = (0..self.items.len()).collect();
         self.populated = true;
+        self.update_filter();
     }
 
     /// Open the finder in git changes mode
@@ -1191,6 +1196,40 @@ mod tests {
             !finder.mode_supports_preview(),
             "keymaps mode has no preview pane"
         );
+    }
+
+    #[test]
+    fn open_keymaps_with_query_prefilters_items() {
+        let mut finder = FuzzyFinder::new();
+        finder.open_keymaps_with_query(
+            vec![
+                FinderItem::new(
+                    "n       h                  Move cursor left".to_string(),
+                    PathBuf::new(),
+                ),
+                FinderItem::new(
+                    "expl    gg                 Move to top".to_string(),
+                    PathBuf::new(),
+                ),
+                FinderItem::new(
+                    "expl    <C-d>              Move half page down".to_string(),
+                    PathBuf::new(),
+                ),
+            ],
+            "expl",
+        );
+
+        assert_eq!(finder.mode, FinderMode::Keymaps);
+        assert_eq!(finder.query, "expl");
+        assert_eq!(finder.cursor, 4);
+        assert_eq!(finder.filtered.len(), 2);
+        assert!(finder.filtered.iter().all(|idx| {
+            finder
+                .items
+                .get(*idx)
+                .map(|item| item.display.starts_with("expl"))
+                .unwrap_or(false)
+        }));
     }
 
     #[test]

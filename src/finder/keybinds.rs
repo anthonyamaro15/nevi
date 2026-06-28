@@ -430,6 +430,14 @@ vim_default = true
             }),
             "existing explorer mappings (e.g. paste) should appear"
         );
+        assert!(
+            items.iter().any(|item| {
+                item.display.contains("expl")
+                    && item.display.contains("?")
+                    && item.display.contains("keymaps")
+            }),
+            "explorer help mapping should appear"
+        );
     }
 
     #[test]

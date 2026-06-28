@@ -1606,6 +1606,12 @@ action = "refresh"
 desc = "Refresh explorer and git status"
 status = "implemented"
 
+[[explorer.help]]
+key = "?"
+action = "show_explorer_keymaps"
+desc = "Show explorer keymaps"
+status = "implemented"
+
 [[explorer.navigation]]
 key = "-"
 action = "go_to_parent"

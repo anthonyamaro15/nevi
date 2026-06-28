@@ -8829,8 +8829,13 @@ impl Editor {
 
     /// Open the fuzzy finder in keymaps cheatsheet mode (read-only).
     pub fn open_keymaps_picker(&mut self) {
+        self.open_keymaps_picker_with_query("");
+    }
+
+    /// Open the fuzzy finder in keymaps mode with a pre-filled filter query.
+    pub fn open_keymaps_picker_with_query(&mut self, query: &str) {
         let items = crate::finder::keymap_finder_items(&self.settings.keymap);
-        self.finder.open_keymaps(items);
+        self.finder.open_keymaps_with_query(items, query);
         self.mode = Mode::Finder;
     }
 

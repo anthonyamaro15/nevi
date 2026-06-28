@@ -8688,6 +8688,11 @@ fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
             editor.refresh_explorer_git_statuses();
         }
 
+        // Help / discoverability
+        (KeyModifiers::SHIFT, KeyCode::Char('?')) | (KeyModifiers::NONE, KeyCode::Char('?')) => {
+            editor.open_keymaps_picker_with_query("expl");
+        }
+
         // Go to parent directory
         (KeyModifiers::NONE, KeyCode::Char('-')) => {
             editor.explorer.go_to_parent();
@@ -9996,6 +10001,28 @@ mod tests {
 
         handle_key(&mut editor, ctrl_key('b'));
         assert_eq!(editor.explorer.selected, 10);
+    }
+
+    #[test]
+    fn explorer_question_opens_keymaps_filtered_to_explorer() {
+        let mut editor = editor_with_explorer_rows(5);
+
+        handle_key(&mut editor, key('?'));
+
+        assert_eq!(editor.mode, Mode::Finder);
+        assert_eq!(editor.finder.mode, FinderMode::Keymaps);
+        assert_eq!(editor.finder.query, "expl");
+        assert!(
+            editor.finder.filtered.iter().any(|idx| {
+                editor
+                    .finder
+                    .items
+                    .get(*idx)
+                    .map(|item| item.display.contains("gg") && item.display.contains("top"))
+                    .unwrap_or(false)
+            }),
+            "filtered keymaps should include explorer mappings"
+        );
     }
 
     #[test]
