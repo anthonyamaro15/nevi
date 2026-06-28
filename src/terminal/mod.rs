@@ -8783,6 +8783,10 @@ fn execute_explorer_action(editor: &mut Editor) {
             };
 
             let new_path = parent.join(&input);
+            if new_path.exists() {
+                editor.set_status(format!("Already exists: {}", new_path.display()));
+                return;
+            }
 
             // Check if it's a directory (ends with /)
             if input.ends_with('/') {
@@ -8794,14 +8798,22 @@ fn execute_explorer_action(editor: &mut Editor) {
                     }
                     Err(e) => {
                         editor.set_status(format!("Error: {}", e));
+                        return;
                     }
                 }
             } else {
                 // Create parent dirs if needed
                 if let Some(parent) = new_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
+                    if let Err(e) = std::fs::create_dir_all(parent) {
+                        editor.set_status(format!("Error creating parent directory: {}", e));
+                        return;
+                    }
                 }
-                match std::fs::File::create(&new_path) {
+                match std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&new_path)
+                {
                     Ok(_) => {
                         editor.set_status(format!("Created: {}", new_path.display()));
                         editor.explorer.refresh_and_select_path(&new_path);
@@ -8815,6 +8827,7 @@ fn execute_explorer_action(editor: &mut Editor) {
                     }
                     Err(e) => {
                         editor.set_status(format!("Error: {}", e));
+                        return;
                     }
                 }
             }
@@ -8833,6 +8846,11 @@ fn execute_explorer_action(editor: &mut Editor) {
                     std::path::PathBuf::from(&input)
                 };
 
+                if new_path != old_path && new_path.exists() {
+                    editor.set_status(format!("Already exists: {}", new_path.display()));
+                    return;
+                }
+
                 match std::fs::rename(&old_path, &new_path) {
                     Ok(_) => {
                         editor.set_status(format!("Renamed to: {}", new_path.display()));
@@ -8841,6 +8859,7 @@ fn execute_explorer_action(editor: &mut Editor) {
                     }
                     Err(e) => {
                         editor.set_status(format!("Error: {}", e));
+                        return;
                     }
                 }
             }
@@ -9719,7 +9738,7 @@ mod tests {
     use crate::commands::{Command, CommandPopupMode};
     use crate::config::{KeymapEntry, Settings};
     use crate::editor::{Editor, Mode, RegisterContent};
-    use crate::explorer::FlatNode;
+    use crate::explorer::{ExplorerAction, FlatNode};
     use crate::finder::FinderMode;
     use crate::input::Motion;
     use crate::lsp::types::{CompletionItem, CompletionKind, Diagnostic, DiagnosticSeverity};
@@ -10026,6 +10045,67 @@ mod tests {
     }
 
     #[test]
+    fn explorer_create_existing_file_does_not_overwrite_and_keeps_prompt_open() {
+        let root = unique_temp_dir("nevi_explorer_create_collision");
+        std::fs::create_dir_all(&root).expect("create root");
+        let existing = root.join("existing.rs");
+        std::fs::write(&existing, "keep me").expect("write existing file");
+
+        let mut editor = editor_with_project_explorer(&root);
+        editor.explorer.start_add();
+        editor.explorer.input_buffer = "existing.rs".to_string();
+
+        super::execute_explorer_action(&mut editor);
+
+        assert_eq!(
+            std::fs::read_to_string(&existing).expect("read existing file"),
+            "keep me"
+        );
+        assert_eq!(editor.explorer.pending_action, Some(ExplorerAction::Add));
+        assert!(editor
+            .status_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Already exists"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn explorer_rename_existing_file_does_not_overwrite_and_keeps_prompt_open() {
+        let root = unique_temp_dir("nevi_explorer_rename_collision");
+        std::fs::create_dir_all(&root).expect("create root");
+        let source = root.join("source.rs");
+        let target = root.join("target.rs");
+        std::fs::write(&source, "source").expect("write source file");
+        std::fs::write(&target, "target").expect("write target file");
+
+        let mut editor = editor_with_project_explorer(&root);
+        select_explorer_path(&mut editor, &source);
+        editor.explorer.start_rename();
+        editor.explorer.input_buffer = "target.rs".to_string();
+
+        super::execute_explorer_action(&mut editor);
+
+        assert_eq!(
+            std::fs::read_to_string(&source).expect("read source file"),
+            "source"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read target file"),
+            "target"
+        );
+        assert_eq!(editor.explorer.pending_action, Some(ExplorerAction::Rename));
+        assert!(editor
+            .status_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Already exists"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn wrap_segments_measure_tabs_by_display_width() {
         let segments = super::calculate_wrap_segments("ab\tcd", 5, true, 4);
 
@@ -10090,6 +10170,22 @@ mod tests {
             })
             .collect();
         editor
+    }
+
+    fn editor_with_project_explorer(root: &std::path::Path) -> Editor {
+        let mut editor = Editor::default();
+        editor.set_project_root(root.to_path_buf());
+        editor.open_explorer();
+        editor
+    }
+
+    fn select_explorer_path(editor: &mut Editor, path: &std::path::Path) {
+        editor.explorer.selected = editor
+            .explorer
+            .flat_view
+            .iter()
+            .position(|node| node.path == path)
+            .expect("path should be visible in explorer");
     }
 
     fn completion_item(label: &str) -> CompletionItem {
