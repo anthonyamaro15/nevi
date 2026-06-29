@@ -1303,6 +1303,9 @@ fn default_config_template() -> &'static str {
 # Search prompt mode (while typing `/` or `?`):
 # Ctrl+b           - Move to beginning of search input
 # Ctrl+e           - Move to end of search input
+# Ctrl+w           - Delete word before cursor
+# Ctrl+u           - Delete from cursor to beginning of search input
+# Ctrl+r {reg}     - Insert register contents
 # Up/Down          - Navigate search history
 #
 # ============================================================================

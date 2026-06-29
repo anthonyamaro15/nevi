@@ -279,6 +279,8 @@ pub struct SearchState {
     pub history_index: Option<usize>,
     /// In-progress search input saved before history navigation begins.
     pub saved_input: Option<String>,
+    /// Waiting for a register name after search prompt Ctrl+r
+    pub pending_register: bool,
 }
 
 impl SearchState {
@@ -288,6 +290,7 @@ impl SearchState {
         self.cursor = 0;
         self.history_index = None;
         self.saved_input = None;
+        self.pending_register = false;
     }
 
     /// Start a new search
@@ -297,6 +300,7 @@ impl SearchState {
         self.direction = direction;
         self.history_index = None;
         self.saved_input = None;
+        self.pending_register = false;
     }
 
     /// Insert a character at cursor (cursor is character index, not byte index)
@@ -305,6 +309,18 @@ impl SearchState {
         let byte_idx = self.char_to_byte_index(self.cursor);
         self.input.insert(byte_idx, ch);
         self.cursor += 1;
+        self.on_input_edited();
+    }
+
+    /// Insert text at the search prompt cursor.
+    pub fn insert_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+
+        let byte_idx = self.char_to_byte_index(self.cursor);
+        self.input.insert_str(byte_idx, text);
+        self.cursor += text.chars().count();
         self.on_input_edited();
     }
 
@@ -317,6 +333,60 @@ impl SearchState {
             self.input.remove(byte_idx);
             self.on_input_edited();
         }
+    }
+
+    /// Delete the word before the cursor, matching Vim search prompt Ctrl+w.
+    pub fn delete_word_before(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+
+        let chars: Vec<char> = self.input.chars().collect();
+        let start_cursor = self.cursor.min(chars.len());
+        let mut cursor = start_cursor;
+
+        while cursor > 0 && chars[cursor - 1].is_whitespace() {
+            cursor -= 1;
+        }
+
+        if cursor > 0 {
+            let delete_word_chars = chars[cursor - 1].is_alphanumeric() || chars[cursor - 1] == '_';
+            if delete_word_chars {
+                while cursor > 0
+                    && (chars[cursor - 1].is_alphanumeric() || chars[cursor - 1] == '_')
+                {
+                    cursor -= 1;
+                }
+            } else {
+                while cursor > 0 {
+                    let ch = chars[cursor - 1];
+                    if ch.is_whitespace() || ch.is_alphanumeric() || ch == '_' {
+                        break;
+                    }
+                    cursor -= 1;
+                }
+            }
+        }
+
+        if cursor < start_cursor {
+            let start_byte = self.char_to_byte_index(cursor);
+            let end_byte = self.char_to_byte_index(start_cursor);
+            self.input.replace_range(start_byte..end_byte, "");
+            self.cursor = cursor;
+            self.on_input_edited();
+        }
+    }
+
+    /// Delete from the cursor back to the start of the search prompt.
+    pub fn delete_to_start(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+
+        let end_byte = self.char_to_byte_index(self.cursor);
+        self.input.replace_range(0..end_byte, "");
+        self.cursor = 0;
+        self.on_input_edited();
     }
 
     /// Move cursor left
@@ -3821,6 +3891,22 @@ impl Editor {
         }
 
         self.command_line.insert_text(&text);
+        true
+    }
+
+    /// Insert text from a register at the search prompt cursor.
+    pub fn insert_register_text_into_search_prompt(&mut self, register: char) -> bool {
+        let Some(content) = self.register_content_for_paste(Some(register)) else {
+            return false;
+        };
+        let text = match content {
+            RegisterContent::Chars(text) | RegisterContent::Lines(text) => text,
+        };
+        if text.is_empty() {
+            return false;
+        }
+
+        self.search.insert_text(&text);
         true
     }
 

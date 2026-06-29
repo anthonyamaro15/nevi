@@ -7940,6 +7940,20 @@ fn vim_latin1_digraph(first: char, second: char) -> Option<char> {
 }
 
 fn handle_search_mode(editor: &mut Editor, key: KeyEvent) {
+    if editor.search.pending_register {
+        editor.search.pending_register = false;
+        match (key.modifiers, key.code) {
+            (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('[')) => {}
+            (_, KeyCode::Char(register)) => {
+                if editor.insert_register_text_into_search_prompt(register) {
+                    editor.update_incremental_search();
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match (key.modifiers, key.code) {
         // Cancel search
         (KeyModifiers::NONE, KeyCode::Esc)
@@ -7984,6 +7998,17 @@ fn handle_search_mode(editor: &mut Editor, key: KeyEvent) {
         (KeyModifiers::NONE, KeyCode::Down) => {
             editor.search.history_next();
             editor.update_incremental_search();
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('w')) => {
+            editor.search.delete_word_before();
+            editor.update_incremental_search();
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+            editor.search.delete_to_start();
+            editor.update_incremental_search();
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('r')) => {
+            editor.search.pending_register = true;
         }
 
         // Regular character - accept any modifier for printable chars
@@ -10040,6 +10065,66 @@ mod tests {
         handle_key(&mut editor, down_key());
         assert_eq!(editor.search.input, "storedx");
         assert_eq!(editor.search.cursor, "storedx".chars().count());
+    }
+
+    #[test]
+    fn search_ctrl_w_deletes_word_before_search_prompt_cursor() {
+        let mut editor = Editor::default();
+        editor.enter_search_forward();
+        editor.search.input = "foo bar baz".to_string();
+        editor.search.cursor = "foo bar baz".chars().count();
+
+        handle_key(&mut editor, ctrl_key('w'));
+
+        assert_eq!(editor.mode, Mode::Search);
+        assert_eq!(editor.search.input, "foo bar ");
+        assert_eq!(editor.search.cursor, "foo bar ".chars().count());
+    }
+
+    #[test]
+    fn search_ctrl_w_skips_trailing_spaces_before_deleting_word() {
+        let mut editor = Editor::default();
+        editor.enter_search_forward();
+        editor.search.input = "foo bar   ".to_string();
+        editor.search.cursor = "foo bar   ".chars().count();
+
+        handle_key(&mut editor, ctrl_key('w'));
+
+        assert_eq!(editor.mode, Mode::Search);
+        assert_eq!(editor.search.input, "foo ");
+        assert_eq!(editor.search.cursor, "foo ".chars().count());
+    }
+
+    #[test]
+    fn search_ctrl_u_deletes_from_search_prompt_cursor_to_start() {
+        let mut editor = Editor::default();
+        editor.enter_search_forward();
+        editor.search.input = "foo bar baz".to_string();
+        editor.search.cursor = "foo bar ".chars().count();
+
+        handle_key(&mut editor, ctrl_key('u'));
+
+        assert_eq!(editor.mode, Mode::Search);
+        assert_eq!(editor.search.input, "baz");
+        assert_eq!(editor.search.cursor, 0);
+    }
+
+    #[test]
+    fn search_ctrl_r_inserts_named_register_text_at_search_cursor() {
+        let mut editor = Editor::default();
+        editor
+            .registers
+            .yank(Some('a'), RegisterContent::Chars("needle".to_string()));
+        editor.enter_search_backward();
+        editor.search.input = "foo bar".to_string();
+        editor.search.cursor = "foo ".chars().count();
+
+        handle_key(&mut editor, ctrl_key('r'));
+        handle_key(&mut editor, key('a'));
+
+        assert_eq!(editor.mode, Mode::Search);
+        assert_eq!(editor.search.input, "foo needlebar");
+        assert_eq!(editor.search.cursor, "foo needle".chars().count());
     }
 
     #[test]

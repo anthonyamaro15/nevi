@@ -4,7 +4,7 @@ Nevi aims for full vim/neovim keybind compatibility. Defaults follow Neovim, and
 keybinds are configurable — sensible defaults out of the box, overridable to your
 own taste.
 
-**Status: 300 keybinds implemented, 65 planned Vim/Neovim parity defaults.**
+**Status: 303 keybinds implemented, 62 planned Vim/Neovim parity defaults.**
 
 This file tracks what's **planned** (not yet implemented). For the full list of
 keybinds that already work, see [KEYBINDINGS.md](KEYBINDINGS.md).
@@ -31,16 +31,6 @@ These apply while editing the command prompt after `:`.
 | `q:` | Open command-line history in the command-line window |
 | `q/` | Open `/` search history in the command-line window |
 | `q?` | Open `?` search history in the command-line window |
-
-### Search Prompt Defaults
-
-These apply while editing `/` and `?` search prompts.
-
-| Keybind | Planned behavior |
-|---------|------------------|
-| `Ctrl+w` | Delete the word before the cursor |
-| `Ctrl+u` | Delete from cursor back to the start of the search input |
-| `Ctrl+r {reg}` | Insert register contents into the search prompt |
 
 ### Window Management Extras
 
