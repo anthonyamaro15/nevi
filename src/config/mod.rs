@@ -1171,6 +1171,7 @@ fn default_config_template() -> &'static str {
 # Ctrl+w _/|       - Maximize current split height/width
 # Ctrl+w r/R       - Rotate windows down-right / up-left
 # Ctrl+w x         - Exchange current window with next
+# Ctrl+w H/J/K/L   - Move current window far left/bottom/top/far right
 #
 # ----------------------------------------------------------------------------
 # NORMAL MODE - Harpoon

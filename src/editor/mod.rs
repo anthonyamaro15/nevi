@@ -2854,6 +2854,44 @@ impl Editor {
         self.set_status("Windows exchanged");
     }
 
+    /// Move the current window to the far left, switching to a vertical layout.
+    pub fn move_window_far_left(&mut self) {
+        self.move_window_to_edge(SplitLayout::Vertical, false, "Window moved far left");
+    }
+
+    /// Move the current window to the far right, switching to a vertical layout.
+    pub fn move_window_far_right(&mut self) {
+        self.move_window_to_edge(SplitLayout::Vertical, true, "Window moved far right");
+    }
+
+    /// Move the current window to the top, switching to a horizontal layout.
+    pub fn move_window_top(&mut self) {
+        self.move_window_to_edge(SplitLayout::Horizontal, false, "Window moved top");
+    }
+
+    /// Move the current window to the bottom, switching to a horizontal layout.
+    pub fn move_window_bottom(&mut self) {
+        self.move_window_to_edge(SplitLayout::Horizontal, true, "Window moved bottom");
+    }
+
+    fn move_window_to_edge(&mut self, layout: SplitLayout, to_end: bool, status: &'static str) {
+        if self.panes.len() <= 1 {
+            self.set_status("Only one window");
+            return;
+        }
+
+        self.save_pane_state();
+        let pane = self.panes.remove(self.active_pane);
+        self.split_layout = layout;
+        let target = if to_end { self.panes.len() } else { 0 };
+        self.panes.insert(target, pane);
+        self.active_pane = target;
+        self.reset_window_size_weights();
+        self.update_pane_rects();
+        self.load_pane_state();
+        self.set_status(status);
+    }
+
     /// Move to a pane in the specified direction
     pub fn move_to_pane_direction(&mut self, direction: PaneDirection) {
         // Special case: if moving left with only one pane and explorer is visible, focus explorer
@@ -9815,7 +9853,7 @@ impl Default for Editor {
 
 #[cfg(test)]
 mod tests {
-    use super::{Editor, JumpList, Mode};
+    use super::{Editor, JumpList, Mode, SplitLayout};
     use crate::input::Motion;
     use crate::lsp::types::{
         CodeActionItem, CompletionItem, CompletionKind, Diagnostic, DiagnosticSeverity, TextEdit,
@@ -10058,6 +10096,96 @@ mod tests {
         assert_eq!(editor.active_pane, 1);
         assert_eq!(editor.panes[editor.active_pane].buffer_idx, active_buffer);
         assert_eq!(editor.status_message.as_deref(), Some("Windows exchanged"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn move_window_to_edges_reorders_active_pane_and_switches_axis() {
+        let tmp = unique_temp_dir("nevi_move_window_edges");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let first = tmp.join("first.txt");
+        let second = tmp.join("second.txt");
+        let third = tmp.join("third.txt");
+        std::fs::write(&first, "first\n").expect("write first");
+        std::fs::write(&second, "second\n").expect("write second");
+        std::fs::write(&third, "third\n").expect("write third");
+
+        let mut editor = Editor::default();
+        editor.open_file(first).expect("open first");
+        editor.vsplit(Some(second)).expect("split second");
+        editor.vsplit(Some(third)).expect("split third");
+        editor.prev_pane();
+        let active_buffer = editor.panes[editor.active_pane].buffer_idx;
+
+        editor.move_window_far_left();
+
+        assert_eq!(editor.split_layout(), SplitLayout::Vertical);
+        assert_eq!(editor.active_pane, 0);
+        assert_eq!(editor.panes[editor.active_pane].buffer_idx, active_buffer);
+        assert_eq!(
+            editor
+                .panes
+                .iter()
+                .map(|pane| pane.buffer_idx)
+                .collect::<Vec<_>>(),
+            vec![1, 0, 2]
+        );
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Window moved far left")
+        );
+
+        editor.move_window_far_right();
+
+        assert_eq!(editor.split_layout(), SplitLayout::Vertical);
+        assert_eq!(editor.active_pane, 2);
+        assert_eq!(editor.panes[editor.active_pane].buffer_idx, active_buffer);
+        assert_eq!(
+            editor
+                .panes
+                .iter()
+                .map(|pane| pane.buffer_idx)
+                .collect::<Vec<_>>(),
+            vec![0, 2, 1]
+        );
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Window moved far right")
+        );
+
+        editor.move_window_top();
+
+        assert_eq!(editor.split_layout(), SplitLayout::Horizontal);
+        assert_eq!(editor.active_pane, 0);
+        assert_eq!(editor.panes[editor.active_pane].buffer_idx, active_buffer);
+        assert_eq!(
+            editor
+                .panes
+                .iter()
+                .map(|pane| pane.buffer_idx)
+                .collect::<Vec<_>>(),
+            vec![1, 0, 2]
+        );
+        assert_eq!(editor.status_message.as_deref(), Some("Window moved top"));
+
+        editor.move_window_bottom();
+
+        assert_eq!(editor.split_layout(), SplitLayout::Horizontal);
+        assert_eq!(editor.active_pane, 2);
+        assert_eq!(editor.panes[editor.active_pane].buffer_idx, active_buffer);
+        assert_eq!(
+            editor
+                .panes
+                .iter()
+                .map(|pane| pane.buffer_idx)
+                .collect::<Vec<_>>(),
+            vec![0, 2, 1]
+        );
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Window moved bottom")
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

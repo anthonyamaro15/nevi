@@ -6461,7 +6461,7 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
 
     // Check for normal mode custom mapping first
     // But skip if we're in a partial sequence (like g; or g,) - let the input state handle it
-    if editor.input_state.partial_key.is_none() {
+    if editor.input_state.partial_key.is_none() && !editor.input_state.pending_window_cmd {
         if let Some(mapping) = editor.keymap.get_normal_mapping(key) {
             let mapping = mapping.clone();
             let t_exec = std::time::Instant::now();
@@ -6859,6 +6859,22 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
 
         KeyAction::WindowExchangeNext => {
             editor.exchange_window_with_next();
+        }
+
+        KeyAction::WindowMoveFarLeft => {
+            editor.move_window_far_left();
+        }
+
+        KeyAction::WindowMoveFarRight => {
+            editor.move_window_far_right();
+        }
+
+        KeyAction::WindowMoveTop => {
+            editor.move_window_top();
+        }
+
+        KeyAction::WindowMoveBottom => {
+            editor.move_window_bottom();
         }
 
         KeyAction::WindowIncreaseHeight => {
@@ -11164,6 +11180,43 @@ mod tests {
         handle_key(&mut editor, key('x'));
 
         assert_eq!(editor.status_message.as_deref(), Some("Windows exchanged"));
+    }
+
+    #[test]
+    fn normal_keymaps_do_not_intercept_pending_window_commands() {
+        let mut settings = Settings::default();
+        settings.keymap.normal.push(KeymapEntry {
+            from: "H".to_string(),
+            to: "^".to_string(),
+        });
+        settings.keymap.normal.push(KeymapEntry {
+            from: "L".to_string(),
+            to: "$".to_string(),
+        });
+        let mut editor = Editor::new(settings);
+        editor.set_size(100, 20);
+        editor.vsplit(None).expect("first split");
+        editor.vsplit(None).expect("second split");
+
+        assert_eq!(editor.active_pane_idx(), 2);
+
+        handle_key(&mut editor, ctrl_key('w'));
+        handle_key(&mut editor, shift_key('H'));
+
+        assert_eq!(editor.active_pane_idx(), 0);
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Window moved far left")
+        );
+
+        handle_key(&mut editor, ctrl_key('w'));
+        handle_key(&mut editor, shift_key('L'));
+
+        assert_eq!(editor.active_pane_idx(), 2);
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Window moved far right")
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@ Nevi aims for full vim/neovim keybind compatibility. Defaults follow Neovim, and
 keybinds are configurable — sensible defaults out of the box, overridable to your
 own taste.
 
-**Status: 311 keybinds implemented, 56 planned Vim/Neovim parity defaults.**
+**Status: 315 keybinds implemented, 52 planned Vim/Neovim parity defaults.**
 
 This file tracks what's **planned** (not yet implemented). For the full list of
 keybinds that already work, see [KEYBINDINGS.md](KEYBINDINGS.md).
@@ -31,18 +31,6 @@ These apply while editing the command prompt after `:`.
 | `q:` | Open command-line history in the command-line window |
 | `q/` | Open `/` search history in the command-line window |
 | `q?` | Open `?` search history in the command-line window |
-
-### Window Management Extras
-
-Nevi already has the core split/navigation defaults. These cover the remaining
-Vim window sizing and window-moving defaults.
-
-| Keybind | Planned behavior |
-|---------|------------------|
-| `Ctrl+w H` | Move current window to the far left |
-| `Ctrl+w J` | Move current window to the bottom |
-| `Ctrl+w K` | Move current window to the top |
-| `Ctrl+w L` | Move current window to the far right |
 
 ### Advanced Motions
 

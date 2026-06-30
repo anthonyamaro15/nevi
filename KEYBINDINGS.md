@@ -650,6 +650,10 @@ Split and navigate between windows.
 | `Ctrl+w r` | Rotate windows down/right |
 | `Ctrl+w R` | Rotate windows up/left |
 | `Ctrl+w x` | Exchange current window with next |
+| `Ctrl+w H` | Move current window to the far left |
+| `Ctrl+w J` | Move current window to the bottom |
+| `Ctrl+w K` | Move current window to the top |
+| `Ctrl+w L` | Move current window to the far right |
 | `Ctrl+h` / `Ctrl+j` / `Ctrl+k` / `Ctrl+l` | Move directly to neighboring windows |
 
 > **Note:** Currently all splits share the same orientation (all vertical OR all horizontal). Mixed layouts like having one vertical split with a horizontal split inside it are not yet supported.

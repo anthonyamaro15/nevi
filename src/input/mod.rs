@@ -217,6 +217,10 @@ pub enum KeyAction {
     WindowRotateDownRight,
     WindowRotateUpLeft,
     WindowExchangeNext,
+    WindowMoveFarLeft,
+    WindowMoveFarRight,
+    WindowMoveTop,
+    WindowMoveBottom,
     WindowIncreaseHeight,
     WindowDecreaseHeight,
     WindowIncreaseWidth,
@@ -1647,7 +1651,8 @@ impl InputState {
             }
             // Cycle through windows
             (KeyModifiers::NONE, KeyCode::Char('w')) => KeyAction::WindowNext,
-            (KeyModifiers::SHIFT, KeyCode::Char('W')) => KeyAction::WindowPrev,
+            (KeyModifiers::SHIFT, KeyCode::Char('W' | 'w'))
+            | (KeyModifiers::NONE, KeyCode::Char('W')) => KeyAction::WindowPrev,
             // Splits
             (KeyModifiers::NONE, KeyCode::Char('v')) => KeyAction::WindowSplitVertical,
             (KeyModifiers::NONE, KeyCode::Char('s')) => KeyAction::WindowSplitHorizontal,
@@ -1665,9 +1670,19 @@ impl InputState {
             (_, KeyCode::Char('|')) => KeyAction::WindowMaximizeWidth,
             // Rotate
             (KeyModifiers::NONE, KeyCode::Char('r')) => KeyAction::WindowRotateDownRight,
-            (KeyModifiers::SHIFT, KeyCode::Char('R')) => KeyAction::WindowRotateUpLeft,
+            (KeyModifiers::SHIFT, KeyCode::Char('R' | 'r'))
+            | (KeyModifiers::NONE, KeyCode::Char('R')) => KeyAction::WindowRotateUpLeft,
             // Exchange
             (KeyModifiers::NONE, KeyCode::Char('x')) => KeyAction::WindowExchangeNext,
+            // Move current window to an edge
+            (KeyModifiers::SHIFT, KeyCode::Char('H' | 'h'))
+            | (KeyModifiers::NONE, KeyCode::Char('H')) => KeyAction::WindowMoveFarLeft,
+            (KeyModifiers::SHIFT, KeyCode::Char('J' | 'j'))
+            | (KeyModifiers::NONE, KeyCode::Char('J')) => KeyAction::WindowMoveBottom,
+            (KeyModifiers::SHIFT, KeyCode::Char('K' | 'k'))
+            | (KeyModifiers::NONE, KeyCode::Char('K')) => KeyAction::WindowMoveTop,
+            (KeyModifiers::SHIFT, KeyCode::Char('L' | 'l'))
+            | (KeyModifiers::NONE, KeyCode::Char('L')) => KeyAction::WindowMoveFarRight,
             // Escape cancels
             (_, KeyCode::Esc) => KeyAction::Pending,
             _ => KeyAction::Unknown,
@@ -2499,6 +2514,22 @@ mod tests {
             KeyAction::WindowExchangeNext => {}
             other => panic!("expected WindowExchangeNext, got {:?}", other),
         }
+        match run(&[ctrl('w'), shift('H')]) {
+            KeyAction::WindowMoveFarLeft => {}
+            other => panic!("expected WindowMoveFarLeft, got {:?}", other),
+        }
+        match run(&[ctrl('w'), shift('J')]) {
+            KeyAction::WindowMoveBottom => {}
+            other => panic!("expected WindowMoveBottom, got {:?}", other),
+        }
+        match run(&[ctrl('w'), shift('K')]) {
+            KeyAction::WindowMoveTop => {}
+            other => panic!("expected WindowMoveTop, got {:?}", other),
+        }
+        match run(&[ctrl('w'), shift('L')]) {
+            KeyAction::WindowMoveFarRight => {}
+            other => panic!("expected WindowMoveFarRight, got {:?}", other),
+        }
         match run(&[ctrl('w'), key('+')]) {
             KeyAction::WindowIncreaseHeight => {}
             other => panic!("expected WindowIncreaseHeight, got {:?}", other),
@@ -2555,6 +2586,58 @@ mod tests {
         match run(&[key('['), key('h')]) {
             KeyAction::HarpoonPrev => {}
             other => panic!("expected HarpoonPrev, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn window_move_commands_accept_uppercase_chars_without_shift_modifier() {
+        match run(&[ctrl('w'), key('H')]) {
+            KeyAction::WindowMoveFarLeft => {}
+            other => panic!("expected WindowMoveFarLeft, got {:?}", other),
+        }
+        match run(&[ctrl('w'), key('J')]) {
+            KeyAction::WindowMoveBottom => {}
+            other => panic!("expected WindowMoveBottom, got {:?}", other),
+        }
+        match run(&[ctrl('w'), key('K')]) {
+            KeyAction::WindowMoveTop => {}
+            other => panic!("expected WindowMoveTop, got {:?}", other),
+        }
+        match run(&[ctrl('w'), key('L')]) {
+            KeyAction::WindowMoveFarRight => {}
+            other => panic!("expected WindowMoveFarRight, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn window_move_commands_accept_shift_modifier_with_lowercase_chars() {
+        match run(&[
+            ctrl('w'),
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::SHIFT),
+        ]) {
+            KeyAction::WindowMoveFarLeft => {}
+            other => panic!("expected WindowMoveFarLeft, got {:?}", other),
+        }
+        match run(&[
+            ctrl('w'),
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::SHIFT),
+        ]) {
+            KeyAction::WindowMoveBottom => {}
+            other => panic!("expected WindowMoveBottom, got {:?}", other),
+        }
+        match run(&[
+            ctrl('w'),
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::SHIFT),
+        ]) {
+            KeyAction::WindowMoveTop => {}
+            other => panic!("expected WindowMoveTop, got {:?}", other),
+        }
+        match run(&[
+            ctrl('w'),
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::SHIFT),
+        ]) {
+            KeyAction::WindowMoveFarRight => {}
+            other => panic!("expected WindowMoveFarRight, got {:?}", other),
         }
     }
 }

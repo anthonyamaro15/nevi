@@ -1240,6 +1240,34 @@ desc = "Exchange current window with next"
 status = "implemented"
 vim_default = true
 
+[[normal.window]]
+key = "<C-w>H"
+action = "move_window_far_left"
+desc = "Move current window to far left"
+status = "implemented"
+vim_default = true
+
+[[normal.window]]
+key = "<C-w>J"
+action = "move_window_bottom"
+desc = "Move current window to bottom"
+status = "implemented"
+vim_default = true
+
+[[normal.window]]
+key = "<C-w>K"
+action = "move_window_top"
+desc = "Move current window to top"
+status = "implemented"
+vim_default = true
+
+[[normal.window]]
+key = "<C-w>L"
+action = "move_window_far_right"
+desc = "Move current window to far right"
+status = "implemented"
+vim_default = true
+
 # ============================================================================
 # INSERT MODE
 # ============================================================================
