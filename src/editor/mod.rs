@@ -5005,10 +5005,21 @@ impl Editor {
 
     /// Save the current buffer
     pub fn save(&mut self) -> anyhow::Result<()> {
-        if self.buffers[self.current_buffer_idx].is_read_only() {
-            self.set_status("Buffer is read-only");
-            anyhow::bail!("Buffer is read-only");
-        }
+        self.save_current_buffer(false)
+    }
+
+    /// Check whether the current buffer can be saved without writing it.
+    pub(crate) fn ensure_current_buffer_can_save(&mut self, force: bool) -> anyhow::Result<()> {
+        self.ensure_buffer_can_save(self.current_buffer_idx, force)
+    }
+
+    /// Save the current buffer, intentionally overwriting external disk changes.
+    pub fn save_force(&mut self) -> anyhow::Result<()> {
+        self.save_current_buffer(true)
+    }
+
+    fn save_current_buffer(&mut self, force: bool) -> anyhow::Result<()> {
+        self.ensure_buffer_can_save(self.current_buffer_idx, force)?;
         self.buffers[self.current_buffer_idx].save()?;
         self.status_message = Some(format!(
             "\"{}\" written",
@@ -5017,6 +5028,22 @@ impl Editor {
         // Update git diff after save (file now matches HEAD if no other changes)
         self.update_git_diff();
         self.refresh_explorer_git_statuses();
+        Ok(())
+    }
+
+    fn ensure_buffer_can_save(&mut self, buffer_idx: usize, force: bool) -> anyhow::Result<()> {
+        if self.buffers[buffer_idx].is_read_only() {
+            self.set_status("Buffer is read-only");
+            anyhow::bail!("Buffer is read-only");
+        }
+        if !force
+            && self.buffers[buffer_idx].dirty
+            && self.buffers[buffer_idx].has_external_changes()
+        {
+            let message = "Write blocked: file changed on disk; use :w! to overwrite".to_string();
+            self.set_status(message.clone());
+            anyhow::bail!(message);
+        }
         Ok(())
     }
 
@@ -5261,6 +5288,15 @@ impl Editor {
         self.save()
     }
 
+    /// Save to a specific file, intentionally overwriting external disk changes.
+    pub fn save_as_force(&mut self, path: std::path::PathBuf) -> anyhow::Result<()> {
+        if self.buffers[self.current_buffer_idx].is_read_only() {
+            anyhow::bail!("Buffer is read-only");
+        }
+        self.buffers[self.current_buffer_idx].set_file_path(path);
+        self.save_force()
+    }
+
     /// Reload the current file
     pub fn reload(&mut self) -> anyhow::Result<()> {
         if let Some(path) = self.buffers[self.current_buffer_idx].path.clone() {
@@ -5351,6 +5387,7 @@ impl Editor {
         let mut saved_count = 0;
         for i in 0..self.buffers.len() {
             if self.buffers[i].dirty && self.buffers[i].path.is_some() {
+                self.ensure_buffer_can_save(i, false)?;
                 self.buffers[i].save()?;
                 saved_count += 1;
             }
@@ -5370,6 +5407,7 @@ impl Editor {
 
         for i in 0..self.buffers.len() {
             if self.buffers[i].dirty && self.buffers[i].path.is_some() {
+                self.ensure_buffer_can_save(i, false)?;
                 // Try to format if format_on_save is enabled
                 if format_on_save {
                     if let Some(formatter_config) = self.get_formatter_for_buffer(i).cloned() {
@@ -5404,6 +5442,7 @@ impl Editor {
                     }
                 }
                 // Save the buffer
+                self.ensure_buffer_can_save(i, false)?;
                 self.buffers[i].save()?;
                 saved_count += 1;
             }
@@ -9932,7 +9971,7 @@ mod tests {
         CodeActionItem, CompletionItem, CompletionKind, Diagnostic, DiagnosticSeverity, TextEdit,
     };
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -9966,6 +10005,18 @@ mod tests {
             repo.commit(Some("HEAD"), &signature, &signature, message, &tree, &[])
                 .expect("initial commit");
         }
+    }
+
+    fn write_until_external_change_is_detected(editor: &Editor, path: &Path, content: &str) {
+        for _ in 0..20 {
+            std::fs::write(path, content).expect("write external change");
+            if editor.buffer().has_external_changes() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        panic!("external change was not detected for {}", path.display());
     }
 
     #[test]
@@ -10383,6 +10434,56 @@ mod tests {
             Some("Buffer is read-only")
         );
         assert!(!editor.buffer().dirty);
+    }
+
+    #[test]
+    fn save_rejects_modified_buffer_when_file_changed_externally() {
+        let tmp = unique_temp_dir("nevi_save_external_change_guard");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("note.txt");
+        std::fs::write(&path, "original\n").expect("write original");
+
+        let mut editor = Editor::default();
+        editor.open_file(path.clone()).expect("open file");
+        editor.replace_buffer_content("local edit\n");
+        write_until_external_change_is_detected(&editor, &path, "external edit\n");
+
+        let err = editor.save().expect_err("save should reject stale buffer");
+
+        assert!(err.to_string().contains("changed on disk"));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read file"),
+            "external edit\n"
+        );
+        assert!(editor.buffer().dirty);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn save_all_rejects_modified_buffer_when_file_changed_externally() {
+        let tmp = unique_temp_dir("nevi_save_all_external_change_guard");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("note.txt");
+        std::fs::write(&path, "original\n").expect("write original");
+
+        let mut editor = Editor::default();
+        editor.open_file(path.clone()).expect("open file");
+        editor.replace_buffer_content("local edit\n");
+        write_until_external_change_is_detected(&editor, &path, "external edit\n");
+
+        let err = editor
+            .save_all()
+            .expect_err("save_all should reject stale buffer");
+
+        assert!(err.to_string().contains("changed on disk"));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read file"),
+            "external edit\n"
+        );
+        assert!(editor.buffer().dirty);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

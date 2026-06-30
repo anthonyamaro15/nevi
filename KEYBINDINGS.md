@@ -857,7 +857,8 @@ While typing an Ex command after `:`.
 
 | Command | Action |
 |---------|--------|
-| `:w` / `:write` | Save file |
+| `:w` / `:write` | Save file, refusing to overwrite external disk changes |
+| `:w!` / `:write!` | Force save file, overwriting external disk changes |
 | `:wa` / `:wall` | Save all files |
 | `:q` / `:quit` | Quit |
 | `:q!` / `:quit!` | Force quit (discard changes) |

@@ -140,7 +140,8 @@ nevi file1.rs file2.rs
 ```
 
 **Basic commands:**
-- `:w` - Save
+- `:w` - Save, refusing to overwrite external disk changes
+- `:w!` - Force save and overwrite external disk changes
 - `:q` - Quit
 - `:wq` - Save and quit
 - `:checkhealth` / `:Health` - Open editor health report in a read-only `[health]` buffer

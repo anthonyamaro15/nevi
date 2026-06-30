@@ -9236,8 +9236,10 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             } else if editor.buffer().path.is_some() {
                 // Check if format_on_save is enabled
                 if editor.settings.editor.format_on_save {
+                    if let Err(e) = editor.ensure_current_buffer_can_save(false) {
+                        CommandResult::Error(format!("Error saving: {}", e))
                     // Check for external formatter first
-                    if let Some(formatter_config) = editor.get_current_formatter().cloned() {
+                    } else if let Some(formatter_config) = editor.get_current_formatter().cloned() {
                         // Use external formatter (blocking)
                         let formatter_name = &formatter_config.command;
                         let content = editor.buffer().content();
@@ -9304,6 +9306,22 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
                         Ok(()) => CommandResult::Ok,
                         Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
                     }
+                }
+            } else {
+                CommandResult::Error("No filename".to_string())
+            }
+        }
+
+        Command::ForceWrite(path) => {
+            if let Some(p) = path {
+                match editor.save_as_force(p) {
+                    Ok(()) => CommandResult::Ok,
+                    Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
+                }
+            } else if editor.buffer().path.is_some() {
+                match editor.save_force() {
+                    Ok(()) => CommandResult::Ok,
+                    Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
                 }
             } else {
                 CommandResult::Error("No filename".to_string())
@@ -9959,8 +9977,9 @@ mod tests {
     use crate::lsp::types::{CompletionItem, CompletionKind, Diagnostic, DiagnosticSeverity};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use crossterm::style::Color;
+    use std::path::Path;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
@@ -10705,6 +10724,18 @@ mod tests {
         std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos))
     }
 
+    fn write_until_external_change_is_detected(editor: &Editor, path: &Path, content: &str) {
+        for _ in 0..20 {
+            std::fs::write(path, content).expect("write external change");
+            if editor.buffer().has_external_changes() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        panic!("external change was not detected for {}", path.display());
+    }
+
     fn editor_with_explorer_rows(count: usize) -> Editor {
         let mut editor = Editor::default();
         editor.mode = Mode::Explorer;
@@ -10900,6 +10931,143 @@ mod tests {
         assert!(text.contains("show_leader_popup"));
         assert!(text.contains("explorer"));
         assert!(!text.starts_with("```toml"));
+    }
+
+    #[test]
+    fn force_write_command_overwrites_external_change() {
+        let tmp = unique_temp_dir("nevi_force_write_external_change");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("note.txt");
+        std::fs::write(&path, "original\n").expect("write original");
+
+        let mut editor = Editor::default();
+        editor.open_file(path.clone()).expect("open file");
+        editor.replace_buffer_content("local edit\n");
+        write_until_external_change_is_detected(&editor, &path, "external edit\n");
+
+        execute_command(&mut editor, Command::ForceWrite(None));
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read file"),
+            "local edit\n"
+        );
+        assert!(!editor.buffer().dirty);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_command_rejects_after_focus_external_change_warning() {
+        let tmp = unique_temp_dir("nevi_write_external_change_after_focus");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("note.txt");
+        std::fs::write(&path, "original\n").expect("write original");
+
+        let mut editor = Editor::default();
+        editor.open_file(path.clone()).expect("open file");
+        editor.replace_buffer_content("local edit\n");
+        write_until_external_change_is_detected(&editor, &path, "external edit\n");
+        let warning = editor
+            .handle_focus_gained()
+            .expect("focus should report external change warning");
+        editor.set_status(warning);
+
+        execute_command(&mut editor, Command::Write(None));
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read file"),
+            "external edit\n"
+        );
+        assert!(editor.buffer().dirty);
+        assert!(
+            editor
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.contains("changed on disk")),
+            "expected changed-on-disk status, got {:?}",
+            editor.status_message
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn colon_write_key_sequence_rejects_after_external_change_warning() {
+        let tmp = unique_temp_dir("nevi_colon_write_external_change_after_focus");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("note.txt");
+        std::fs::write(&path, "original\n").expect("write original");
+
+        let mut editor = Editor::default();
+        editor.open_file(path.clone()).expect("open file");
+        editor.replace_buffer_content("local edit\n");
+        write_until_external_change_is_detected(&editor, &path, "external edit\n");
+        let warning = editor
+            .handle_focus_gained()
+            .expect("focus should report external change warning");
+        editor.set_status(warning);
+
+        handle_key(&mut editor, key(':'));
+        handle_key(&mut editor, key('w'));
+        handle_key(
+            &mut editor,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read file"),
+            "external edit\n"
+        );
+        assert!(editor.buffer().dirty);
+        assert!(
+            editor
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.contains("changed on disk")),
+            "expected changed-on-disk status, got {:?}",
+            editor.status_message
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn colon_write_rejects_external_change_before_format_on_save() {
+        let tmp = unique_temp_dir("nevi_colon_write_external_change_format_on_save");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("note.txt");
+        std::fs::write(&path, "original\n").expect("write original");
+
+        let mut editor = Editor::default();
+        editor.settings.editor.format_on_save = true;
+        editor.open_file(path.clone()).expect("open file");
+        editor.replace_buffer_content("local edit\n");
+        write_until_external_change_is_detected(&editor, &path, "external edit\n");
+
+        handle_key(&mut editor, key(':'));
+        handle_key(&mut editor, key('w'));
+        handle_key(
+            &mut editor,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read file"),
+            "external edit\n"
+        );
+        assert!(editor.buffer().dirty);
+        assert!(editor.pending_lsp_action.is_none());
+        assert!(!editor.save_after_format);
+        assert!(
+            editor
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.contains("Write blocked")),
+            "expected write-blocked status, got {:?}",
+            editor.status_message
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

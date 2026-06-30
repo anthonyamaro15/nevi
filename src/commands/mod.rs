@@ -7,6 +7,8 @@ use std::path::PathBuf;
 pub enum Command {
     /// :w [filename] - Write buffer to file
     Write(Option<PathBuf>),
+    /// :w! [filename] - Force write buffer to file
+    ForceWrite(Option<PathBuf>),
     /// :wa - Write all modified buffers
     WriteAll,
     /// :q - Quit (fails if unsaved changes)
@@ -207,7 +209,13 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec {
         command: "w",
         aliases: &["write"],
-        description: "Write current buffer",
+        description: "Write current buffer unless it changed on disk",
+        takes_args: false,
+    },
+    CommandSpec {
+        command: "w!",
+        aliases: &["write!"],
+        description: "Force write current buffer and overwrite disk changes",
         takes_args: false,
     },
     CommandSpec {
@@ -875,6 +883,7 @@ pub fn parse_command(input: &str) -> Command {
     match cmd {
         // Write commands
         "w" | "write" => Command::Write(args.filter(|s| !s.is_empty()).map(PathBuf::from)),
+        "w!" | "write!" => Command::ForceWrite(args.filter(|s| !s.is_empty()).map(PathBuf::from)),
         "wa" | "wall" => Command::WriteAll,
 
         // Quit commands
@@ -1970,6 +1979,16 @@ mod tests {
         assert!(matches!(
             parse_command("termrename 2 test runner"),
             Command::TerminalRename(Some(2), name) if name == "test runner"
+        ));
+    }
+
+    #[test]
+    fn force_write_commands_parse_arguments() {
+        assert!(matches!(parse_command("w!"), Command::ForceWrite(None)));
+        assert!(matches!(parse_command("write!"), Command::ForceWrite(None)));
+        assert!(matches!(
+            parse_command("w! /tmp/nevi-force-save.txt"),
+            Command::ForceWrite(Some(path)) if path == PathBuf::from("/tmp/nevi-force-save.txt")
         ));
     }
 

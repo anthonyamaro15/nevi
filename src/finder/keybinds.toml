@@ -2324,7 +2324,14 @@ vim_default = true
 [[commands.file]]
 key = ":w"
 action = "write"
-desc = "Write (save) current buffer"
+desc = "Write current buffer, refusing to overwrite external disk changes"
+status = "implemented"
+vim_default = true
+
+[[commands.file]]
+key = ":w!"
+action = "force_write"
+desc = "Force write current buffer, overwriting external disk changes"
 status = "implemented"
 vim_default = true
 
