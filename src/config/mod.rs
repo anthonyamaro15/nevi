@@ -1166,6 +1166,9 @@ fn default_config_template() -> &'static str {
 # Ctrl+w h/j/k/l   - Move to window left/down/up/right
 # Ctrl+h/j/k/l     - Move directly to window left/down/up/right
 # Ctrl+w =         - Make all windows equal size
+# Ctrl+w +/-       - Increase/decrease current split height
+# Ctrl+w >/<       - Increase/decrease current split width
+# Ctrl+w _/|       - Maximize current split height/width
 # Ctrl+w r/R       - Rotate windows down-right / up-left
 # Ctrl+w x         - Exchange current window with next
 #

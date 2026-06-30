@@ -641,6 +641,12 @@ Split and navigate between windows.
 | `Ctrl+w k` | Move to window above |
 | `Ctrl+w l` | Move to window on the right |
 | `Ctrl+w =` | Make all windows equal size |
+| `Ctrl+w +` | Increase current split height |
+| `Ctrl+w -` | Decrease current split height |
+| `Ctrl+w >` | Increase current split width |
+| `Ctrl+w <` | Decrease current split width |
+| `Ctrl+w _` | Maximize current split height |
+| `Ctrl+w \|` | Maximize current split width |
 | `Ctrl+w r` | Rotate windows down/right |
 | `Ctrl+w R` | Rotate windows up/left |
 | `Ctrl+w x` | Exchange current window with next |

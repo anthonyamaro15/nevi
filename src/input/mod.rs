@@ -217,6 +217,12 @@ pub enum KeyAction {
     WindowRotateDownRight,
     WindowRotateUpLeft,
     WindowExchangeNext,
+    WindowIncreaseHeight,
+    WindowDecreaseHeight,
+    WindowIncreaseWidth,
+    WindowDecreaseWidth,
+    WindowMaximizeHeight,
+    WindowMaximizeWidth,
     /// Go to definition (gd)
     GotoDefinition,
     /// Go to declaration (gD)
@@ -1650,6 +1656,13 @@ impl InputState {
             (KeyModifiers::NONE, KeyCode::Char('o')) => KeyAction::WindowCloseOthers,
             // Equalize
             (KeyModifiers::NONE, KeyCode::Char('=')) => KeyAction::WindowEqualize,
+            // Resize/maximize
+            (_, KeyCode::Char('+')) => KeyAction::WindowIncreaseHeight,
+            (_, KeyCode::Char('-')) => KeyAction::WindowDecreaseHeight,
+            (_, KeyCode::Char('>')) => KeyAction::WindowIncreaseWidth,
+            (_, KeyCode::Char('<')) => KeyAction::WindowDecreaseWidth,
+            (_, KeyCode::Char('_')) => KeyAction::WindowMaximizeHeight,
+            (_, KeyCode::Char('|')) => KeyAction::WindowMaximizeWidth,
             // Rotate
             (KeyModifiers::NONE, KeyCode::Char('r')) => KeyAction::WindowRotateDownRight,
             (KeyModifiers::SHIFT, KeyCode::Char('R')) => KeyAction::WindowRotateUpLeft,
@@ -2485,6 +2498,30 @@ mod tests {
         match run(&[ctrl('w'), key('x')]) {
             KeyAction::WindowExchangeNext => {}
             other => panic!("expected WindowExchangeNext, got {:?}", other),
+        }
+        match run(&[ctrl('w'), key('+')]) {
+            KeyAction::WindowIncreaseHeight => {}
+            other => panic!("expected WindowIncreaseHeight, got {:?}", other),
+        }
+        match run(&[ctrl('w'), key('-')]) {
+            KeyAction::WindowDecreaseHeight => {}
+            other => panic!("expected WindowDecreaseHeight, got {:?}", other),
+        }
+        match run(&[ctrl('w'), key('>')]) {
+            KeyAction::WindowIncreaseWidth => {}
+            other => panic!("expected WindowIncreaseWidth, got {:?}", other),
+        }
+        match run(&[ctrl('w'), key('<')]) {
+            KeyAction::WindowDecreaseWidth => {}
+            other => panic!("expected WindowDecreaseWidth, got {:?}", other),
+        }
+        match run(&[ctrl('w'), key('_')]) {
+            KeyAction::WindowMaximizeHeight => {}
+            other => panic!("expected WindowMaximizeHeight, got {:?}", other),
+        }
+        match run(&[ctrl('w'), key('|')]) {
+            KeyAction::WindowMaximizeWidth => {}
+            other => panic!("expected WindowMaximizeWidth, got {:?}", other),
         }
         match run(&[ctrl('w'), key('w')]) {
             KeyAction::WindowNext => {}

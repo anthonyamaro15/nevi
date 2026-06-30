@@ -1178,6 +1178,48 @@ status = "implemented"
 vim_default = true
 
 [[normal.window]]
+key = "<C-w>+"
+action = "increase_window_height"
+desc = "Increase current split height"
+status = "implemented"
+vim_default = true
+
+[[normal.window]]
+key = "<C-w>-"
+action = "decrease_window_height"
+desc = "Decrease current split height"
+status = "implemented"
+vim_default = true
+
+[[normal.window]]
+key = "<C-w>>"
+action = "increase_window_width"
+desc = "Increase current split width"
+status = "implemented"
+vim_default = true
+
+[[normal.window]]
+key = "<C-w><"
+action = "decrease_window_width"
+desc = "Decrease current split width"
+status = "implemented"
+vim_default = true
+
+[[normal.window]]
+key = "<C-w>_"
+action = "maximize_window_height"
+desc = "Maximize current split height"
+status = "implemented"
+vim_default = true
+
+[[normal.window]]
+key = "<C-w>|"
+action = "maximize_window_width"
+desc = "Maximize current split width"
+status = "implemented"
+vim_default = true
+
+[[normal.window]]
 key = "<C-w>r"
 action = "rotate_windows"
 desc = "Rotate windows down/right"

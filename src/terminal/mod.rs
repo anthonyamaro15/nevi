@@ -6861,6 +6861,30 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.exchange_window_with_next();
         }
 
+        KeyAction::WindowIncreaseHeight => {
+            editor.increase_window_height();
+        }
+
+        KeyAction::WindowDecreaseHeight => {
+            editor.decrease_window_height();
+        }
+
+        KeyAction::WindowIncreaseWidth => {
+            editor.increase_window_width();
+        }
+
+        KeyAction::WindowDecreaseWidth => {
+            editor.decrease_window_width();
+        }
+
+        KeyAction::WindowMaximizeHeight => {
+            editor.maximize_window_height();
+        }
+
+        KeyAction::WindowMaximizeWidth => {
+            editor.maximize_window_width();
+        }
+
         KeyAction::GotoDefinition => {
             editor.pending_lsp_action = Some(crate::editor::LspAction::GotoDefinition);
         }
@@ -11032,6 +11056,80 @@ mod tests {
 
         assert_eq!(editor.panes().len(), 2);
         assert_eq!(editor.status_message.as_deref(), Some("Windows equalized"));
+    }
+
+    #[test]
+    fn normal_ctrl_w_width_keys_resize_and_maximize_vertical_windows() {
+        let mut editor = Editor::default();
+        editor.set_size(100, 20);
+        editor.vsplit(None).expect("split");
+
+        assert_eq!(editor.active_pane_idx(), 1);
+        assert_eq!(editor.panes()[0].rect.width, 50);
+        assert_eq!(editor.panes()[1].rect.width, 50);
+
+        handle_key(&mut editor, ctrl_key('w'));
+        handle_key(&mut editor, key('>'));
+
+        assert_eq!(editor.panes()[0].rect.width, 45);
+        assert_eq!(editor.panes()[1].rect.width, 55);
+        assert_eq!(editor.status_message.as_deref(), Some("Window resized"));
+
+        handle_key(&mut editor, ctrl_key('w'));
+        handle_key(&mut editor, key('<'));
+
+        assert_eq!(editor.panes()[0].rect.width, 50);
+        assert_eq!(editor.panes()[1].rect.width, 50);
+
+        handle_key(&mut editor, ctrl_key('w'));
+        handle_key(&mut editor, key('|'));
+
+        assert_eq!(editor.panes()[0].rect.width, 10);
+        assert_eq!(editor.panes()[1].rect.width, 90);
+        assert_eq!(editor.status_message.as_deref(), Some("Window maximized"));
+
+        handle_key(&mut editor, ctrl_key('w'));
+        handle_key(&mut editor, key('='));
+
+        assert_eq!(editor.panes()[0].rect.width, 50);
+        assert_eq!(editor.panes()[1].rect.width, 50);
+    }
+
+    #[test]
+    fn normal_ctrl_w_height_keys_resize_and_maximize_horizontal_windows() {
+        let mut editor = Editor::default();
+        editor.set_size(100, 22);
+        editor.hsplit(None).expect("split");
+
+        assert_eq!(editor.active_pane_idx(), 1);
+        assert_eq!(editor.panes()[0].rect.height, 10);
+        assert_eq!(editor.panes()[1].rect.height, 10);
+
+        handle_key(&mut editor, ctrl_key('w'));
+        handle_key(&mut editor, key('+'));
+
+        assert_eq!(editor.panes()[0].rect.height, 5);
+        assert_eq!(editor.panes()[1].rect.height, 15);
+        assert_eq!(editor.status_message.as_deref(), Some("Window resized"));
+
+        handle_key(&mut editor, ctrl_key('w'));
+        handle_key(&mut editor, key('-'));
+
+        assert_eq!(editor.panes()[0].rect.height, 10);
+        assert_eq!(editor.panes()[1].rect.height, 10);
+
+        handle_key(&mut editor, ctrl_key('w'));
+        handle_key(&mut editor, key('_'));
+
+        assert_eq!(editor.panes()[0].rect.height, 3);
+        assert_eq!(editor.panes()[1].rect.height, 17);
+        assert_eq!(editor.status_message.as_deref(), Some("Window maximized"));
+
+        handle_key(&mut editor, ctrl_key('w'));
+        handle_key(&mut editor, key('='));
+
+        assert_eq!(editor.panes()[0].rect.height, 10);
+        assert_eq!(editor.panes()[1].rect.height, 10);
     }
 
     #[test]

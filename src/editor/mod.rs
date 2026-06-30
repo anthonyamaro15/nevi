@@ -158,6 +158,8 @@ pub struct Pane {
     pub h_offset: usize,
     /// Screen region for this pane
     pub rect: Rect,
+    /// Relative size in the active split axis.
+    pub size_weight: u16,
 }
 
 impl Pane {
@@ -168,9 +170,14 @@ impl Pane {
             viewport_offset: 0,
             h_offset: 0,
             rect: Rect::default(),
+            size_weight: 1,
         }
     }
 }
+
+const WINDOW_RESIZE_STEP: u16 = 5;
+const MIN_WINDOW_WIDTH: u16 = 10;
+const MIN_WINDOW_HEIGHT: u16 = 3;
 
 /// Split layout orientation for panes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2547,6 +2554,7 @@ impl Editor {
         // Create new pane
         let new_pane = Pane::new(new_buffer_idx);
         self.panes.push(new_pane);
+        self.reset_window_size_weights();
 
         // Update pane layout
         self.update_pane_rects();
@@ -2604,6 +2612,7 @@ impl Editor {
             if self.active_pane >= self.panes.len() {
                 self.active_pane = self.panes.len() - 1;
             }
+            self.reset_window_size_weights();
             self.update_pane_rects();
             self.load_pane_state();
             self.set_status(format!(
@@ -2624,6 +2633,7 @@ impl Editor {
             let current_pane = self.panes[self.active_pane].clone();
             self.panes = vec![current_pane];
             self.active_pane = 0;
+            self.reset_window_size_weights();
             self.update_pane_rects();
             self.set_status("Only pane remaining");
         }
@@ -2631,8 +2641,158 @@ impl Editor {
 
     /// Make all pane rectangles equal according to the current split layout.
     pub fn equalize_windows(&mut self) {
+        self.reset_window_size_weights();
         self.update_pane_rects();
         self.set_status("Windows equalized");
+    }
+
+    /// Increase current window height.
+    pub fn increase_window_height(&mut self) {
+        self.adjust_window_size(SplitLayout::Horizontal, true);
+    }
+
+    /// Decrease current window height.
+    pub fn decrease_window_height(&mut self) {
+        self.adjust_window_size(SplitLayout::Horizontal, false);
+    }
+
+    /// Increase current window width.
+    pub fn increase_window_width(&mut self) {
+        self.adjust_window_size(SplitLayout::Vertical, true);
+    }
+
+    /// Decrease current window width.
+    pub fn decrease_window_width(&mut self) {
+        self.adjust_window_size(SplitLayout::Vertical, false);
+    }
+
+    /// Maximize current window height.
+    pub fn maximize_window_height(&mut self) {
+        self.maximize_window_size(SplitLayout::Horizontal);
+    }
+
+    /// Maximize current window width.
+    pub fn maximize_window_width(&mut self) {
+        self.maximize_window_size(SplitLayout::Vertical);
+    }
+
+    fn adjust_window_size(&mut self, layout: SplitLayout, increase: bool) {
+        if self.panes.len() <= 1 {
+            self.set_status("Only one window");
+            return;
+        }
+        if self.split_layout != layout {
+            self.set_status(Self::split_axis_unavailable_status(layout));
+            return;
+        }
+
+        self.capture_current_window_size_weights();
+        let Some(neighbor) = self.window_resize_neighbor() else {
+            self.set_status("Only one window");
+            return;
+        };
+
+        let min_size = Self::minimum_window_axis_size(layout);
+        let active = self.active_pane;
+        let mut weights: Vec<u16> = self
+            .panes
+            .iter()
+            .map(|pane| pane.size_weight.max(1))
+            .collect();
+        let amount = if increase {
+            WINDOW_RESIZE_STEP.min(weights[neighbor].saturating_sub(min_size))
+        } else {
+            WINDOW_RESIZE_STEP.min(weights[active].saturating_sub(min_size))
+        };
+
+        if amount == 0 {
+            self.set_status("Window size unchanged");
+            return;
+        }
+
+        if increase {
+            weights[active] = weights[active].saturating_add(amount);
+            weights[neighbor] = weights[neighbor].saturating_sub(amount);
+        } else {
+            weights[active] = weights[active].saturating_sub(amount);
+            weights[neighbor] = weights[neighbor].saturating_add(amount);
+        }
+
+        self.apply_window_size_weights(&weights);
+        self.update_pane_rects();
+        self.set_status("Window resized");
+    }
+
+    fn maximize_window_size(&mut self, layout: SplitLayout) {
+        if self.panes.len() <= 1 {
+            self.set_status("Only one window");
+            return;
+        }
+        if self.split_layout != layout {
+            self.set_status(Self::split_axis_unavailable_status(layout));
+            return;
+        }
+
+        self.capture_current_window_size_weights();
+        let min_size = Self::minimum_window_axis_size(layout);
+        let total: u16 = self.panes.iter().map(|pane| pane.size_weight.max(1)).sum();
+        let other_count = self.panes.len().saturating_sub(1) as u16;
+        let min_total_for_others = min_size.saturating_mul(other_count);
+
+        if total <= min_total_for_others {
+            self.set_status("Window size unchanged");
+            return;
+        }
+
+        let mut weights = vec![min_size; self.panes.len()];
+        weights[self.active_pane] = total - min_total_for_others;
+        self.apply_window_size_weights(&weights);
+        self.update_pane_rects();
+        self.set_status("Window maximized");
+    }
+
+    fn window_resize_neighbor(&self) -> Option<usize> {
+        if self.active_pane + 1 < self.panes.len() {
+            Some(self.active_pane + 1)
+        } else {
+            self.active_pane.checked_sub(1)
+        }
+    }
+
+    fn reset_window_size_weights(&mut self) {
+        for pane in &mut self.panes {
+            pane.size_weight = 1;
+        }
+    }
+
+    fn capture_current_window_size_weights(&mut self) {
+        let layout = self.split_layout;
+        for pane in &mut self.panes {
+            pane.size_weight = match layout {
+                SplitLayout::Vertical => pane.rect.width.max(1),
+                SplitLayout::Horizontal => pane.rect.height.max(1),
+            };
+        }
+    }
+
+    fn apply_window_size_weights(&mut self, weights: &[u16]) {
+        for (pane, weight) in self.panes.iter_mut().zip(weights.iter().copied()) {
+            pane.size_weight = weight.max(1);
+        }
+    }
+
+    fn minimum_window_axis_size(layout: SplitLayout) -> u16 {
+        match layout {
+            SplitLayout::Vertical => MIN_WINDOW_WIDTH,
+            SplitLayout::Horizontal => MIN_WINDOW_HEIGHT,
+        }
+    }
+
+    fn split_axis_unavailable_status(layout: SplitLayout) -> &'static str {
+        match layout {
+            SplitLayout::Vertical => "No vertical split",
+            SplitLayout::Horizontal => "No horizontal split",
+        }
     }
 
     /// Rotate pane order down/right according to the current split layout.
@@ -2934,7 +3094,6 @@ impl Editor {
     }
 
     /// Update pane rects based on current layout
-    /// For now, uses simple even splits - horizontal for 2 panes
     pub fn update_pane_rects(&mut self) {
         let text_height = self.text_rows() as u16;
         let num_panes = self.panes.len() as u16;
@@ -2951,42 +3110,57 @@ impl Editor {
         };
 
         let available_width = self.term_width.saturating_sub(explorer_offset);
+        let weights: Vec<u16> = self
+            .panes
+            .iter()
+            .map(|pane| pane.size_weight.max(1))
+            .collect();
 
         match self.split_layout {
             SplitLayout::Vertical => {
                 // Side-by-side panes
-                let pane_width = available_width / num_panes;
-                let remainder = available_width % num_panes;
+                let widths = Self::split_lengths_by_weights(available_width, &weights);
 
                 let mut x = explorer_offset;
-                for (i, pane) in self.panes.iter_mut().enumerate() {
-                    // Add remainder to last pane
-                    let w = if i as u16 == num_panes - 1 {
-                        pane_width + remainder
-                    } else {
-                        pane_width
-                    };
+                for (pane, w) in self.panes.iter_mut().zip(widths) {
                     pane.rect = Rect::new(x, 0, w, text_height);
                     x += w;
                 }
             }
             SplitLayout::Horizontal => {
                 // Stacked panes
-                let pane_height = text_height / num_panes;
-                let remainder = text_height % num_panes;
+                let heights = Self::split_lengths_by_weights(text_height, &weights);
 
                 let mut y = 0u16;
-                for (i, pane) in self.panes.iter_mut().enumerate() {
-                    let h = if i as u16 == num_panes - 1 {
-                        pane_height + remainder
-                    } else {
-                        pane_height
-                    };
+                for (pane, h) in self.panes.iter_mut().zip(heights) {
                     pane.rect = Rect::new(explorer_offset, y, available_width, h);
                     y += h;
                 }
             }
         }
+    }
+
+    fn split_lengths_by_weights(total: u16, weights: &[u16]) -> Vec<u16> {
+        if weights.is_empty() {
+            return Vec::new();
+        }
+
+        let weight_sum: u32 = weights.iter().map(|weight| (*weight).max(1) as u32).sum();
+        if weight_sum == 0 {
+            return vec![0; weights.len()];
+        }
+
+        let mut lengths: Vec<u16> = weights
+            .iter()
+            .map(|weight| {
+                ((total as u32 * (*weight).max(1) as u32) / weight_sum).min(u16::MAX as u32) as u16
+            })
+            .collect();
+        let assigned: u16 = lengths.iter().copied().sum();
+        if let Some(last) = lengths.last_mut() {
+            *last = last.saturating_add(total.saturating_sub(assigned));
+        }
+        lengths
     }
 
     /// Clamp cursor to valid buffer positions

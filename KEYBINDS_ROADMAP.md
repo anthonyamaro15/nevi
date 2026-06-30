@@ -4,7 +4,7 @@ Nevi aims for full vim/neovim keybind compatibility. Defaults follow Neovim, and
 keybinds are configurable — sensible defaults out of the box, overridable to your
 own taste.
 
-**Status: 305 keybinds implemented, 62 planned Vim/Neovim parity defaults.**
+**Status: 311 keybinds implemented, 56 planned Vim/Neovim parity defaults.**
 
 This file tracks what's **planned** (not yet implemented). For the full list of
 keybinds that already work, see [KEYBINDINGS.md](KEYBINDINGS.md).
@@ -39,12 +39,6 @@ Vim window sizing and window-moving defaults.
 
 | Keybind | Planned behavior |
 |---------|------------------|
-| `Ctrl+w _` | Maximize current split height |
-| `Ctrl+w \|` | Maximize current split width |
-| `Ctrl+w +` | Increase current split height |
-| `Ctrl+w -` | Decrease current split height |
-| `Ctrl+w >` | Increase current split width |
-| `Ctrl+w <` | Decrease current split width |
 | `Ctrl+w H` | Move current window to the far left |
 | `Ctrl+w J` | Move current window to the bottom |
 | `Ctrl+w K` | Move current window to the top |
