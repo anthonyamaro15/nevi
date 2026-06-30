@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const PROFILE_LOG_PATH: &str = "/tmp/nevi_profile.log";
 
@@ -37,6 +37,7 @@ pub struct HealthReportInput {
     pub languages_path: Option<PathBuf>,
     pub languages_status: FileCheckStatus,
     pub keymap: KeymapHealth,
+    pub external_tools: ExternalToolsHealth,
     pub profile_enabled: bool,
     pub profile_log_path: PathBuf,
     pub profile_log_status: ProfileLogStatus,
@@ -69,6 +70,21 @@ pub struct LspServerHealth {
     pub language: &'static str,
     pub enabled: bool,
     pub command: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExternalToolsHealth {
+    pub built_in_notes: Vec<String>,
+    pub optional_commands: Vec<CommandToolHealth>,
+    pub lsp_commands: Vec<CommandToolHealth>,
+    pub formatter_commands: Vec<CommandToolHealth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandToolHealth {
+    pub label: String,
+    pub command: String,
+    pub found: bool,
 }
 
 pub fn parse_profile_summary(contents: &str) -> Vec<ProfileMetricSummary> {
@@ -265,12 +281,38 @@ pub fn build_health_report(input: &HealthReportInput) -> String {
             ));
         }
     }
-    report.push_str("- External tool checks: skipped in v1 to keep `:checkhealth` cheap.\n");
+    report.push('\n');
+
+    report.push_str("## External Tools\n");
+    for note in &input.external_tools.built_in_notes {
+        report.push_str(&format!("- {note}\n"));
+    }
+    write_command_tool_group(
+        &mut report,
+        "Optional commands",
+        &input.external_tools.optional_commands,
+        "none",
+    );
+    write_command_tool_group(
+        &mut report,
+        "LSP commands",
+        &input.external_tools.lsp_commands,
+        "none enabled/configured",
+    );
+    write_command_tool_group(
+        &mut report,
+        "Configured formatters",
+        &input.external_tools.formatter_commands,
+        "none configured",
+    );
 
     report
 }
 
-pub fn collect_health_report(settings: &crate::config::Settings) -> String {
+pub fn collect_health_report(
+    settings: &crate::config::Settings,
+    languages_config: &crate::config::LanguagesConfig,
+) -> String {
     let config_path = crate::config::config_path();
     let languages_path = crate::config::languages::languages_config_path();
     let profile_log_path = PathBuf::from(PROFILE_LOG_PATH);
@@ -283,6 +325,11 @@ pub fn collect_health_report(settings: &crate::config::Settings) -> String {
         config_path,
         languages_path,
         keymap: keymap_health_from_settings(&settings.keymap),
+        external_tools: external_tools_health_from_settings(
+            settings,
+            languages_config,
+            command_exists_on_path,
+        ),
         profile_enabled: profile_enabled_from_env(),
         profile_log_status: inspect_profile_log(&profile_log_path),
         profile_log_path,
@@ -355,6 +402,145 @@ fn write_keymap_remaps(report: &mut String, label: &str, mappings: &[KeymapMappi
     }
 }
 
+pub fn external_tools_health_from_settings<F>(
+    settings: &crate::config::Settings,
+    languages_config: &crate::config::LanguagesConfig,
+    is_command_available: F,
+) -> ExternalToolsHealth
+where
+    F: Fn(&str) -> bool,
+{
+    let optional_commands = vec![command_tool_health(
+        "LazyGit",
+        "lazygit",
+        &is_command_available,
+    )];
+
+    let lsp_commands = lsp_command_health(settings, &is_command_available);
+    let formatter_commands = formatter_command_health(languages_config, &is_command_available);
+
+    ExternalToolsHealth {
+        built_in_notes: vec![
+            "Live grep: built in; no external `rg` required".to_string(),
+            "Git signs: built in via libgit2; no external `git` command required".to_string(),
+            "Missing LSP and formatter commands only matter for languages you use".to_string(),
+        ],
+        optional_commands,
+        lsp_commands,
+        formatter_commands,
+    }
+}
+
+fn lsp_command_health<F>(
+    settings: &crate::config::Settings,
+    is_command_available: &F,
+) -> Vec<CommandToolHealth>
+where
+    F: Fn(&str) -> bool,
+{
+    if !settings.lsp.enabled {
+        return Vec::new();
+    }
+
+    let servers = &settings.lsp.servers;
+    let mut commands = vec![
+        command_tool_health_if_enabled("rust", &servers.rust, is_command_available),
+        command_tool_health_if_enabled("typescript", &servers.typescript, is_command_available),
+        command_tool_health_if_enabled("javascript", &servers.javascript, is_command_available),
+        command_tool_health_if_enabled("css", &servers.css, is_command_available),
+        command_tool_health_if_enabled("json", &servers.json, is_command_available),
+        command_tool_health_if_enabled("toml", &servers.toml, is_command_available),
+        command_tool_health_if_enabled("markdown", &servers.markdown, is_command_available),
+        command_tool_health_if_enabled("html", &servers.html, is_command_available),
+        command_tool_health_if_enabled("python", &servers.python, is_command_available),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    commands.sort_by(|a, b| a.label.cmp(&b.label).then(a.command.cmp(&b.command)));
+    commands
+}
+
+fn command_tool_health_if_enabled<F>(
+    label: &str,
+    config: &crate::config::LspServerConfig,
+    is_command_available: &F,
+) -> Option<CommandToolHealth>
+where
+    F: Fn(&str) -> bool,
+{
+    if !config.enabled {
+        return None;
+    }
+
+    let command = config.effective_command().trim();
+    if command.is_empty() {
+        return None;
+    }
+
+    Some(command_tool_health(label, command, is_command_available))
+}
+
+fn formatter_command_health<F>(
+    languages_config: &crate::config::LanguagesConfig,
+    is_command_available: &F,
+) -> Vec<CommandToolHealth>
+where
+    F: Fn(&str) -> bool,
+{
+    let mut commands = languages_config
+        .languages
+        .iter()
+        .filter_map(|(language, config)| {
+            let formatter = config.formatter.as_ref()?;
+            let command = formatter.command.trim();
+            if command.is_empty() {
+                return None;
+            }
+            Some(command_tool_health(language, command, is_command_available))
+        })
+        .collect::<Vec<_>>();
+    commands.sort_by(|a, b| a.label.cmp(&b.label).then(a.command.cmp(&b.command)));
+    commands
+}
+
+fn command_tool_health<F>(
+    label: impl Into<String>,
+    command: &str,
+    is_command_available: &F,
+) -> CommandToolHealth
+where
+    F: Fn(&str) -> bool,
+{
+    CommandToolHealth {
+        label: label.into(),
+        command: command.to_string(),
+        found: is_command_available(command),
+    }
+}
+
+fn write_command_tool_group(
+    report: &mut String,
+    label: &str,
+    commands: &[CommandToolHealth],
+    empty_message: &str,
+) {
+    report.push_str(&format!("- {label}:\n"));
+    if commands.is_empty() {
+        report.push_str(&format!("  - {empty_message}\n"));
+        return;
+    }
+
+    for command in commands {
+        report.push_str(&format!(
+            "  - {} (`{}`): {}\n",
+            command.label,
+            command.command,
+            if command.found { "found" } else { "missing" }
+        ));
+    }
+}
+
 fn keymap_key_label(key: &str) -> String {
     match key {
         " " | "<Space>" | "<space>" => "<Space>".to_string(),
@@ -376,6 +562,44 @@ pub fn profile_enabled_from_value(value: Option<&str>) -> bool {
         || value.eq_ignore_ascii_case("true")
         || value.eq_ignore_ascii_case("yes")
         || value.eq_ignore_ascii_case("on")
+}
+
+pub fn command_exists_on_path(command: &str) -> bool {
+    let command = command.trim();
+    if command.is_empty() {
+        return false;
+    }
+
+    let command_path = Path::new(command);
+    if command_path.is_absolute() || command.contains('/') {
+        return is_executable_file(command_path);
+    }
+
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return false;
+    };
+
+    std::env::split_paths(&path_var).any(|dir| is_executable_file(&dir.join(command)))
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn inspect_toml_file<T>(path: Option<&PathBuf>) -> FileCheckStatus
@@ -460,10 +684,15 @@ fn path_label(path: Option<&PathBuf>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{KeymapEntry, Settings};
+    use crate::config::{FormatterConfig, KeymapEntry, LanguageConfig, LanguagesConfig, Settings};
+    use std::collections::HashMap;
 
     fn default_keymap_health() -> KeymapHealth {
         keymap_health_from_settings(&Settings::default().keymap)
+    }
+
+    fn default_external_tools_health() -> ExternalToolsHealth {
+        ExternalToolsHealth::default()
     }
 
     #[test]
@@ -510,6 +739,7 @@ mod tests {
             languages_path: Some(PathBuf::from("/home/me/.config/nevi/languages.toml")),
             languages_status: FileCheckStatus::Missing,
             keymap: default_keymap_health(),
+            external_tools: default_external_tools_health(),
             profile_enabled: false,
             profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
             profile_log_status: ProfileLogStatus::Missing,
@@ -541,6 +771,7 @@ mod tests {
             languages_path: None,
             languages_status: FileCheckStatus::Unavailable,
             keymap: default_keymap_health(),
+            external_tools: default_external_tools_health(),
             profile_enabled: true,
             profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
             profile_log_status: ProfileLogStatus::Summary(vec![ProfileMetricSummary {
@@ -570,6 +801,7 @@ mod tests {
             languages_path: None,
             languages_status: FileCheckStatus::Unavailable,
             keymap: default_keymap_health(),
+            external_tools: default_external_tools_health(),
             profile_enabled: false,
             profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
             profile_log_status: ProfileLogStatus::Summary(vec![ProfileMetricSummary {
@@ -611,12 +843,13 @@ mod tests {
             config_status: FileCheckStatus::Unavailable,
             languages_path: None,
             languages_status: FileCheckStatus::Unavailable,
+            keymap: keymap_health_from_settings(&settings.keymap),
+            external_tools: default_external_tools_health(),
             profile_enabled: false,
             profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
             profile_log_status: ProfileLogStatus::Missing,
             lsp_enabled: true,
             lsp_servers: Vec::new(),
-            keymap: keymap_health_from_settings(&settings.keymap),
         });
 
         assert!(report.contains("## Keymaps"));
@@ -630,5 +863,122 @@ mod tests {
         assert!(report.contains("H overrides Vim default: Move to top of visible screen"));
         assert!(report.contains("L overrides Vim default: Move to bottom of visible screen"));
         assert!(report.contains("; overrides Vim default: Repeat latest f/F/t/T search"));
+    }
+
+    #[test]
+    fn health_report_lists_external_tool_checks() {
+        let report = build_health_report(&HealthReportInput {
+            config_path: None,
+            config_status: FileCheckStatus::Unavailable,
+            languages_path: None,
+            languages_status: FileCheckStatus::Unavailable,
+            keymap: default_keymap_health(),
+            profile_enabled: false,
+            profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
+            profile_log_status: ProfileLogStatus::Missing,
+            lsp_enabled: true,
+            lsp_servers: Vec::new(),
+            external_tools: ExternalToolsHealth {
+                built_in_notes: vec![
+                    "Live grep: built in; no external `rg` required".to_string(),
+                    "Git signs: built in via libgit2; no external `git` command required"
+                        .to_string(),
+                ],
+                optional_commands: vec![CommandToolHealth {
+                    label: "LazyGit".to_string(),
+                    command: "lazygit".to_string(),
+                    found: false,
+                }],
+                lsp_commands: vec![CommandToolHealth {
+                    label: "rust".to_string(),
+                    command: "rust-analyzer".to_string(),
+                    found: true,
+                }],
+                formatter_commands: vec![CommandToolHealth {
+                    label: "typescript".to_string(),
+                    command: "biome".to_string(),
+                    found: false,
+                }],
+            },
+        });
+
+        assert!(report.contains("## External Tools"));
+        assert!(report.contains("Live grep: built in; no external `rg` required"));
+        assert!(report.contains("Git signs: built in via libgit2"));
+        assert!(report.contains("LazyGit (`lazygit`): missing"));
+        assert!(report.contains("rust (`rust-analyzer`): found"));
+        assert!(report.contains("typescript (`biome`): missing"));
+    }
+
+    #[test]
+    fn external_tool_health_uses_configured_lsp_and_formatter_commands() {
+        let mut settings = Settings::default();
+        settings.lsp.servers.rust.command = "ra-multiplex".to_string();
+        settings.lsp.servers.markdown.enabled = true;
+
+        let languages_config = LanguagesConfig {
+            languages: HashMap::from([
+                (
+                    "typescript".to_string(),
+                    LanguageConfig {
+                        formatter: Some(FormatterConfig {
+                            command: "biome".to_string(),
+                            args: vec!["format".to_string()],
+                            timeout: 5,
+                        }),
+                        tab_width: Some(2),
+                    },
+                ),
+                (
+                    "python".to_string(),
+                    LanguageConfig {
+                        formatter: Some(FormatterConfig {
+                            command: "black".to_string(),
+                            args: vec!["-".to_string()],
+                            timeout: 5,
+                        }),
+                        tab_width: None,
+                    },
+                ),
+            ]),
+        };
+
+        let health = external_tools_health_from_settings(&settings, &languages_config, |command| {
+            matches!(command, "lazygit" | "ra-multiplex" | "biome")
+        });
+
+        assert_eq!(
+            health.optional_commands,
+            vec![CommandToolHealth {
+                label: "LazyGit".to_string(),
+                command: "lazygit".to_string(),
+                found: true,
+            }]
+        );
+        assert!(health.lsp_commands.contains(&CommandToolHealth {
+            label: "rust".to_string(),
+            command: "ra-multiplex".to_string(),
+            found: true,
+        }));
+        assert!(health.lsp_commands.contains(&CommandToolHealth {
+            label: "markdown".to_string(),
+            command: "marksman".to_string(),
+            found: false,
+        }));
+        assert_eq!(
+            health.formatter_commands,
+            vec![
+                CommandToolHealth {
+                    label: "python".to_string(),
+                    command: "black".to_string(),
+                    found: false,
+                },
+                CommandToolHealth {
+                    label: "typescript".to_string(),
+                    command: "biome".to_string(),
+                    found: true,
+                },
+            ]
+        );
     }
 }

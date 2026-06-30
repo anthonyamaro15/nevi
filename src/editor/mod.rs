@@ -1728,7 +1728,7 @@ impl Editor {
 
     /// Open a health report in a read-only virtual buffer.
     pub fn open_health_report(&mut self) {
-        let report = crate::health::collect_health_report(&self.settings);
+        let report = crate::health::collect_health_report(&self.settings, &self.languages_config);
         self.open_virtual_read_only_buffer("[health]", &report, Some("health.md"));
     }
 
