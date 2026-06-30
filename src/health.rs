@@ -36,11 +36,32 @@ pub struct HealthReportInput {
     pub config_status: FileCheckStatus,
     pub languages_path: Option<PathBuf>,
     pub languages_status: FileCheckStatus,
+    pub keymap: KeymapHealth,
     pub profile_enabled: bool,
     pub profile_log_path: PathBuf,
     pub profile_log_status: ProfileLogStatus,
     pub lsp_enabled: bool,
     pub lsp_servers: Vec<LspServerHealth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct KeymapHealth {
+    pub leader: String,
+    pub timeoutlen: u64,
+    pub show_leader_popup: bool,
+    pub normal_mappings: Vec<KeymapMappingHealth>,
+    pub visual_mappings: Vec<KeymapMappingHealth>,
+    pub insert_mappings: Vec<KeymapMappingHealth>,
+    pub leader_mapping_count: usize,
+    pub command_mapping_count: usize,
+    pub explorer_mapping_count: usize,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeymapMappingHealth {
+    pub from: String,
+    pub to: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +153,45 @@ pub fn build_health_report(input: &HealthReportInput) -> String {
     report.push_str("- Open user config: `:ConfigOpen`\n");
     report.push_str("- View latest default config: `:ConfigDefaults`\n\n");
 
+    report.push_str("## Keymaps\n");
+    report.push_str(&format!(
+        "- Leader key: {}\n",
+        keymap_key_label(&input.keymap.leader)
+    ));
+    report.push_str(&format!(
+        "- Leader popup: {}\n",
+        if input.keymap.show_leader_popup {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    ));
+    report.push_str(&format!("- Timeout: {}ms\n", input.keymap.timeoutlen));
+    write_keymap_remaps(&mut report, "Normal remaps", &input.keymap.normal_mappings);
+    write_keymap_remaps(&mut report, "Visual remaps", &input.keymap.visual_mappings);
+    write_keymap_remaps(&mut report, "Insert remaps", &input.keymap.insert_mappings);
+    report.push_str(&format!(
+        "- Leader mappings: {} configured\n",
+        input.keymap.leader_mapping_count
+    ));
+    report.push_str(&format!(
+        "- Command mappings: {} configured\n",
+        input.keymap.command_mapping_count
+    ));
+    report.push_str(&format!(
+        "- Explorer mappings: {} configured\n",
+        input.keymap.explorer_mapping_count
+    ));
+    if input.keymap.warnings.is_empty() {
+        report.push_str("- Warnings: none\n");
+    } else {
+        report.push_str("- Warnings:\n");
+        for warning in &input.keymap.warnings {
+            report.push_str(&format!("  - {warning}\n"));
+        }
+    }
+    report.push('\n');
+
     report.push_str("## Performance\n");
     report.push_str(&format!(
         "- Profiling: {} for this session (`NEVI_PROFILE=1`)\n",
@@ -222,12 +282,85 @@ pub fn collect_health_report(settings: &crate::config::Settings) -> String {
         ),
         config_path,
         languages_path,
+        keymap: keymap_health_from_settings(&settings.keymap),
         profile_enabled: profile_enabled_from_env(),
         profile_log_status: inspect_profile_log(&profile_log_path),
         profile_log_path,
         lsp_enabled: settings.lsp.enabled,
         lsp_servers: lsp_server_health(settings),
     })
+}
+
+pub fn keymap_health_from_settings(settings: &crate::config::KeymapSettings) -> KeymapHealth {
+    let normal_mappings = keymap_entry_health(&settings.normal);
+    let mut warnings = Vec::new();
+
+    for mapping in &normal_mappings {
+        if let Some(default) = known_normal_mode_default(&mapping.from) {
+            warnings.push(format!(
+                "{} overrides Vim default: {}",
+                mapping.from, default
+            ));
+        }
+    }
+
+    KeymapHealth {
+        leader: settings.leader.clone(),
+        timeoutlen: settings.timeoutlen,
+        show_leader_popup: settings.show_leader_popup,
+        normal_mappings,
+        visual_mappings: keymap_entry_health(&settings.visual),
+        insert_mappings: keymap_entry_health(&settings.insert),
+        leader_mapping_count: settings.leader_mappings.len(),
+        command_mapping_count: settings.command_mappings.len(),
+        explorer_mapping_count: settings.explorer.len(),
+        warnings,
+    }
+}
+
+fn keymap_entry_health(entries: &[crate::config::KeymapEntry]) -> Vec<KeymapMappingHealth> {
+    entries
+        .iter()
+        .map(|entry| KeymapMappingHealth {
+            from: entry.from.clone(),
+            to: entry.to.clone(),
+        })
+        .collect()
+}
+
+fn known_normal_mode_default(key: &str) -> Option<&'static str> {
+    match key {
+        "H" => Some("Move to top of visible screen"),
+        "L" => Some("Move to bottom of visible screen"),
+        "M" => Some("Move to middle of visible screen"),
+        "U" => Some("Undo latest changes on the current line"),
+        ";" => Some("Repeat latest f/F/t/T search"),
+        "," => Some("Repeat latest f/F/t/T search in reverse"),
+        "|" => Some("Go to a screen column"),
+        "_" => Some("Move to first non-blank character of a line"),
+        "=" => Some("Format with motion"),
+        _ => None,
+    }
+}
+
+fn write_keymap_remaps(report: &mut String, label: &str, mappings: &[KeymapMappingHealth]) {
+    if mappings.is_empty() {
+        report.push_str(&format!("- {label}: none\n"));
+        return;
+    }
+
+    report.push_str(&format!("- {label}: {}\n", mappings.len()));
+    for mapping in mappings {
+        report.push_str(&format!("  - {} -> {}\n", mapping.from, mapping.to));
+    }
+}
+
+fn keymap_key_label(key: &str) -> String {
+    match key {
+        " " | "<Space>" | "<space>" => "<Space>".to_string(),
+        "" => "<unset>".to_string(),
+        other => other.to_string(),
+    }
 }
 
 pub fn profile_enabled_from_env() -> bool {
@@ -327,6 +460,11 @@ fn path_label(path: Option<&PathBuf>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{KeymapEntry, Settings};
+
+    fn default_keymap_health() -> KeymapHealth {
+        keymap_health_from_settings(&Settings::default().keymap)
+    }
 
     #[test]
     fn parses_profile_summary_after_header() {
@@ -371,6 +509,7 @@ mod tests {
             config_status: FileCheckStatus::Ok,
             languages_path: Some(PathBuf::from("/home/me/.config/nevi/languages.toml")),
             languages_status: FileCheckStatus::Missing,
+            keymap: default_keymap_health(),
             profile_enabled: false,
             profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
             profile_log_status: ProfileLogStatus::Missing,
@@ -401,6 +540,7 @@ mod tests {
             config_status: FileCheckStatus::Unavailable,
             languages_path: None,
             languages_status: FileCheckStatus::Unavailable,
+            keymap: default_keymap_health(),
             profile_enabled: true,
             profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
             profile_log_status: ProfileLogStatus::Summary(vec![ProfileMetricSummary {
@@ -429,6 +569,7 @@ mod tests {
             config_status: FileCheckStatus::Unavailable,
             languages_path: None,
             languages_status: FileCheckStatus::Unavailable,
+            keymap: default_keymap_health(),
             profile_enabled: false,
             profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
             profile_log_status: ProfileLogStatus::Summary(vec![ProfileMetricSummary {
@@ -447,5 +588,47 @@ mod tests {
 
         assert!(report.contains("Profiling: disabled for this session"));
         assert!(report.contains("Profile summary: found from saved log"));
+    }
+
+    #[test]
+    fn health_report_lists_keymap_overrides_and_warnings() {
+        let mut settings = Settings::default();
+        settings.keymap.normal.push(KeymapEntry {
+            from: "H".to_string(),
+            to: "^".to_string(),
+        });
+        settings.keymap.normal.push(KeymapEntry {
+            from: "L".to_string(),
+            to: "$".to_string(),
+        });
+        settings.keymap.normal.push(KeymapEntry {
+            from: ";".to_string(),
+            to: ":".to_string(),
+        });
+
+        let report = build_health_report(&HealthReportInput {
+            config_path: None,
+            config_status: FileCheckStatus::Unavailable,
+            languages_path: None,
+            languages_status: FileCheckStatus::Unavailable,
+            profile_enabled: false,
+            profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
+            profile_log_status: ProfileLogStatus::Missing,
+            lsp_enabled: true,
+            lsp_servers: Vec::new(),
+            keymap: keymap_health_from_settings(&settings.keymap),
+        });
+
+        assert!(report.contains("## Keymaps"));
+        assert!(report.contains("Leader key: <Space>"));
+        assert!(report.contains("Leader popup: enabled"));
+        assert!(report.contains("Normal remaps: 3"));
+        assert!(report.contains("H -> ^"));
+        assert!(report.contains("L -> $"));
+        assert!(report.contains("; -> :"));
+        assert!(report.contains("Warnings:"));
+        assert!(report.contains("H overrides Vim default: Move to top of visible screen"));
+        assert!(report.contains("L overrides Vim default: Move to bottom of visible screen"));
+        assert!(report.contains("; overrides Vim default: Repeat latest f/F/t/T search"));
     }
 }

@@ -930,7 +930,7 @@ While typing an Ex command after `:`.
 | `:Themes` | Open theme picker |
 | `:Theme {name}` / `:theme {name}` / `:colorscheme {name}` | Set theme |
 | `:LazyGit` / `:lg` | Open lazygit |
-| `:checkhealth` / `:CheckHealth` / `:Health` | Open editor health report with config, profiling, and LSP summary |
+| `:checkhealth` / `:CheckHealth` / `:Health` | Open editor health report with config, keymap, profiling, and LSP summary |
 | `:ConfigOpen` / `:config` / `:configopen` | Open the user config file, creating it first if needed |
 | `:ConfigDefaults` / `:configdefaults` | View the latest built-in default config template without changing user config |
 | `:!{command}` | Run external shell command |

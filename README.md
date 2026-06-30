@@ -105,8 +105,8 @@ Optional tools unlock optional features:
 | GitHub Copilot completions | GitHub account and network access | No local Copilot binary required |
 
 If an optional tool is missing, the rest of Nevi still works. Run
-`:checkhealth` or `:Health` inside Nevi to inspect config paths, LSP settings,
-profiling status, and common setup issues.
+`:checkhealth` or `:Health` inside Nevi to inspect config paths, keymap
+overrides, LSP settings, profiling status, and common setup issues.
 
 ### From Source
 
@@ -358,9 +358,9 @@ microseconds for metrics such as key handling, syntax updates, full renders, and
 terminal-only renders.
 
 Run `:checkhealth` (or `:Health`) inside Nevi to see config paths, config
-discoverability commands, LSP settings, profiling status, and any profile
-summary from `/tmp/nevi_profile.log`. Profile summaries are written when a
-profiled Nevi session exits.
+discoverability commands, keymap overrides and warnings, LSP settings, profiling
+status, and any profile summary from `/tmp/nevi_profile.log`. Profile summaries
+are written when a profiled Nevi session exits.
 
 ## License
 
