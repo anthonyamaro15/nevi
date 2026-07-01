@@ -675,6 +675,7 @@ the popup, or press `Esc` to cancel.
 | `<leader>e` | Toggle file explorer |
 | `<leader>ff` | Find files (fuzzy finder) |
 | `<leader>fg` | Live grep (search in files) |
+| `<leader>fl` | Find lines in current buffer |
 | `<leader>sw` | Search word under cursor |
 | `<leader>fb` | Find buffers |
 | `<leader>ft` | Theme picker |
@@ -882,6 +883,7 @@ While typing an Ex command after `:`.
 | `:{n}` | Go to line n |
 | `:FindFiles` / `:ff` / `:files` | Open file finder |
 | `:LiveGrep` / `:grep` / `:rg` | Search in files |
+| `:BufferSearch` / `:FindLines` / `:Lines` / `:bl` | Find lines in current buffer |
 | `:SearchWord` / `:sw` | Search word under cursor |
 | `:FindBuffers` / `:fb` / `:buffers` | Open buffer finder |
 | `:FindDiagnostics` / `:diag` / `:fd` | Open diagnostics finder |

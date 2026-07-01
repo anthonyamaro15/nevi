@@ -5069,6 +5069,7 @@ impl Terminal {
             crate::finder::FinderMode::Files => " Find Files ",
             crate::finder::FinderMode::Grep => " Live Grep ",
             crate::finder::FinderMode::Buffers => " Buffers ",
+            crate::finder::FinderMode::BufferLines => " Buffer Lines ",
             crate::finder::FinderMode::Diagnostics => " Diagnostics ",
             crate::finder::FinderMode::Harpoon => " Harpoon ",
             crate::finder::FinderMode::Marks => " Marks ",
@@ -8418,6 +8419,11 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
                 } else if let Some(buf_idx) = item.buffer_idx {
                     if !editor.switch_to_buffer(buf_idx) {
                         editor.set_status("Buffer not found");
+                    } else if let Some(line_num) = item.line {
+                        editor.cursor.line = line_num.saturating_sub(1);
+                        editor.cursor.col = item.col.unwrap_or(0);
+                        editor.clamp_cursor();
+                        editor.scroll_to_cursor();
                     }
                 } else if item
                     .git_status
@@ -9527,6 +9533,11 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
 
         Command::FindBuffers => {
             editor.open_finder_buffers();
+            CommandResult::Ok
+        }
+
+        Command::BufferSearch => {
+            editor.open_finder_buffer_lines();
             CommandResult::Ok
         }
 
@@ -11517,6 +11528,24 @@ mod tests {
         assert_eq!(editor.current_buffer_index(), 0);
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn finder_enter_jumps_to_selected_buffer_line() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("alpha\nneedle here\nomega\n");
+        editor.open_finder_buffer_lines();
+
+        for ch in "needle".chars() {
+            editor.finder.insert_char(ch);
+        }
+        handle_key(
+            &mut editor,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!((editor.cursor.line, editor.cursor.col), (1, 0));
     }
 
     #[test]

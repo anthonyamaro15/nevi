@@ -32,6 +32,7 @@ pub enum FinderMode {
     Files,
     Grep,
     Buffers,
+    BufferLines,
     Diagnostics,
     Harpoon,
     Marks,
@@ -347,6 +348,38 @@ impl FuzzyFinder {
                     FinderItem::new(format!("{}: {}", idx + 1, name), path).with_buffer_idx(idx);
                 item.score = idx as u32;
                 item
+            })
+            .collect();
+        self.filtered = (0..self.items.len()).collect();
+        self.populated = true;
+    }
+
+    pub fn open_buffer_lines(
+        &mut self,
+        buffer_idx: usize,
+        buffer_path: PathBuf,
+        lines: Vec<(usize, String)>,
+    ) {
+        self.mode = FinderMode::BufferLines;
+        self.input_mode = FinderInputMode::Insert;
+        self.query.clear();
+        self.cursor = 0;
+        self.selected = 0;
+        self.scroll_offset = 0;
+        self.clear_preview_cache();
+        self.cancel_grep_search();
+
+        self.items = lines
+            .into_iter()
+            .map(|(line_idx, text)| {
+                FinderItem::new(
+                    format!("{:>4}: {}", line_idx + 1, text),
+                    buffer_path.clone(),
+                )
+                .with_buffer_idx(buffer_idx)
+                .with_line(line_idx + 1)
+                .with_col(0)
+                .with_icon("LN")
             })
             .collect();
         self.filtered = (0..self.items.len()).collect();
@@ -1195,6 +1228,39 @@ mod tests {
         assert!(
             !finder.mode_supports_preview(),
             "keymaps mode has no preview pane"
+        );
+    }
+
+    #[test]
+    fn open_buffer_lines_sets_line_metadata_and_fuzzy_filters() {
+        let mut finder = FuzzyFinder::new();
+        finder.open_buffer_lines(
+            2,
+            PathBuf::from("src/main.rs"),
+            vec![
+                (0, "fn main() {".to_string()),
+                (1, "    println!(\"hello\");".to_string()),
+                (2, "}".to_string()),
+            ],
+        );
+
+        assert_eq!(finder.mode, FinderMode::BufferLines);
+        assert_eq!(finder.filtered.len(), 3);
+        assert_eq!(
+            finder
+                .selected_item()
+                .map(|item| (item.buffer_idx, item.line, item.col)),
+            Some((Some(2), Some(1), Some(0)))
+        );
+
+        for ch in "print".chars() {
+            finder.insert_char(ch);
+        }
+
+        assert_eq!(finder.filtered.len(), 1);
+        assert_eq!(
+            finder.selected_item().map(|item| item.display.as_str()),
+            Some("   2:     println!(\"hello\");")
         );
     }
 

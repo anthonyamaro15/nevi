@@ -360,6 +360,11 @@ impl Default for KeymapSettings {
                     desc: Some("Live grep".to_string()),
                 },
                 LeaderMapping {
+                    key: "fl".to_string(),
+                    action: ":BufferSearch".to_string(),
+                    desc: Some("Find lines in current buffer".to_string()),
+                },
+                LeaderMapping {
                     key: "sw".to_string(),
                     action: ":SearchWord".to_string(),
                     desc: Some("Search word under cursor".to_string()),
@@ -1246,6 +1251,7 @@ fn default_config_template() -> &'static str {
 # <leader>e        - Toggle file explorer
 # <leader>ff       - Find files
 # <leader>fg       - Live grep
+# <leader>fl       - Find lines in current buffer
 # <leader>sw       - Search word under cursor (grep)
 # <leader>fb       - Find buffers
 # <leader>ft       - Theme picker

@@ -149,6 +149,7 @@ nevi file1.rs file2.rs
 - `:MarkdownPreview` - Open rendered Markdown reader for `.md` files (`j/k`, `Ctrl-d/u`, `g/G`, `q`)
 - `<Space>ff` - Find files
 - `<Space>fg` - Live grep
+- `<Space>fl` - Find lines in current buffer
 - `<Space>gc` - Git changes picker
 - `<Space>e` - File explorer
 - `<Space>tt` - Terminal picker
@@ -278,6 +279,7 @@ Press `<Space>` by itself to show available leader continuations. Set `[keymap] 
 |-----|--------|
 | `ff` | Find files |
 | `fg` | Live grep |
+| `fl` | Find lines in current buffer |
 | `sw` | Search word under cursor |
 | `fb` | Find buffers |
 | `ft` | Theme picker |

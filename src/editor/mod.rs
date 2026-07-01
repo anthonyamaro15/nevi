@@ -9351,6 +9351,25 @@ impl Editor {
         self.mode = Mode::Finder;
     }
 
+    /// Open the fuzzy finder with lines from the current buffer.
+    pub fn open_finder_buffer_lines(&mut self) {
+        let buffer_idx = self.current_buffer_idx;
+        let buffer = &self.buffers[buffer_idx];
+        let path = buffer.path.clone().unwrap_or_default();
+        let lines: Vec<(usize, String)> = (0..buffer.len_lines())
+            .map(|line_idx| {
+                let text = buffer
+                    .line(line_idx)
+                    .map(|line| line.to_string().trim_end_matches('\n').to_string())
+                    .unwrap_or_default();
+                (line_idx, text)
+            })
+            .collect();
+
+        self.finder.open_buffer_lines(buffer_idx, path, lines);
+        self.mode = Mode::Finder;
+    }
+
     /// Open the fuzzy finder in grep mode (live search)
     pub fn open_finder_grep(&mut self) {
         let root = self.working_directory();
