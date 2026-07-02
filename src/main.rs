@@ -132,6 +132,7 @@ enum CliStartupAction {
     PrintUsageError(String),
     LaunchEditor(Option<PathBuf>),
     ViewFile(PathBuf),
+    DiffFiles { left: PathBuf, right: PathBuf },
 }
 
 fn version_output() -> String {
@@ -150,13 +151,21 @@ where
             Some(path) => CliStartupAction::ViewFile(PathBuf::from(path.as_ref())),
             None => CliStartupAction::PrintUsageError("usage: nevi view <file>".to_string()),
         },
+        Some(arg) if arg.as_ref() == "diff" => match (args.next(), args.next(), args.next()) {
+            (Some(left), Some(right), None) => CliStartupAction::DiffFiles {
+                left: PathBuf::from(left.as_ref()),
+                right: PathBuf::from(right.as_ref()),
+            },
+            _ => CliStartupAction::PrintUsageError("usage: nevi diff <left> <right>".to_string()),
+        },
         Some(arg) => CliStartupAction::LaunchEditor(Some(PathBuf::from(arg.as_ref()))),
         None => CliStartupAction::LaunchEditor(None),
     }
 }
 
 fn main() -> anyhow::Result<()> {
-    let (arg_path, read_only_view) = match startup_action_from_args(env::args().skip(1)) {
+    let (arg_path, read_only_view, diff_paths) = match startup_action_from_args(env::args().skip(1))
+    {
         CliStartupAction::PrintVersion => {
             println!("{}", version_output());
             return Ok(());
@@ -165,8 +174,9 @@ fn main() -> anyhow::Result<()> {
             eprintln!("{}", message);
             std::process::exit(2);
         }
-        CliStartupAction::LaunchEditor(path) => (path, false),
-        CliStartupAction::ViewFile(path) => (Some(path), true),
+        CliStartupAction::LaunchEditor(path) => (path, false, None),
+        CliStartupAction::ViewFile(path) => (Some(path), true, None),
+        CliStartupAction::DiffFiles { left, right } => (None, true, Some((left, right))),
     };
 
     // Profiling is opt-in with NEVI_PROFILE=1/true/yes/on.
@@ -270,6 +280,21 @@ fn main() -> anyhow::Result<()> {
             }
             editor.open_file(abs_path)?;
         }
+    }
+
+    if let Some((left, right)) = diff_paths {
+        let diff_width = crossterm::terminal::size()
+            .map(|(width, _)| width as usize)
+            .unwrap_or(120);
+        let diff =
+            nevi::file_diff::render_file_diff_from_paths_with_width(&left, &right, diff_width)
+                .map_err(anyhow::Error::msg)?;
+        editor.open_virtual_read_only_buffer("[diff]", &diff, Some("nevi.diff"));
+        editor.set_status(format!(
+            "Read-only diff: {} -> {}",
+            left.display(),
+            right.display()
+        ));
     }
 
     // If no argument, use current directory as project root
@@ -2388,6 +2413,25 @@ mod tests {
         assert_eq!(
             startup_action_from_args(["view"]),
             CliStartupAction::PrintUsageError("usage: nevi view <file>".to_string())
+        );
+    }
+
+    #[test]
+    fn cli_diff_subcommand_opens_two_file_paths() {
+        assert_eq!(
+            startup_action_from_args(["diff", "before.rs", "after.rs"]),
+            CliStartupAction::DiffFiles {
+                left: PathBuf::from("before.rs"),
+                right: PathBuf::from("after.rs"),
+            }
+        );
+    }
+
+    #[test]
+    fn cli_diff_subcommand_requires_two_file_paths() {
+        assert_eq!(
+            startup_action_from_args(["diff", "before.rs"]),
+            CliStartupAction::PrintUsageError("usage: nevi diff <left> <right>".to_string())
         );
     }
 

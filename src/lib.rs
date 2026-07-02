@@ -3,6 +3,7 @@ pub mod config;
 pub mod copilot;
 pub mod editor;
 pub mod explorer;
+pub mod file_diff;
 pub mod finder;
 pub mod floating_terminal;
 pub mod formatter;

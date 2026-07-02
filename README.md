@@ -183,6 +183,10 @@ nevi src/main.rs
 # Open a file as a read-only terminal viewer
 nevi view src/main.rs
 
+# Compare any two text files in a read-only diff view.
+# Wide terminals use side-by-side output; narrow terminals use stacked changes.
+nevi diff before.rs after.rs
+
 # Open multiple files
 nevi file1.rs file2.rs
 ```
