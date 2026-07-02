@@ -133,6 +133,14 @@ enum CliStartupAction {
     LaunchEditor(Option<PathBuf>),
     ViewFile(PathBuf),
     DiffFiles { left: PathBuf, right: PathBuf },
+    PickFile(Option<PathBuf>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PickModeAction {
+    Continue,
+    Cancel,
+    Select(PathBuf),
 }
 
 fn version_output() -> String {
@@ -158,26 +166,54 @@ where
             },
             _ => CliStartupAction::PrintUsageError("usage: nevi diff <left> <right>".to_string()),
         },
+        Some(arg) if arg.as_ref() == "pick" => match (args.next(), args.next()) {
+            (None, None) => CliStartupAction::PickFile(None),
+            (Some(path), None) => CliStartupAction::PickFile(Some(PathBuf::from(path.as_ref()))),
+            _ => CliStartupAction::PrintUsageError("usage: nevi pick [path]".to_string()),
+        },
         Some(arg) => CliStartupAction::LaunchEditor(Some(PathBuf::from(arg.as_ref()))),
         None => CliStartupAction::LaunchEditor(None),
     }
 }
 
+fn pick_mode_action_for_key(editor: &Editor, key: KeyEvent) -> PickModeAction {
+    if editor.mode != Mode::Finder || editor.finder.mode != nevi::finder::FinderMode::Files {
+        return PickModeAction::Continue;
+    }
+
+    match (key.modifiers, key.code) {
+        (KeyModifiers::NONE, KeyCode::Enter) => editor
+            .finder
+            .selected_item()
+            .map(|item| PickModeAction::Select(item.path.clone()))
+            .unwrap_or(PickModeAction::Continue),
+        (KeyModifiers::NONE, KeyCode::Esc)
+        | (KeyModifiers::CONTROL, KeyCode::Char('c'))
+        | (KeyModifiers::CONTROL, KeyCode::Char('[')) => PickModeAction::Cancel,
+        (KeyModifiers::NONE, KeyCode::Char('q')) if editor.finder.query.is_empty() => {
+            PickModeAction::Cancel
+        }
+        _ => PickModeAction::Continue,
+    }
+}
+
 fn main() -> anyhow::Result<()> {
-    let (arg_path, read_only_view, diff_paths) = match startup_action_from_args(env::args().skip(1))
-    {
-        CliStartupAction::PrintVersion => {
-            println!("{}", version_output());
-            return Ok(());
-        }
-        CliStartupAction::PrintUsageError(message) => {
-            eprintln!("{}", message);
-            std::process::exit(2);
-        }
-        CliStartupAction::LaunchEditor(path) => (path, false, None),
-        CliStartupAction::ViewFile(path) => (Some(path), true, None),
-        CliStartupAction::DiffFiles { left, right } => (None, true, Some((left, right))),
-    };
+    let (arg_path, read_only_view, diff_paths, pick_root) =
+        match startup_action_from_args(env::args().skip(1)) {
+            CliStartupAction::PrintVersion => {
+                println!("{}", version_output());
+                return Ok(());
+            }
+            CliStartupAction::PrintUsageError(message) => {
+                eprintln!("{}", message);
+                std::process::exit(2);
+            }
+            CliStartupAction::LaunchEditor(path) => (path, false, None, None),
+            CliStartupAction::ViewFile(path) => (Some(path), true, None, None),
+            CliStartupAction::DiffFiles { left, right } => (None, true, Some((left, right)), None),
+            CliStartupAction::PickFile(root) => (None, true, None, Some(root)),
+        };
+    let pick_mode = pick_root.is_some();
 
     // Profiling is opt-in with NEVI_PROFILE=1/true/yes/on.
     let profile_enabled = profile_enabled_from_env();
@@ -254,6 +290,21 @@ fn main() -> anyhow::Result<()> {
     let mut initial_file: Option<PathBuf> = None;
     let mut open_file_picker = false;
 
+    if let Some(root_arg) = pick_root {
+        let root = match root_arg {
+            Some(path) => {
+                let abs_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+                if !abs_path.is_dir() {
+                    anyhow::bail!("pick expects a directory: {}", path.display());
+                }
+                abs_path
+            }
+            None => env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        };
+        editor.set_project_root(root);
+        open_file_picker = true;
+    }
+
     if let Some(ref path) = arg_path {
         // Canonicalize the path to get absolute path
         let abs_path = path.canonicalize().unwrap_or_else(|_| path.clone());
@@ -298,7 +349,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     // If no argument, use current directory as project root
-    if arg_path.is_none() {
+    if arg_path.is_none() && !pick_mode {
         if let Ok(cwd) = env::current_dir() {
             editor.set_project_root(cwd);
         }
@@ -432,6 +483,7 @@ fn main() -> anyhow::Result<()> {
     // Finder preview debouncing: delay preview updates to avoid tree-sitter parsing on every keystroke
     let preview_debounce = Duration::from_millis(50);
     let mut preview_pending_since: Option<Instant> = None;
+    let mut pick_result: Option<PathBuf> = None;
 
     // Grep search debouncing: delay grep searches to avoid searching on every keystroke
     let grep_debounce = Duration::from_millis(150);
@@ -538,6 +590,17 @@ fn main() -> anyhow::Result<()> {
                     editor.hover_content = None;
                     // Dismiss diagnostic float on any key press (it can be reopened with gl)
                     editor.show_diagnostic_float = false;
+
+                    if pick_mode {
+                        match pick_mode_action_for_key(&editor, key) {
+                            PickModeAction::Select(path) => {
+                                pick_result = Some(path);
+                                break 'main_loop;
+                            }
+                            PickModeAction::Cancel => break 'main_loop,
+                            PickModeAction::Continue => {}
+                        }
+                    }
 
                     if editor.floating_terminal.is_visible() {
                         if editor.floating_terminal.handle_search_key(key) {
@@ -1920,6 +1983,12 @@ fn main() -> anyhow::Result<()> {
         mlsp.shutdown();
     }
 
+    drop(terminal);
+
+    if let Some(path) = pick_result {
+        println!("{}", path.display());
+    }
+
     Ok(())
 }
 
@@ -2327,10 +2396,12 @@ mod tests {
     use super::{
         apply_edits_to_file, diagnostic_to_lsp_offsets, editor_lsp_cursor_col, editor_lsp_line_len,
         lsp_completion_response_matches_current_cursor, lsp_response_matches_current_buffer,
-        profile_enabled_from_value, startup_action_from_args, CliStartupAction,
+        pick_mode_action_for_key, profile_enabled_from_value, startup_action_from_args,
+        CliStartupAction, PickModeAction,
     };
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use nevi::lsp::types::{Diagnostic, DiagnosticSeverity, TextEdit};
-    use nevi::Editor;
+    use nevi::{Editor, Mode};
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -2432,6 +2503,72 @@ mod tests {
         assert_eq!(
             startup_action_from_args(["diff", "before.rs"]),
             CliStartupAction::PrintUsageError("usage: nevi diff <left> <right>".to_string())
+        );
+    }
+
+    #[test]
+    fn cli_pick_subcommand_opens_picker_with_optional_root() {
+        assert_eq!(
+            startup_action_from_args(["pick"]),
+            CliStartupAction::PickFile(None)
+        );
+        assert_eq!(
+            startup_action_from_args(["pick", "src"]),
+            CliStartupAction::PickFile(Some(PathBuf::from("src")))
+        );
+    }
+
+    #[test]
+    fn cli_pick_subcommand_rejects_extra_args() {
+        assert_eq!(
+            startup_action_from_args(["pick", "src", "extra"]),
+            CliStartupAction::PrintUsageError("usage: nevi pick [path]".to_string())
+        );
+    }
+
+    #[test]
+    fn pick_mode_enter_selects_current_file_path() {
+        let mut editor = Editor::default();
+        editor.mode = Mode::Finder;
+        editor.finder.mode = nevi::finder::FinderMode::Files;
+        editor.finder.items = vec![nevi::finder::FinderItem::new(
+            "src/main.rs".to_string(),
+            PathBuf::from("src/main.rs"),
+        )];
+        editor.finder.filtered = vec![0];
+        editor.finder.selected = 0;
+
+        assert_eq!(
+            pick_mode_action_for_key(&editor, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            PickModeAction::Select(PathBuf::from("src/main.rs"))
+        );
+    }
+
+    #[test]
+    fn pick_mode_escape_and_empty_query_q_cancel() {
+        let mut editor = Editor::default();
+        editor.mode = Mode::Finder;
+        editor.finder.mode = nevi::finder::FinderMode::Files;
+
+        assert_eq!(
+            pick_mode_action_for_key(&editor, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            PickModeAction::Cancel
+        );
+        assert_eq!(
+            pick_mode_action_for_key(
+                &editor,
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)
+            ),
+            PickModeAction::Cancel
+        );
+
+        editor.finder.query = "sq".to_string();
+        assert_eq!(
+            pick_mode_action_for_key(
+                &editor,
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)
+            ),
+            PickModeAction::Continue
         );
     }
 

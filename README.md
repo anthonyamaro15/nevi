@@ -183,6 +183,9 @@ nevi src/main.rs
 # Open a file as a read-only terminal viewer
 nevi view src/main.rs
 
+# Pick a file path from the terminal; Enter prints the path, Esc cancels
+nevi pick .
+
 # Compare any two text files in a read-only diff view.
 # Wide terminals use side-by-side output; narrow terminals use stacked changes.
 nevi diff before.rs after.rs
