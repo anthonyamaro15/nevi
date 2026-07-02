@@ -19,6 +19,8 @@ pub mod project_replace;
 pub mod syntax;
 pub mod terminal;
 pub mod theme;
+#[cfg(test)]
+mod vim_oracle;
 
 pub use config::{
     load_config, AutosaveMode, CopilotSettings, KeymapLookup, LeaderAction, Settings,

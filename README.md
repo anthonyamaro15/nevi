@@ -352,6 +352,21 @@ Contributions are welcome! Please feel free to submit issues and pull requests.
 - [Report a bug](https://github.com/anthonyamaro15/nevi/issues)
 - [Request a feature](https://github.com/anthonyamaro15/nevi/issues)
 
+### Vim/Neovim Parity Checks
+
+Nevi includes a test-only Vim oracle harness for checking selected key sequences
+against headless Neovim. The normal test suite does not require Neovim:
+
+```bash
+cargo test vim_oracle --quiet
+```
+
+To run the real Neovim comparison, install `nvim` and opt in explicitly:
+
+```bash
+NEVI_VIM_ORACLE=1 cargo test vim_oracle_smoke -- --ignored --nocapture
+```
+
 ### Performance Profiling
 
 Nevi keeps a small in-memory flight recorder for recent hot-path timings. Run
