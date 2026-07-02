@@ -181,23 +181,7 @@ impl MultiLspManager {
     }
 
     fn install_hint_for_command(command: &str) -> Option<&'static str> {
-        match Self::command_name(command) {
-            "typescript-language-server" | "typescript-language-server.cmd" => {
-                Some("npm install -g typescript typescript-language-server")
-            }
-            "rust-analyzer" | "rust-analyzer.exe" => Some("rustup component add rust-analyzer"),
-            "vscode-css-language-server"
-            | "vscode-json-language-server"
-            | "vscode-html-language-server"
-            | "vscode-eslint-language-server" => {
-                Some("npm install -g vscode-langservers-extracted")
-            }
-            "taplo" | "taplo.exe" => Some("cargo install taplo-cli --locked"),
-            "pyright-langserver" | "pyright-langserver.cmd" => Some("npm install -g pyright"),
-            "pylsp" => Some("pipx install python-lsp-server"),
-            "biome" | "biome.cmd" => Some("npm install -g @biomejs/biome"),
-            _ => None,
-        }
+        crate::tool_installer::install_command_for(command)
     }
 
     fn is_missing_command_error(message: &str) -> bool {

@@ -1741,6 +1741,17 @@ impl Editor {
         self.open_virtual_read_only_buffer("[health]", &report, Some("health.md"));
     }
 
+    /// Open missing LSP/tool install guidance in a read-only virtual buffer.
+    pub fn open_tool_install_report(&mut self) {
+        let report = crate::tool_installer::collect_tool_install_report(
+            &self.settings,
+            &self.languages_config,
+            crate::health::command_exists_on_path,
+        )
+        .render_markdown();
+        self.open_virtual_read_only_buffer("[tool-installer]", &report, Some("tool-installer.md"));
+    }
+
     /// Open recent performance timings in a read-only virtual buffer.
     pub fn open_flight_recorder_report(&mut self) {
         let report = self.flight_recorder.render_report();
@@ -10700,6 +10711,22 @@ mod tests {
         assert!(content.contains("## Keymaps"));
         assert!(content.contains("## Performance"));
         assert!(content.contains("## LSP"));
+    }
+
+    #[test]
+    fn tool_install_report_opens_as_read_only_virtual_buffer() {
+        let mut editor = Editor::default();
+
+        editor.open_tool_install_report();
+
+        assert!(editor.markdown_preview.is_none());
+        assert_eq!(editor.buffer().display_name(), "[tool-installer]");
+        assert!(editor.buffer().is_read_only());
+        assert!(editor.buffer().path.is_none());
+        assert!(!editor.buffer().dirty);
+        let content = editor.buffer().content();
+        assert!(content.contains("# Nevi Tool Installer"));
+        assert!(content.contains(":checkhealth"));
     }
 
     #[test]

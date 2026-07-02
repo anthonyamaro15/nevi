@@ -9994,6 +9994,10 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             editor.open_health_report();
             CommandResult::Ok
         }
+        Command::ToolInstall => {
+            editor.open_tool_install_report();
+            CommandResult::Ok
+        }
         Command::FlightRecorder => {
             editor.open_flight_recorder_report();
             CommandResult::Ok
@@ -11111,6 +11115,21 @@ mod tests {
         assert!(text.contains("Keymaps"));
         assert!(text.contains("Performance"));
         assert!(text.contains("LSP"));
+    }
+
+    #[test]
+    fn tool_install_command_opens_tool_installer_report_buffer() {
+        let mut editor = Editor::default();
+
+        execute_command(&mut editor, Command::ToolInstall);
+
+        assert!(editor.markdown_preview.is_none());
+        assert_eq!(editor.buffer().display_name(), "[tool-installer]");
+        assert!(editor.buffer().is_read_only());
+        assert!(!editor.buffer().dirty);
+        let text = editor.buffer().content();
+        assert!(text.contains("Nevi Tool Installer"));
+        assert!(text.contains(":checkhealth"));
     }
 
     #[test]

@@ -157,6 +157,8 @@ pub enum Command {
     Keymaps,
     /// :checkhealth - Open the editor health report
     CheckHealth,
+    /// :ToolInstall - Open missing tool install plan
+    ToolInstall,
     /// :FlightRecorder - Open recent performance timing report
     FlightRecorder,
     /// :Jump - Start labeled jump navigation for visible text
@@ -644,6 +646,18 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         takes_args: false,
     },
     CommandSpec {
+        command: "ToolInstall",
+        aliases: &[
+            "toolinstall",
+            "toolsinstall",
+            "ToolsInstall",
+            "LspInstall",
+            "lspinstall",
+        ],
+        description: "Open missing LSP/tool install plan",
+        takes_args: false,
+    },
+    CommandSpec {
         command: "FlightRecorder",
         aliases: &["flightrecorder", "flight", "WhySlow", "whyslow"],
         description: "Open recent performance timing report",
@@ -1101,6 +1115,8 @@ pub fn parse_command(input: &str) -> Command {
         "Themes" | "themes" => Command::Themes,
         "Keymaps" | "keymaps" | "keys" => Command::Keymaps,
         "checkhealth" | "CheckHealth" | "Health" | "health" => Command::CheckHealth,
+        "ToolInstall" | "toolinstall" | "ToolsInstall" | "toolsinstall" | "LspInstall"
+        | "lspinstall" => Command::ToolInstall,
         "FlightRecorder" | "flightrecorder" | "flight" | "WhySlow" | "whyslow" => {
             Command::FlightRecorder
         }
@@ -1978,6 +1994,26 @@ mod tests {
         assert!(
             rows.iter().any(|(name, _)| name == ":checkhealth"),
             "expected :checkhealth in command cheatsheet rows"
+        );
+    }
+
+    #[test]
+    fn tool_install_commands_are_parseable_and_listed() {
+        assert!(matches!(parse_command("ToolInstall"), Command::ToolInstall));
+        assert!(matches!(parse_command("toolinstall"), Command::ToolInstall));
+        assert!(matches!(parse_command("LspInstall"), Command::ToolInstall));
+        assert!(matches!(parse_command("lspinstall"), Command::ToolInstall));
+
+        let suggestions = command_suggestions("install", 12);
+        assert!(
+            suggestions.iter().any(|item| item.command == "ToolInstall"),
+            "expected ToolInstall to match install query"
+        );
+
+        let rows = command_cheatsheet_rows();
+        assert!(
+            rows.iter().any(|(name, _)| name == ":ToolInstall"),
+            "expected :ToolInstall in command cheatsheet rows"
         );
     }
 

@@ -20,6 +20,7 @@ pub mod project_replace;
 pub mod syntax;
 pub mod terminal;
 pub mod theme;
+pub mod tool_installer;
 #[cfg(test)]
 mod vim_oracle;
 

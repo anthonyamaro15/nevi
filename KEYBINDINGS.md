@@ -956,6 +956,7 @@ for example `:ProjectReplace#/api/v1#/api/v2#g`.
 | `:Format` / `:format` | Format current document |
 | `:rn [name]` / `:lsprename [name]` | Rename symbol |
 | `:codeaction` / `:ca` | Show code actions |
+| `:ToolInstall` / `:LspInstall` | Open read-only `[tool-installer]` report with missing LSP/tool install commands |
 
 ### Other
 

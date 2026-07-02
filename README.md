@@ -151,6 +151,8 @@ If an optional tool is missing, the rest of Nevi still works. Run
 `:checkhealth` or `:Health` inside Nevi to inspect config paths, keymap
 overrides, optional tool availability, LSP settings, formatter commands,
 profiling status, and common setup issues.
+Run `:ToolInstall` or `:LspInstall` to open a read-only install plan for missing
+configured LSP servers and formatters.
 
 ### From Source
 
@@ -188,6 +190,7 @@ nevi file1.rs file2.rs
 - `:q` - Quit
 - `:wq` - Save and quit
 - `:checkhealth` / `:Health` - Open editor health report in a read-only `[health]` buffer
+- `:ToolInstall` / `:LspInstall` - Open missing LSP/tool install guidance in a read-only `[tool-installer]` buffer
 - `:FlightRecorder` / `:WhySlow` - Open recent in-memory timing report in a read-only `[flight-recorder]` buffer
 - `:ConfigOpen` / `:config` - Open your user config file
 - `:ConfigDefaults` - View the latest built-in default config in a read-only `[config-defaults]` buffer
@@ -374,7 +377,8 @@ Visual mode (`v/V/Ctrl+v`), macros (`q{a-z}/@{a-z}`), marks (`m{a-z}/'`), read-o
 LSP servers are auto-detected when installed. See [`~/.config/nevi/config.toml`](#configuration) for LSP configuration options.
 
 If a server is missing, Nevi shows an install hint in the LSP status/error
-message. You can also run `:checkhealth` to review the active LSP configuration.
+message. You can also run `:checkhealth` to review the active LSP configuration,
+or `:ToolInstall` / `:LspInstall` to open a missing-tool install plan.
 
 > **Missing a language?** Open a [GitHub issue](https://github.com/anthonyamaro15/nevi/issues) and we'll work on adding support!
 
