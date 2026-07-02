@@ -24,7 +24,9 @@ pub struct Buffer {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BufferKind {
-    File,
+    File {
+        read_only: bool,
+    },
     Untitled,
     Virtual {
         name: String,
@@ -48,6 +50,15 @@ impl Buffer {
 
     /// Create a buffer from a file
     pub fn from_file(path: PathBuf) -> anyhow::Result<Self> {
+        Self::from_file_with_read_only(path, false)
+    }
+
+    /// Create a read-only buffer from a file.
+    pub fn from_file_read_only(path: PathBuf) -> anyhow::Result<Self> {
+        Self::from_file_with_read_only(path, true)
+    }
+
+    fn from_file_with_read_only(path: PathBuf, read_only: bool) -> anyhow::Result<Self> {
         let (text, last_mtime) = if path.exists() {
             let mtime = std::fs::metadata(&path)?.modified().ok();
             let rope = Rope::from_reader(std::fs::File::open(&path)?)?;
@@ -63,7 +74,7 @@ impl Buffer {
             dirty: false,
             version: 0,
             last_mtime,
-            kind: BufferKind::File,
+            kind: BufferKind::File { read_only },
         })
     }
 
@@ -91,17 +102,33 @@ impl Buffer {
     pub fn is_read_only(&self) -> bool {
         matches!(
             self.kind,
-            BufferKind::Virtual {
-                read_only: true,
-                ..
-            }
+            BufferKind::File { read_only: true }
+                | BufferKind::Virtual {
+                    read_only: true,
+                    ..
+                }
         )
+    }
+
+    /// Update read-only state for file-backed buffers.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        if let BufferKind::File {
+            read_only: ref mut file_read_only,
+        } = self.kind
+        {
+            *file_read_only = read_only;
+        }
+    }
+
+    /// Whether this is a file-backed buffer.
+    pub fn is_file_backed(&self) -> bool {
+        matches!(self.kind, BufferKind::File { .. })
     }
 
     /// Mark this buffer as file-backed.
     pub fn set_file_path(&mut self, path: PathBuf) {
         self.path = Some(path);
-        self.kind = BufferKind::File;
+        self.kind = BufferKind::File { read_only: false };
     }
 
     /// Path used for syntax detection. Virtual buffers may provide a synthetic hint.
@@ -110,7 +137,7 @@ impl Buffer {
             BufferKind::Virtual {
                 syntax_hint_path, ..
             } => syntax_hint_path.as_ref(),
-            BufferKind::File | BufferKind::Untitled => self.path.as_ref(),
+            BufferKind::File { .. } | BufferKind::Untitled => self.path.as_ref(),
         }
     }
 

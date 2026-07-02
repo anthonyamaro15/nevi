@@ -180,6 +180,9 @@ nevi .
 # Open a file
 nevi src/main.rs
 
+# Open a file as a read-only terminal viewer
+nevi view src/main.rs
+
 # Open multiple files
 nevi file1.rs file2.rs
 ```

@@ -129,7 +129,9 @@ fn request_selected_completion_resolve(
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CliStartupAction {
     PrintVersion,
+    PrintUsageError(String),
     LaunchEditor(Option<PathBuf>),
+    ViewFile(PathBuf),
 }
 
 fn version_output() -> String {
@@ -144,18 +146,27 @@ where
     let mut args = args.into_iter();
     match args.next() {
         Some(arg) if matches!(arg.as_ref(), "--version" | "-V") => CliStartupAction::PrintVersion,
+        Some(arg) if arg.as_ref() == "view" => match args.next() {
+            Some(path) => CliStartupAction::ViewFile(PathBuf::from(path.as_ref())),
+            None => CliStartupAction::PrintUsageError("usage: nevi view <file>".to_string()),
+        },
         Some(arg) => CliStartupAction::LaunchEditor(Some(PathBuf::from(arg.as_ref()))),
         None => CliStartupAction::LaunchEditor(None),
     }
 }
 
 fn main() -> anyhow::Result<()> {
-    let arg_path = match startup_action_from_args(env::args().skip(1)) {
+    let (arg_path, read_only_view) = match startup_action_from_args(env::args().skip(1)) {
         CliStartupAction::PrintVersion => {
             println!("{}", version_output());
             return Ok(());
         }
-        CliStartupAction::LaunchEditor(path) => path,
+        CliStartupAction::PrintUsageError(message) => {
+            eprintln!("{}", message);
+            std::process::exit(2);
+        }
+        CliStartupAction::LaunchEditor(path) => (path, false),
+        CliStartupAction::ViewFile(path) => (Some(path), true),
     };
 
     // Profiling is opt-in with NEVI_PROFILE=1/true/yes/on.
@@ -197,7 +208,11 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Load configuration
-    let settings = load_config();
+    let mut settings = load_config();
+    if read_only_view {
+        settings.lsp.enabled = false;
+        settings.copilot.enabled = false;
+    }
     // Store LSP settings before moving settings into editor
     let lsp_enabled = settings.lsp.enabled;
     let lsp_servers = settings.lsp.servers.clone();
@@ -233,7 +248,17 @@ fn main() -> anyhow::Result<()> {
         // Canonicalize the path to get absolute path
         let abs_path = path.canonicalize().unwrap_or_else(|_| path.clone());
 
-        if abs_path.is_dir() {
+        if read_only_view {
+            if !abs_path.is_file() {
+                anyhow::bail!("view expects an existing file: {}", path.display());
+            }
+            initial_file = Some(abs_path.clone());
+            if let Some(parent) = abs_path.parent() {
+                editor.set_project_root(parent.to_path_buf());
+            }
+            editor.open_file_read_only(abs_path.clone())?;
+            editor.set_status(format!("Read-only view: {}", abs_path.display()));
+        } else if abs_path.is_dir() {
             // Directory: set as project root and open file picker
             editor.set_project_root(abs_path);
             open_file_picker = true;
@@ -2347,6 +2372,22 @@ mod tests {
         assert_eq!(
             startup_action_from_args(["README.md"]),
             CliStartupAction::LaunchEditor(Some(PathBuf::from("README.md")))
+        );
+    }
+
+    #[test]
+    fn cli_view_subcommand_opens_read_only_file_path() {
+        assert_eq!(
+            startup_action_from_args(["view", "README.md"]),
+            CliStartupAction::ViewFile(PathBuf::from("README.md"))
+        );
+    }
+
+    #[test]
+    fn cli_view_subcommand_requires_file_path() {
+        assert_eq!(
+            startup_action_from_args(["view"]),
+            CliStartupAction::PrintUsageError("usage: nevi view <file>".to_string())
         );
     }
 

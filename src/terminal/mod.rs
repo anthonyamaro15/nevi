@@ -2663,6 +2663,11 @@ impl Terminal {
         };
 
         let filename = editor.buffer().display_name();
+        let read_only = if editor.buffer().is_read_only() {
+            " [RO]"
+        } else {
+            ""
+        };
         let modified = if editor.buffer().dirty { " [+]" } else { "" };
 
         // Show macro recording indicator
@@ -2683,8 +2688,8 @@ impl Terminal {
 
         let mode_display = format!(" {} ", mode_str);
         let rest_left = format!(
-            "{}{} | {}{}{} ",
-            pending, recording, project_name, filename, modified
+            "{}{} | {}{}{}{} ",
+            pending, recording, project_name, filename, read_only, modified
         );
 
         // Right side: LSP status, language and position

@@ -3293,6 +3293,19 @@ impl Editor {
 
     /// Open a file in the editor (replaces current buffer or adds new one)
     pub fn open_file(&mut self, path: std::path::PathBuf) -> anyhow::Result<()> {
+        self.open_file_with_read_only(path, false)
+    }
+
+    /// Open a file as read-only.
+    pub fn open_file_read_only(&mut self, path: std::path::PathBuf) -> anyhow::Result<()> {
+        self.open_file_with_read_only(path, true)
+    }
+
+    fn open_file_with_read_only(
+        &mut self,
+        path: std::path::PathBuf,
+        read_only: bool,
+    ) -> anyhow::Result<()> {
         // Check if file is already open in an existing buffer
         let canonical_path = path.canonicalize().ok();
         if let Some(existing_idx) = self
@@ -3310,6 +3323,9 @@ impl Editor {
             self.cursor = Cursor::default();
             self.viewport_offset = 0;
             self.h_offset = 0;
+            if read_only && self.buffers[existing_idx].is_file_backed() {
+                self.buffers[existing_idx].set_read_only(true);
+            }
             // Sync active pane state
             if self.active_pane < self.panes.len() {
                 self.panes[self.active_pane].buffer_idx = existing_idx;
@@ -3328,7 +3344,11 @@ impl Editor {
         // Set up syntax highlighting based on file extension
         self.syntax.set_language_from_path(&path);
 
-        let new_buffer = Buffer::from_file(path)?;
+        let new_buffer = if read_only {
+            Buffer::from_file_read_only(path)?
+        } else {
+            Buffer::from_file(path)?
+        };
 
         // If current buffer is empty and unnamed, replace it; otherwise add new buffer
         if self.buffers[self.current_buffer_idx].is_empty()
@@ -10779,6 +10799,36 @@ mod tests {
             Some("Buffer is read-only")
         );
         assert!(!editor.buffer().dirty);
+    }
+
+    #[test]
+    fn read_only_file_buffer_rejects_insert_and_save() {
+        let tmp = unique_temp_dir("nevi_read_only_file_buffer");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("main.rs");
+        std::fs::write(&path, "fn main() {}\n").expect("write file");
+
+        let mut editor = Editor::default();
+        editor.open_file_read_only(path.clone()).expect("open file");
+
+        assert_eq!(editor.buffer().path.as_ref(), Some(&path));
+        assert!(editor.buffer().is_read_only());
+        assert!(!editor.buffer().dirty);
+
+        editor.insert_char('x');
+        assert_eq!(editor.buffer().content(), "fn main() {}\n");
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("Buffer is read-only")
+        );
+
+        let err = editor
+            .save()
+            .expect_err("read-only file should reject save");
+        assert!(err.to_string().contains("Buffer is read-only"));
+        assert!(!editor.buffer().dirty);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
