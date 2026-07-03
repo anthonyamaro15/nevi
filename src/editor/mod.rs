@@ -2028,14 +2028,17 @@ impl Editor {
         &self,
         query: &str,
     ) -> Vec<crate::labeled_jump::LabeledJumpTarget> {
-        let lines: Vec<String> = (0..self.buffer().len_lines())
+        let (viewport_offset, visible_rows) = self.labeled_jump_visible_region();
+        let end_line = viewport_offset
+            .saturating_add(visible_rows)
+            .min(self.buffer().len_lines());
+        let lines: Vec<String> = (viewport_offset..end_line)
             .filter_map(|idx| {
                 self.buffer()
                     .line(idx)
                     .map(|line| line.to_string().trim_end_matches('\n').to_string())
             })
             .collect();
-        let (viewport_offset, visible_rows) = self.labeled_jump_visible_region();
         crate::labeled_jump::collect_visible_targets(&lines, viewport_offset, visible_rows, query)
     }
 

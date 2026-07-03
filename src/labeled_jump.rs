@@ -24,8 +24,8 @@ impl LabeledJumpState {
 }
 
 pub fn collect_visible_targets(
-    lines: &[String],
-    viewport_offset: usize,
+    visible_lines: &[String],
+    base_line: usize,
     visible_rows: usize,
     query: &str,
 ) -> Vec<LabeledJumpTarget> {
@@ -35,14 +35,10 @@ pub fn collect_visible_targets(
 
     let mut labels = LABEL_ALPHABET.chars();
     let mut targets = Vec::new();
-    let end_line = viewport_offset
-        .saturating_add(visible_rows)
-        .min(lines.len());
+    let end_line = visible_rows.min(visible_lines.len());
 
-    for line_idx in viewport_offset..end_line {
-        let Some(line) = lines.get(line_idx) else {
-            continue;
-        };
+    for (visible_idx, line) in visible_lines.iter().take(end_line).enumerate() {
+        let line_idx = base_line.saturating_add(visible_idx);
 
         for (byte_idx, _) in line.match_indices(query) {
             let Some(label) = labels.next() else {
@@ -80,7 +76,7 @@ mod tests {
             "below old".to_string(),
         ];
 
-        let targets = collect_visible_targets(&lines, 1, 2, "old");
+        let targets = collect_visible_targets(&lines[1..3], 1, 2, "old");
 
         assert_eq!(
             targets,
@@ -93,6 +89,32 @@ mod tests {
                 LabeledJumpTarget {
                     label: 's',
                     line: 2,
+                    col: 0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn collects_targets_from_visible_slice_with_absolute_line_offset() {
+        let visible_lines = vec![
+            "visible old here".to_string(),
+            "old visible too".to_string(),
+        ];
+
+        let targets = collect_visible_targets(&visible_lines, 10, 2, "old");
+
+        assert_eq!(
+            targets,
+            vec![
+                LabeledJumpTarget {
+                    label: 'a',
+                    line: 10,
+                    col: 8
+                },
+                LabeledJumpTarget {
+                    label: 's',
+                    line: 11,
                     col: 0
                 },
             ]
