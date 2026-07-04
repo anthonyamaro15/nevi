@@ -14,6 +14,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
 
+macro_rules! terminal_print {
+    ($terminal:expr, $($arg:tt)*) => {{
+        write!($terminal.stdout, $($arg)*)?;
+    }};
+}
+
 /// Enable finder profiling (writes to /tmp/nevi_finder_profile.log)
 pub static FINDER_PROFILE_ENABLED: AtomicBool = AtomicBool::new(false);
 
@@ -907,6 +913,7 @@ pub struct Terminal {
     stdout: Box<dyn Write>,
     mouse_capture_enabled: bool,
     leader_popup_rect: Option<(u16, u16)>,
+    restore_terminal_state_on_drop: bool,
 }
 
 impl Terminal {
@@ -937,7 +944,18 @@ impl Terminal {
             stdout,
             mouse_capture_enabled: false,
             leader_popup_rect: None,
+            restore_terminal_state_on_drop: true,
         })
+    }
+
+    #[cfg(test)]
+    fn new_for_test(stdout: Box<dyn Write>) -> Self {
+        Self {
+            stdout,
+            mouse_capture_enabled: false,
+            leader_popup_rect: None,
+            restore_terminal_state_on_drop: false,
+        }
     }
 
     fn set_mouse_capture(&mut self, enabled: bool) -> anyhow::Result<()> {
@@ -1201,7 +1219,7 @@ impl Terminal {
         if header_len < term_width {
             header_line.push_str(&" ".repeat(term_width - header_len));
         }
-        print!("{}", header_line);
+        terminal_print!(self, "{}", header_line);
         execute!(self.stdout, ResetColor)?;
 
         for (row_offset, item) in items.iter().take(item_rows).enumerate() {
@@ -1243,7 +1261,7 @@ impl Terminal {
             } else if printed > term_width {
                 line = line.chars().take(term_width).collect();
             }
-            print!("{}", line);
+            terminal_print!(self, "{}", line);
             execute!(self.stdout, ResetColor)?;
         }
 
@@ -1475,7 +1493,7 @@ impl Terminal {
                     match git_status {
                         Some(crate::git::GitLineStatus::Added) => {
                             execute!(self.stdout, SetForegroundColor(theme.git.added))?;
-                            print!("▎");
+                            terminal_print!(self, "▎");
                             execute!(
                                 self.stdout,
                                 SetForegroundColor(editor_fg),
@@ -1484,7 +1502,7 @@ impl Terminal {
                         }
                         Some(crate::git::GitLineStatus::Modified) => {
                             execute!(self.stdout, SetForegroundColor(theme.git.modified))?;
-                            print!("▎");
+                            terminal_print!(self, "▎");
                             execute!(
                                 self.stdout,
                                 SetForegroundColor(editor_fg),
@@ -1493,7 +1511,7 @@ impl Terminal {
                         }
                         Some(crate::git::GitLineStatus::Deleted) => {
                             execute!(self.stdout, SetForegroundColor(theme.git.deleted))?;
-                            print!("▁");
+                            terminal_print!(self, "▁");
                             execute!(
                                 self.stdout,
                                 SetForegroundColor(editor_fg),
@@ -1501,14 +1519,14 @@ impl Terminal {
                             )?;
                         }
                         None => {
-                            print!(" ");
+                            terminal_print!(self, " ");
                         }
                     }
 
                     // Diagnostic sign (second char) - priority: error > warning > info > hint
                     if has_error {
                         execute!(self.stdout, SetForegroundColor(theme.diagnostic.error))?;
-                        print!("●");
+                        terminal_print!(self, "●");
                         execute!(
                             self.stdout,
                             SetForegroundColor(editor_fg),
@@ -1516,7 +1534,7 @@ impl Terminal {
                         )?;
                     } else if has_warning {
                         execute!(self.stdout, SetForegroundColor(theme.diagnostic.warning))?;
-                        print!("▲");
+                        terminal_print!(self, "▲");
                         execute!(
                             self.stdout,
                             SetForegroundColor(editor_fg),
@@ -1524,7 +1542,7 @@ impl Terminal {
                         )?;
                     } else if has_info {
                         execute!(self.stdout, SetForegroundColor(theme.diagnostic.info))?;
-                        print!("■");
+                        terminal_print!(self, "■");
                         execute!(
                             self.stdout,
                             SetForegroundColor(editor_fg),
@@ -1532,17 +1550,17 @@ impl Terminal {
                         )?;
                     } else if has_hint {
                         execute!(self.stdout, SetForegroundColor(theme.diagnostic.hint))?;
-                        print!("○");
+                        terminal_print!(self, "○");
                         execute!(
                             self.stdout,
                             SetForegroundColor(editor_fg),
                             SetBackgroundColor(row_bg)
                         )?;
                     } else {
-                        print!(" ");
+                        terminal_print!(self, " ");
                     }
                 } else {
-                    print!("  "); // Empty sign column for continuation lines
+                    terminal_print!(self, "  "); // Empty sign column for continuation lines
                 }
 
                 // Line number (only on first segment)
@@ -1576,7 +1594,7 @@ impl Terminal {
                         };
 
                         execute!(self.stdout, SetForegroundColor(line_num_color))?;
-                        print!("{}", line_num);
+                        terminal_print!(self, "{}", line_num);
                         execute!(
                             self.stdout,
                             SetForegroundColor(editor_fg),
@@ -1584,7 +1602,7 @@ impl Terminal {
                         )?;
                     } else {
                         // Continuation line - empty line number gutter
-                        print!("{:>width$} ", "", width = line_num_width);
+                        terminal_print!(self, "{:>width$} ", "", width = line_num_width);
                     }
                 }
 
@@ -1656,11 +1674,11 @@ impl Terminal {
 
                             // Row background already set at start of row
                             execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
-                            print!(" ");
+                            terminal_print!(self, " ");
                             execute!(self.stdout, SetForegroundColor(color))?;
-                            print!("{}", icon);
+                            terminal_print!(self, "{}", icon);
                             execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
-                            print!(" {}", msg);
+                            terminal_print!(self, " {}", msg);
                             execute!(
                                 self.stdout,
                                 SetForegroundColor(editor_fg),
@@ -1673,7 +1691,7 @@ impl Terminal {
                 }
 
                 for _ in chars_printed..pane_width {
-                    print!(" ");
+                    terminal_print!(self, " ");
                 }
 
                 current_row += 1;
@@ -1695,13 +1713,13 @@ impl Terminal {
                 SetForegroundColor(editor_fg)
             )?;
 
-            print!("  "); // Empty sign column
+            terminal_print!(self, "  "); // Empty sign column
 
             execute!(self.stdout, SetForegroundColor(Color::Blue))?;
             if show_line_numbers {
-                print!("{:>width$} ~", "", width = line_num_width);
+                terminal_print!(self, "{:>width$} ~", "", width = line_num_width);
             } else {
-                print!("~");
+                terminal_print!(self, "~");
             }
             execute!(self.stdout, SetForegroundColor(editor_fg))?;
 
@@ -1712,7 +1730,7 @@ impl Terminal {
                 1
             };
             for _ in chars_printed..pane_width {
-                print!(" ");
+                terminal_print!(self, " ");
             }
 
             current_row += 1;
@@ -1813,7 +1831,7 @@ impl Terminal {
                 match git_status {
                     Some(crate::git::GitLineStatus::Added) => {
                         execute!(self.stdout, SetForegroundColor(theme.git.added))?;
-                        print!("▎");
+                        terminal_print!(self, "▎");
                         execute!(
                             self.stdout,
                             SetForegroundColor(editor_fg),
@@ -1822,7 +1840,7 @@ impl Terminal {
                     }
                     Some(crate::git::GitLineStatus::Modified) => {
                         execute!(self.stdout, SetForegroundColor(theme.git.modified))?;
-                        print!("▎");
+                        terminal_print!(self, "▎");
                         execute!(
                             self.stdout,
                             SetForegroundColor(editor_fg),
@@ -1831,7 +1849,7 @@ impl Terminal {
                     }
                     Some(crate::git::GitLineStatus::Deleted) => {
                         execute!(self.stdout, SetForegroundColor(theme.git.deleted))?;
-                        print!("▁");
+                        terminal_print!(self, "▁");
                         execute!(
                             self.stdout,
                             SetForegroundColor(editor_fg),
@@ -1839,14 +1857,14 @@ impl Terminal {
                         )?;
                     }
                     None => {
-                        print!(" ");
+                        terminal_print!(self, " ");
                     }
                 }
 
                 // Diagnostic sign (second char) - priority: error > warning > info > hint
                 if has_error {
                     execute!(self.stdout, SetForegroundColor(theme.diagnostic.error))?;
-                    print!("●");
+                    terminal_print!(self, "●");
                     execute!(
                         self.stdout,
                         SetForegroundColor(editor_fg),
@@ -1854,7 +1872,7 @@ impl Terminal {
                     )?;
                 } else if has_warning {
                     execute!(self.stdout, SetForegroundColor(theme.diagnostic.warning))?;
-                    print!("▲");
+                    terminal_print!(self, "▲");
                     execute!(
                         self.stdout,
                         SetForegroundColor(editor_fg),
@@ -1862,7 +1880,7 @@ impl Terminal {
                     )?;
                 } else if has_info {
                     execute!(self.stdout, SetForegroundColor(theme.diagnostic.info))?;
-                    print!("■");
+                    terminal_print!(self, "■");
                     execute!(
                         self.stdout,
                         SetForegroundColor(editor_fg),
@@ -1870,14 +1888,14 @@ impl Terminal {
                     )?;
                 } else if has_hint {
                     execute!(self.stdout, SetForegroundColor(theme.diagnostic.hint))?;
-                    print!("○");
+                    terminal_print!(self, "○");
                     execute!(
                         self.stdout,
                         SetForegroundColor(editor_fg),
                         SetBackgroundColor(row_bg)
                     )?;
                 } else {
-                    print!(" ");
+                    terminal_print!(self, " ");
                 }
 
                 // Line number (if enabled)
@@ -1911,7 +1929,7 @@ impl Terminal {
                     };
 
                     execute!(self.stdout, SetForegroundColor(line_num_color))?;
-                    print!("{}", line_num);
+                    terminal_print!(self, "{}", line_num);
                     execute!(
                         self.stdout,
                         SetForegroundColor(editor_fg),
@@ -1999,7 +2017,7 @@ impl Terminal {
                                     SetForegroundColor(Color::DarkGrey),
                                     SetBackgroundColor(row_bg)
                                 )?;
-                                print!("{}", ghost_chars);
+                                terminal_print!(self, "{}", ghost_chars);
                                 execute!(
                                     self.stdout,
                                     SetForegroundColor(editor_fg),
@@ -2039,7 +2057,7 @@ impl Terminal {
                                     }),
                                     SetBackgroundColor(row_bg)
                                 )?;
-                                print!("{}", ghost_chars);
+                                terminal_print!(self, "{}", ghost_chars);
 
                                 // Show count if multiple completions
                                 if !ghost.count_display.is_empty() {
@@ -2053,7 +2071,7 @@ impl Terminal {
                                                 b: 90
                                             })
                                         )?;
-                                        print!(" {}", ghost.count_display);
+                                        terminal_print!(self, " {}", ghost.count_display);
                                         chars_printed += 1 + ghost.count_display.len();
                                     }
                                 }
@@ -2100,11 +2118,11 @@ impl Terminal {
                                     SetForegroundColor(Color::DarkGrey),
                                     SetBackgroundColor(row_bg)
                                 )?;
-                                print!(" ");
+                                terminal_print!(self, " ");
                                 execute!(self.stdout, SetForegroundColor(color))?;
-                                print!("{}", icon);
+                                terminal_print!(self, "{}", icon);
                                 execute!(self.stdout, SetForegroundColor(Color::DarkGrey))?;
-                                print!(" {}", msg);
+                                terminal_print!(self, " {}", msg);
                                 execute!(
                                     self.stdout,
                                     SetForegroundColor(editor_fg),
@@ -2124,18 +2142,18 @@ impl Terminal {
                         SetForegroundColor(editor_fg)
                     )?;
                     for _ in chars_printed..pane_width {
-                        print!(" ");
+                        terminal_print!(self, " ");
                     }
                 }
             } else {
                 // Empty line - sign column + line indicator
-                print!("  "); // Empty sign column
+                terminal_print!(self, "  "); // Empty sign column
 
                 execute!(self.stdout, SetForegroundColor(Color::Blue))?;
                 if show_line_numbers {
-                    print!("{:>width$} ~", "", width = line_num_width);
+                    terminal_print!(self, "{:>width$} ~", "", width = line_num_width);
                 } else {
-                    print!("~");
+                    terminal_print!(self, "~");
                 }
                 execute!(
                     self.stdout,
@@ -2150,7 +2168,7 @@ impl Terminal {
                     1
                 };
                 for _ in chars_printed..pane_width {
-                    print!(" ");
+                    terminal_print!(self, " ");
                 }
             }
             // Keep background color set (don't reset to terminal default)
@@ -2224,7 +2242,7 @@ impl Terminal {
 
         execute!(self.stdout, SetForegroundColor(explorer_fg))?;
         execute!(self.stdout, SetAttribute(Attribute::Bold))?;
-        print!("{:width$}", header, width = width);
+        terminal_print!(self, "{:width$}", header, width = width);
         execute!(
             self.stdout,
             SetAttribute(Attribute::Reset),
@@ -2281,7 +2299,7 @@ impl Terminal {
                 } else {
                     execute!(self.stdout, SetForegroundColor(line_num_color))?;
                 }
-                print!("{:>3} ", rel_line);
+                terminal_print!(self, "{:>3} ", rel_line);
 
                 // Get icon (use config for Nerd Font vs Unicode fallback)
                 let use_nerd_fonts = editor.settings.editor.use_nerd_font_icons;
@@ -2299,7 +2317,7 @@ impl Terminal {
                 if node.depth > 1 {
                     execute!(self.stdout, SetForegroundColor(tree_line_color))?;
                     for _ in 0..(node.depth - 1) {
-                        print!("│ ");
+                        terminal_print!(self, "│ ");
                     }
                 }
 
@@ -2358,46 +2376,46 @@ impl Terminal {
 
                 // Print icon with color
                 execute!(self.stdout, SetForegroundColor(dimmed_icon_color))?;
-                print!("{} ", icon);
+                terminal_print!(self, "{} ", icon);
 
                 // Print git marker with git-sign colors. Keep the marker column
                 // stable so file names do not shift when status appears.
                 match git_status {
                     Some(crate::git::GitFileStatus::Added) => {
                         execute!(self.stdout, SetForegroundColor(theme.git.added))?;
-                        print!("+ ");
+                        terminal_print!(self, "+ ");
                     }
                     Some(crate::git::GitFileStatus::Modified) => {
                         execute!(self.stdout, SetForegroundColor(theme.git.modified))?;
-                        print!("x ");
+                        terminal_print!(self, "x ");
                     }
                     Some(crate::git::GitFileStatus::Deleted) => {
                         execute!(self.stdout, SetForegroundColor(theme.git.deleted))?;
-                        print!("- ");
+                        terminal_print!(self, "- ");
                     }
                     Some(crate::git::GitFileStatus::Untracked) => {
                         execute!(self.stdout, SetForegroundColor(theme.git.added))?;
-                        print!("? ");
+                        terminal_print!(self, "? ");
                     }
                     Some(crate::git::GitFileStatus::Conflicted) => {
                         execute!(self.stdout, SetForegroundColor(theme.diagnostic.error))?;
-                        print!("! ");
+                        terminal_print!(self, "! ");
                     }
                     None => {
                         execute!(self.stdout, SetForegroundColor(name_color))?;
-                        print!("  ");
+                        terminal_print!(self, "  ");
                     }
                 }
 
                 // Print name with color, padded to fill remaining width
                 execute!(self.stdout, SetForegroundColor(name_color))?;
                 let name_display_len = name_display.chars().count();
-                print!("{}", name_display);
+                terminal_print!(self, "{}", name_display);
 
                 // Fill any remaining space with background
                 let used_width = prefix_width + name_display_len;
                 if used_width < remaining_width {
-                    print!("{:width$}", "", width = remaining_width - used_width);
+                    terminal_print!(self, "{:width$}", "", width = remaining_width - used_width);
                 }
             } else {
                 // Empty line - use explorer background
@@ -2406,7 +2424,7 @@ impl Terminal {
                     SetForegroundColor(explorer_fg),
                     SetBackgroundColor(explorer_bg)
                 )?;
-                print!("{:width$}", "", width = width);
+                terminal_print!(self, "{:width$}", "", width = width);
             }
         }
 
@@ -2421,7 +2439,7 @@ impl Terminal {
             // Prompt text
             let prompt = editor.explorer.action_prompt();
             execute!(self.stdout, SetForegroundColor(theme.ui.finder_prompt))?;
-            print!("{}", prompt);
+            terminal_print!(self, "{}", prompt);
 
             // Input buffer
             execute!(self.stdout, SetForegroundColor(explorer_fg))?;
@@ -2431,9 +2449,9 @@ impl Terminal {
             if available > 0 {
                 let (visible, _) =
                     explorer_action_input_view(input, editor.explorer.input_cursor, available);
-                print!("{}", visible);
+                terminal_print!(self, "{}", visible);
                 let remaining = available.saturating_sub(visible.chars().count());
-                print!("{:remaining$}", "", remaining = remaining);
+                terminal_print!(self, "{:remaining$}", "", remaining = remaining);
             }
 
             // Show help text if available
@@ -2448,7 +2466,7 @@ impl Terminal {
                 } else {
                     format!("{:width$}", help, width = width)
                 };
-                print!("{}", help_display);
+                terminal_print!(self, "{}", help_display);
             }
         }
 
@@ -2465,7 +2483,7 @@ impl Terminal {
                 self.stdout,
                 SetForegroundColor(theme.ui.statusline_mode_insert)
             )?;
-            print!("/");
+            terminal_print!(self, "/");
 
             // Search buffer
             execute!(self.stdout, SetForegroundColor(explorer_fg))?;
@@ -2473,17 +2491,17 @@ impl Terminal {
 
             let available = width.saturating_sub(1);
             if search.len() <= available {
-                print!("{}", search);
+                terminal_print!(self, "{}", search);
                 let match_info = editor.explorer.search_match_info();
                 let padding = available
                     .saturating_sub(search.len())
                     .saturating_sub(match_info.len());
-                print!("{:padding$}", "", padding = padding);
+                terminal_print!(self, "{:padding$}", "", padding = padding);
                 execute!(self.stdout, SetForegroundColor(line_num_color))?;
-                print!("{}", match_info);
+                terminal_print!(self, "{}", match_info);
             } else {
                 let visible = &search[..available.saturating_sub(1)];
-                print!("{}…", visible);
+                terminal_print!(self, "{}…", visible);
             }
         }
 
@@ -2492,7 +2510,7 @@ impl Terminal {
         execute!(self.stdout, SetForegroundColor(separator_color))?;
         for y in 0..height {
             execute!(self.stdout, cursor::MoveTo(width as u16, y as u16))?;
-            print!("\u{2502}"); // │
+            terminal_print!(self, "\u{2502}"); // │
         }
         execute!(
             self.stdout,
@@ -2522,7 +2540,7 @@ impl Terminal {
                     execute!(self.stdout, SetForegroundColor(separator_color))?;
                     for y in 0..pane.rect.height {
                         execute!(self.stdout, cursor::MoveTo(separator_x, pane.rect.y + y))?;
-                        print!("\u{2502}"); // │
+                        terminal_print!(self, "\u{2502}"); // │
                     }
                     execute!(self.stdout, ResetColor)?;
                 }
@@ -2541,7 +2559,7 @@ impl Terminal {
                     execute!(self.stdout, SetForegroundColor(separator_color))?;
                     execute!(self.stdout, cursor::MoveTo(0, separator_y))?;
                     for _ in 0..editor.term_width {
-                        print!("\u{2500}"); // ─
+                        terminal_print!(self, "\u{2500}"); // ─
                     }
                     execute!(self.stdout, ResetColor)?;
                 }
@@ -2928,7 +2946,7 @@ impl Terminal {
             SetBackgroundColor(mode_color),
             SetForegroundColor(theme.ui.statusline_bg)
         )?;
-        print!("{}", mode_display);
+        terminal_print!(self, "{}", mode_display);
 
         // Rest of status line with standard colors
         execute!(
@@ -2936,7 +2954,14 @@ impl Terminal {
             SetBackgroundColor(theme.ui.statusline_bg),
             SetForegroundColor(theme.ui.statusline_fg)
         )?;
-        print!("{}{:padding$}{}", rest_left, "", right, padding = padding);
+        terminal_print!(
+            self,
+            "{}{:padding$}{}",
+            rest_left,
+            "",
+            right,
+            padding = padding
+        );
         execute!(self.stdout, ResetColor)?;
 
         Ok(())
@@ -3042,7 +3067,7 @@ impl Terminal {
         if header_len < term_width {
             header_line.push_str(&" ".repeat(term_width - header_len));
         }
-        print!("{}", header_line);
+        terminal_print!(self, "{}", header_line);
         execute!(self.stdout, ResetColor)?;
 
         for row_offset in 0..item_rows {
@@ -3107,7 +3132,7 @@ impl Terminal {
             } else if printed > term_width {
                 line = line.chars().take(term_width).collect();
             }
-            print!("{}", line);
+            terminal_print!(self, "{}", line);
             execute!(self.stdout, ResetColor)?;
         }
 
@@ -3126,23 +3151,23 @@ impl Terminal {
 
         if editor.mode == Mode::Command {
             // Show command line input
-            print!("{}", editor.command_line.display());
+            terminal_print!(self, "{}", editor.command_line.display());
         } else if editor.mode == Mode::Search {
             // Show search prompt
-            print!("{}", editor.search.display());
+            terminal_print!(self, "{}", editor.search.display());
         } else if editor.mode == Mode::RenamePrompt {
             // Show rename prompt
             execute!(self.stdout, SetForegroundColor(Color::Yellow))?;
-            print!("Rename");
+            terminal_print!(self, "Rename");
             execute!(self.stdout, ResetColor)?;
-            print!(" '{}' → ", editor.rename_original);
+            terminal_print!(self, " '{}' → ", editor.rename_original);
             execute!(self.stdout, SetForegroundColor(Color::Green))?;
-            print!("{}", editor.rename_input);
+            terminal_print!(self, "{}", editor.rename_input);
             execute!(self.stdout, ResetColor)?;
-            print!("_"); // Cursor indicator
+            terminal_print!(self, "_"); // Cursor indicator
         } else if let Some(ref msg) = editor.status_message {
             // Show status message
-            print!("{}", msg);
+            terminal_print!(self, "{}", msg);
         } else if let Some(diag) = editor.diagnostic_at_cursor() {
             // Show diagnostic message when cursor is on a line with diagnostics
             let (color, prefix) = match diag.severity {
@@ -3162,7 +3187,7 @@ impl Terminal {
             } else {
                 msg
             };
-            print!("{}: {}", prefix, msg);
+            terminal_print!(self, "{}: {}", prefix, msg);
             execute!(self.stdout, ResetColor)?;
         }
 
@@ -3269,11 +3294,11 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        print!("╭");
+        terminal_print!(self, "╭");
         for _ in 0..(popup_width - 2) {
-            print!("─");
+            terminal_print!(self, "─");
         }
-        print!("╮");
+        terminal_print!(self, "╮");
 
         // Draw items - iterate over filtered indices
         let scroll_offset = if completion.selected >= max_items {
@@ -3304,7 +3329,7 @@ impl Terminal {
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            print!("│");
+            terminal_print!(self, "│");
 
             execute!(self.stdout, SetBackgroundColor(item_bg))?;
 
@@ -3312,7 +3337,7 @@ impl Terminal {
             let (r, g, b) = item.kind.color();
             let kind_color = Color::Rgb { r, g, b };
             execute!(self.stdout, SetForegroundColor(kind_color))?;
-            print!(" {} ", item.kind.short_name());
+            terminal_print!(self, " {} ", item.kind.short_name());
 
             // Label (brighter when selected)
             let label_color = if is_selected {
@@ -3334,7 +3359,7 @@ impl Terminal {
             } else {
                 format!("{:width$}", item.label, width = available_label_width)
             };
-            print!("{}", label);
+            terminal_print!(self, "{}", label);
 
             // Detail/type signature (dimmed, right-aligned)
             if let Some(detail) = &item.detail {
@@ -3345,9 +3370,9 @@ impl Terminal {
                 } else {
                     format!("{:>width$}", detail, width = detail_width)
                 };
-                print!(" {}", detail_str);
+                terminal_print!(self, " {}", detail_str);
             } else if detail_col_width > 0 {
-                print!("{:width$}", "", width = detail_col_width + 1);
+                terminal_print!(self, "{:width$}", "", width = detail_col_width + 1);
             }
 
             execute!(
@@ -3355,7 +3380,7 @@ impl Terminal {
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            print!("│");
+            terminal_print!(self, "│");
         }
 
         // Draw bottom border (rounded corners for Zed-style)
@@ -3366,11 +3391,11 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        print!("╰");
+        terminal_print!(self, "╰");
         for _ in 0..(popup_width - 2) {
-            print!("─");
+            terminal_print!(self, "─");
         }
-        print!("╯");
+        terminal_print!(self, "╯");
 
         // Draw documentation panel to the RIGHT of the completion popup
         if let Some(item) = completion.selected_item() {
@@ -3497,11 +3522,11 @@ impl Terminal {
                             SetForegroundColor(border_color),
                             SetBackgroundColor(doc_bg)
                         )?;
-                        print!("╭");
+                        terminal_print!(self, "╭");
                         for _ in 0..(doc_width - 2) {
-                            print!("─");
+                            terminal_print!(self, "─");
                         }
-                        print!("╮");
+                        terminal_print!(self, "╮");
 
                         // Content lines
                         let mut row_offset = 1u16;
@@ -3525,11 +3550,11 @@ impl Terminal {
                                     SetForegroundColor(border_color),
                                     SetBackgroundColor(doc_bg)
                                 )?;
-                                print!("├");
+                                terminal_print!(self, "├");
                                 for _ in 0..(doc_width - 2) {
-                                    print!("─");
+                                    terminal_print!(self, "─");
                                 }
-                                print!("┤");
+                                terminal_print!(self, "┤");
                                 row_offset += 1;
                                 lines_drawn += 1;
                                 if lines_drawn >= max_content_lines {
@@ -3546,12 +3571,16 @@ impl Terminal {
                                 SetForegroundColor(border_color),
                                 SetBackgroundColor(doc_bg)
                             )?;
-                            print!("│");
+                            terminal_print!(self, "│");
                             execute!(self.stdout, SetForegroundColor(*color))?;
                             let padded = format!(" {:width$}", line, width = content_width);
-                            print!("{}", &padded[..padded.len().min(content_width + 1)]);
+                            terminal_print!(
+                                self,
+                                "{}",
+                                &padded[..padded.len().min(content_width + 1)]
+                            );
                             execute!(self.stdout, SetForegroundColor(border_color))?;
-                            print!(" │");
+                            terminal_print!(self, " │");
                             row_offset += 1;
                             lines_drawn += 1;
                         }
@@ -3566,11 +3595,11 @@ impl Terminal {
                             SetForegroundColor(border_color),
                             SetBackgroundColor(doc_bg)
                         )?;
-                        print!("╰");
+                        terminal_print!(self, "╰");
                         for _ in 0..(doc_width - 2) {
-                            print!("─");
+                            terminal_print!(self, "─");
                         }
-                        print!("╯");
+                        terminal_print!(self, "╯");
                     }
                 }
             }
@@ -3754,11 +3783,11 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        print!("╭");
+        terminal_print!(self, "╭");
         for _ in 1..(popup_width - 1) {
-            print!("─");
+            terminal_print!(self, "─");
         }
-        print!("╮");
+        terminal_print!(self, "╮");
 
         // Draw content lines
         let content_width = (popup_width - 4) as usize;
@@ -3775,7 +3804,7 @@ impl Terminal {
                         SetForegroundColor(border_color),
                         SetBackgroundColor(code_bg)
                     )?;
-                    print!("│ ");
+                    terminal_print!(self, "│ ");
                     // Simple syntax highlighting for Rust
                     self.render_hover_code_line(
                         line,
@@ -3790,7 +3819,7 @@ impl Terminal {
                         SetForegroundColor(border_color),
                         SetBackgroundColor(code_bg)
                     )?;
-                    print!(" │");
+                    terminal_print!(self, " │");
                 }
                 HoverLineType::Text => {
                     execute!(
@@ -3798,7 +3827,7 @@ impl Terminal {
                         SetForegroundColor(border_color),
                         SetBackgroundColor(bg_color)
                     )?;
-                    print!("│ ");
+                    terminal_print!(self, "│ ");
                     execute!(self.stdout, SetForegroundColor(text_color))?;
                     let display = if line.chars().count() > content_width {
                         format!(
@@ -3810,9 +3839,9 @@ impl Terminal {
                     } else {
                         format!("{:width$}", line, width = content_width)
                     };
-                    print!("{}", display);
+                    terminal_print!(self, "{}", display);
                     execute!(self.stdout, SetForegroundColor(border_color))?;
-                    print!(" │");
+                    terminal_print!(self, " │");
                 }
                 HoverLineType::Separator => {
                     execute!(
@@ -3820,11 +3849,11 @@ impl Terminal {
                         SetForegroundColor(separator_color),
                         SetBackgroundColor(bg_color)
                     )?;
-                    print!("├");
+                    terminal_print!(self, "├");
                     for _ in 1..(popup_width - 1) {
-                        print!("─");
+                        terminal_print!(self, "─");
                     }
-                    print!("┤");
+                    terminal_print!(self, "┤");
                 }
             }
         }
@@ -3838,7 +3867,7 @@ impl Terminal {
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            print!("│ {:width$} │", "", width = content_width);
+            terminal_print!(self, "│ {:width$} │", "", width = content_width);
         }
 
         // Draw bottom border (rounded corners)
@@ -3849,11 +3878,11 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        print!("╰");
+        terminal_print!(self, "╰");
         for _ in 1..(popup_width - 1) {
-            print!("─");
+            terminal_print!(self, "─");
         }
-        print!("╯");
+        terminal_print!(self, "╯");
 
         execute!(self.stdout, ResetColor)?;
         Ok(())
@@ -3910,10 +3939,10 @@ impl Terminal {
                 )?;
                 let remaining = width - chars_printed;
                 if word.len() <= remaining {
-                    print!("{}", word);
+                    terminal_print!(self, "{}", word);
                     chars_printed += word.len();
                 } else {
-                    print!("{}", &word[..remaining]);
+                    terminal_print!(self, "{}", &word[..remaining]);
                     chars_printed = width;
                 }
             } else {
@@ -3923,7 +3952,7 @@ impl Terminal {
                     SetForegroundColor(default_color),
                     SetBackgroundColor(bg_color)
                 )?;
-                print!("{}", chars[i]);
+                terminal_print!(self, "{}", chars[i]);
                 chars_printed += 1;
                 i += 1;
             }
@@ -3936,7 +3965,7 @@ impl Terminal {
                 SetForegroundColor(default_color),
                 SetBackgroundColor(bg_color)
             )?;
-            print!("{:width$}", "", width = width - chars_printed);
+            terminal_print!(self, "{:width$}", "", width = width - chars_printed);
         }
 
         Ok(())
@@ -4005,11 +4034,11 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        print!("╭");
+        terminal_print!(self, "╭");
         for _ in 1..(popup_width - 1) {
-            print!("─");
+            terminal_print!(self, "─");
         }
-        print!("╮");
+        terminal_print!(self, "╮");
 
         // Draw signature with highlighted parameter
         let content_width = (popup_width - 4) as usize;
@@ -4019,7 +4048,7 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        print!("│ ");
+        terminal_print!(self, "│ ");
 
         // Render the signature with active parameter highlighted
         let label = &signature.label;
@@ -4052,7 +4081,7 @@ impl Terminal {
                 )?;
             }
 
-            print!("{}", label_chars[i]);
+            terminal_print!(self, "{}", label_chars[i]);
             chars_printed += 1;
             i += 1;
         }
@@ -4064,11 +4093,11 @@ impl Terminal {
                 SetForegroundColor(text_color),
                 SetBackgroundColor(bg_color)
             )?;
-            print!("{:width$}", "", width = content_width - chars_printed);
+            terminal_print!(self, "{:width$}", "", width = content_width - chars_printed);
         }
 
         execute!(self.stdout, SetForegroundColor(border_color))?;
-        print!(" │");
+        terminal_print!(self, " │");
 
         // Draw bottom border
         execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 2))?;
@@ -4077,11 +4106,11 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        print!("╰");
+        terminal_print!(self, "╰");
         for _ in 1..(popup_width - 1) {
-            print!("─");
+            terminal_print!(self, "─");
         }
-        print!("╯");
+        terminal_print!(self, "╯");
 
         execute!(self.stdout, ResetColor)?;
         Ok(())
@@ -4255,11 +4284,11 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        print!("╭");
+        terminal_print!(self, "╭");
         for _ in 1..(popup_width - 1) {
-            print!("─");
+            terminal_print!(self, "─");
         }
-        print!("╮");
+        terminal_print!(self, "╮");
 
         // Draw content lines
         let visible_lines = (popup_height - 2) as usize;
@@ -4270,7 +4299,7 @@ impl Terminal {
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            print!("│ ");
+            terminal_print!(self, "│ ");
 
             // Determine text color based on line type
             let text_color = if i == 0 { title_color } else { *color };
@@ -4278,16 +4307,16 @@ impl Terminal {
 
             // Truncate line to fit
             let display_line: String = line.chars().take(content_width).collect();
-            print!("{}", display_line);
+            terminal_print!(self, "{}", display_line);
 
             // Pad remaining space
             let line_len = display_line.chars().count();
             if line_len < content_width {
-                print!("{:width$}", "", width = content_width - line_len);
+                terminal_print!(self, "{:width$}", "", width = content_width - line_len);
             }
 
             execute!(self.stdout, SetForegroundColor(border_color))?;
-            print!(" │");
+            terminal_print!(self, " │");
         }
 
         // Fill remaining rows if content is shorter than popup
@@ -4298,7 +4327,7 @@ impl Terminal {
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            print!("│ {:width$} │", "", width = content_width);
+            terminal_print!(self, "│ {:width$} │", "", width = content_width);
         }
 
         // Draw bottom border
@@ -4311,11 +4340,11 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        print!("╰");
+        terminal_print!(self, "╰");
         for _ in 1..(popup_width - 1) {
-            print!("─");
+            terminal_print!(self, "─");
         }
-        print!("╯");
+        terminal_print!(self, "╯");
 
         execute!(self.stdout, ResetColor)?;
         Ok(())
@@ -4341,19 +4370,19 @@ impl Terminal {
             SetBackgroundColor(theme.ui.popup_bg),
             cursor::MoveTo(rect.x, rect.y)
         )?;
-        print!("╭");
+        terminal_print!(self, "╭");
         let title = format!(" {} ", preview.title);
         let title_start = (rect.width as usize).saturating_sub(title.len()) / 2;
         for i in 1..rect.width.saturating_sub(1) {
             if i as usize == title_start {
-                print!("{}", title);
+                terminal_print!(self, "{}", title);
             } else if i as usize > title_start && (i as usize) < title_start + title.len() {
                 continue;
             } else {
-                print!("─");
+                terminal_print!(self, "─");
             }
         }
-        print!("╮");
+        terminal_print!(self, "╮");
 
         for row in 0..visible_rows {
             execute!(
@@ -4362,12 +4391,12 @@ impl Terminal {
                 SetForegroundColor(theme.ui.popup_border),
                 SetBackgroundColor(theme.ui.popup_bg)
             )?;
-            print!("│");
+            terminal_print!(self, "│");
 
             if let Some(line) = display_lines.get(scroll + row) {
                 Self::render_markdown_preview_line(&mut self.stdout, line, inner_width, editor)?;
             } else {
-                print!("{:width$}", "", width = inner_width);
+                terminal_print!(self, "{:width$}", "", width = inner_width);
             }
 
             execute!(
@@ -4375,7 +4404,7 @@ impl Terminal {
                 SetForegroundColor(theme.ui.popup_border),
                 SetBackgroundColor(theme.ui.popup_bg)
             )?;
-            print!("│");
+            terminal_print!(self, "│");
         }
 
         execute!(
@@ -4384,12 +4413,12 @@ impl Terminal {
             SetForegroundColor(theme.ui.line_number),
             SetBackgroundColor(theme.ui.popup_bg)
         )?;
-        print!("│");
+        terminal_print!(self, "│");
         let footer = Self::markdown_preview_footer(scroll, display_lines.len(), visible_rows);
         let footer = take_display_width(&footer, 0, inner_width, editor.settings.editor.tab_width);
-        print!("{:^width$}", footer, width = inner_width);
+        terminal_print!(self, "{:^width$}", footer, width = inner_width);
         execute!(self.stdout, SetForegroundColor(theme.ui.popup_border))?;
-        print!("│");
+        terminal_print!(self, "│");
 
         execute!(
             self.stdout,
@@ -4397,11 +4426,11 @@ impl Terminal {
             SetForegroundColor(theme.ui.popup_border),
             SetBackgroundColor(theme.ui.popup_bg)
         )?;
-        print!("╰");
+        terminal_print!(self, "╰");
         for _ in 1..rect.width.saturating_sub(1) {
-            print!("─");
+            terminal_print!(self, "─");
         }
-        print!("╯");
+        terminal_print!(self, "╯");
 
         execute!(self.stdout, ResetColor)?;
         Ok(())
@@ -4557,17 +4586,17 @@ impl Terminal {
         )?;
         let title = " References ";
         let title_start = (popup_width as usize - title.len()) / 2;
-        print!("╭");
+        terminal_print!(self, "╭");
         for i in 1..(popup_width - 1) {
             if i as usize == title_start {
-                print!("{}", title);
+                terminal_print!(self, "{}", title);
             } else if i as usize > title_start && i as usize <= title_start + title.len() {
                 // Skip - part of title
             } else {
-                print!("─");
+                terminal_print!(self, "─");
             }
         }
-        print!("╮");
+        terminal_print!(self, "╮");
 
         // Calculate visible items
         let visible_count = (popup_height - 2) as usize;
@@ -4588,7 +4617,7 @@ impl Terminal {
                     SetForegroundColor(border_color),
                     SetBackgroundColor(bg_color)
                 )?;
-                print!("│{:width$}│", "", width = (popup_width - 2) as usize);
+                terminal_print!(self, "│{:width$}│", "", width = (popup_width - 2) as usize);
                 continue;
             }
 
@@ -4603,7 +4632,7 @@ impl Terminal {
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            print!("│");
+            terminal_print!(self, "│");
 
             // Item content
             execute!(self.stdout, SetBackgroundColor(current_bg))?;
@@ -4624,13 +4653,13 @@ impl Terminal {
             // Print with colors
             execute!(self.stdout, SetForegroundColor(file_color))?;
             let truncated: String = content.chars().take(content_width).collect();
-            print!(" {}", truncated);
+            terminal_print!(self, " {}", truncated);
 
             // Pad
             let printed = truncated.len() + 1;
             if printed < content_width + 1 {
                 execute!(self.stdout, SetForegroundColor(text_color))?;
-                print!("{:width$}", "", width = content_width + 1 - printed);
+                terminal_print!(self, "{:width$}", "", width = content_width + 1 - printed);
             }
 
             // Closing border
@@ -4639,7 +4668,7 @@ impl Terminal {
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            print!("│");
+            terminal_print!(self, "│");
         }
 
         // Draw bottom border
@@ -4652,11 +4681,11 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        print!("╰");
+        terminal_print!(self, "╰");
         for _ in 1..(popup_width - 1) {
-            print!("─");
+            terminal_print!(self, "─");
         }
-        print!("╯");
+        terminal_print!(self, "╯");
 
         execute!(self.stdout, ResetColor)?;
         Ok(())
@@ -4741,17 +4770,17 @@ impl Terminal {
         )?;
         let title = " Code Actions ";
         let title_start = (popup_width as usize - title.len()) / 2;
-        print!("╭");
+        terminal_print!(self, "╭");
         for i in 1..(popup_width - 1) {
             if i as usize == title_start {
-                print!("{}", title);
+                terminal_print!(self, "{}", title);
             } else if i as usize > title_start && (i as usize) < title_start + title.len() {
                 // Skip (title already printed)
             } else {
-                print!("─");
+                terminal_print!(self, "─");
             }
         }
-        print!("╮");
+        terminal_print!(self, "╮");
 
         // Calculate visible items
         let visible_count = (popup_height - 2) as usize;
@@ -4771,7 +4800,7 @@ impl Terminal {
                     SetForegroundColor(border_color),
                     SetBackgroundColor(bg_color)
                 )?;
-                print!("│{:width$}│", "", width = (popup_width - 2) as usize);
+                terminal_print!(self, "│{:width$}│", "", width = (popup_width - 2) as usize);
                 continue;
             }
 
@@ -4786,7 +4815,7 @@ impl Terminal {
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            print!("│");
+            terminal_print!(self, "│");
 
             // Item content
             execute!(self.stdout, SetBackgroundColor(current_bg))?;
@@ -4800,12 +4829,12 @@ impl Terminal {
                 execute!(self.stdout, SetForegroundColor(text_color))?;
             }
             let title_display: String = action.title.chars().take(content_width).collect();
-            print!("{}", title_display);
+            terminal_print!(self, "{}", title_display);
 
             // Pad
             let printed = title_display.len();
             if printed < content_width {
-                print!("{:width$}", "", width = content_width - printed);
+                terminal_print!(self, "{:width$}", "", width = content_width - printed);
             }
 
             // Closing border
@@ -4814,7 +4843,7 @@ impl Terminal {
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            print!("│");
+            terminal_print!(self, "│");
         }
 
         // Draw bottom border
@@ -4827,11 +4856,11 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        print!("╰");
+        terminal_print!(self, "╰");
         for _ in 1..(popup_width - 1) {
-            print!("─");
+            terminal_print!(self, "─");
         }
-        print!("╯");
+        terminal_print!(self, "╯");
 
         execute!(self.stdout, ResetColor)?;
         Ok(())
@@ -4879,17 +4908,17 @@ impl Terminal {
         )?;
         let title = " Themes ";
         let title_start = (popup_width as usize - title.len()) / 2;
-        print!("╭");
+        terminal_print!(self, "╭");
         for i in 1..(popup_width - 1) {
             if i as usize == title_start {
-                print!("{}", title);
+                terminal_print!(self, "{}", title);
             } else if i as usize > title_start && (i as usize) < title_start + title.len() {
                 // Skip - title already printed
             } else {
-                print!("─");
+                terminal_print!(self, "─");
             }
         }
-        print!("╮");
+        terminal_print!(self, "╮");
 
         // Draw search input line
         execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 1))?;
@@ -4898,18 +4927,18 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        print!("│");
+        terminal_print!(self, "│");
         execute!(self.stdout, SetForegroundColor(prompt_color))?;
-        print!(" > ");
+        terminal_print!(self, " > ");
         execute!(self.stdout, SetForegroundColor(text_color))?;
         let query_max = inner_width.saturating_sub(3); // " > " prefix
         let query_display: String = picker.query.chars().take(query_max).collect();
-        print!("{}", query_display);
+        terminal_print!(self, "{}", query_display);
         // Padding to fill rest of line
         let query_padding = inner_width.saturating_sub(3 + query_display.len());
-        print!("{:width$}", "", width = query_padding);
+        terminal_print!(self, "{:width$}", "", width = query_padding);
         execute!(self.stdout, SetForegroundColor(border_color))?;
-        print!("│");
+        terminal_print!(self, "│");
 
         // Draw theme items
         let scroll_offset = if picker.selected >= visible_count {
@@ -4931,7 +4960,7 @@ impl Terminal {
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            print!("│");
+            terminal_print!(self, "│");
 
             if list_idx < filtered_count {
                 let item_idx = picker.filtered[list_idx];
@@ -4962,7 +4991,7 @@ impl Terminal {
                 } else {
                     execute!(self.stdout, SetForegroundColor(text_color))?;
                 }
-                print!("{}", prefix);
+                terminal_print!(self, "{}", prefix);
 
                 // Theme name - highlight matching characters if there's a query
                 if !picker.query.is_empty() {
@@ -4971,23 +5000,28 @@ impl Terminal {
                     if let Some(match_start) = name_lower.find(&query_lower) {
                         // Before match
                         execute!(self.stdout, SetForegroundColor(text_color))?;
-                        print!("{}", &display_name[..match_start]);
+                        terminal_print!(self, "{}", &display_name[..match_start]);
                         // Match
                         execute!(self.stdout, SetForegroundColor(match_color))?;
-                        print!(
+                        terminal_print!(
+                            self,
                             "{}",
                             &display_name[match_start..match_start + picker.query.len()]
                         );
                         // After match
                         execute!(self.stdout, SetForegroundColor(text_color))?;
-                        print!("{}", &display_name[match_start + picker.query.len()..]);
+                        terminal_print!(
+                            self,
+                            "{}",
+                            &display_name[match_start + picker.query.len()..]
+                        );
                     } else {
                         execute!(self.stdout, SetForegroundColor(text_color))?;
-                        print!("{}", display_name);
+                        terminal_print!(self, "{}", display_name);
                     }
                 } else {
                     execute!(self.stdout, SetForegroundColor(text_color))?;
-                    print!("{}", display_name);
+                    terminal_print!(self, "{}", display_name);
                 }
 
                 // User indicator or padding
@@ -4995,15 +5029,15 @@ impl Terminal {
                     execute!(self.stdout, SetForegroundColor(user_color))?;
                     let padding = inner_width
                         .saturating_sub(prefix.len() + display_name.len() + suffix.len());
-                    print!("{:width$}{}", "", suffix, width = padding);
+                    terminal_print!(self, "{:width$}{}", "", suffix, width = padding);
                 } else {
                     let padding = inner_width.saturating_sub(prefix.len() + display_name.len());
-                    print!("{:width$}", "", width = padding);
+                    terminal_print!(self, "{:width$}", "", width = padding);
                 }
             } else {
                 // Empty row
                 execute!(self.stdout, SetBackgroundColor(bg_color))?;
-                print!("{:width$}", "", width = inner_width);
+                terminal_print!(self, "{:width$}", "", width = inner_width);
             }
 
             // Right border
@@ -5012,7 +5046,7 @@ impl Terminal {
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            print!("│");
+            terminal_print!(self, "│");
         }
 
         // Draw separator line (immediately after items)
@@ -5023,11 +5057,11 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        print!("├");
+        terminal_print!(self, "├");
         for _ in 1..(popup_width - 1) {
-            print!("─");
+            terminal_print!(self, "─");
         }
-        print!("┤");
+        terminal_print!(self, "┤");
 
         // Draw help line with count
         execute!(self.stdout, cursor::MoveTo(popup_x, separator_y + 1))?;
@@ -5036,7 +5070,7 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        print!("│");
+        terminal_print!(self, "│");
         execute!(
             self.stdout,
             SetForegroundColor(user_color),
@@ -5045,9 +5079,9 @@ impl Terminal {
         let count_str = format!("{}/{}", filtered_count, picker.all_items.len());
         let help = "Type to filter • j/k nav • Enter";
         let combined = format!("{} {}", help, count_str);
-        print!("{:^width$}", combined, width = inner_width);
+        terminal_print!(self, "{:^width$}", combined, width = inner_width);
         execute!(self.stdout, SetForegroundColor(border_color))?;
-        print!("│");
+        terminal_print!(self, "│");
 
         // Draw bottom border
         execute!(self.stdout, cursor::MoveTo(popup_x, separator_y + 2))?;
@@ -5056,11 +5090,11 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        print!("╰");
+        terminal_print!(self, "╰");
         for _ in 1..(popup_width - 1) {
-            print!("─");
+            terminal_print!(self, "─");
         }
-        print!("╯");
+        terminal_print!(self, "╯");
 
         execute!(
             self.stdout,
@@ -5115,26 +5149,26 @@ impl Terminal {
         }
         let title_width = title.chars().count();
 
-        print!("╭");
+        terminal_print!(self, "╭");
         for i in 1..(term_width - 1) {
             let i = i as usize;
             if i == title_start {
                 execute!(self.stdout, SetForegroundColor(title_color))?;
-                print!("{}", title);
+                terminal_print!(self, "{}", title);
                 execute!(self.stdout, SetForegroundColor(border_color))?;
             } else if i > title_start && i < title_start + title_width {
                 // Skip - title already printed
             } else if i == close_start {
                 execute!(self.stdout, SetForegroundColor(hint_color))?;
-                print!("{}", close_hint);
+                terminal_print!(self, "{}", close_hint);
                 execute!(self.stdout, SetForegroundColor(border_color))?;
             } else if i > close_start && i < close_start + close_hint.len() {
                 // Skip - close hint already printed
             } else {
-                print!("─");
+                terminal_print!(self, "─");
             }
         }
-        print!("╮");
+        terminal_print!(self, "╮");
 
         // Get terminal content
         let content_height = (term_height - 2) as usize;
@@ -5152,7 +5186,7 @@ impl Terminal {
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            print!("│");
+            terminal_print!(self, "│");
 
             let mut active_style = None;
             for cell in line {
@@ -5172,7 +5206,7 @@ impl Terminal {
                     self.apply_terminal_cell_style(style)?;
                     active_style = Some(style);
                 }
-                print!("{}", if cell.hidden { ' ' } else { cell.ch });
+                terminal_print!(self, "{}", if cell.hidden { ' ' } else { cell.ch });
             }
 
             execute!(
@@ -5181,7 +5215,7 @@ impl Terminal {
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            print!("│");
+            terminal_print!(self, "│");
         }
 
         // Fill remaining rows if content is shorter
@@ -5192,11 +5226,11 @@ impl Terminal {
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            print!("│");
+            terminal_print!(self, "│");
             execute!(self.stdout, SetForegroundColor(text_color))?;
-            print!("{:<width$}", "", width = content_width);
+            terminal_print!(self, "{:<width$}", "", width = content_width);
             execute!(self.stdout, SetForegroundColor(border_color))?;
-            print!("│");
+            terminal_print!(self, "│");
         }
 
         // Draw bottom border
@@ -5209,11 +5243,11 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        print!("╰");
+        terminal_print!(self, "╰");
         for _ in 1..(term_width - 1) {
-            print!("─");
+            terminal_print!(self, "─");
         }
-        print!("╯");
+        terminal_print!(self, "╯");
 
         execute!(self.stdout, ResetColor)?;
 
@@ -6113,6 +6147,10 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
+        if !self.restore_terminal_state_on_drop {
+            return;
+        }
+
         // Restore terminal state
         let _ = execute!(
             self.stdout,
@@ -10155,9 +10193,12 @@ mod tests {
     use crate::lsp::types::{CompletionItem, CompletionKind, Diagnostic, DiagnosticSeverity};
     use crate::syntax::{HighlightSpan, SyntaxStyle};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use crossterm::style::Color;
+    use crossterm::style::{Color, SetBackgroundColor};
+    use std::cell::RefCell;
+    use std::io::{self, Write};
     use std::path::Path;
     use std::path::PathBuf;
+    use std::rc::Rc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn key(c: char) -> KeyEvent {
@@ -10194,6 +10235,114 @@ mod tests {
 
     fn numbered_lines(count: usize) -> Vec<String> {
         (1..=count).map(|line| format!("line {}", line)).collect()
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedOutput(Rc<RefCell<Vec<u8>>>);
+
+    impl SharedOutput {
+        fn into_string(&self) -> String {
+            String::from_utf8(self.0.borrow().clone()).expect("terminal output should be utf-8")
+        }
+    }
+
+    impl Write for SharedOutput {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn render_editor_to_string(editor: &Editor) -> String {
+        crossterm::style::force_color_output(true);
+        let output = SharedOutput::default();
+        let mut terminal = Terminal::new_for_test(Box::new(output.clone()));
+        terminal.render(editor).expect("render should succeed");
+        output.into_string()
+    }
+
+    fn background_sequence(color: Color) -> String {
+        let mut output = Vec::new();
+        crossterm::execute!(output, SetBackgroundColor(color)).expect("write ansi background");
+        String::from_utf8(output).expect("ansi background should be utf-8")
+    }
+
+    #[test]
+    fn full_render_harness_captures_buffer_text() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha\nbeta\n");
+
+        let rendered = render_editor_to_string(&editor);
+
+        assert!(
+            rendered.contains("alpha"),
+            "full render output should include first buffer line; output={rendered:?}"
+        );
+        assert!(
+            rendered.contains("beta"),
+            "full render output should include second buffer line; output={rendered:?}"
+        );
+    }
+
+    #[test]
+    fn full_render_after_search_workflow_keeps_search_highlights_visible() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("# Nevi\nA fast Nevi editor\n");
+
+        let _ = render_editor_to_string(&editor);
+        handle_key(&mut editor, key('/'));
+        for ch in "Nevi".chars() {
+            handle_key(&mut editor, key(ch));
+        }
+        handle_key(&mut editor, enter_key());
+
+        assert_eq!(editor.mode, Mode::Normal);
+        assert!(!editor.search_matches.is_empty());
+
+        let rendered = render_editor_to_string(&editor);
+        let search_bg = background_sequence(editor.theme().ui.search_match_bg);
+
+        assert!(
+            rendered.contains(&search_bg),
+            "search workflow render should include search highlight background; output={rendered:?}"
+        );
+        assert!(
+            rendered.contains("Nevi"),
+            "search workflow render should include matched text; output={rendered:?}"
+        );
+    }
+
+    #[test]
+    fn full_render_after_visual_workflow_keeps_selection_highlight_visible() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("A fast, Neovim-inspired terminal editor\n");
+
+        let _ = render_editor_to_string(&editor);
+        handle_key(&mut editor, key('v'));
+        handle_key(&mut editor, key('l'));
+        handle_key(&mut editor, key('l'));
+
+        assert_eq!(editor.mode, Mode::Visual);
+        assert_eq!(editor.get_visual_range(), (0, 0, 0, 2));
+
+        let rendered = render_editor_to_string(&editor);
+        let selection_bg = background_sequence(editor.theme().ui.selection);
+
+        assert!(
+            rendered.contains(&selection_bg),
+            "visual workflow render should include selection background; output={rendered:?}"
+        );
+        assert!(
+            rendered.contains("A f") && rendered.contains("ast, Neovim-inspired"),
+            "visual workflow render should include selected line text; output={rendered:?}"
+        );
     }
 
     #[test]
