@@ -3616,6 +3616,10 @@ impl Editor {
             self.viewport_offset = self.cursor.line + scroll_off + 1 - text_rows;
         }
 
+        if self.settings.editor.wrap {
+            self.scroll_wrapped_view_to_cursor(text_rows, scroll_off);
+        }
+
         // Horizontal scrolling (only in non-wrap mode)
         if !self.settings.editor.wrap {
             let text_area_width = self.text_area_width();
@@ -3636,6 +3640,85 @@ impl Editor {
             self.panes[self.active_pane].viewport_offset = self.viewport_offset;
             self.panes[self.active_pane].h_offset = self.h_offset;
             self.panes[self.active_pane].cursor = self.cursor;
+        }
+    }
+
+    fn scroll_wrapped_view_to_cursor(&mut self, text_rows: usize, scroll_off: usize) {
+        let wrap_width = self.effective_wrap_width();
+        if text_rows == 0 || wrap_width == 0 {
+            self.h_offset = 0;
+            return;
+        }
+
+        let tab_width = self.get_effective_tab_width();
+        let cursor_segment_idx = self.cursor_wrapped_segment_idx(wrap_width, tab_width);
+        let cursor_visual_row =
+            self.cursor_wrapped_visual_row_from_viewport(cursor_segment_idx, wrap_width, tab_width);
+
+        if cursor_visual_row < scroll_off {
+            if self.cursor.line != self.viewport_offset {
+                self.viewport_offset = self.cursor.line;
+            }
+            self.h_offset = cursor_segment_idx.saturating_sub(scroll_off);
+            return;
+        }
+
+        if cursor_visual_row + scroll_off >= text_rows {
+            self.viewport_offset = self.cursor.line;
+            let bottom_margin = scroll_off.min(text_rows.saturating_sub(1));
+            let rows_above_cursor = text_rows.saturating_sub(bottom_margin + 1);
+            self.h_offset = cursor_segment_idx.saturating_sub(rows_above_cursor);
+            return;
+        }
+
+        if self.cursor.line != self.viewport_offset {
+            self.h_offset = 0;
+        }
+    }
+
+    fn cursor_wrapped_segment_idx(&self, wrap_width: usize, tab_width: usize) -> usize {
+        let line = self
+            .buffers
+            .get(self.current_buffer_idx)
+            .and_then(|buffer| buffer.line(self.cursor.line))
+            .map(|line| line.to_string())
+            .unwrap_or_default();
+        let segments = Self::display_line_segments(&line, wrap_width, tab_width);
+        let (segment_idx, _) =
+            Self::display_segment_for_col(&line, &segments, self.cursor.col, tab_width);
+        segment_idx
+    }
+
+    fn cursor_wrapped_visual_row_from_viewport(
+        &self,
+        cursor_segment_idx: usize,
+        wrap_width: usize,
+        tab_width: usize,
+    ) -> usize {
+        if self.cursor.line < self.viewport_offset {
+            return 0;
+        }
+
+        let mut visual_row = 0usize;
+        for line_idx in self.viewport_offset..self.cursor.line {
+            let line = self
+                .buffers
+                .get(self.current_buffer_idx)
+                .and_then(|buffer| buffer.line(line_idx))
+                .map(|line| line.to_string())
+                .unwrap_or_default();
+            let segment_count = Self::display_line_segments(&line, wrap_width, tab_width).len();
+            if line_idx == self.viewport_offset {
+                visual_row = visual_row.saturating_add(segment_count.saturating_sub(self.h_offset));
+            } else {
+                visual_row = visual_row.saturating_add(segment_count);
+            }
+        }
+
+        if self.cursor.line == self.viewport_offset {
+            visual_row.saturating_add(cursor_segment_idx.saturating_sub(self.h_offset))
+        } else {
+            visual_row.saturating_add(cursor_segment_idx)
         }
     }
 
@@ -5878,7 +5961,9 @@ impl Editor {
         let direction = self.search.direction;
         if let Some(pattern) = self.search.execute() {
             self.mode = Mode::Normal;
-            if self.do_search(&pattern, direction, true) {
+            if self.cursor_starts_search_match(&pattern)
+                || self.do_search(&pattern, direction, true)
+            {
                 self.refresh_visible_search_matches(&pattern);
             } else {
                 self.search_matches.clear();
@@ -6013,6 +6098,31 @@ impl Editor {
                 }
             }
         }
+    }
+
+    fn cursor_starts_search_match(&self, pattern: &str) -> bool {
+        if pattern.is_empty() {
+            return false;
+        }
+
+        let Some(line) = self.buffers[self.current_buffer_idx].line(self.cursor.line) else {
+            return false;
+        };
+
+        let pattern_len = pattern.chars().count();
+        let line_len = line.len_chars();
+        if self.cursor.col.saturating_add(pattern_len) > line_len {
+            return false;
+        }
+
+        let mut line_chars = line.slice(self.cursor.col..line_len).chars();
+        for expected in pattern.chars() {
+            if line_chars.next() != Some(expected) {
+                return false;
+            }
+        }
+
+        true
     }
 
     /// Search for word under cursor forward (*)
@@ -6472,6 +6582,7 @@ impl Editor {
         if total_lines == 0 || pattern.is_empty() {
             return None;
         }
+        let pattern_len = pattern.chars().count();
 
         match direction {
             SearchDirection::Forward => {
@@ -6509,7 +6620,7 @@ impl Editor {
                         if let Some(line) = self.buffers[self.current_buffer_idx].line(line_idx) {
                             let line_str: String = line.chars().collect();
                             let end_col = if line_idx == self.cursor.line {
-                                self.cursor.col
+                                self.cursor.col.saturating_add(pattern_len)
                             } else {
                                 line_str.chars().count()
                             };
@@ -6560,7 +6671,7 @@ impl Editor {
                         if let Some(line) = self.buffers[self.current_buffer_idx].line(line_idx) {
                             let line_str: String = line.chars().collect();
                             let start_col = if line_idx == self.cursor.line {
-                                self.cursor.col + 1
+                                self.cursor.col
                             } else {
                                 0
                             };
@@ -10434,6 +10545,100 @@ mod tests {
     }
 
     #[test]
+    fn executing_incremental_search_accepts_match_under_cursor() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 8);
+        let prefix = "x".repeat(50_000);
+        let pattern = "old_render_target_24000";
+        editor.replace_buffer_content(&format!("{prefix}{pattern}\n"));
+        editor.enter_search_forward();
+        editor.search.input = pattern.to_string();
+        editor.search.cursor = pattern.chars().count();
+
+        editor.update_incremental_search();
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), (0, prefix.len()));
+
+        editor.execute_search();
+
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!((editor.cursor.line, editor.cursor.col), (0, prefix.len()));
+        assert_eq!(editor.search.last_pattern.as_deref(), Some(pattern));
+        assert_ne!(
+            editor.status_message.as_deref(),
+            Some("Pattern not found: old_render_target_24000")
+        );
+    }
+
+    #[test]
+    fn typing_incremental_search_then_enter_accepts_exact_long_line_match() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 8);
+        let content = (1..=25_000)
+            .map(|idx| format!("{{id:{idx},name:\"old_render_target_{idx}\"}},"))
+            .collect::<String>();
+        let pattern = "old_render_target_24000";
+        editor.replace_buffer_content(&content);
+        editor.enter_search_forward();
+
+        for ch in pattern.chars() {
+            editor.search.insert_char(ch);
+            editor.update_incremental_search();
+        }
+
+        editor.execute_search();
+
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.search.last_pattern.as_deref(), Some(pattern));
+        assert_ne!(
+            editor.status_message.as_deref(),
+            Some("Pattern not found: old_render_target_24000")
+        );
+    }
+
+    #[test]
+    fn search_next_wraps_to_only_match_on_current_line() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 8);
+        editor.replace_buffer_content("before old_render_target_24000 after\n");
+        let pattern = "old_render_target_24000";
+        editor.enter_search_forward();
+        editor.search.input = pattern.to_string();
+        editor.search.cursor = pattern.chars().count();
+        editor.execute_search();
+
+        let first_match = (editor.cursor.line, editor.cursor.col);
+        editor.search_next();
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), first_match);
+        assert_ne!(
+            editor.status_message.as_deref(),
+            Some("Pattern not found: old_render_target_24000")
+        );
+    }
+
+    #[test]
+    fn search_prev_wraps_to_only_match_on_current_line() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 8);
+        editor.replace_buffer_content("before old_render_target_24000 after\n");
+        let pattern = "old_render_target_24000";
+        editor.enter_search_forward();
+        editor.search.input = pattern.to_string();
+        editor.search.cursor = pattern.chars().count();
+        editor.execute_search();
+
+        let first_match = (editor.cursor.line, editor.cursor.col);
+        editor.search_prev();
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), first_match);
+        assert_ne!(
+            editor.status_message.as_deref(),
+            Some("Pattern not found: old_render_target_24000")
+        );
+    }
+
+    #[test]
     fn open_url_under_cursor_uses_url_token_without_trailing_punctuation() {
         let mut editor = Editor::default();
         editor.replace_buffer_content("see (https://example.test/docs?q=nevi).\n");
@@ -10578,6 +10783,50 @@ mod tests {
         editor.cursor.col = 3;
         editor.apply_motion(Motion::DisplayLineFirstNonBlank, 1);
         assert_eq!((editor.cursor.line, editor.cursor.col), (0, 2));
+    }
+
+    #[test]
+    fn search_scrolls_to_far_match_inside_single_wrapped_line() {
+        let mut editor = Editor::default();
+        editor.set_size(40, 12);
+        editor.settings.editor.wrap = true;
+        editor.settings.editor.wrap_width = 10;
+        editor.settings.editor.line_numbers = false;
+        let content = (1..=250)
+            .map(|idx| format!("old_render_target_{idx},"))
+            .collect::<String>();
+        let pattern = "old_render_target_240";
+        editor.replace_buffer_content(&content);
+        editor.enter_search_forward();
+        editor.search.input = pattern.to_string();
+        editor.search.cursor = pattern.chars().count();
+
+        editor.execute_search();
+
+        let line = editor.buffer().line(0).unwrap().to_string();
+        let segments = Editor::display_line_segments(
+            &line,
+            editor.effective_wrap_width(),
+            editor.get_effective_tab_width(),
+        );
+        let (cursor_segment, _) = Editor::display_segment_for_col(
+            &line,
+            &segments,
+            editor.cursor.col,
+            editor.get_effective_tab_width(),
+        );
+        let pane_offset = editor.panes[editor.active_pane].h_offset;
+
+        assert!(
+            pane_offset > 0,
+            "wrapped row offset should move down to reveal a far same-line match"
+        );
+        assert!(
+            cursor_segment >= pane_offset
+                && cursor_segment < pane_offset.saturating_add(editor.text_rows()),
+            "cursor segment {cursor_segment} should be visible in wrapped row window {pane_offset}..{}",
+            pane_offset.saturating_add(editor.text_rows())
+        );
     }
 
     #[test]

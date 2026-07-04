@@ -515,11 +515,63 @@ fn display_width_between_char_cols(
         .sum()
 }
 
+fn display_width_between_rope_char_cols(
+    line: ropey::RopeSlice<'_>,
+    start_col: usize,
+    end_col: usize,
+    tab_width: usize,
+) -> usize {
+    if end_col <= start_col {
+        return 0;
+    }
+
+    let line_len = line.len_chars();
+    let start_col = start_col.min(line_len);
+    let end_col = end_col.min(line_len);
+    if end_col <= start_col {
+        return 0;
+    }
+
+    line.slice(start_col..end_col)
+        .chars()
+        .take_while(|ch| *ch != '\n')
+        .map(|ch| editor_char_display_width(ch, tab_width))
+        .sum()
+}
+
 fn take_display_width(text: &str, start_col: usize, max_width: usize, tab_width: usize) -> String {
     let mut width = 0;
     let mut out = String::new();
 
     for ch in text.chars().skip(start_col) {
+        if ch == '\n' {
+            break;
+        }
+
+        let ch_width = editor_char_display_width(ch, tab_width);
+        if width + ch_width > max_width {
+            break;
+        }
+
+        out.push(ch);
+        width += ch_width;
+    }
+
+    out
+}
+
+fn take_rope_display_width(
+    line: ropey::RopeSlice<'_>,
+    start_col: usize,
+    max_width: usize,
+    tab_width: usize,
+) -> String {
+    let line_len = line.len_chars();
+    let start_col = start_col.min(line_len);
+    let mut width = 0;
+    let mut out = String::new();
+
+    for ch in line.slice(start_col..line_len).chars() {
         if ch == '\n' {
             break;
         }
@@ -1271,8 +1323,14 @@ impl Terminal {
                 (e, w, i, h)
             };
 
+            let first_visible_segment = if file_line == pane.viewport_offset {
+                pane.h_offset.min(segments.len().saturating_sub(1))
+            } else {
+                0
+            };
+
             // Render each segment
-            for segment in &segments {
+            for segment in segments.iter().skip(first_visible_segment) {
                 if current_row >= pane_height {
                     break;
                 }
@@ -1755,10 +1813,9 @@ impl Terminal {
                 // Line content with syntax highlighting and visual selection
                 if let Some(line) = buffer.line(file_line) {
                     let h_offset = pane.h_offset;
-                    let line_content = line.to_string();
-                    let full_line_len = line_content.chars().filter(|c| *c != '\n').count();
+                    let full_line_len = buffer.line_len(file_line);
                     let line_str =
-                        take_display_width(&line_content, h_offset, effective_width, tab_width);
+                        take_rope_display_width(line, h_offset, effective_width, tab_width);
 
                     // Get syntax highlights for this line (only for active pane)
                     let highlights = if is_active {
@@ -2588,7 +2645,11 @@ impl Terminal {
                                 true,
                                 tab_width,
                             );
-                            visual_row += segments.len();
+                            if line_idx == active_pane.viewport_offset {
+                                visual_row += segments.len().saturating_sub(active_pane.h_offset);
+                            } else {
+                                visual_row += segments.len();
+                            }
                         }
                     }
 
@@ -2637,6 +2698,10 @@ impl Terminal {
                         cursor_visual_row += 1;
                     }
 
+                    if editor.cursor.line == active_pane.viewport_offset {
+                        cursor_visual_row = cursor_visual_row.saturating_sub(active_pane.h_offset);
+                    }
+
                     // Handle cursor at end of line
                     if editor.cursor.col
                         >= cursor_line_content.trim_end_matches('\n').chars().count()
@@ -2645,6 +2710,10 @@ impl Terminal {
                         let last_segment = segments.last().unwrap();
                         cursor_visual_col =
                             text_display_width(last_segment.text.trim_end_matches('\n'), tab_width);
+                        if editor.cursor.line == active_pane.viewport_offset {
+                            cursor_visual_row =
+                                cursor_visual_row.saturating_sub(active_pane.h_offset);
+                        }
                     }
 
                     // Sign column (2) + line numbers + cursor position
@@ -2662,17 +2731,18 @@ impl Terminal {
                         .line
                         .saturating_sub(active_pane.viewport_offset);
                     // Sign column (2) + line numbers + cursor position (adjusted for horizontal scroll)
-                    let cursor_line_content = editor
+                    let display_col = editor
                         .buffer()
                         .line(editor.cursor.line)
-                        .map(|l| l.to_string())
-                        .unwrap_or_default();
-                    let display_col = display_width_between_char_cols(
-                        &cursor_line_content,
-                        active_pane.h_offset,
-                        editor.cursor.col,
-                        tab_width,
-                    );
+                        .map(|line| {
+                            display_width_between_rope_char_cols(
+                                line,
+                                active_pane.h_offset,
+                                editor.cursor.col,
+                                tab_width,
+                            )
+                        })
+                        .unwrap_or(0);
                     let cursor_col = 2 + if show_line_numbers {
                         line_num_width + 1 + display_col
                     } else {
@@ -10238,6 +10308,54 @@ mod tests {
     }
 
     #[test]
+    fn typed_forward_search_finds_match_deep_in_single_long_line() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        let content = (1..=25_000)
+            .map(|idx| format!("{{id:{idx},name:\"old_render_target_{idx}\"}},"))
+            .collect::<String>();
+        let pattern = "old_render_target_24000";
+        editor.replace_buffer_content(&content);
+
+        handle_key(&mut editor, key('/'));
+        for ch in pattern.chars() {
+            handle_key(&mut editor, key(ch));
+        }
+        handle_key(&mut editor, enter_key());
+
+        let first_match = (editor.cursor.line, editor.cursor.col);
+        for _ in 0..3 {
+            handle_key(&mut editor, key('n'));
+            assert_eq!((editor.cursor.line, editor.cursor.col), first_match);
+            assert_ne!(
+                editor.status_message.as_deref(),
+                Some("Pattern not found: old_render_target_24000")
+            );
+        }
+
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.search.last_pattern.as_deref(), Some(pattern));
+        assert!(
+            editor
+                .buffer()
+                .line(editor.cursor.line)
+                .is_some_and(|line| {
+                    line.slice(editor.cursor.col..)
+                        .chars()
+                        .take(pattern.chars().count())
+                        .eq(pattern.chars())
+                }),
+            "cursor should land on the typed search match, status={:?}, cursor={:?}",
+            editor.status_message,
+            editor.cursor
+        );
+        assert_ne!(
+            editor.status_message.as_deref(),
+            Some("Pattern not found: old_render_target_24000")
+        );
+    }
+
+    #[test]
     fn search_up_down_navigates_search_history() {
         let mut editor = Editor::default();
 
@@ -10576,6 +10694,28 @@ mod tests {
     fn take_display_width_stops_before_expanded_tab_overflows() {
         assert_eq!(super::take_display_width("ab\tcd", 0, 5, 4), "ab");
         assert_eq!(super::take_display_width("ab\tcd", 0, 6, 4), "ab\t");
+    }
+
+    #[test]
+    fn take_rope_display_width_slices_from_large_horizontal_offset() {
+        let rope = ropey::Rope::from_str(&format!("{}target\twide，，tail\n", "x".repeat(50_000)));
+        let line = rope.line(0);
+
+        assert_eq!(
+            super::take_rope_display_width(line, 50_000, 14, 4),
+            "target\twide"
+        );
+    }
+
+    #[test]
+    fn display_width_between_rope_char_cols_slices_large_prefix() {
+        let rope = ropey::Rope::from_str(&format!("{}a，\tbc\n", "x".repeat(50_000)));
+        let line = rope.line(0);
+
+        assert_eq!(
+            super::display_width_between_rope_char_cols(line, 50_000, 50_004, 4),
+            8
+        );
     }
 
     #[test]
