@@ -1,7 +1,7 @@
 [package]
 name = "nevi"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "A Neovim-like terminal editor in Rust"
 authors = ["Anthony Amaro"]
 repository = "https://github.com/anthonyamaro15/nevi"

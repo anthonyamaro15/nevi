@@ -155,17 +155,17 @@ impl Registers {
                 let lower = c.to_ascii_lowercase();
                 if let Some(existing) = self.named.get_mut(&lower) {
                     match (existing, &content) {
-                        (RegisterContent::Chars(ref mut s), RegisterContent::Chars(new)) => {
+                        (RegisterContent::Chars(s), RegisterContent::Chars(new)) => {
                             s.push_str(new);
                         }
-                        (RegisterContent::Lines(ref mut s), RegisterContent::Lines(new)) => {
+                        (RegisterContent::Lines(s), RegisterContent::Lines(new)) => {
                             s.push_str(new);
                         }
-                        (RegisterContent::Chars(ref mut s), RegisterContent::Lines(new)) => {
+                        (RegisterContent::Chars(s), RegisterContent::Lines(new)) => {
                             s.push('\n');
                             s.push_str(new);
                         }
-                        (RegisterContent::Lines(ref mut s), RegisterContent::Chars(new)) => {
+                        (RegisterContent::Lines(s), RegisterContent::Chars(new)) => {
                             s.push_str(new);
                         }
                     }

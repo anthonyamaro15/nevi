@@ -1995,7 +1995,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     if profile_enabled {
-        if let (Some(stats), Some(Some(ref mut file))) =
+        if let (Some(stats), Some(Some(file))) =
             (profile_stats.as_ref(), profile_file.as_mut())
         {
             let _ = stats.write_summary(file);
