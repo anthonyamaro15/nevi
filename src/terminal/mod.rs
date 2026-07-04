@@ -10420,6 +10420,181 @@ mod tests {
     }
 
     #[test]
+    fn full_render_after_insert_workflow_shows_inserted_text_and_dirty_status() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha\n");
+
+        let _ = render_editor_to_string(&editor);
+        handle_key(&mut editor, key('i'));
+        for ch in "fast ".chars() {
+            handle_key(&mut editor, key(ch));
+        }
+
+        assert_eq!(editor.mode, Mode::Insert);
+        assert!(editor.buffer().dirty);
+
+        let rendered = render_editor_to_string(&editor);
+
+        assert!(
+            rendered.contains("fast alpha"),
+            "insert workflow render should include inserted text; output={rendered:?}"
+        );
+        assert!(
+            rendered.contains("INSERT"),
+            "insert workflow render should show insert mode in statusline; output={rendered:?}"
+        );
+        assert!(
+            rendered.contains("[+]"),
+            "insert workflow render should show dirty marker in statusline; output={rendered:?}"
+        );
+    }
+
+    #[test]
+    fn full_render_after_command_prompt_workflow_shows_command_input() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha\n");
+
+        let _ = render_editor_to_string(&editor);
+        handle_key(&mut editor, key(':'));
+        handle_key(&mut editor, key('w'));
+
+        assert_eq!(editor.mode, Mode::Command);
+
+        let rendered = render_editor_to_string(&editor);
+
+        assert!(
+            rendered.contains(":w"),
+            "command prompt render should include typed command input; output={rendered:?}"
+        );
+    }
+
+    #[test]
+    fn full_render_after_search_prompt_workflow_shows_search_input() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("Nevi search target\nanother Nevi target\n");
+
+        let _ = render_editor_to_string(&editor);
+        handle_key(&mut editor, key('/'));
+        for ch in "Nev".chars() {
+            handle_key(&mut editor, key(ch));
+        }
+
+        assert_eq!(editor.mode, Mode::Search);
+        assert!(!editor.search_matches.is_empty());
+
+        let rendered = render_editor_to_string(&editor);
+
+        assert!(
+            rendered.contains("/Nev"),
+            "search prompt render should include typed search input; output={rendered:?}"
+        );
+        assert!(
+            rendered.contains(&background_sequence(editor.theme().ui.search_match_bg)),
+            "search prompt render should include incremental search highlights; output={rendered:?}"
+        );
+    }
+
+    #[test]
+    fn full_render_after_visual_line_workflow_keeps_line_selection_highlight_visible() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha line\nbeta line\ngamma line\n");
+
+        let _ = render_editor_to_string(&editor);
+        handle_key(&mut editor, shift_key('V'));
+        handle_key(&mut editor, key('j'));
+
+        assert_eq!(editor.mode, Mode::VisualLine);
+        assert_eq!(editor.get_visual_range(), (0, 0, 1, 9));
+
+        let rendered = render_editor_to_string(&editor);
+        let selection_bg = background_sequence(editor.theme().ui.selection);
+
+        assert!(
+            rendered.contains(&selection_bg),
+            "visual-line workflow render should include selection background; output={rendered:?}"
+        );
+        assert!(
+            rendered.contains("alpha line") && rendered.contains("beta line"),
+            "visual-line workflow render should include selected lines; output={rendered:?}"
+        );
+    }
+
+    #[test]
+    fn full_render_after_visual_block_workflow_keeps_block_selection_highlight_visible() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("abcd\nefgh\nijkl\n");
+
+        let _ = render_editor_to_string(&editor);
+        handle_key(&mut editor, ctrl_key('v'));
+        handle_key(&mut editor, key('j'));
+        handle_key(&mut editor, key('l'));
+
+        assert_eq!(editor.mode, Mode::VisualBlock);
+        assert_eq!(editor.get_visual_range(), (0, 0, 1, 1));
+
+        let rendered = render_editor_to_string(&editor);
+        let selection_bg = background_sequence(editor.theme().ui.selection);
+
+        assert!(
+            rendered.contains(&selection_bg),
+            "visual-block workflow render should include selection background; output={rendered:?}"
+        );
+        assert!(
+            rendered.contains("ab") && rendered.contains("ef"),
+            "visual-block workflow render should include selected block text; output={rendered:?}"
+        );
+    }
+
+    #[test]
+    fn full_render_after_finder_workflow_shows_finder_overlay() {
+        let mut editor = Editor::default();
+        editor.set_size(100, 24);
+        editor.finder.open_buffers(vec![
+            (0, "alpha.rs".to_string(), PathBuf::from("alpha.rs")),
+            (1, "beta.rs".to_string(), PathBuf::from("beta.rs")),
+        ]);
+        editor.mode = Mode::Finder;
+
+        let rendered = render_editor_to_string(&editor);
+
+        assert!(
+            rendered.contains("Buffers"),
+            "finder render should include finder title; output={rendered:?}"
+        );
+        assert!(
+            rendered.contains("alpha.rs") && rendered.contains("beta.rs"),
+            "finder render should include finder results; output={rendered:?}"
+        );
+    }
+
+    #[test]
+    fn partial_render_after_status_change_updates_statusline_without_repainting_buffer_text() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("statusline target\n");
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+        editor.set_lsp_status("LSP: ready");
+
+        let rendered = render_editor_to_string(&editor);
+
+        assert!(
+            !rendered.contains("statusline target"),
+            "statusline-only render should not repaint buffer text; output={rendered:?}"
+        );
+        assert!(
+            rendered.contains("LSP: ready"),
+            "statusline update render should include updated LSP status; output={rendered:?}"
+        );
+    }
+
+    #[test]
     fn command_ctrl_b_moves_to_beginning_of_command_line() {
         let mut editor = Editor::default();
         editor.enter_command_mode_with_input("write buffer");
