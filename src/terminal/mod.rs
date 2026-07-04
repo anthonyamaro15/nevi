@@ -193,6 +193,11 @@ struct RenderLineContext<'a> {
     tab_width: usize,
 }
 
+#[derive(Clone, Copy)]
+struct RenderTextOptions {
+    extend_visual_selection_past_line_end: bool,
+}
+
 impl RenderLineContext<'_> {
     fn base_bg(&self) -> Color {
         if self.is_cursor_line {
@@ -206,6 +211,7 @@ impl RenderLineContext<'_> {
         source_col_for_wrap_segment_position(self.col_offset, self.virtual_prefix_chars, visual_idx)
     }
 
+    #[cfg(test)]
     fn style_for_source_col(&self, source_col: usize) -> RenderLineCellStyle {
         self.style_for_source_col_with_syntax(source_col, self.syntax_style_at(source_col))
     }
@@ -262,16 +268,12 @@ impl RenderLineContext<'_> {
         }
     }
 
+    #[cfg(test)]
     fn syntax_style_at(&self, source_col: usize) -> Option<SyntaxStyle> {
         self.highlights
             .iter()
             .find(|h| source_col >= h.start_col && source_col < h.end_col)
             .map(|h| h.style)
-    }
-
-    fn style_for_position(&self, visual_idx: usize) -> Option<RenderLineCellStyle> {
-        self.source_col_for_position(visual_idx)
-            .map(|source_col| self.style_for_source_col(source_col))
     }
 
     fn selection_end_for_line(&self, line_len: usize) -> Option<usize> {
@@ -629,20 +631,19 @@ fn explorer_action_input_view(
     (visible, cursor_x)
 }
 
-fn print_editor_char(ch: char, tab_width: usize) -> usize {
+fn write_editor_char<W: Write>(writer: &mut W, ch: char, tab_width: usize) -> io::Result<usize> {
     let width = editor_char_display_width(ch, tab_width);
     if ch == '\t' {
         for _ in 0..width {
-            print!(" ");
+            write!(writer, " ")?;
         }
-        width
     } else if ch.is_control() {
-        print!(" ");
-        1
+        write!(writer, " ")?;
     } else {
-        print!("{}", ch);
-        width
+        write!(writer, "{}", ch)?;
     }
+
+    Ok(width)
 }
 
 /// Dim a color by reducing its brightness (for hidden files, etc.)
@@ -782,6 +783,114 @@ fn source_col_for_wrap_segment_position(
     } else {
         Some(start_col + visual_idx - virtual_prefix_chars)
     }
+}
+
+fn render_line_text_with_context<W: Write>(
+    writer: &mut W,
+    text: &str,
+    context: &RenderLineContext<'_>,
+    options: RenderTextOptions,
+) -> anyhow::Result<usize> {
+    let chars: Vec<char> = text.chars().collect();
+    let line_len = chars.len();
+    let base_bg = context.base_bg();
+    let selection_end = options
+        .extend_visual_selection_past_line_end
+        .then(|| context.selection_end_for_line(line_len))
+        .flatten();
+
+    let mut highlight_idx = 0;
+    let mut current_fg: Option<Color> = None;
+    let mut current_bg: Option<Color> = None;
+    let mut current_bold = false;
+    let mut current_italic = false;
+    let mut current_underline_color: Option<Color> = None;
+    let mut rendered_cols = 0;
+
+    for (visual_idx, ch) in chars.iter().enumerate() {
+        let cell_style = if let Some(source_col) = context.source_col_for_position(visual_idx) {
+            let syntax_style =
+                Terminal::get_syntax_style_at(context.highlights, source_col, &mut highlight_idx);
+            context.style_for_source_col_with_syntax(source_col, syntax_style)
+        } else {
+            RenderLineCellStyle {
+                fg: context.colors.editor_fg,
+                bg: base_bg,
+                bold: false,
+                italic: false,
+                underline_color: None,
+                jump_label: None,
+            }
+        };
+
+        if let Some(label) = cell_style.jump_label {
+            apply_labeled_jump_style(
+                writer,
+                context.colors.jump_label_bg,
+                context.colors.jump_label_fg,
+            )?;
+            rendered_cols += write_editor_char(writer, label, context.tab_width)?;
+            restore_after_labeled_jump(writer, base_bg, context.colors.editor_fg)?;
+            current_fg = Some(context.colors.editor_fg);
+            current_bg = Some(base_bg);
+            current_bold = false;
+            current_italic = false;
+            current_underline_color = None;
+            continue;
+        }
+
+        if Some(cell_style.bg) != current_bg {
+            execute!(writer, SetBackgroundColor(cell_style.bg))?;
+            current_bg = Some(cell_style.bg);
+        }
+        if Some(cell_style.fg) != current_fg {
+            execute!(writer, SetForegroundColor(cell_style.fg))?;
+            current_fg = Some(cell_style.fg);
+        }
+        if cell_style.bold != current_bold {
+            execute!(
+                writer,
+                SetAttribute(if cell_style.bold {
+                    Attribute::Bold
+                } else {
+                    Attribute::NoBold
+                })
+            )?;
+            current_bold = cell_style.bold;
+        }
+        if cell_style.italic != current_italic {
+            execute!(
+                writer,
+                SetAttribute(if cell_style.italic {
+                    Attribute::Italic
+                } else {
+                    Attribute::NoItalic
+                })
+            )?;
+            current_italic = cell_style.italic;
+        }
+        if cell_style.underline_color != current_underline_color {
+            apply_diagnostic_underline(writer, cell_style.underline_color, cell_style.fg)?;
+            current_underline_color = cell_style.underline_color;
+        }
+
+        rendered_cols += write_editor_char(writer, *ch, context.tab_width)?;
+    }
+
+    if selection_end.is_some_and(|end| end > line_len) {
+        execute!(writer, SetBackgroundColor(context.colors.selection_bg))?;
+        write!(writer, " ")?;
+        rendered_cols += 1;
+    }
+
+    execute!(
+        writer,
+        SetAttribute(Attribute::Reset),
+        SetBackgroundColor(base_bg),
+        SetForegroundColor(context.colors.editor_fg)
+    )?;
+
+    Ok(rendered_cols)
 }
 
 #[cfg(test)]
@@ -2057,98 +2166,14 @@ impl Terminal {
         text: &str,
         context: &RenderLineContext<'_>,
     ) -> anyhow::Result<usize> {
-        let chars: Vec<char> = text.chars().collect();
-        let base_bg = context.base_bg();
-
-        let mut current_fg: Option<Color> = None;
-        let mut current_bg: Option<Color> = None;
-        let mut current_bold = false;
-        let mut current_italic = false;
-        let mut current_underline_color: Option<Color> = None;
-        let mut rendered_cols = 0;
-
-        for (i, ch) in chars.iter().enumerate() {
-            // Calculate the actual column in the original line. Wrapped continuation
-            // indentation is virtual text, so it has no source column.
-            let cell_style = context
-                .style_for_position(i)
-                .unwrap_or(RenderLineCellStyle {
-                    fg: context.colors.editor_fg,
-                    bg: base_bg,
-                    bold: false,
-                    italic: false,
-                    underline_color: None,
-                    jump_label: None,
-                });
-
-            if let Some(label) = cell_style.jump_label {
-                apply_labeled_jump_style(
-                    &mut self.stdout,
-                    context.colors.jump_label_bg,
-                    context.colors.jump_label_fg,
-                )?;
-                rendered_cols += print_editor_char(label, context.tab_width);
-                restore_after_labeled_jump(&mut self.stdout, base_bg, context.colors.editor_fg)?;
-                current_fg = Some(context.colors.editor_fg);
-                current_bg = Some(base_bg);
-                current_bold = false;
-                current_italic = false;
-                current_underline_color = None;
-                continue;
-            }
-
-            // Only change colors when necessary
-            if Some(cell_style.bg) != current_bg {
-                execute!(self.stdout, SetBackgroundColor(cell_style.bg))?;
-                current_bg = Some(cell_style.bg);
-            }
-            if Some(cell_style.fg) != current_fg {
-                execute!(self.stdout, SetForegroundColor(cell_style.fg))?;
-                current_fg = Some(cell_style.fg);
-            }
-            if cell_style.bold != current_bold {
-                execute!(
-                    self.stdout,
-                    SetAttribute(if cell_style.bold {
-                        Attribute::Bold
-                    } else {
-                        Attribute::NoBold
-                    })
-                )?;
-                current_bold = cell_style.bold;
-            }
-            if cell_style.italic != current_italic {
-                execute!(
-                    self.stdout,
-                    SetAttribute(if cell_style.italic {
-                        Attribute::Italic
-                    } else {
-                        Attribute::NoItalic
-                    })
-                )?;
-                current_italic = cell_style.italic;
-            }
-            if cell_style.underline_color != current_underline_color {
-                apply_diagnostic_underline(
-                    &mut self.stdout,
-                    cell_style.underline_color,
-                    cell_style.fg,
-                )?;
-                current_underline_color = cell_style.underline_color;
-            }
-
-            rendered_cols += print_editor_char(*ch, context.tab_width);
-        }
-
-        // Restore to base background/foreground and clear text attributes.
-        execute!(
-            self.stdout,
-            SetAttribute(Attribute::Reset),
-            SetBackgroundColor(base_bg),
-            SetForegroundColor(context.colors.editor_fg)
-        )?;
-
-        Ok(rendered_cols)
+        render_line_text_with_context(
+            &mut self.stdout,
+            text,
+            context,
+            RenderTextOptions {
+                extend_visual_selection_past_line_end: false,
+            },
+        )
     }
 
     /// Draw separator lines between panes
@@ -6014,103 +6039,14 @@ impl Terminal {
         line: &str,
         context: &RenderLineContext<'_>,
     ) -> anyhow::Result<usize> {
-        let chars: Vec<char> = line.chars().collect();
-        let line_len = chars.len();
-        let base_bg = context.base_bg();
-        let selection_end = context.selection_end_for_line(line_len);
-
-        // Render character by character
-        let mut highlight_idx = 0;
-        let mut current_fg: Option<Color> = None;
-        let mut current_bg: Option<Color> = None;
-        let mut current_bold = false;
-        let mut current_italic = false;
-        let mut current_underline_color: Option<Color> = None;
-        let mut rendered_cols = 0;
-        for (i, ch) in chars.iter().enumerate() {
-            // Map display column to actual buffer column
-            let actual_col = context.col_offset + i;
-
-            // Find syntax color for this column
-            let syntax_style =
-                Self::get_syntax_style_at(context.highlights, actual_col, &mut highlight_idx);
-            let cell_style = context.style_for_source_col_with_syntax(actual_col, syntax_style);
-
-            if let Some(label) = cell_style.jump_label {
-                apply_labeled_jump_style(
-                    &mut self.stdout,
-                    context.colors.jump_label_bg,
-                    context.colors.jump_label_fg,
-                )?;
-                rendered_cols += print_editor_char(label, context.tab_width);
-                restore_after_labeled_jump(&mut self.stdout, base_bg, context.colors.editor_fg)?;
-                current_fg = Some(context.colors.editor_fg);
-                current_bg = Some(base_bg);
-                current_bold = false;
-                current_italic = false;
-                current_underline_color = None;
-                continue;
-            }
-
-            // Only change colors when necessary
-            if Some(cell_style.bg) != current_bg {
-                execute!(self.stdout, SetBackgroundColor(cell_style.bg))?;
-                current_bg = Some(cell_style.bg);
-            }
-            if Some(cell_style.fg) != current_fg {
-                execute!(self.stdout, SetForegroundColor(cell_style.fg))?;
-                current_fg = Some(cell_style.fg);
-            }
-            if cell_style.bold != current_bold {
-                execute!(
-                    self.stdout,
-                    SetAttribute(if cell_style.bold {
-                        Attribute::Bold
-                    } else {
-                        Attribute::NoBold
-                    })
-                )?;
-                current_bold = cell_style.bold;
-            }
-            if cell_style.italic != current_italic {
-                execute!(
-                    self.stdout,
-                    SetAttribute(if cell_style.italic {
-                        Attribute::Italic
-                    } else {
-                        Attribute::NoItalic
-                    })
-                )?;
-                current_italic = cell_style.italic;
-            }
-            if cell_style.underline_color != current_underline_color {
-                apply_diagnostic_underline(
-                    &mut self.stdout,
-                    cell_style.underline_color,
-                    cell_style.fg,
-                )?;
-                current_underline_color = cell_style.underline_color;
-            }
-
-            rendered_cols += print_editor_char(*ch, context.tab_width);
-        }
-
-        // Handle selection extending past line end
-        if selection_end.is_some_and(|end| end > line_len) {
-            execute!(self.stdout, SetBackgroundColor(context.colors.selection_bg))?;
-            print!(" ");
-            rendered_cols += 1;
-        }
-
-        // Restore to base background/foreground and clear text attributes.
-        execute!(
-            self.stdout,
-            SetAttribute(Attribute::Reset),
-            SetBackgroundColor(base_bg),
-            SetForegroundColor(context.colors.editor_fg)
-        )?;
-
-        Ok(rendered_cols)
+        render_line_text_with_context(
+            &mut self.stdout,
+            line,
+            context,
+            RenderTextOptions {
+                extend_visual_selection_past_line_end: true,
+            },
+        )
     }
 
     /// Get the syntax color at a given column position
@@ -10206,8 +10142,9 @@ mod tests {
     use super::{
         apply_diagnostic_underline, apply_labeled_jump_style, diagnostic_at_col,
         diagnostic_underline_color, execute_command, execute_leader_action,
-        finder_preview_match_ranges, handle_insert_mode, handle_key, replace_completion_text,
-        restore_after_labeled_jump, RenderLineColors, RenderLineContext, Terminal,
+        finder_preview_match_ranges, handle_insert_mode, handle_key, render_line_text_with_context,
+        replace_completion_text, restore_after_labeled_jump, RenderLineColors, RenderLineContext,
+        RenderTextOptions, Terminal,
     };
     use crate::commands::{Command, CommandPopupMode};
     use crate::config::{KeymapEntry, Settings};
@@ -11187,6 +11124,57 @@ mod tests {
         assert_eq!(cell.fg, Color::Black);
         assert!(!cell.bold, "search match should not inherit syntax bold");
         assert_eq!(cell.underline_color, None);
+    }
+
+    #[test]
+    fn render_line_text_with_context_can_extend_visual_selection_past_line_end() {
+        crossterm::style::force_color_output(true);
+        let diagnostics = Vec::<&Diagnostic>::new();
+        let highlights = Vec::<HighlightSpan>::new();
+        let search_matches = Vec::<(usize, usize, usize)>::new();
+        let jump_labels = Vec::<(usize, char)>::new();
+        let colors = RenderLineColors {
+            editor_bg: Color::Black,
+            editor_fg: Color::White,
+            cursor_line_bg: Color::DarkGrey,
+            selection_bg: Color::DarkBlue,
+            search_match_bg: Color::Yellow,
+            search_match_fg: Color::Black,
+            jump_label_bg: Color::Green,
+            jump_label_fg: Color::Black,
+            diagnostic_error_color: Color::Red,
+            diagnostic_hint_color: Color::DarkGrey,
+        };
+        let context = RenderLineContext {
+            line_idx: 0,
+            col_offset: 0,
+            virtual_prefix_chars: 0,
+            highlights: &highlights,
+            visual_range: Some((0, 0, 0, 2)),
+            mode: &Mode::Visual,
+            is_cursor_line: false,
+            search_matches: &search_matches,
+            jump_labels: &jump_labels,
+            diagnostics: &diagnostics,
+            colors,
+            tab_width: 4,
+        };
+        let mut output = Vec::new();
+
+        let rendered_cols = render_line_text_with_context(
+            &mut output,
+            "ab",
+            &context,
+            RenderTextOptions {
+                extend_visual_selection_past_line_end: true,
+            },
+        )
+        .expect("render line text");
+
+        assert_eq!(rendered_cols, 3);
+        let rendered = String::from_utf8(output).expect("utf8");
+        assert!(rendered.contains("ab"));
+        assert!(rendered.contains("\x1b[48;5;4m "));
     }
 
     #[test]
