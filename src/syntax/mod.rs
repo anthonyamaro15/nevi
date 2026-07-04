@@ -10,6 +10,13 @@ use tree_sitter::{Parser, Query, Tree};
 
 use crate::editor::Buffer;
 
+pub const MAX_HIGHLIGHT_LINES: usize = 200_000;
+pub const MAX_HIGHLIGHT_CHARS: usize = 2_000_000;
+
+pub fn exceeds_highlight_limits(line_count: usize, char_count: usize) -> bool {
+    line_count > MAX_HIGHLIGHT_LINES || char_count > MAX_HIGHLIGHT_CHARS
+}
+
 /// Manages syntax highlighting for a buffer
 pub struct SyntaxManager {
     /// Tree-sitter parser
@@ -425,10 +432,7 @@ impl SyntaxManager {
             return;
         }
 
-        const MAX_HIGHLIGHT_LINES: usize = 200_000;
-        const MAX_HIGHLIGHT_CHARS: usize = 2_000_000;
-
-        if buffer.len_lines() > MAX_HIGHLIGHT_LINES || buffer.len_chars() > MAX_HIGHLIGHT_CHARS {
+        if exceeds_highlight_limits(buffer.len_lines(), buffer.len_chars()) {
             self.tree = None;
             self.source_cache.clear();
             self.line_start_bytes.clear();

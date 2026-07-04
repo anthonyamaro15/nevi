@@ -2843,6 +2843,11 @@ impl Terminal {
         } else {
             ""
         };
+        let large_file = if editor.current_buffer_large_file_mode_active() {
+            " [large]"
+        } else {
+            ""
+        };
         let modified = if editor.buffer().dirty { " [+]" } else { "" };
 
         // Show macro recording indicator
@@ -2863,8 +2868,8 @@ impl Terminal {
 
         let mode_display = format!(" {} ", mode_str);
         let rest_left = format!(
-            "{}{} | {}{}{}{} ",
-            pending, recording, project_name, filename, read_only, modified
+            "{}{} | {}{}{}{}{} ",
+            pending, recording, project_name, filename, large_file, read_only, modified
         );
 
         // Right side: LSP status, language and position

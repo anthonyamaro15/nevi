@@ -38,11 +38,20 @@ pub struct HealthReportInput {
     pub languages_status: FileCheckStatus,
     pub keymap: KeymapHealth,
     pub external_tools: ExternalToolsHealth,
+    pub large_file: Option<LargeFileHealth>,
     pub profile_enabled: bool,
     pub profile_log_path: PathBuf,
     pub profile_log_status: ProfileLogStatus,
     pub lsp_enabled: bool,
     pub lsp_servers: Vec<LspServerHealth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LargeFileHealth {
+    pub buffer_name: String,
+    pub line_count: usize,
+    pub char_count: usize,
+    pub syntax_degraded: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -249,6 +258,41 @@ pub fn build_health_report(input: &HealthReportInput) -> String {
             report.push_str(&format!("- Profile summary: error ({error})\n"));
         }
     }
+    report.push_str(&format!(
+        "- Large file thresholds: syntax highlighting is disabled above {} lines or {} chars\n",
+        crate::syntax::MAX_HIGHLIGHT_LINES,
+        crate::syntax::MAX_HIGHLIGHT_CHARS
+    ));
+    match &input.large_file {
+        Some(large_file) => {
+            report.push_str(&format!(
+                "- Current buffer: {} ({} lines, {} chars)\n",
+                large_file.buffer_name, large_file.line_count, large_file.char_count
+            ));
+            report.push_str(&format!(
+                "- Current buffer large-file mode: {}\n",
+                if large_file.syntax_degraded {
+                    "active"
+                } else {
+                    "inactive"
+                }
+            ));
+            report.push_str(&format!(
+                "- Syntax highlighting: {}\n",
+                if large_file.syntax_degraded {
+                    "degraded to keep input/rendering responsive"
+                } else {
+                    "full"
+                }
+            ));
+        }
+        None => {
+            report.push_str("- Current buffer large-file mode: unavailable\n");
+        }
+    }
+    report.push_str(
+        "- Live grep large-file cutoff: none; it respects ignore patterns and binary extensions\n",
+    );
     report.push('\n');
 
     report.push_str("## LSP\n");
@@ -312,6 +356,7 @@ pub fn build_health_report(input: &HealthReportInput) -> String {
 pub fn collect_health_report(
     settings: &crate::config::Settings,
     languages_config: &crate::config::LanguagesConfig,
+    large_file: Option<LargeFileHealth>,
 ) -> String {
     let config_path = crate::config::config_path();
     let languages_path = crate::config::languages::languages_config_path();
@@ -330,6 +375,7 @@ pub fn collect_health_report(
             languages_config,
             command_exists_on_path,
         ),
+        large_file,
         profile_enabled: profile_enabled_from_env(),
         profile_log_status: inspect_profile_log(&profile_log_path),
         profile_log_path,
@@ -742,6 +788,7 @@ mod tests {
             languages_status: FileCheckStatus::Missing,
             keymap: default_keymap_health(),
             external_tools: default_external_tools_health(),
+            large_file: None,
             profile_enabled: false,
             profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
             profile_log_status: ProfileLogStatus::Missing,
@@ -774,6 +821,7 @@ mod tests {
             languages_status: FileCheckStatus::Unavailable,
             keymap: default_keymap_health(),
             external_tools: default_external_tools_health(),
+            large_file: None,
             profile_enabled: true,
             profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
             profile_log_status: ProfileLogStatus::Summary(vec![ProfileMetricSummary {
@@ -804,6 +852,7 @@ mod tests {
             languages_status: FileCheckStatus::Unavailable,
             keymap: default_keymap_health(),
             external_tools: default_external_tools_health(),
+            large_file: None,
             profile_enabled: false,
             profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
             profile_log_status: ProfileLogStatus::Summary(vec![ProfileMetricSummary {
@@ -822,6 +871,29 @@ mod tests {
 
         assert!(report.contains("Profiling: disabled for this session"));
         assert!(report.contains("Profile summary: found from saved log"));
+    }
+
+    #[test]
+    fn health_report_lists_large_file_limits() {
+        let report = build_health_report(&HealthReportInput {
+            config_path: None,
+            config_status: FileCheckStatus::Unavailable,
+            languages_path: None,
+            languages_status: FileCheckStatus::Unavailable,
+            keymap: default_keymap_health(),
+            external_tools: default_external_tools_health(),
+            large_file: None,
+            profile_enabled: false,
+            profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
+            profile_log_status: ProfileLogStatus::Missing,
+            lsp_enabled: true,
+            lsp_servers: Vec::new(),
+        });
+
+        assert!(report.contains("Large file thresholds"));
+        assert!(report.contains("200000 lines"));
+        assert!(report.contains("2000000 chars"));
+        assert!(report.contains("Live grep large-file cutoff: none"));
     }
 
     #[test]
@@ -847,6 +919,7 @@ mod tests {
             languages_status: FileCheckStatus::Unavailable,
             keymap: keymap_health_from_settings(&settings.keymap),
             external_tools: default_external_tools_health(),
+            large_file: None,
             profile_enabled: false,
             profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
             profile_log_status: ProfileLogStatus::Missing,
@@ -875,6 +948,7 @@ mod tests {
             languages_path: None,
             languages_status: FileCheckStatus::Unavailable,
             keymap: default_keymap_health(),
+            large_file: None,
             profile_enabled: false,
             profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
             profile_log_status: ProfileLogStatus::Missing,

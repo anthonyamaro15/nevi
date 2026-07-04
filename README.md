@@ -450,9 +450,12 @@ terminal-only renders.
 Run `:checkhealth` (or `:Health`) inside Nevi to open a read-only `[health]`
 buffer with config paths, config discoverability commands, keymap overrides and
 warnings, LSP settings, optional external tool checks, formatter command checks,
-profiling status, and any profile summary from `/tmp/nevi_profile.log`. Because
-it is a regular buffer, normal motions, search, and yank commands work there.
-Profile summaries are written when a profiled Nevi session exits.
+profiling status, large-file thresholds, the active buffer's large-file mode,
+and any profile summary from `/tmp/nevi_profile.log`. When syntax highlighting
+is degraded for a very large buffer, the statusline shows `[large]` and
+`:checkhealth` reports the active threshold. Because it is a regular buffer,
+normal motions, search, and yank commands work there. Profile summaries are
+written when a profiled Nevi session exits.
 
 ## License
 

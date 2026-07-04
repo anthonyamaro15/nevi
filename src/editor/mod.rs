@@ -1739,7 +1739,11 @@ impl Editor {
 
     /// Open a health report in a read-only virtual buffer.
     pub fn open_health_report(&mut self) {
-        let report = crate::health::collect_health_report(&self.settings, &self.languages_config);
+        let report = crate::health::collect_health_report(
+            &self.settings,
+            &self.languages_config,
+            Some(self.current_large_file_health()),
+        );
         self.open_virtual_read_only_buffer("[health]", &report, Some("health.md"));
     }
 
@@ -2666,6 +2670,24 @@ impl Editor {
     /// Get a mutable reference to the current buffer
     pub fn buffer_mut(&mut self) -> &mut Buffer {
         &mut self.buffers[self.current_buffer_idx]
+    }
+
+    pub fn current_large_file_health(&self) -> crate::health::LargeFileHealth {
+        let buffer = self.buffer();
+        let line_count = buffer.len_lines();
+        let char_count = buffer.len_chars();
+
+        crate::health::LargeFileHealth {
+            buffer_name: buffer.display_name(),
+            line_count,
+            char_count,
+            syntax_degraded: crate::syntax::exceeds_highlight_limits(line_count, char_count),
+        }
+    }
+
+    pub fn current_buffer_large_file_mode_active(&self) -> bool {
+        let buffer = self.buffer();
+        crate::syntax::exceeds_highlight_limits(buffer.len_lines(), buffer.len_chars())
     }
 
     fn reject_read_only_edit(&mut self) -> bool {
@@ -11064,7 +11086,21 @@ mod tests {
         assert!(content.contains("## Configuration"));
         assert!(content.contains("## Keymaps"));
         assert!(content.contains("## Performance"));
+        assert!(content.contains("Current buffer large-file mode: inactive"));
         assert!(content.contains("## LSP"));
+    }
+
+    #[test]
+    fn health_report_shows_current_large_file_mode() {
+        let mut editor = Editor::default();
+        let content = "x".repeat(crate::syntax::MAX_HIGHLIGHT_CHARS + 1);
+        editor.buffer_mut().set_content(&content);
+
+        editor.open_health_report();
+
+        let report = editor.buffer().content();
+        assert!(report.contains("Current buffer large-file mode: active"));
+        assert!(report.contains("Syntax highlighting: degraded"));
     }
 
     #[test]
