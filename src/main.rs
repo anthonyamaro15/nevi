@@ -1968,6 +1968,7 @@ fn main() -> anyhow::Result<()> {
                     "render",
                     t_render.elapsed()
                 );
+                editor.render_damage.clear_after_full_render();
                 needs_redraw = false;
                 terminal_redraw_pending = false;
                 last_render = now;

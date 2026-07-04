@@ -1040,6 +1040,8 @@ pub struct Editor {
     pub markdown_preview: Option<crate::markdown_preview::MarkdownPreviewState>,
     /// Recent in-memory performance timing events.
     pub flight_recorder: crate::perf::FlightRecorder,
+    /// Dirty regions recorded for future partial-rendering passes.
+    pub render_damage: crate::render_damage::RenderDamage,
     /// Last project-wide replace preview, pending explicit apply.
     project_replace_preview: Option<crate::project_replace::ProjectReplacePreview>,
     /// Active labeled jump state, if the user is choosing a visible target.
@@ -1540,6 +1542,7 @@ impl Editor {
             theme_picker: None,
             markdown_preview: None,
             flight_recorder: crate::perf::FlightRecorder::default(),
+            render_damage: crate::render_damage::RenderDamage::full(),
             project_replace_preview: None,
             labeled_jump: None,
             marks: Marks::new(),
@@ -2182,6 +2185,7 @@ impl Editor {
     /// Set the LSP status (persistent, shown in status bar)
     pub fn set_lsp_status<S: Into<String>>(&mut self, msg: S) {
         self.lsp_status = Some(msg.into());
+        self.render_damage.mark_statusline();
     }
 
     /// Update diagnostics for a file URI
@@ -3485,8 +3489,12 @@ impl Editor {
 
     /// Set terminal size
     pub fn set_size(&mut self, width: u16, height: u16) {
+        let size_changed = self.term_width != width || self.term_height != height;
         self.term_width = width;
         self.term_height = height;
+        if size_changed {
+            self.render_damage.mark_full();
+        }
         if let Some(preview) = &mut self.markdown_preview {
             preview.reflow(crate::markdown_preview::preview_content_width(width));
         }
@@ -5464,29 +5472,34 @@ impl Editor {
     /// Set a status message
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_message = Some(msg.into());
+        self.render_damage.mark_command_line();
     }
 
     /// Clear status message
     pub fn clear_status(&mut self) {
         self.status_message = None;
+        self.render_damage.mark_command_line();
     }
 
     /// Enter command mode
     pub fn enter_command_mode(&mut self) {
         self.mode = Mode::Command;
         self.command_line.begin_prompt();
+        self.render_damage.mark_command_line();
     }
 
     /// Enter command mode with prefilled input.
     pub fn enter_command_mode_with_input(&mut self, input: impl Into<String>) {
         self.mode = Mode::Command;
         self.command_line.begin_prompt_with_input(input);
+        self.render_damage.mark_command_line();
     }
 
     /// Exit command mode back to normal
     pub fn exit_command_mode(&mut self) {
         self.mode = Mode::Normal;
         self.command_line.clear();
+        self.render_damage.mark_command_line();
     }
 
     /// Go to a specific line number (1-indexed)
@@ -11122,6 +11135,25 @@ mod tests {
         let report = editor.buffer().content();
         assert!(report.contains("Current buffer large-file mode: active"));
         assert!(report.contains("Syntax highlighting: degraded"));
+    }
+
+    #[test]
+    fn editor_marks_render_damage_for_status_lsp_and_resize_changes() {
+        let mut editor = Editor::default();
+        editor.render_damage.clear_after_full_render();
+
+        editor.set_status("saved");
+        assert!(editor.render_damage.command_line());
+        assert!(!editor.render_damage.requires_full_render());
+
+        editor.render_damage.clear_after_full_render();
+        editor.set_lsp_status("LSP: ready");
+        assert!(editor.render_damage.statusline());
+        assert!(!editor.render_damage.requires_full_render());
+
+        editor.render_damage.clear_after_full_render();
+        editor.set_size(120, 40);
+        assert!(editor.render_damage.requires_full_render());
     }
 
     #[test]

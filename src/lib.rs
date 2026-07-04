@@ -19,6 +19,7 @@ pub mod lsp;
 pub mod markdown_preview;
 pub mod perf;
 pub mod project_replace;
+pub mod render_damage;
 pub mod syntax;
 pub mod terminal;
 pub mod theme;
@@ -45,5 +46,6 @@ pub use markdown_preview::{
     render_markdown, MarkdownPreview, MarkdownPreviewState, PreviewLine, PreviewLineKind,
     PreviewSpan, PreviewSpanStyle,
 };
+pub use render_damage::RenderDamage;
 pub use terminal::Terminal;
 pub use theme::{Theme, ThemeManager};
