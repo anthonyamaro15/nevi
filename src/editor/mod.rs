@@ -5499,7 +5499,7 @@ impl Editor {
     pub fn exit_command_mode(&mut self) {
         self.mode = Mode::Normal;
         self.command_line.clear();
-        self.render_damage.mark_command_line();
+        self.render_damage.mark_full();
     }
 
     /// Go to a specific line number (1-indexed)
@@ -5952,12 +5952,14 @@ impl Editor {
     pub fn enter_search_forward(&mut self) {
         self.mode = Mode::Search;
         self.search.start(SearchDirection::Forward);
+        self.render_damage.mark_full();
     }
 
     /// Enter search mode (backward search)
     pub fn enter_search_backward(&mut self) {
         self.mode = Mode::Search;
         self.search.start(SearchDirection::Backward);
+        self.render_damage.mark_full();
     }
 
     /// Exit search mode
@@ -5965,11 +5967,15 @@ impl Editor {
         self.mode = Mode::Normal;
         self.search.clear();
         self.search_matches.clear();
+        self.render_damage.mark_full();
     }
 
     /// Clear search highlights (called on non-search movement)
     pub fn clear_search_highlights(&mut self) {
-        self.search_matches.clear();
+        if !self.search_matches.is_empty() {
+            self.search_matches.clear();
+            self.render_damage.mark_full();
+        }
     }
 
     /// Update incremental search matches based on current search input.
@@ -5979,6 +5985,7 @@ impl Editor {
         let pattern = self.search.input.clone();
         if pattern.is_empty() {
             self.search_matches.clear();
+            self.render_damage.mark_full();
             return;
         }
 
@@ -5990,10 +5997,12 @@ impl Editor {
         }
 
         self.refresh_visible_search_matches(&pattern);
+        self.render_damage.mark_full();
     }
 
     /// Execute the current search
     pub fn execute_search(&mut self) {
+        self.render_damage.mark_full();
         let direction = self.search.direction;
         if let Some(pattern) = self.search.execute() {
             self.mode = Mode::Normal;
@@ -6013,6 +6022,7 @@ impl Editor {
 
     /// Search for next occurrence (n)
     pub fn search_next(&mut self) {
+        self.render_damage.mark_full();
         if let Some(pattern) = self.search.last_pattern.clone() {
             // Record jump before searching (search is a jump motion)
             self.record_jump();
@@ -6030,6 +6040,7 @@ impl Editor {
 
     /// Search for previous occurrence (N)
     pub fn search_prev(&mut self) {
+        self.render_damage.mark_full();
         if let Some(pattern) = self.search.last_pattern.clone() {
             // Record jump before searching (search is a jump motion)
             self.record_jump();
@@ -6052,6 +6063,7 @@ impl Editor {
     /// Update search matches from a pattern string (used for n/N/*/#)
     fn update_search_matches_from_pattern(&mut self, pattern: &str) {
         self.search_matches.clear();
+        self.render_damage.mark_full();
 
         if pattern.is_empty() {
             return;
@@ -6094,6 +6106,7 @@ impl Editor {
 
     fn refresh_visible_search_matches(&mut self, pattern: &str) {
         self.search_matches.clear();
+        self.render_damage.mark_full();
 
         if pattern.is_empty() {
             return;
@@ -6163,6 +6176,7 @@ impl Editor {
 
     /// Search for word under cursor forward (*)
     pub fn search_word_forward(&mut self) {
+        self.render_damage.mark_full();
         if let Some(word) = self.get_word_under_cursor() {
             // Set as search pattern
             self.search.last_pattern = Some(word.clone());
@@ -6180,6 +6194,7 @@ impl Editor {
 
     /// Search for word under cursor backward (#)
     pub fn search_word_backward(&mut self) {
+        self.render_damage.mark_full();
         if let Some(word) = self.get_word_under_cursor() {
             // Set as search pattern
             self.search.last_pattern = Some(word.clone());
@@ -6750,18 +6765,21 @@ impl Editor {
     pub fn enter_visual_mode(&mut self) {
         self.mode = Mode::Visual;
         self.visual = VisualSelection::new(self.cursor.line, self.cursor.col);
+        self.render_damage.mark_full();
     }
 
     /// Enter visual line mode
     pub fn enter_visual_line_mode(&mut self) {
         self.mode = Mode::VisualLine;
         self.visual = VisualSelection::new(self.cursor.line, self.cursor.col);
+        self.render_damage.mark_full();
     }
 
     /// Enter visual block mode
     pub fn enter_visual_block_mode(&mut self) {
         self.mode = Mode::VisualBlock;
         self.visual = VisualSelection::new(self.cursor.line, self.cursor.col);
+        self.render_damage.mark_full();
     }
 
     /// Enter insert mode for a Visual Block `I` or `A` edit.
@@ -6801,6 +6819,7 @@ impl Editor {
         });
 
         self.mode = Mode::Insert;
+        self.render_damage.mark_full();
         self.begin_insert_session();
         self.cursor.line = primary_line;
         self.cursor.col = primary_col;
@@ -6822,6 +6841,7 @@ impl Editor {
             });
         }
         self.mode = Mode::Normal;
+        self.render_damage.mark_full();
     }
 
     /// Reselect the last visual selection (gv command)
@@ -6832,6 +6852,7 @@ impl Editor {
             self.cursor.col = sel.cursor_col;
             self.mode = sel.mode;
             self.clamp_cursor();
+            self.render_damage.mark_full();
         }
     }
 
@@ -6842,6 +6863,7 @@ impl Editor {
             Mode::VisualLine => self.mode = Mode::Visual,
             _ => {}
         }
+        self.render_damage.mark_full();
     }
 
     /// Toggle to visual block mode
@@ -6851,6 +6873,7 @@ impl Editor {
             Mode::VisualBlock => self.mode = Mode::Visual,
             _ => {}
         }
+        self.render_damage.mark_full();
     }
 
     /// Get the current visual selection range
@@ -11153,6 +11176,17 @@ mod tests {
 
         editor.render_damage.clear_after_full_render();
         editor.set_size(120, 40);
+        assert!(editor.render_damage.requires_full_render());
+    }
+
+    #[test]
+    fn exiting_command_mode_marks_full_render_damage() {
+        let mut editor = Editor::default();
+        editor.enter_command_mode();
+        editor.render_damage.clear_after_full_render();
+
+        editor.exit_command_mode();
+
         assert!(editor.render_damage.requires_full_render());
     }
 

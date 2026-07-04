@@ -916,6 +916,11 @@ pub struct Terminal {
     restore_terminal_state_on_drop: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PartialRenderKind {
+    StatusLine,
+}
+
 impl Terminal {
     pub fn new() -> anyhow::Result<Self> {
         Self::new_with_writer(Box::new(io::stdout()))
@@ -1049,6 +1054,13 @@ impl Terminal {
     /// Render the editor state to the terminal
     pub fn render(&mut self, editor: &Editor) -> anyhow::Result<()> {
         self.set_mouse_capture(Self::should_capture_mouse(editor))?;
+
+        if self.leader_popup_rect.is_none() {
+            if let Some(kind) = Self::partial_render_kind(editor) {
+                return self.render_partial(editor, kind);
+            }
+        }
+
         execute!(self.stdout, cursor::Hide, cursor::MoveTo(0, 0))?;
 
         // Large overlays fully cover the content area, so repainting the editor
@@ -1145,6 +1157,63 @@ impl Terminal {
         if editor.floating_terminal.is_visible() {
             self.render_floating_terminal(editor)?;
         } else if editor.markdown_preview.is_some() {
+            execute!(self.stdout, cursor::Hide)?;
+        } else {
+            self.position_cursor(editor)?;
+        }
+
+        self.stdout.flush()?;
+        Ok(())
+    }
+
+    fn partial_render_kind(editor: &Editor) -> Option<PartialRenderKind> {
+        let damage = &editor.render_damage;
+        if damage.is_clean()
+            || damage.requires_full_render()
+            || !damage.dirty_editor_rows().is_empty()
+        {
+            return None;
+        }
+
+        if Self::has_partial_render_blocking_ui(editor) {
+            return None;
+        }
+
+        match (damage.statusline(), damage.command_line()) {
+            (true, false) => Some(PartialRenderKind::StatusLine),
+            _ => None,
+        }
+    }
+
+    fn has_partial_render_blocking_ui(editor: &Editor) -> bool {
+        Self::should_skip_background(editor)
+            || editor.mode == Mode::Finder
+            || editor.floating_terminal.is_visible()
+            || editor.completion.active
+            || editor.hover_content.is_some()
+            || editor.signature_help.is_some()
+            || editor.show_diagnostic_float
+            || editor.references_picker.is_some()
+            || editor.code_actions_picker.is_some()
+            || editor.markdown_preview.is_some()
+            || editor.theme_picker.is_some()
+            || !editor.leader_popup_items().is_empty()
+            || editor.command_line.popup_mode != CommandPopupMode::None
+            || !editor.search_matches.is_empty()
+            || editor.mode.is_visual()
+    }
+
+    fn render_partial(&mut self, editor: &Editor, kind: PartialRenderKind) -> anyhow::Result<()> {
+        execute!(self.stdout, cursor::Hide)?;
+
+        match kind {
+            PartialRenderKind::StatusLine => {
+                let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+                self.render_status_line(editor, line_num_width)?;
+            }
+        }
+
+        if editor.markdown_preview.is_some() {
             execute!(self.stdout, cursor::Hide)?;
         } else {
             self.position_cursor(editor)?;
@@ -6394,6 +6463,11 @@ fn play_macro(editor: &mut Editor, register: char, count: usize) {
 
 /// Handle a key event and update editor state
 pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
+    // Until editor-row damage is complete, any user key can affect cursor,
+    // selections, decorations, overlays, or buffer text. Keep key-driven
+    // redraws full-frame and reserve partial rendering for idle async updates.
+    editor.render_damage.mark_full();
+
     // Check for floating terminal toggle (Ctrl-\) - works in any mode
     // Note: Ctrl-\ sends ASCII 28 (File Separator) on Unix terminals
     // We check for both the character and the raw control code
@@ -10181,8 +10255,8 @@ mod tests {
         apply_diagnostic_underline, apply_labeled_jump_style, diagnostic_at_col,
         diagnostic_underline_color, execute_command, execute_leader_action,
         finder_preview_match_ranges, handle_insert_mode, handle_key, render_line_text_with_context,
-        replace_completion_text, restore_after_labeled_jump, RenderLineColors, RenderLineContext,
-        RenderTextOptions, Terminal,
+        replace_completion_text, restore_after_labeled_jump, PartialRenderKind, RenderLineColors,
+        RenderLineContext, RenderTextOptions, Terminal,
     };
     use crate::commands::{Command, CommandPopupMode};
     use crate::config::{KeymapEntry, Settings};
@@ -11822,6 +11896,96 @@ mod tests {
         assert!(Terminal::should_skip_background(&editor));
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn partial_render_kind_allows_only_statusline_damage() {
+        let mut editor = Editor::default();
+        editor.render_damage.clear_after_full_render();
+        editor.render_damage.mark_statusline();
+        assert_eq!(
+            Terminal::partial_render_kind(&editor),
+            Some(PartialRenderKind::StatusLine)
+        );
+    }
+
+    #[test]
+    fn partial_render_kind_rejects_full_editor_or_overlay_damage() {
+        let mut editor = Editor::default();
+        assert_eq!(Terminal::partial_render_kind(&editor), None);
+
+        editor.render_damage.clear_after_full_render();
+        editor.render_damage.mark_editor_row(3);
+        assert_eq!(Terminal::partial_render_kind(&editor), None);
+
+        editor.render_damage.clear_after_full_render();
+        editor.render_damage.mark_command_line();
+        assert_eq!(Terminal::partial_render_kind(&editor), None);
+
+        editor.render_damage.clear_after_full_render();
+        editor.render_damage.mark_statusline();
+        editor.render_damage.mark_command_line();
+        assert_eq!(Terminal::partial_render_kind(&editor), None);
+
+        editor.render_damage.clear_after_full_render();
+        editor.render_damage.mark_statusline();
+        editor.mode = Mode::Finder;
+        assert_eq!(Terminal::partial_render_kind(&editor), None);
+
+        editor.mode = Mode::Command;
+        editor.command_line.popup_mode = CommandPopupMode::History;
+        editor.render_damage.clear_after_full_render();
+        editor.render_damage.mark_command_line();
+        assert_eq!(Terminal::partial_render_kind(&editor), None);
+    }
+
+    #[test]
+    fn partial_render_kind_rejects_statusline_damage_when_search_highlights_are_visible() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("# Nevi\n\nNevi editor\n");
+        editor.enter_search_forward();
+        editor.search.input = "Nevi".to_string();
+        editor.update_incremental_search();
+        assert!(
+            !editor.search_matches.is_empty(),
+            "test setup should produce visible search highlights"
+        );
+
+        editor.render_damage.clear_after_full_render();
+        editor.set_lsp_status("LSP: ready");
+
+        assert_eq!(Terminal::partial_render_kind(&editor), None);
+    }
+
+    #[test]
+    fn partial_render_kind_rejects_statusline_damage_while_visual_selection_is_active() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("alpha beta\n");
+        editor.enter_visual_mode();
+        editor.cursor.col = 4;
+
+        editor.render_damage.clear_after_full_render();
+        editor.set_lsp_status("LSP: ready");
+
+        assert_eq!(Terminal::partial_render_kind(&editor), None);
+    }
+
+    #[test]
+    fn handled_key_events_mark_full_render_damage() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("one\ntwo\n");
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('j'));
+
+        assert!(editor.render_damage.requires_full_render());
+
+        editor.enter_visual_mode();
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('l'));
+
+        assert!(editor.render_damage.requires_full_render());
     }
 
     #[test]
