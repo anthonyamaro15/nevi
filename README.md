@@ -201,6 +201,7 @@ nevi file1.rs file2.rs
 - `:w!` - Force save and overwrite external disk changes
 - `:q` - Quit
 - `:wq` - Save and quit
+- `ZZ` / `:x` - Save if modified and quit
 - `:checkhealth` / `:Health` - Open editor health report in a read-only `[health]` buffer
 - `:ToolInstall` / `:LspInstall` - Open missing LSP/tool install guidance in a read-only `[tool-installer]` buffer
 - `:FlightRecorder` / `:WhySlow` - Open recent in-memory timing report in a read-only `[flight-recorder]` buffer

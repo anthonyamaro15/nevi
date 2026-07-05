@@ -202,6 +202,8 @@ pub enum KeyAction {
     Quit,
     /// Save
     Save,
+    /// Write if modified and quit
+    WriteQuitIfModified,
     /// Window/pane operations
     WindowSplitVertical,
     WindowSplitHorizontal,
@@ -1121,6 +1123,10 @@ impl InputState {
                 self.partial_key = Some('z');
                 KeyAction::Pending
             }
+            (KeyModifiers::SHIFT, KeyCode::Char('Z')) => {
+                self.partial_key = Some('Z');
+                KeyAction::Pending
+            }
             (KeyModifiers::NONE, KeyCode::Char(']')) => {
                 // ] prefix for forward navigation (]d = next diagnostic)
                 self.partial_key = Some(']');
@@ -1444,6 +1450,11 @@ impl InputState {
             ('z', KeyModifiers::NONE, KeyCode::Char('b')) => {
                 self.reset();
                 KeyAction::ScrollBottom
+            }
+            // ZZ - write if modified and quit
+            ('Z', KeyModifiers::SHIFT, KeyCode::Char('Z')) => {
+                self.reset();
+                KeyAction::WriteQuitIfModified
             }
             // ]d - go to next diagnostic
             (']', KeyModifiers::NONE, KeyCode::Char('d')) => {
@@ -2021,6 +2032,13 @@ mod tests {
         }
     }
 
+    fn assert_write_quit_if_modified(keys: &[KeyEvent]) {
+        match run(keys) {
+            KeyAction::WriteQuitIfModified => {}
+            other => panic!("expected write quit action, got {:?}", other),
+        }
+    }
+
     fn assert_text_object(
         keys: &[KeyEvent],
         expected_operator: Operator,
@@ -2107,6 +2125,11 @@ mod tests {
         assert_motion(&[shift('H')], Motion::ScreenTop, 1);
         assert_motion(&[shift('M')], Motion::ScreenMiddle, 1);
         assert_motion(&[shift('L')], Motion::ScreenBottom, 1);
+    }
+
+    #[test]
+    fn normal_zz_maps_to_write_quit_if_modified() {
+        assert_write_quit_if_modified(&[shift('Z'), shift('Z')]);
     }
 
     #[test]

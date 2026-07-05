@@ -888,7 +888,7 @@ While typing an Ex command after `:`.
 | `:qa!` / `:qall!` | Force quit all |
 | `:wq` | Save and quit |
 | `:wqa` / `:wqall` / `:xall` | Save all and quit |
-| `:x` / `:exit` | Save if modified and quit |
+| `:x` / `:exit` / `ZZ` | Save if modified and quit |
 | `:xa` | Save all modified files and quit all |
 | `:e {file}` / `:edit {file}` | Edit/open a file |
 | `:e!` / `:edit!` | Reload current file and discard changes |

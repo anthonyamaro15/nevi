@@ -7155,6 +7155,10 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             }
         }
 
+        KeyAction::WriteQuitIfModified => {
+            execute_command(editor, Command::WriteQuitIfModified);
+        }
+
         // Window/pane operations
         KeyAction::WindowSplitVertical => {
             if let Err(e) = editor.vsplit(None) {
@@ -12092,6 +12096,68 @@ mod tests {
             "local edit\n"
         );
         assert!(!editor.buffer().dirty);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn normal_zz_writes_modified_file_and_quits() {
+        let tmp = unique_temp_dir("nevi_normal_zz_write_quit");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("note.txt");
+        std::fs::write(&path, "original\n").expect("write original");
+
+        let mut editor = Editor::default();
+        editor.open_file(path.clone()).expect("open file");
+        editor.replace_buffer_content("local edit\n");
+
+        handle_key(&mut editor, shift_key('Z'));
+        handle_key(&mut editor, shift_key('Z'));
+
+        assert!(editor.should_quit);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read saved file"),
+            "local edit\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn normal_zz_refuses_dirty_unnamed_buffer_without_quitting() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("scratch edit\n");
+
+        handle_key(&mut editor, shift_key('Z'));
+        handle_key(&mut editor, shift_key('Z'));
+
+        assert!(!editor.should_quit);
+        assert_eq!(editor.status_message.as_deref(), Some("E: No filename"));
+    }
+
+    #[test]
+    fn normal_keymap_can_bind_custom_key_to_write_quit_if_modified() {
+        let tmp = unique_temp_dir("nevi_normal_keymap_write_quit");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("note.txt");
+        std::fs::write(&path, "original\n").expect("write original");
+
+        let mut settings = Settings::default();
+        settings.keymap.normal.push(KeymapEntry {
+            from: "Q".to_string(),
+            to: ":x<CR>".to_string(),
+        });
+        let mut editor = Editor::new(settings);
+        editor.open_file(path.clone()).expect("open file");
+        editor.replace_buffer_content("local edit\n");
+
+        handle_key(&mut editor, shift_key('Q'));
+
+        assert!(editor.should_quit);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read saved file"),
+            "local edit\n"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -47,6 +47,17 @@ status = "implemented"
 vim_default = false
 
 # ----------------------------------------------------------------------------
+# File operations
+# ----------------------------------------------------------------------------
+
+[[normal.file]]
+key = "ZZ"
+action = "write_quit_if_modified"
+desc = "Write if modified and quit"
+status = "implemented"
+vim_default = true
+
+# ----------------------------------------------------------------------------
 # Movement - Basic cursor movement
 # ----------------------------------------------------------------------------
 
