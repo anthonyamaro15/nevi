@@ -1275,6 +1275,7 @@ impl Terminal {
             || editor.code_actions_picker.is_some()
             || editor.markdown_preview.is_some()
             || editor.theme_picker.is_some()
+            || editor.labeled_jump.is_some()
             || !editor.leader_popup_items().is_empty()
             || editor.command_line.popup_mode != CommandPopupMode::None
             || !editor.search_matches.is_empty()
@@ -10878,6 +10879,33 @@ mod tests {
     }
 
     #[test]
+    fn full_render_after_labeled_jump_workflow_keeps_actionable_labels_visible() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha line\nbeta line\ngamma line\n");
+
+        let _ = render_editor_to_string(&editor);
+        execute_command(&mut editor, Command::Jump);
+        handle_key(&mut editor, key('l'));
+        handle_key(&mut editor, key('i'));
+
+        assert_eq!(editor.mode, Mode::Normal);
+        assert_eq!(editor.labeled_jump_labels_for_line(0), vec![(6, 'a')]);
+
+        let rendered = render_editor_to_string(&editor);
+        let jump_label_bg = background_sequence(editor.theme().ui.finder_match);
+
+        assert!(
+            rendered.contains(&jump_label_bg),
+            "labeled-jump render should include label background; output={rendered:?}"
+        );
+        assert!(
+            rendered.contains("a") && rendered.contains("s") && rendered.contains("d"),
+            "labeled-jump render should include visible labels; output={rendered:?}"
+        );
+    }
+
+    #[test]
     fn full_render_after_finder_workflow_shows_finder_overlay() {
         let mut editor = Editor::default();
         editor.set_size(100, 24);
@@ -10956,6 +10984,35 @@ mod tests {
         assert!(
             !rendered.contains("alpha target") && !rendered.contains("gamma target"),
             "dirty editor-row render should not repaint neighboring rows; output={rendered:?}"
+        );
+    }
+
+    #[test]
+    fn partial_render_after_normal_j_repaints_old_and_new_cursor_rows_only() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha row\nbeta row\ngamma row\n");
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('j'));
+
+        assert_eq!(editor.cursor.line, 1);
+        assert_eq!(
+            Terminal::partial_render_kind(&editor),
+            Some(PartialRenderKind::EditorRowsAndStatusLine(vec![0, 1]))
+        );
+
+        let rendered = render_editor_to_string(&editor);
+
+        assert!(
+            rendered.contains("alpha row") && rendered.contains("beta row"),
+            "cursor-row partial render should repaint old and new cursor rows; output={rendered:?}"
+        );
+        assert!(
+            !rendered.contains("gamma row"),
+            "cursor-row partial render should not repaint untouched rows; output={rendered:?}"
         );
     }
 
@@ -12867,6 +12924,26 @@ mod tests {
 
         editor.render_damage.clear_after_full_render();
         editor.set_lsp_status("LSP: ready");
+
+        assert_eq!(Terminal::partial_render_kind(&editor), None);
+    }
+
+    #[test]
+    fn partial_render_kind_rejects_editor_row_damage_when_labeled_jump_labels_are_visible() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha line\nbeta line\ngamma line\n");
+
+        execute_command(&mut editor, Command::Jump);
+        handle_key(&mut editor, key('l'));
+        handle_key(&mut editor, key('i'));
+        assert!(
+            !editor.labeled_jump_labels_for_line(0).is_empty(),
+            "test setup should produce visible labeled-jump labels"
+        );
+
+        editor.render_damage.clear_after_full_render();
+        editor.render_damage.mark_editor_row(1);
 
         assert_eq!(Terminal::partial_render_kind(&editor), None);
     }
