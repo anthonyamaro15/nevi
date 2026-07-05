@@ -44,6 +44,91 @@ fn editor_redraw_interval(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LspRedrawPriority {
+    Immediate,
+    StatusOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LspRedrawDecision {
+    Now,
+    Later(Instant),
+}
+
+fn lsp_redraw_decision(
+    priority: LspRedrawPriority,
+    last_status_redraw_at: Option<Instant>,
+    now: Instant,
+    throttle: Duration,
+) -> LspRedrawDecision {
+    if priority == LspRedrawPriority::Immediate {
+        return LspRedrawDecision::Now;
+    }
+
+    let Some(last_status_redraw_at) = last_status_redraw_at else {
+        return LspRedrawDecision::Now;
+    };
+
+    if now.saturating_duration_since(last_status_redraw_at) >= throttle {
+        LspRedrawDecision::Now
+    } else {
+        LspRedrawDecision::Later(last_status_redraw_at + throttle)
+    }
+}
+
+fn should_redraw_for_lsp_notification(
+    priority: LspRedrawPriority,
+    last_status_redraw_at: Option<Instant>,
+    now: Instant,
+    throttle: Duration,
+) -> bool {
+    matches!(
+        lsp_redraw_decision(priority, last_status_redraw_at, now, throttle),
+        LspRedrawDecision::Now
+    )
+}
+
+fn request_lsp_redraw(
+    priority: LspRedrawPriority,
+    last_status_redraw_at: &mut Option<Instant>,
+    deferred_status_redraw_at: &mut Option<Instant>,
+    now: Instant,
+    throttle: Duration,
+) -> bool {
+    match lsp_redraw_decision(priority, *last_status_redraw_at, now, throttle) {
+        LspRedrawDecision::Now => {
+            if priority == LspRedrawPriority::StatusOnly {
+                *last_status_redraw_at = Some(now);
+                *deferred_status_redraw_at = None;
+            }
+            true
+        }
+        LspRedrawDecision::Later(due_at) => {
+            *deferred_status_redraw_at = Some(due_at);
+            false
+        }
+    }
+}
+
+fn flush_deferred_lsp_status_redraw(
+    last_status_redraw_at: &mut Option<Instant>,
+    deferred_status_redraw_at: &mut Option<Instant>,
+    now: Instant,
+) -> bool {
+    let Some(due_at) = *deferred_status_redraw_at else {
+        return false;
+    };
+
+    if now < due_at {
+        return false;
+    }
+
+    *last_status_redraw_at = Some(now);
+    *deferred_status_redraw_at = None;
+    true
+}
+
 fn should_continue_input_batch(
     events_processed: usize,
     max_events_per_frame: usize,
@@ -505,7 +590,10 @@ fn main() -> anyhow::Result<()> {
     let mut needs_redraw = true;
     let render_interval = Duration::from_millis(16);
     let lsp_render_interval = Duration::from_millis(50);
+    let lsp_status_redraw_throttle = Duration::from_millis(100);
     let mut last_render = Instant::now() - render_interval;
+    let mut last_lsp_status_redraw_at: Option<Instant> = None;
+    let mut deferred_lsp_status_redraw_at: Option<Instant> = None;
     let max_key_events_per_frame: usize = 8;
     let mut redraw_from_input = false;
     let mut terminal_redraw_pending = false;
@@ -1488,14 +1576,30 @@ fn main() -> anyhow::Result<()> {
                         }
                         LspNotification::Status { message } => {
                             editor.set_lsp_status(format!("LSP: {}", message));
-                            needs_redraw = true;
+                            if request_lsp_redraw(
+                                LspRedrawPriority::StatusOnly,
+                                &mut last_lsp_status_redraw_at,
+                                &mut deferred_lsp_status_redraw_at,
+                                Instant::now(),
+                                lsp_status_redraw_throttle,
+                            ) {
+                                needs_redraw = true;
+                            }
                         }
                         LspNotification::Progress { .. } => {
                             let current_path = editor.buffer().path.clone();
                             editor.set_lsp_status(
                                 mlsp.status(current_path.as_ref().map(|p| p.as_path())),
                             );
-                            needs_redraw = true;
+                            if request_lsp_redraw(
+                                LspRedrawPriority::StatusOnly,
+                                &mut last_lsp_status_redraw_at,
+                                &mut deferred_lsp_status_redraw_at,
+                                Instant::now(),
+                                lsp_status_redraw_throttle,
+                            ) {
+                                needs_redraw = true;
+                            }
                         }
                         LspNotification::ServerStatus { .. } => {
                             // Analysis readiness changed (indexing <-> quiescent);
@@ -1505,7 +1609,15 @@ fn main() -> anyhow::Result<()> {
                             editor.set_lsp_status(
                                 mlsp.status(current_path.as_ref().map(|p| p.as_path())),
                             );
-                            needs_redraw = true;
+                            if request_lsp_redraw(
+                                LspRedrawPriority::StatusOnly,
+                                &mut last_lsp_status_redraw_at,
+                                &mut deferred_lsp_status_redraw_at,
+                                Instant::now(),
+                                lsp_status_redraw_throttle,
+                            ) {
+                                needs_redraw = true;
+                            }
                         }
                         LspNotification::Formatting {
                             edits,
@@ -1992,6 +2104,15 @@ fn main() -> anyhow::Result<()> {
                 autosave_pending = None;
             }
         }
+
+        if flush_deferred_lsp_status_redraw(
+            &mut last_lsp_status_redraw_at,
+            &mut deferred_lsp_status_redraw_at,
+            Instant::now(),
+        ) {
+            needs_redraw = true;
+        }
+
         // Render (debounced to avoid excessive redraws during LSP spam)
         if needs_redraw {
             let now = Instant::now();
@@ -2014,6 +2135,10 @@ fn main() -> anyhow::Result<()> {
                 editor.render_damage.clear_after_full_render();
                 needs_redraw = false;
                 terminal_redraw_pending = false;
+                if deferred_lsp_status_redraw_at.is_some() {
+                    last_lsp_status_redraw_at = Some(now);
+                    deferred_lsp_status_redraw_at = None;
+                }
                 last_render = now;
                 redraw_from_input = false;
             }
@@ -2469,7 +2594,7 @@ mod tests {
     use nevi::lsp::types::{Diagnostic, DiagnosticSeverity, TextEdit};
     use nevi::{Editor, Mode};
     use std::path::PathBuf;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -2702,6 +2827,68 @@ mod tests {
         assert!(!super::should_continue_input_batch(1, 8, false));
         assert!(!super::should_continue_input_batch(8, 8, true));
         assert!(!super::should_continue_input_batch(9, 8, true));
+    }
+
+    #[test]
+    fn lsp_status_only_redraws_immediately_when_no_previous_status_redraw_exists() {
+        let now = Instant::now();
+        assert!(super::should_redraw_for_lsp_notification(
+            super::LspRedrawPriority::StatusOnly,
+            None,
+            now,
+            Duration::from_millis(100),
+        ));
+    }
+
+    #[test]
+    fn lsp_status_only_redraws_are_throttled_inside_window() {
+        let previous = Instant::now();
+        let now = previous + Duration::from_millis(50);
+        assert!(!super::should_redraw_for_lsp_notification(
+            super::LspRedrawPriority::StatusOnly,
+            Some(previous),
+            now,
+            Duration::from_millis(100),
+        ));
+    }
+
+    #[test]
+    fn lsp_status_only_redraws_inside_window_are_deferred_not_dropped() {
+        let previous = Instant::now();
+        let now = previous + Duration::from_millis(50);
+        assert_eq!(
+            super::lsp_redraw_decision(
+                super::LspRedrawPriority::StatusOnly,
+                Some(previous),
+                now,
+                Duration::from_millis(100),
+            ),
+            super::LspRedrawDecision::Later(previous + Duration::from_millis(100))
+        );
+    }
+
+    #[test]
+    fn lsp_status_only_redraws_resume_after_window() {
+        let previous = Instant::now();
+        let now = previous + Duration::from_millis(100);
+        assert!(super::should_redraw_for_lsp_notification(
+            super::LspRedrawPriority::StatusOnly,
+            Some(previous),
+            now,
+            Duration::from_millis(100),
+        ));
+    }
+
+    #[test]
+    fn lsp_semantic_notifications_are_never_status_throttled() {
+        let previous = Instant::now();
+        let now = previous + Duration::from_millis(1);
+        assert!(super::should_redraw_for_lsp_notification(
+            super::LspRedrawPriority::Immediate,
+            Some(previous),
+            now,
+            Duration::from_millis(100),
+        ));
     }
 
     #[test]
