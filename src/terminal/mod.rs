@@ -6575,11 +6575,113 @@ fn play_macro(editor: &mut Editor, register: char, count: usize) {
         .end_compound_group(editor.cursor.line, editor.cursor.col);
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CursorRowDamageCandidate {
+    old_line: usize,
+    old_viewport_offset: usize,
+    old_h_offset: usize,
+    old_active_pane: usize,
+    old_buffer_idx: usize,
+    pane_y: usize,
+    pane_height: usize,
+    relative_numbers: bool,
+}
+
+impl CursorRowDamageCandidate {
+    fn capture(editor: &Editor, key: KeyEvent) -> Option<Self> {
+        if !matches!(
+            (key.modifiers, key.code),
+            (KeyModifiers::NONE, KeyCode::Char('j' | 'k'))
+        ) {
+            return None;
+        }
+        if editor.mode != Mode::Normal
+            || editor.pending_insert_normal_once
+            || editor.input_state.has_pending_sequence()
+            || editor.input_state.count.is_some()
+            || editor.input_state.selected_register.is_some()
+            || editor.macros.is_recording()
+            || editor.leader_sequence.is_some()
+            || editor.leader_pending_action.is_some()
+            || editor.pending_expression_register.is_some()
+            || editor.labeled_jump.is_some()
+            || editor.keymap.get_normal_mapping(key).is_some()
+            || Terminal::has_partial_render_blocking_ui(editor)
+        {
+            return None;
+        }
+
+        let active_pane = editor.active_pane_idx();
+        let pane = &editor.panes()[active_pane];
+        Some(Self {
+            old_line: editor.cursor.line,
+            old_viewport_offset: editor.viewport_offset,
+            old_h_offset: editor.h_offset,
+            old_active_pane: active_pane,
+            old_buffer_idx: pane.buffer_idx,
+            pane_y: pane.rect.y as usize,
+            pane_height: pane.rect.height as usize,
+            relative_numbers: editor.settings.editor.line_numbers
+                && editor.settings.editor.relative_numbers,
+        })
+    }
+
+    fn apply(self, editor: &mut Editor) {
+        if editor.mode != Mode::Normal
+            || editor.active_pane_idx() != self.old_active_pane
+            || editor.panes()[editor.active_pane_idx()].buffer_idx != self.old_buffer_idx
+            || editor.viewport_offset != self.old_viewport_offset
+            || editor.h_offset != self.old_h_offset
+            || editor.cursor.line == self.old_line
+            || editor.cursor.line.abs_diff(self.old_line) != 1
+            || Terminal::has_partial_render_blocking_ui(editor)
+        {
+            return;
+        }
+
+        let Some(old_row) = self.screen_row_for_line(self.old_line) else {
+            return;
+        };
+        let Some(new_row) = self.screen_row_for_line(editor.cursor.line) else {
+            return;
+        };
+
+        let mut rows = if self.relative_numbers {
+            (self.pane_y..self.pane_y + self.pane_height).collect::<Vec<_>>()
+        } else {
+            let mut rows = vec![old_row, new_row];
+            rows.sort_unstable();
+            rows.dedup();
+            rows
+        };
+
+        if !Terminal::can_partial_render_editor_rows(editor, &rows) {
+            return;
+        }
+
+        editor.render_damage.clear_after_full_render();
+        for row in rows.drain(..) {
+            editor.render_damage.mark_editor_row(row);
+        }
+        editor.render_damage.mark_statusline();
+    }
+
+    fn screen_row_for_line(&self, line: usize) -> Option<usize> {
+        if line < self.old_viewport_offset {
+            return None;
+        }
+        let row = self.pane_y + line - self.old_viewport_offset;
+        (row < self.pane_y + self.pane_height).then_some(row)
+    }
+}
+
 /// Handle a key event and update editor state
 pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
-    // Until editor-row damage is complete, any user key can affect cursor,
-    // selections, decorations, overlays, or buffer text. Keep key-driven
-    // redraws full-frame and reserve partial rendering for idle async updates.
+    let cursor_row_damage = CursorRowDamageCandidate::capture(editor, key);
+
+    // Default key-driven redraws to full-frame because most keys can affect
+    // selections, decorations, overlays, or buffer text. Narrow safe paths can
+    // downgrade this after handling.
     editor.render_damage.mark_full();
 
     // Check for floating terminal toggle (Ctrl-\) - works in any mode
@@ -6706,6 +6808,10 @@ pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
         Mode::Finder => handle_finder_mode(editor, key),
         Mode::Explorer => handle_explorer_mode(editor, key),
         Mode::RenamePrompt => handle_rename_prompt_mode(editor, key),
+    }
+
+    if let Some(cursor_row_damage) = cursor_row_damage {
+        cursor_row_damage.apply(editor);
     }
 }
 
@@ -10854,6 +10960,158 @@ mod tests {
     }
 
     #[test]
+    fn normal_j_marks_only_old_and_new_cursor_rows_plus_statusline() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha\nbeta\ngamma\n");
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('j'));
+
+        assert_eq!(editor.cursor.line, 1);
+        assert!(
+            !editor.render_damage.requires_full_render(),
+            "simple j movement should stay on partial-render path"
+        );
+        assert_eq!(editor.render_damage.dirty_editor_rows(), vec![0, 1]);
+        assert!(editor.render_damage.statusline());
+        assert_eq!(
+            Terminal::partial_render_kind(&editor),
+            Some(PartialRenderKind::EditorRowsAndStatusLine(vec![0, 1]))
+        );
+    }
+
+    #[test]
+    fn normal_k_marks_only_old_and_new_cursor_rows_plus_statusline() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha\nbeta\ngamma\n");
+        editor.cursor.line = 2;
+        editor.scroll_to_cursor();
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('k'));
+
+        assert_eq!(editor.cursor.line, 1);
+        assert!(
+            !editor.render_damage.requires_full_render(),
+            "simple k movement should stay on partial-render path"
+        );
+        assert_eq!(editor.render_damage.dirty_editor_rows(), vec![1, 2]);
+        assert!(editor.render_damage.statusline());
+        assert_eq!(
+            Terminal::partial_render_kind(&editor),
+            Some(PartialRenderKind::EditorRowsAndStatusLine(vec![1, 2]))
+        );
+    }
+
+    #[test]
+    fn normal_j_that_scrolls_keeps_full_render_damage() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 5);
+        editor.replace_buffer_content("alpha\nbeta\ngamma\ndelta\nepsilon\n");
+        editor.settings.editor.scroll_off = 0;
+        editor.cursor.line = 2;
+        editor.viewport_offset = 0;
+        editor.scroll_to_cursor();
+        assert_eq!(editor.viewport_offset, 0);
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('j'));
+
+        assert_eq!(editor.cursor.line, 3);
+        assert!(
+            editor.render_damage.requires_full_render(),
+            "movement that changes viewport must stay on full-render path"
+        );
+    }
+
+    #[test]
+    fn normal_j_with_search_highlights_keeps_full_render_damage() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha\nbeta\ngamma\n");
+        editor.search_matches = vec![(1, 0, 4)];
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('j'));
+
+        assert!(
+            editor.render_damage.requires_full_render(),
+            "active search highlights should keep cursor movement on full-render path"
+        );
+    }
+
+    #[test]
+    fn visual_j_keeps_full_render_damage() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha\nbeta\ngamma\n");
+        editor.enter_visual_mode();
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('j'));
+
+        assert!(
+            editor.render_damage.requires_full_render(),
+            "visual selection movement must stay on full-render path"
+        );
+    }
+
+    #[test]
+    fn normal_j_with_wrap_enabled_keeps_full_render_damage() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.settings.editor.wrap = true;
+        editor.replace_buffer_content("alpha\nbeta\ngamma\n");
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('j'));
+
+        assert!(
+            editor.render_damage.requires_full_render(),
+            "wrapped layout cursor movement must stay on full-render path"
+        );
+    }
+
+    #[test]
+    fn normal_j_with_relative_numbers_marks_all_visible_rows_plus_statusline() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.settings.editor.relative_numbers = true;
+        editor.replace_buffer_content("alpha\nbeta\ngamma\ndelta\n");
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('j'));
+
+        let pane = &editor.panes()[editor.active_pane_idx()];
+        let expected_rows: Vec<usize> =
+            (pane.rect.y as usize..pane.rect.y as usize + pane.rect.height as usize).collect();
+
+        assert_eq!(editor.cursor.line, 1);
+        assert!(
+            !editor.render_damage.requires_full_render(),
+            "relative-number cursor movement should stay on partial-render path"
+        );
+        assert_eq!(editor.render_damage.dirty_editor_rows(), expected_rows);
+        assert!(editor.render_damage.statusline());
+    }
+
+    #[test]
     fn partial_render_kind_rejects_editor_rows_when_layout_is_not_simple() {
         let mut editor = Editor::default();
         editor.set_size(80, 12);
@@ -12177,6 +12435,42 @@ mod tests {
 
         assert!(editor.labeled_jump.is_none());
         assert_eq!((editor.cursor.line, editor.cursor.col), (1, 7));
+    }
+
+    #[test]
+    fn labeled_jump_does_not_show_labels_until_query_is_actionable() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("alpha line\nbeta line\ngamma line\n");
+        editor.term_height = 8;
+        editor.update_pane_rects();
+
+        execute_command(&mut editor, Command::Jump);
+        handle_key(&mut editor, key('l'));
+
+        assert_eq!(
+            editor.labeled_jump_labels_for_line(0),
+            Vec::<(usize, char)>::new(),
+            "labels should not render while label keys are still interpreted as query text"
+        );
+    }
+
+    #[test]
+    fn labeled_jump_two_char_query_selects_label_from_later_cursor_line() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content(
+            "alpha line\nbeta line\ngamma line\ndelta line\nepsilon line\nzeta line\n",
+        );
+        editor.term_height = 10;
+        editor.update_pane_rects();
+        editor.cursor.line = 5;
+
+        execute_command(&mut editor, Command::Jump);
+        handle_key(&mut editor, key('l'));
+        handle_key(&mut editor, key('i'));
+        handle_key(&mut editor, key('a'));
+
+        assert!(editor.labeled_jump.is_none());
+        assert_eq!((editor.cursor.line, editor.cursor.col), (0, 6));
     }
 
     #[test]

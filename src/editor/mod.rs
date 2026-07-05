@@ -1970,7 +1970,11 @@ impl Editor {
 
         state.query.push(ch);
         let query = state.query.clone();
-        let targets = self.collect_labeled_jump_targets(&query);
+        let targets = if query.chars().count() >= 2 {
+            self.collect_labeled_jump_targets(&query)
+        } else {
+            Vec::new()
+        };
 
         if let Some(state) = self.labeled_jump.as_mut() {
             state.targets = targets;
@@ -1987,7 +1991,11 @@ impl Editor {
 
         state.query.pop();
         let query = state.query.clone();
-        let targets = self.collect_labeled_jump_targets(&query);
+        let targets = if query.chars().count() >= 2 {
+            self.collect_labeled_jump_targets(&query)
+        } else {
+            Vec::new()
+        };
 
         if let Some(state) = self.labeled_jump.as_mut() {
             state.targets = targets;
@@ -2072,14 +2080,10 @@ impl Editor {
 
         if state.query.is_empty() {
             self.set_status("Jump: type 2 chars, label to jump, Esc cancels");
+        } else if state.query.chars().count() < 2 {
+            self.set_status(format!("Jump: `{}`, type next char", state.query));
         } else if state.targets.is_empty() {
             self.set_status(format!("Jump: no matches for `{}`", state.query));
-        } else if state.query.chars().count() < 2 {
-            self.set_status(format!(
-                "Jump: `{}` {} target(s), type next char",
-                state.query,
-                state.targets.len()
-            ));
         } else {
             self.set_status(format!(
                 "Jump: `{}` {} target(s), press label",
