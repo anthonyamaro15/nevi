@@ -6580,6 +6580,7 @@ fn play_macro(editor: &mut Editor, register: char, count: usize) {
 
 #[derive(Debug, Clone, Copy)]
 struct CursorRowDamageCandidate {
+    mode: Mode,
     old_line: usize,
     old_viewport_offset: usize,
     old_h_offset: usize,
@@ -6592,31 +6593,50 @@ struct CursorRowDamageCandidate {
 
 impl CursorRowDamageCandidate {
     fn capture(editor: &Editor, key: KeyEvent) -> Option<Self> {
-        if !matches!(
+        if Self::can_capture_normal_move(editor, key) || Self::can_capture_insert_move(editor, key)
+        {
+            Self::from_editor(editor)
+        } else {
+            None
+        }
+    }
+
+    fn can_capture_normal_move(editor: &Editor, key: KeyEvent) -> bool {
+        matches!(
             (key.modifiers, key.code),
             (KeyModifiers::NONE, KeyCode::Char('j' | 'k'))
-        ) {
-            return None;
-        }
-        if editor.mode != Mode::Normal
-            || editor.pending_insert_normal_once
-            || editor.input_state.has_pending_sequence()
-            || editor.input_state.count.is_some()
-            || editor.input_state.selected_register.is_some()
-            || editor.macros.is_recording()
-            || editor.leader_sequence.is_some()
-            || editor.leader_pending_action.is_some()
-            || editor.pending_expression_register.is_some()
-            || editor.labeled_jump.is_some()
-            || editor.keymap.get_normal_mapping(key).is_some()
-            || Terminal::has_partial_render_blocking_ui(editor)
-        {
-            return None;
-        }
+        ) && editor.mode == Mode::Normal
+            && !editor.pending_insert_normal_once
+            && !editor.input_state.has_pending_sequence()
+            && editor.input_state.count.is_none()
+            && editor.input_state.selected_register.is_none()
+            && !editor.macros.is_recording()
+            && editor.leader_sequence.is_none()
+            && editor.leader_pending_action.is_none()
+            && editor.pending_expression_register.is_none()
+            && editor.labeled_jump.is_none()
+            && editor.keymap.get_normal_mapping(key).is_none()
+            && !Terminal::has_partial_render_blocking_ui(editor)
+    }
 
+    fn can_capture_insert_move(editor: &Editor, key: KeyEvent) -> bool {
+        matches!(
+            (key.modifiers, key.code),
+            (KeyModifiers::NONE, KeyCode::Up | KeyCode::Down)
+        ) && editor.mode == Mode::Insert
+            && !editor.pending_insert_register
+            && !editor.pending_insert_normal_once
+            && !editor.macros.is_recording()
+            && editor.pending_expression_register.is_none()
+            && editor.keymap.remap_insert(key) == key
+            && !Terminal::has_partial_render_blocking_ui(editor)
+    }
+
+    fn from_editor(editor: &Editor) -> Option<Self> {
         let active_pane = editor.active_pane_idx();
         let pane = &editor.panes()[active_pane];
         Some(Self {
+            mode: editor.mode,
             old_line: editor.cursor.line,
             old_viewport_offset: editor.viewport_offset,
             old_h_offset: editor.h_offset,
@@ -6630,7 +6650,7 @@ impl CursorRowDamageCandidate {
     }
 
     fn apply(self, editor: &mut Editor) {
-        if editor.mode != Mode::Normal
+        if editor.mode != self.mode
             || editor.active_pane_idx() != self.old_active_pane
             || editor.panes()[editor.active_pane_idx()].buffer_idx != self.old_buffer_idx
             || editor.viewport_offset != self.old_viewport_offset
@@ -11486,6 +11506,157 @@ mod tests {
         assert!(
             editor.render_damage.requires_full_render(),
             "wrapped layout insert cursor movement must stay on full-render path"
+        );
+    }
+
+    #[test]
+    fn insert_vertical_partial_render_after_down_repaints_old_and_new_rows_only() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha row\nbeta row\ngamma row\ndelta row\n");
+        editor.cursor.line = 1;
+        editor.cursor.col = 4;
+        editor.enter_insert_mode();
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, down_key());
+
+        assert_eq!(editor.cursor.line, 2);
+        assert_eq!(editor.cursor.col, 4);
+        assert!(
+            !editor.render_damage.requires_full_render(),
+            "same-viewport insert-mode down movement should stay on partial-render path"
+        );
+        assert_eq!(editor.render_damage.dirty_editor_rows(), vec![1, 2]);
+        assert!(editor.render_damage.statusline());
+        assert_eq!(
+            Terminal::partial_render_kind(&editor),
+            Some(PartialRenderKind::EditorRowsAndStatusLine(vec![1, 2]))
+        );
+    }
+
+    #[test]
+    fn insert_vertical_partial_render_after_up_repaints_old_and_new_rows_only() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha row\nbeta row\ngamma row\ndelta row\n");
+        editor.cursor.line = 2;
+        editor.cursor.col = 4;
+        editor.enter_insert_mode();
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, up_key());
+
+        assert_eq!(editor.cursor.line, 1);
+        assert_eq!(editor.cursor.col, 4);
+        assert!(
+            !editor.render_damage.requires_full_render(),
+            "same-viewport insert-mode up movement should stay on partial-render path"
+        );
+        assert_eq!(editor.render_damage.dirty_editor_rows(), vec![1, 2]);
+        assert!(editor.render_damage.statusline());
+        assert_eq!(
+            Terminal::partial_render_kind(&editor),
+            Some(PartialRenderKind::EditorRowsAndStatusLine(vec![1, 2]))
+        );
+    }
+
+    #[test]
+    fn insert_vertical_partial_render_with_relative_numbers_marks_all_visible_rows() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.settings.editor.relative_numbers = true;
+        editor.replace_buffer_content("alpha\nbeta\ngamma\ndelta\n");
+        editor.cursor.line = 1;
+        editor.cursor.col = 2;
+        editor.enter_insert_mode();
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, down_key());
+
+        let pane = &editor.panes()[editor.active_pane_idx()];
+        let expected_rows: Vec<usize> =
+            (pane.rect.y as usize..pane.rect.y as usize + pane.rect.height as usize).collect();
+
+        assert_eq!(editor.cursor.line, 2);
+        assert!(
+            !editor.render_damage.requires_full_render(),
+            "relative-number insert-mode vertical movement should stay on partial-render path"
+        );
+        assert_eq!(editor.render_damage.dirty_editor_rows(), expected_rows);
+        assert!(editor.render_damage.statusline());
+    }
+
+    #[test]
+    fn insert_vertical_partial_render_down_that_scrolls_keeps_full_render_damage() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 5);
+        editor.replace_buffer_content("alpha\nbeta\ngamma\ndelta\nepsilon\n");
+        editor.settings.editor.scroll_off = 0;
+        editor.cursor.line = 2;
+        editor.cursor.col = 2;
+        editor.viewport_offset = 0;
+        editor.enter_insert_mode();
+        editor.scroll_to_cursor();
+        assert_eq!(editor.viewport_offset, 0);
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, down_key());
+
+        assert_eq!(editor.cursor.line, 3);
+        assert!(
+            editor.render_damage.requires_full_render(),
+            "insert-mode vertical movement that scrolls must stay on full-render path"
+        );
+    }
+
+    #[test]
+    fn insert_vertical_partial_render_with_search_highlights_keeps_full_render_damage() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha row\nbeta row\ngamma row\n");
+        editor.cursor.line = 1;
+        editor.cursor.col = 4;
+        editor.search_matches = vec![(1, 0, 4)];
+        editor.enter_insert_mode();
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, down_key());
+
+        assert!(
+            editor.render_damage.requires_full_render(),
+            "active search highlights should keep insert vertical movement on full-render path"
+        );
+    }
+
+    #[test]
+    fn insert_vertical_partial_render_with_wrap_enabled_keeps_full_render_damage() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.settings.editor.wrap = true;
+        editor.replace_buffer_content("alpha row\nbeta row\ngamma row\n");
+        editor.cursor.line = 1;
+        editor.cursor.col = 4;
+        editor.enter_insert_mode();
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, down_key());
+
+        assert!(
+            editor.render_damage.requires_full_render(),
+            "wrapped layout insert vertical movement must stay on full-render path"
         );
     }
 
