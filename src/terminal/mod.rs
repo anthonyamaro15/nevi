@@ -14733,6 +14733,37 @@ mod tests {
     }
 
     #[test]
+    fn normal_enter_moves_to_first_non_blank_on_next_line() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("zero\n    one\n  two\nthree\n");
+        editor.cursor.line = 0;
+        editor.cursor.col = 2;
+
+        handle_key(&mut editor, enter_key());
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), (1, 4));
+
+        handle_key(&mut editor, key('2'));
+        handle_key(&mut editor, enter_key());
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), (3, 0));
+    }
+
+    #[test]
+    fn normal_delete_enter_deletes_through_next_line() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("zero\n    one\n  two\nthree\n");
+        editor.cursor.line = 0;
+        editor.cursor.col = 2;
+
+        handle_key(&mut editor, key('d'));
+        handle_key(&mut editor, enter_key());
+
+        assert_eq!(editor.buffer().content(), "  two\nthree\n");
+        assert_eq!((editor.cursor.line, editor.cursor.col), (0, 2));
+    }
+
+    #[test]
     fn normal_gj_gk_move_by_wrapped_display_lines() {
         let mut editor = Editor::default();
         editor.set_size(40, 12);
