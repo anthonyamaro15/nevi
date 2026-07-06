@@ -6605,7 +6605,11 @@ impl CursorRowDamageCandidate {
         matches!(
             (key.modifiers, key.code),
             (KeyModifiers::NONE, KeyCode::Char('j' | 'k'))
-        ) && editor.mode == Mode::Normal
+        ) && Self::can_capture_normal_state(editor, key)
+    }
+
+    fn can_capture_normal_state(editor: &Editor, key: KeyEvent) -> bool {
+        editor.mode == Mode::Normal
             && !editor.pending_insert_normal_once
             && !editor.input_state.has_pending_sequence()
             && editor.input_state.count.is_none()
@@ -6686,6 +6690,86 @@ impl CursorRowDamageCandidate {
         for row in rows.drain(..) {
             editor.render_damage.mark_editor_row(row);
         }
+        editor.render_damage.mark_statusline();
+    }
+
+    fn screen_row_for_line(&self, line: usize) -> Option<usize> {
+        if line < self.old_viewport_offset {
+            return None;
+        }
+        let row = self.pane_y + line - self.old_viewport_offset;
+        (row < self.pane_y + self.pane_height).then_some(row)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CursorSameRowDamageCandidate {
+    old_line: usize,
+    old_col: usize,
+    old_viewport_offset: usize,
+    old_h_offset: usize,
+    old_active_pane: usize,
+    old_buffer_idx: usize,
+    pane_y: usize,
+    pane_height: usize,
+}
+
+impl CursorSameRowDamageCandidate {
+    fn capture(editor: &Editor, key: KeyEvent) -> Option<Self> {
+        if !Self::is_same_row_normal_move_key(key)
+            || !CursorRowDamageCandidate::can_capture_normal_state(editor, key)
+        {
+            return None;
+        }
+
+        let active_pane = editor.active_pane_idx();
+        let pane = &editor.panes()[active_pane];
+        Some(Self {
+            old_line: editor.cursor.line,
+            old_col: editor.cursor.col,
+            old_viewport_offset: editor.viewport_offset,
+            old_h_offset: editor.h_offset,
+            old_active_pane: active_pane,
+            old_buffer_idx: pane.buffer_idx,
+            pane_y: pane.rect.y as usize,
+            pane_height: pane.rect.height as usize,
+        })
+    }
+
+    fn is_same_row_normal_move_key(key: KeyEvent) -> bool {
+        match (key.modifiers, key.code) {
+            (KeyModifiers::NONE, KeyCode::Char('h' | 'l' | '0')) => true,
+            (modifiers, KeyCode::Char('^' | '$')) => {
+                !modifiers.contains(KeyModifiers::CONTROL) && !modifiers.contains(KeyModifiers::ALT)
+            }
+            _ => false,
+        }
+    }
+
+    fn apply(self, editor: &mut Editor) {
+        if editor.mode != Mode::Normal
+            || editor.active_pane_idx() != self.old_active_pane
+            || editor.panes()[editor.active_pane_idx()].buffer_idx != self.old_buffer_idx
+            || editor.viewport_offset != self.old_viewport_offset
+            || editor.h_offset != self.old_h_offset
+            || editor.cursor.line != self.old_line
+            || editor.cursor.col == self.old_col
+            || Terminal::has_partial_render_blocking_ui(editor)
+        {
+            return;
+        }
+
+        let Some(row) = self.screen_row_for_line(self.old_line) else {
+            return;
+        };
+        let rows = vec![row];
+
+        if !Terminal::can_partial_render_editor_rows(editor, &rows) {
+            return;
+        }
+
+        editor.render_damage.clear_after_full_render();
+        editor.render_damage.mark_editor_row(row);
         editor.render_damage.mark_statusline();
     }
 
@@ -6830,6 +6914,7 @@ impl ContentRowDamageCandidate {
 /// Handle a key event and update editor state
 pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
     let cursor_row_damage = CursorRowDamageCandidate::capture(editor, key);
+    let cursor_same_row_damage = CursorSameRowDamageCandidate::capture(editor, key);
     let content_row_damage = ContentRowDamageCandidate::capture(editor, key);
 
     // Default key-driven redraws to full-frame because most keys can affect
@@ -6965,6 +7050,9 @@ pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
 
     if let Some(cursor_row_damage) = cursor_row_damage {
         cursor_row_damage.apply(editor);
+    }
+    if let Some(cursor_same_row_damage) = cursor_same_row_damage {
+        cursor_same_row_damage.apply(editor);
     }
     if let Some(content_row_damage) = content_row_damage {
         content_row_damage.apply(editor);
@@ -11271,6 +11359,227 @@ mod tests {
             Terminal::partial_render_kind(&editor),
             Some(PartialRenderKind::EditorRowsAndStatusLine(vec![1, 2]))
         );
+    }
+
+    #[test]
+    fn normal_h_marks_current_cursor_row_plus_statusline() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha\nbeta row\ngamma\n");
+        editor.cursor.line = 1;
+        editor.cursor.col = 4;
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('h'));
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), (1, 3));
+        assert!(
+            !editor.render_damage.requires_full_render(),
+            "simple h movement should stay on partial-render path"
+        );
+        assert_eq!(editor.render_damage.dirty_editor_rows(), vec![1]);
+        assert!(editor.render_damage.statusline());
+        assert_eq!(
+            Terminal::partial_render_kind(&editor),
+            Some(PartialRenderKind::EditorRowsAndStatusLine(vec![1]))
+        );
+    }
+
+    #[test]
+    fn normal_l_marks_current_cursor_row_plus_statusline() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha\nbeta row\ngamma\n");
+        editor.cursor.line = 1;
+        editor.cursor.col = 3;
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('l'));
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), (1, 4));
+        assert!(
+            !editor.render_damage.requires_full_render(),
+            "simple l movement should stay on partial-render path"
+        );
+        assert_eq!(editor.render_damage.dirty_editor_rows(), vec![1]);
+        assert!(editor.render_damage.statusline());
+        assert_eq!(
+            Terminal::partial_render_kind(&editor),
+            Some(PartialRenderKind::EditorRowsAndStatusLine(vec![1]))
+        );
+    }
+
+    #[test]
+    fn normal_0_marks_current_cursor_row_plus_statusline() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha\nbeta row\ngamma\n");
+        editor.cursor.line = 1;
+        editor.cursor.col = 5;
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('0'));
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), (1, 0));
+        assert!(
+            !editor.render_damage.requires_full_render(),
+            "line-start motion should stay on partial-render path when it stays on the same row"
+        );
+        assert_eq!(editor.render_damage.dirty_editor_rows(), vec![1]);
+        assert!(editor.render_damage.statusline());
+    }
+
+    #[test]
+    fn normal_caret_marks_current_cursor_row_plus_statusline() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha\n    beta row\ngamma\n");
+        editor.cursor.line = 1;
+        editor.cursor.col = 9;
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('^'));
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), (1, 4));
+        assert!(
+            !editor.render_damage.requires_full_render(),
+            "first-non-blank motion should stay on partial-render path when it stays on the same row"
+        );
+        assert_eq!(editor.render_damage.dirty_editor_rows(), vec![1]);
+        assert!(editor.render_damage.statusline());
+    }
+
+    #[test]
+    fn normal_dollar_marks_current_cursor_row_plus_statusline() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha\nbeta row\ngamma\n");
+        editor.cursor.line = 1;
+        editor.cursor.col = 1;
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('$'));
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), (1, 7));
+        assert!(
+            !editor.render_damage.requires_full_render(),
+            "line-end motion should stay on partial-render path when it stays on the same row"
+        );
+        assert_eq!(editor.render_damage.dirty_editor_rows(), vec![1]);
+        assert!(editor.render_damage.statusline());
+    }
+
+    #[test]
+    fn normal_h_at_line_start_keeps_full_render_damage() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha\nbeta row\ngamma\n");
+        editor.cursor.line = 1;
+        editor.cursor.col = 0;
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('h'));
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), (1, 0));
+        assert!(
+            editor.render_damage.requires_full_render(),
+            "no-op h movement should not enter a partial-render path"
+        );
+    }
+
+    #[test]
+    fn normal_horizontal_motion_with_count_keeps_full_render_damage() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha\nbeta row\ngamma\n");
+        editor.cursor.line = 1;
+        editor.cursor.col = 1;
+
+        handle_key(&mut editor, key('2'));
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('l'));
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), (1, 3));
+        assert!(
+            editor.render_damage.requires_full_render(),
+            "counted horizontal movement should stay on full-render path"
+        );
+    }
+
+    #[test]
+    fn normal_horizontal_motion_with_search_highlights_keeps_full_render_damage() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("alpha\nbeta row\ngamma\n");
+        editor.cursor.line = 1;
+        editor.cursor.col = 1;
+        editor.search_matches = vec![(1, 0, 4)];
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('l'));
+
+        assert!(
+            editor.render_damage.requires_full_render(),
+            "active search highlights should keep horizontal movement on full-render path"
+        );
+    }
+
+    #[test]
+    fn normal_horizontal_motion_with_wrap_enabled_keeps_full_render_damage() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.settings.editor.wrap = true;
+        editor.replace_buffer_content("alpha\nbeta row\ngamma\n");
+        editor.cursor.line = 1;
+        editor.cursor.col = 1;
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('l'));
+
+        assert!(
+            editor.render_damage.requires_full_render(),
+            "wrapped layout horizontal movement must stay on full-render path"
+        );
+    }
+
+    #[test]
+    fn normal_horizontal_motion_with_relative_numbers_marks_current_row_only() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.settings.editor.relative_numbers = true;
+        editor.replace_buffer_content("alpha\nbeta row\ngamma\n");
+        editor.cursor.line = 1;
+        editor.cursor.col = 1;
+
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+
+        handle_key(&mut editor, key('l'));
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), (1, 2));
+        assert!(
+            !editor.render_damage.requires_full_render(),
+            "relative numbers do not require all visible rows for same-line cursor movement"
+        );
+        assert_eq!(editor.render_damage.dirty_editor_rows(), vec![1]);
+        assert!(editor.render_damage.statusline());
     }
 
     #[test]
