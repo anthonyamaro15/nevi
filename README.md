@@ -34,7 +34,7 @@ A fast, native terminal editor where your existing vim/neovim muscle memory just
 
 - **Vim/neovim keybindings** - Most common keybinds implemented, more being added regularly
 - **Built-in LSP** - rust-analyzer, typescript-language-server, pyright, and more
-- **Tree-sitter syntax highlighting** - Fast, accurate highlighting for Rust, Go, Ruby, TypeScript, JavaScript, Python, CSS, JSON, TOML, HTML, Markdown
+- **Tree-sitter syntax highlighting** - Fast, accurate highlighting for Rust, Go, Ruby, PHP, TypeScript, JavaScript, Python, CSS, JSON, TOML, HTML, Markdown
 - **Theme selection** - Multiple built-in colorschemes with easy switching
 - **Fuzzy file finder** - Telescope-style file and content search
 - **Previewed project replace** - Project-wide literal replace with a read-only preview and explicit apply step
@@ -176,6 +176,7 @@ Optional tools unlock optional features:
 | CSS / JSON / HTML LSP | `vscode-langservers-extracted` | `npm install -g vscode-langservers-extracted` |
 | TOML LSP | `taplo` | `cargo install taplo-cli --locked` |
 | Python LSP | `pyright` | `npm install -g pyright` |
+| PHP LSP | PHP 8.2+ and `phpactor` | `brew install php`, then `mkdir -p ~/.local/bin && curl -Lo phpactor.phar https://github.com/phpactor/phpactor/releases/latest/download/phpactor.phar && chmod +x phpactor.phar && mv phpactor.phar ~/.local/bin/phpactor` |
 | Go LSP | `gopls` | `go install golang.org/x/tools/gopls@latest` |
 | Ruby LSP | `ruby-lsp` | `gem install ruby-lsp` |
 | Markdown LSP | `marksman` | Optional and disabled by default |
@@ -415,6 +416,7 @@ Visual mode (`v/V/Ctrl+v`), macros (`q{a-z}/@{a-z}`), marks (`m{a-z}/'`), read-o
 | Rust | rust-analyzer | Supported |
 | TypeScript/JavaScript | typescript-language-server | Supported |
 | Python | pyright | Supported |
+| PHP | phpactor | Supported |
 | Ruby | ruby-lsp | Supported |
 | CSS/SCSS | vscode-css-language-server | Supported |
 | JSON | vscode-json-language-server | Supported |

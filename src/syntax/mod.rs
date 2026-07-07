@@ -81,6 +81,7 @@ impl SyntaxManager {
             Some("yaml") | Some("yml") => self.set_yaml_language(),
             Some("html") | Some("htm") => self.set_html_language(),
             Some("py") | Some("pyi") | Some("pyw") => self.set_python_language(),
+            Some("php") => self.set_php_language(),
             Some("go") => self.set_go_language(),
             _ => {
                 self.language = None;
@@ -385,6 +386,30 @@ impl SyntaxManager {
             }
             Err(e) => {
                 self.language = Some(format!("python (lang error: {:?})", e));
+            }
+        }
+    }
+
+    /// Set up PHP language parser
+    fn set_php_language(&mut self) {
+        let language = tree_sitter_php::LANGUAGE_PHP;
+        match self.parser.set_language(&language.into()) {
+            Ok(()) => {
+                self.language = Some("php".to_string());
+
+                let query_source = highlighter::php_highlight_query();
+                match Query::new(&language.into(), query_source) {
+                    Ok(query) => {
+                        self.query = Some(query);
+                    }
+                    Err(e) => {
+                        self.language = Some(format!("php (query error: {:?})", e));
+                        self.query = None;
+                    }
+                }
+            }
+            Err(e) => {
+                self.language = Some(format!("php (lang error: {:?})", e));
             }
         }
     }
@@ -745,7 +770,7 @@ pub fn get_comment_string(language: Option<&str>) -> &'static str {
         Some("bash") | Some("shell") => "# ",
         Some("lua") => "-- ",
         Some("yaml") | Some("toml") => "# ",
-        Some("go") | Some("c") | Some("cpp") | Some("java") | Some("swift") => "// ",
+        Some("php") | Some("go") | Some("c") | Some("cpp") | Some("java") | Some("swift") => "// ",
         Some("ruby") | Some("perl") => "# ",
         Some("html") | Some("xml") => "<!-- ",
         _ => "// ", // Default fallback
@@ -852,5 +877,30 @@ mod tests {
             !syntax.get_line_highlights(1).is_empty(),
             "common Ruby filenames should use Ruby syntax highlighting"
         );
+    }
+
+    #[test]
+    fn php_extension_uses_php_highlighting() {
+        let mut syntax = SyntaxManager::new();
+        syntax.set_language_from_path(Path::new("index.php"));
+
+        let mut buffer = Buffer::new();
+        buffer.set_content(
+            "<?php\nfunction greet(string $name): void {\n    echo \"Hello $name\";\n}\n",
+        );
+        syntax.parse(&buffer);
+
+        assert_eq!(syntax.language_name(), Some("php"));
+        assert!(syntax.has_highlighting());
+        assert!(
+            !syntax.get_line_highlights(1).is_empty(),
+            "php files should use PHP syntax highlighting"
+        );
+    }
+
+    #[test]
+    fn php_uses_slash_slash_line_comments() {
+        assert_eq!(get_comment_string(Some("php")), "// ");
+        assert_eq!(get_comment_end(Some("php")), None);
     }
 }

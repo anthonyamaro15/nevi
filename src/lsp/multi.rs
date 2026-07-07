@@ -24,6 +24,7 @@ pub enum LanguageId {
     Markdown,
     Html,
     Python,
+    Php,
     Go,
     Ruby,
 }
@@ -41,6 +42,7 @@ impl LanguageId {
             "md" | "markdown" => Some(Self::Markdown),
             "html" | "htm" => Some(Self::Html),
             "py" | "pyi" | "pyw" => Some(Self::Python),
+            "php" => Some(Self::Php),
             "go" => Some(Self::Go),
             "rb" | "rake" | "gemspec" | "ru" | "podspec" => Some(Self::Ruby),
             _ => None,
@@ -90,6 +92,7 @@ impl LanguageId {
             Self::Markdown => "markdown",
             Self::Html => "html",
             Self::Python => "python",
+            Self::Php => "php",
             Self::Go => "go",
             Self::Ruby => "ruby",
         }
@@ -144,6 +147,7 @@ impl MultiLspManager {
             LanguageId::Markdown,
             LanguageId::Html,
             LanguageId::Python,
+            LanguageId::Php,
             LanguageId::Go,
             LanguageId::Ruby,
         ]
@@ -327,6 +331,7 @@ impl MultiLspManager {
         markdown_config: LspServerConfig,
         html_config: LspServerConfig,
         python_config: LspServerConfig,
+        php_config: LspServerConfig,
         go_config: LspServerConfig,
         ruby_config: LspServerConfig,
     ) -> Self {
@@ -340,6 +345,7 @@ impl MultiLspManager {
         configs.insert(LanguageId::Markdown, markdown_config);
         configs.insert(LanguageId::Html, html_config);
         configs.insert(LanguageId::Python, python_config);
+        configs.insert(LanguageId::Php, php_config);
         configs.insert(LanguageId::Go, go_config);
         configs.insert(LanguageId::Ruby, ruby_config);
 
@@ -901,6 +907,7 @@ mod tests {
             servers.markdown,
             servers.html,
             servers.python,
+            servers.php,
             servers.go,
             servers.ruby,
         )
@@ -1111,6 +1118,28 @@ mod tests {
     }
 
     #[test]
+    fn php_extension_routes_to_php_language_server() {
+        let tmp = unique_temp_dir("nevi_lsp_php_route");
+        let workspace_root = tmp.join("workspace");
+        fs::create_dir_all(&workspace_root).expect("create workspace");
+
+        let manager = make_manager(workspace_root);
+
+        assert_eq!(LanguageId::from_extension("php"), Some(LanguageId::Php));
+        assert_eq!(LanguageId::Php.as_lsp_id(), "php");
+        assert_eq!(
+            manager.language_for_path(Path::new("app/Http/Controllers/HomeController.php")),
+            Some(LanguageId::Php)
+        );
+        assert_eq!(
+            manager.status(Some(Path::new("app/Http/Controllers/HomeController.php"))),
+            "LSP: phpactor not started (php)"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn resolve_server_root_uses_ruby_root_markers() {
         let tmp = unique_temp_dir("nevi_lsp_ruby_root");
         let workspace_root = tmp.join("workspace");
@@ -1126,6 +1155,23 @@ mod tests {
         let manager = make_manager(workspace_root.clone());
         let file_path = nested.join("user.rb");
         let resolved = manager.resolve_server_root(LanguageId::Ruby, Some(file_path.as_path()));
+        assert_eq!(resolved, project_root);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_server_root_uses_php_root_markers() {
+        let tmp = unique_temp_dir("nevi_lsp_php_root");
+        let workspace_root = tmp.join("workspace");
+        let project_root = workspace_root.join("project");
+        let nested = project_root.join("app/Http/Controllers");
+        fs::create_dir_all(&nested).expect("create nested tree");
+        fs::write(project_root.join("composer.json"), "{}\n").expect("write composer marker");
+
+        let manager = make_manager(workspace_root.clone());
+        let file_path = nested.join("HomeController.php");
+        let resolved = manager.resolve_server_root(LanguageId::Php, Some(file_path.as_path()));
         assert_eq!(resolved, project_root);
 
         let _ = fs::remove_dir_all(&tmp);

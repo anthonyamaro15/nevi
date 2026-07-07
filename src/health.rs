@@ -499,6 +499,7 @@ where
         command_tool_health_if_enabled("markdown", &servers.markdown, is_command_available),
         command_tool_health_if_enabled("html", &servers.html, is_command_available),
         command_tool_health_if_enabled("python", &servers.python, is_command_available),
+        command_tool_health_if_enabled("php", &servers.php, is_command_available),
         command_tool_health_if_enabled("go", &servers.go, is_command_available),
         command_tool_health_if_enabled("ruby", &servers.ruby, is_command_available),
     ]
@@ -667,6 +668,7 @@ fn lsp_server_health(settings: &crate::config::Settings) -> Vec<LspServerHealth>
         server_health("markdown", &servers.markdown),
         server_health("html", &servers.html),
         server_health("python", &servers.python),
+        server_health("php", &servers.php),
         server_health("go", &servers.go),
         server_health("ruby", &servers.ruby),
     ]

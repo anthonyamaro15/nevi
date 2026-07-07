@@ -1362,6 +1362,11 @@ pub fn ruby_highlight_query() -> &'static str {
     tree_sitter_ruby::HIGHLIGHTS_QUERY
 }
 
+/// Get the highlight query for PHP
+pub fn php_highlight_query() -> &'static str {
+    tree_sitter_php::HIGHLIGHTS_QUERY
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1515,6 +1520,15 @@ mod tests {
             tree_sitter_ruby::LANGUAGE.into(),
             ruby_highlight_query(),
             "Ruby",
+        );
+    }
+
+    #[test]
+    fn php_highlight_query_compiles() {
+        assert_query_compiles(
+            tree_sitter_php::LANGUAGE_PHP.into(),
+            php_highlight_query(),
+            "PHP",
         );
     }
 
