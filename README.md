@@ -7,6 +7,7 @@ A fast, Neovim-inspired terminal editor written in Rust.
 ![Nevi demo — fuzzy file finder with preview, vim motions, Harpoon quick-switch, live grep, and live theme switching](nevi-demo.gif)
 
 > **Tip:** To see every keybinding available in Nevi, run `:Keymaps` (or press `<Space>fk`) — a searchable list with a description for each one.
+> See [CHANGELOG.md](CHANGELOG.md) for release notes and upgrade highlights.
 
 ## Why Nevi?
 
