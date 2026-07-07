@@ -209,7 +209,7 @@ When specifying keys, use these formats:
 | `0` | Move to start of line (column 0) |
 | `^` | Move to first non-blank character |
 | `$` | Move to end of line |
-| `+` | Move to first non-blank of next line |
+| `+` / `Enter` | Move to first non-blank of next line |
 | `-` | Move to first non-blank of previous line |
 | `gj` | Move down by display line when wrap is enabled |
 | `gk` | Move up by display line when wrap is enabled |

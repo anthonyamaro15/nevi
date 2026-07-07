@@ -931,7 +931,7 @@ impl InputState {
             }
             (_, KeyCode::Char('^')) => self.motion_or_operator(Motion::FirstNonBlank, count),
             (_, KeyCode::Char('$')) => self.motion_or_operator(Motion::LineEnd, count),
-            (_, KeyCode::Char('+')) => {
+            (_, KeyCode::Char('+')) | (KeyModifiers::NONE, KeyCode::Enter) => {
                 self.motion_or_operator(Motion::NextLineFirstNonBlank, count)
             }
             (_, KeyCode::Char('-')) => {
@@ -1599,7 +1599,9 @@ impl InputState {
             (KeyModifiers::NONE, KeyCode::Char('0')) => Motion::LineStart,
             (_, KeyCode::Char('^')) => Motion::FirstNonBlank,
             (_, KeyCode::Char('$')) => Motion::LineEnd,
-            (_, KeyCode::Char('+')) => Motion::NextLineFirstNonBlank,
+            (_, KeyCode::Char('+')) | (KeyModifiers::NONE, KeyCode::Enter) => {
+                Motion::NextLineFirstNonBlank
+            }
             (_, KeyCode::Char('-')) => Motion::PrevLineFirstNonBlank,
             (_, KeyCode::Char('}')) => Motion::ParagraphForward,
             (_, KeyCode::Char('{')) => Motion::ParagraphBackward,
@@ -1756,7 +1758,7 @@ impl InputState {
                 self.reset();
                 KeyAction::ToggleCommentMotion(Motion::FirstNonBlank, count)
             }
-            (_, KeyCode::Char('+')) => {
+            (_, KeyCode::Char('+')) | (KeyModifiers::NONE, KeyCode::Enter) => {
                 self.reset();
                 KeyAction::ToggleCommentMotion(Motion::NextLineFirstNonBlank, count)
             }
@@ -1890,7 +1892,7 @@ impl InputState {
                 self.reset();
                 KeyAction::CaseMotion(case_op, Motion::FirstNonBlank, count)
             }
-            (_, KeyCode::Char('+')) => {
+            (_, KeyCode::Char('+')) | (KeyModifiers::NONE, KeyCode::Enter) => {
                 self.reset();
                 KeyAction::CaseMotion(case_op, Motion::NextLineFirstNonBlank, count)
             }
@@ -1963,6 +1965,10 @@ mod tests {
 
     fn ctrl(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn enter() -> KeyEvent {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
     }
 
     fn run(keys: &[KeyEvent]) -> KeyAction {
@@ -2108,8 +2114,10 @@ mod tests {
         assert_motion(&[key('^')], Motion::FirstNonBlank, 1);
         assert_motion(&[key('$')], Motion::LineEnd, 1);
         assert_motion(&[key('+')], Motion::NextLineFirstNonBlank, 1);
+        assert_motion(&[enter()], Motion::NextLineFirstNonBlank, 1);
         assert_motion(&[key('-')], Motion::PrevLineFirstNonBlank, 1);
         assert_motion(&[key('3'), key('+')], Motion::NextLineFirstNonBlank, 3);
+        assert_motion(&[key('3'), enter()], Motion::NextLineFirstNonBlank, 3);
         assert_motion(&[key('3'), key('-')], Motion::PrevLineFirstNonBlank, 3);
         assert_motion(&[key('{')], Motion::ParagraphBackward, 1);
         assert_motion(&[key('}')], Motion::ParagraphForward, 1);
@@ -2194,9 +2202,21 @@ mod tests {
             1,
         );
         assert_operator_motion(
+            &[key('d'), enter()],
+            Operator::Delete,
+            Motion::NextLineFirstNonBlank,
+            1,
+        );
+        assert_operator_motion(
             &[key('2'), key('d'), key('3'), key('w')],
             Operator::Delete,
             Motion::WordForward,
+            6,
+        );
+        assert_operator_motion(
+            &[key('2'), key('d'), key('3'), enter()],
+            Operator::Delete,
+            Motion::NextLineFirstNonBlank,
             6,
         );
         assert_operator_line(&[key('d'), key('d')], Operator::Delete, 1);
@@ -2288,6 +2308,12 @@ mod tests {
             &[key('g'), shift('U'), key('w')],
             CaseOperator::Uppercase,
             Motion::WordForward,
+            1,
+        );
+        assert_case_motion(
+            &[key('g'), shift('U'), enter()],
+            CaseOperator::Uppercase,
+            Motion::NextLineFirstNonBlank,
             1,
         );
         assert_case_line(

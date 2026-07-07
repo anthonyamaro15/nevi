@@ -84,6 +84,16 @@ const MOTION_CASES: &[OracleCase] = &[
         keys: "$^",
     },
     OracleCase {
+        name: "enter next line first nonblank",
+        initial_text: "zero\n    one\n  two\nthree\n",
+        keys: "<CR>",
+    },
+    OracleCase {
+        name: "counted enter next line first nonblank",
+        initial_text: "zero\n    one\n  two\nthree\n",
+        keys: "2<CR>",
+    },
+    OracleCase {
         name: "file top",
         initial_text: "alpha\nbeta\ngamma\n",
         keys: "gg",
@@ -160,6 +170,11 @@ const EDITING_CASES: &[OracleCase] = &[
         name: "delete word",
         initial_text: "alpha beta\n",
         keys: "dw",
+    },
+    OracleCase {
+        name: "delete enter motion",
+        initial_text: "zero\n    one\n  two\nthree\n",
+        keys: "d<CR>",
     },
     OracleCase {
         name: "change inner word",

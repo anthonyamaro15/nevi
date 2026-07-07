@@ -4112,6 +4112,8 @@ impl Editor {
     /// Delete from cursor to motion target
     pub fn delete_motion(&mut self, motion: Motion, count: usize, register: Option<char>) {
         if let Some((start_line, start_col, end_line, end_col)) = self.motion_range(motion, count) {
+            let linewise = Self::motion_is_linewise(motion);
+            let original_col = self.cursor.col;
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
             // Record for undo
@@ -4124,9 +4126,17 @@ impl Editor {
             self.undo_stack
                 .end_undo_group(self.cursor.line, self.cursor.col);
 
-            let is_small = !deleted.contains('\n');
-            self.registers
-                .delete(register, RegisterContent::Chars(deleted), is_small);
+            if linewise {
+                self.cursor.col = original_col;
+                self.clamp_cursor();
+                self.scroll_to_cursor();
+                self.registers
+                    .delete(register, RegisterContent::Lines(deleted), false);
+            } else {
+                let is_small = !deleted.contains('\n');
+                self.registers
+                    .delete(register, RegisterContent::Chars(deleted), is_small);
+            }
         }
     }
 
@@ -4158,7 +4168,12 @@ impl Editor {
     pub fn yank_motion(&mut self, motion: Motion, count: usize, register: Option<char>) {
         if let Some((start_line, start_col, end_line, end_col)) = self.motion_range(motion, count) {
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
-            self.registers.yank(register, RegisterContent::Chars(text));
+            let content = if Self::motion_is_linewise(motion) {
+                RegisterContent::Lines(text)
+            } else {
+                RegisterContent::Chars(text)
+            };
+            self.registers.yank(register, content);
             self.set_status("Yanked");
         }
     }
@@ -4184,6 +4199,7 @@ impl Editor {
     /// Change from cursor to motion target (delete + insert mode)
     pub fn change_motion(&mut self, motion: Motion, count: usize, register: Option<char>) {
         if let Some((start_line, start_col, end_line, end_col)) = self.motion_range(motion, count) {
+            let linewise = Self::motion_is_linewise(motion);
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
             // Begin undo group (will include the delete and subsequent inserts)
@@ -4193,9 +4209,14 @@ impl Editor {
 
             let deleted = self.delete_range(start_line, start_col, end_line, end_col);
 
-            let is_small = !deleted.contains('\n');
-            self.registers
-                .delete(register, RegisterContent::Chars(deleted), is_small);
+            if linewise {
+                self.registers
+                    .delete(register, RegisterContent::Lines(deleted), false);
+            } else {
+                let is_small = !deleted.contains('\n');
+                self.registers
+                    .delete(register, RegisterContent::Chars(deleted), is_small);
+            }
 
             // Enter insert mode (don't start new undo group, reuse the one from change)
             self.enter_insert_mode_at_change(start_line, start_col);
@@ -10387,6 +10408,13 @@ impl Editor {
         )
     }
 
+    fn motion_is_linewise(motion: Motion) -> bool {
+        matches!(
+            motion,
+            Motion::NextLineFirstNonBlank | Motion::PrevLineFirstNonBlank
+        )
+    }
+
     fn motion_range(&self, motion: Motion, count: usize) -> Option<(usize, usize, usize, usize)> {
         let (target_line, target_col) = apply_motion(
             &self.buffers[self.current_buffer_idx],
@@ -10396,6 +10424,19 @@ impl Editor {
             count,
             self.text_rows(),
         )?;
+
+        if Self::motion_is_linewise(motion) {
+            if target_line == self.cursor.line {
+                return None;
+            }
+
+            let start_line = self.cursor.line.min(target_line);
+            let end_line = self.cursor.line.max(target_line);
+            let end_col = self.buffers[self.current_buffer_idx]
+                .line_len_including_newline(end_line)
+                .saturating_sub(1);
+            return Some((start_line, 0, end_line, end_col));
+        }
 
         let forward = (target_line, target_col) >= (self.cursor.line, self.cursor.col);
         let inclusive = forward && Self::motion_is_inclusive(motion);
