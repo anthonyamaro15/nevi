@@ -519,6 +519,7 @@ fn main() -> anyhow::Result<()> {
             &lsp_servers.markdown,
             &lsp_servers.html,
             &lsp_servers.python,
+            &lsp_servers.php,
             &lsp_servers.go,
             &lsp_servers.ruby,
         ] {
@@ -556,6 +557,7 @@ fn main() -> anyhow::Result<()> {
             lsp_servers.markdown,
             lsp_servers.html,
             lsp_servers.python,
+            lsp_servers.php,
             lsp_servers.go,
             lsp_servers.ruby,
         );

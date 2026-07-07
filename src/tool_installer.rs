@@ -121,6 +121,7 @@ where
             &servers.python,
             &is_command_available,
         );
+        add_lsp_tool(&mut grouped, "php", &servers.php, &is_command_available);
         add_lsp_tool(&mut grouped, "go", &servers.go, &is_command_available);
         add_lsp_tool(&mut grouped, "ruby", &servers.ruby, &is_command_available);
     }
@@ -214,6 +215,9 @@ pub fn install_command_for(command: &str) -> Option<&'static str> {
         | "vscode-eslint-language-server" => Some("npm install -g vscode-langservers-extracted"),
         "taplo" | "taplo.exe" => Some("cargo install taplo-cli --locked"),
         "pyright-langserver" | "pyright-langserver.cmd" => Some("npm install -g pyright"),
+        "phpactor" | "phpactor.bat" | "phpactor.cmd" => Some(
+            "PHP 8.2+ is required. macOS/Homebrew: brew install php. Then install Phpactor: mkdir -p ~/.local/bin && curl -Lo phpactor.phar https://github.com/phpactor/phpactor/releases/latest/download/phpactor.phar && chmod +x phpactor.phar && mv phpactor.phar ~/.local/bin/phpactor",
+        ),
         "gopls" | "gopls.exe" => Some("go install golang.org/x/tools/gopls@latest"),
         "ruby-lsp" | "ruby-lsp.cmd" => Some("gem install ruby-lsp"),
         "pylsp" => Some("pipx install python-lsp-server"),
@@ -249,6 +253,7 @@ mod tests {
         settings.lsp.servers.markdown.enabled = false;
         settings.lsp.servers.html.enabled = false;
         settings.lsp.servers.python.enabled = false;
+        settings.lsp.servers.php.enabled = false;
         settings.lsp.servers.go.enabled = false;
         settings.lsp.servers.ruby.enabled = false;
     }
@@ -270,6 +275,12 @@ mod tests {
         assert_eq!(
             super::install_command_for("ruby-lsp"),
             Some("gem install ruby-lsp")
+        );
+        assert_eq!(
+            super::install_command_for("phpactor"),
+            Some(
+                "PHP 8.2+ is required. macOS/Homebrew: brew install php. Then install Phpactor: mkdir -p ~/.local/bin && curl -Lo phpactor.phar https://github.com/phpactor/phpactor/releases/latest/download/phpactor.phar && chmod +x phpactor.phar && mv phpactor.phar ~/.local/bin/phpactor"
+            )
         );
     }
 

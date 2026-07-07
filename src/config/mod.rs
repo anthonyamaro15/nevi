@@ -647,6 +647,7 @@ pub struct LspServers {
     pub markdown: LspServerConfig,
     pub html: LspServerConfig,
     pub python: LspServerConfig,
+    pub php: LspServerConfig,
     pub go: LspServerConfig,
     pub ruby: LspServerConfig,
 }
@@ -746,6 +747,18 @@ impl Default for LspServers {
                     "pyrightconfig.json".to_string(),
                 ],
                 file_extensions: vec!["py".to_string(), "pyi".to_string(), "pyw".to_string()],
+            },
+            php: LspServerConfig {
+                enabled: true,
+                preset: None,
+                command: "phpactor".to_string(),
+                args: vec!["language-server".to_string()],
+                root_patterns: vec![
+                    "composer.json".to_string(),
+                    ".phpactor.json".to_string(),
+                    ".phpactor.yml".to_string(),
+                ],
+                file_extensions: vec!["php".to_string()],
             },
             go: LspServerConfig {
                 enabled: true,
@@ -1439,7 +1452,8 @@ fn default_config_template() -> &'static str {
 # ============================================================================
 # LSP servers are auto-detected and enabled by default.
 # Supported: rust-analyzer, typescript-language-server, vscode-css-language-server,
-# vscode-json-language-server, taplo, vscode-html-language-server, pyright-langserver, gopls, ruby-lsp
+# vscode-json-language-server, taplo, vscode-html-language-server, pyright-langserver,
+# phpactor, gopls, ruby-lsp
 # Optional: marksman for Markdown (disabled by default)
 #
 # To disable LSP entirely:
@@ -1582,6 +1596,7 @@ fn merge_lsp_servers_with_defaults(user: LspServers) -> LspServers {
         markdown: merge_lsp_server_config(defaults.markdown, user.markdown),
         html: merge_lsp_server_config(defaults.html, user.html),
         python: merge_lsp_server_config(defaults.python, user.python),
+        php: merge_lsp_server_config(defaults.php, user.php),
         go: merge_lsp_server_config(defaults.go, user.go),
         ruby: merge_lsp_server_config(defaults.ruby, user.ruby),
     }
@@ -1775,6 +1790,29 @@ mod tests {
                 "ru".to_string(),
                 "podspec".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn php_lsp_defaults_use_phpactor() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.lsp.servers.php.effective_command(), "phpactor");
+        assert_eq!(
+            settings.lsp.servers.php.effective_args(),
+            vec!["language-server".to_string()]
+        );
+        assert_eq!(
+            settings.lsp.servers.php.root_patterns,
+            vec![
+                "composer.json".to_string(),
+                ".phpactor.json".to_string(),
+                ".phpactor.yml".to_string()
+            ]
+        );
+        assert_eq!(
+            settings.lsp.servers.php.file_extensions,
+            vec!["php".to_string()]
         );
     }
 

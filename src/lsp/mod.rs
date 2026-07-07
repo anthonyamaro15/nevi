@@ -683,6 +683,7 @@ mod tests {
             ("file.pyi", "python"),
             ("file.pyw", "python"),
             ("file.go", "go"),
+            ("file.php", "php"),
             ("file.rb", "ruby"),
             ("file.rake", "ruby"),
             ("file.gemspec", "ruby"),
