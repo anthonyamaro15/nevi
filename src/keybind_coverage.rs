@@ -97,7 +97,7 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
         "Move to end of previous WORD",
         "previous big word end",
     ),
-    needs_oracle("%", "Jump to matching bracket"),
+    vim_oracle("%", "Jump to matching bracket", "matching bracket"),
     needs_oracle("H", "Move to top of visible screen"),
     needs_oracle("M", "Move to middle of visible screen"),
     needs_oracle("L", "Move to bottom of visible screen"),
@@ -293,8 +293,8 @@ mod tests {
 
         assert!(
             gaps.iter()
-                .any(|entry| entry.mode == KeybindMode::Normal && entry.key == "%"),
-            "`%` should stay visible as a tracked Vim parity gap until oracle-covered"
+                .any(|entry| entry.mode == KeybindMode::Normal && entry.key == "H"),
+            "`H` should stay visible as a tracked Vim parity gap until oracle-covered"
         );
     }
 
@@ -347,5 +347,20 @@ mod tests {
                 "`{key}` should be protected by oracle case `{oracle_case}`"
             );
         }
+    }
+
+    #[test]
+    fn matching_bracket_default_is_oracle_covered() {
+        let entry = coverage_for(KeybindMode::Normal, "%")
+            .expect("missing coverage entry for matching-bracket motion");
+
+        assert_eq!(entry.kind, CoverageKind::VimOracle);
+        assert_eq!(
+            entry.state,
+            CoverageState::Protected {
+                test_id: "matching bracket",
+            },
+            "`%` should be protected by the matching-bracket oracle case"
+        );
     }
 }

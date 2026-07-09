@@ -139,6 +139,11 @@ const MOTION_CASES: &[OracleCase] = &[
         keys: "fa;,",
     },
     OracleCase {
+        name: "matching bracket",
+        initial_text: "(alpha)\n",
+        keys: "%",
+    },
+    OracleCase {
         name: "enter next line first nonblank",
         initial_text: "zero\n    one\n  two\nthree\n",
         keys: "<CR>",
