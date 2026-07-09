@@ -88,11 +88,15 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
             test_id: "default_leader_includes_keymaps_picker",
         },
     },
-    needs_oracle("W", "Move to start of next WORD"),
-    needs_oracle("B", "Move to start of previous WORD"),
-    needs_oracle("E", "Move to end of WORD"),
-    needs_oracle("ge", "Move to end of previous word"),
-    needs_oracle("gE", "Move to end of previous WORD"),
+    vim_oracle("W", "Move to start of next WORD", "big word forward"),
+    vim_oracle("B", "Move to start of previous WORD", "big word backward"),
+    vim_oracle("E", "Move to end of WORD", "big word end"),
+    vim_oracle("ge", "Move to end of previous word", "previous word end"),
+    vim_oracle(
+        "gE",
+        "Move to end of previous WORD",
+        "previous big word end",
+    ),
     needs_oracle("%", "Jump to matching bracket"),
     needs_oracle("H", "Move to top of visible screen"),
     needs_oracle("M", "Move to middle of visible screen"),
@@ -265,8 +269,33 @@ mod tests {
 
         assert!(
             gaps.iter()
-                .any(|entry| entry.mode == KeybindMode::Normal && entry.key == "W"),
-            "`W` should stay visible as a tracked Vim parity gap until oracle-covered"
+                .any(|entry| entry.mode == KeybindMode::Normal && entry.key == "%"),
+            "`%` should stay visible as a tracked Vim parity gap until oracle-covered"
         );
+    }
+
+    #[test]
+    fn word_motion_defaults_are_oracle_covered() {
+        let expected = [
+            ("W", "big word forward"),
+            ("B", "big word backward"),
+            ("E", "big word end"),
+            ("ge", "previous word end"),
+            ("gE", "previous big word end"),
+        ];
+
+        for (key, oracle_case) in expected {
+            let entry = coverage_for(KeybindMode::Normal, key)
+                .unwrap_or_else(|| panic!("missing coverage entry for `{key}`"));
+
+            assert_eq!(entry.kind, CoverageKind::VimOracle);
+            assert_eq!(
+                entry.state,
+                CoverageState::Protected {
+                    test_id: oracle_case,
+                },
+                "`{key}` should be protected by oracle case `{oracle_case}`"
+            );
+        }
     }
 }

@@ -59,14 +59,39 @@ const MOTION_CASES: &[OracleCase] = &[
         keys: "w",
     },
     OracleCase {
+        name: "big word forward",
+        initial_text: "alpha.beta gamma\n",
+        keys: "W",
+    },
+    OracleCase {
         name: "word backward",
         initial_text: "alpha beta gamma\n",
         keys: "wwb",
     },
     OracleCase {
+        name: "big word backward",
+        initial_text: "alpha.beta gamma.delta omega\n",
+        keys: "WWB",
+    },
+    OracleCase {
         name: "word end",
         initial_text: "alpha beta\n",
         keys: "e",
+    },
+    OracleCase {
+        name: "big word end",
+        initial_text: "alpha.beta gamma\n",
+        keys: "E",
+    },
+    OracleCase {
+        name: "previous word end",
+        initial_text: "alpha beta gamma\n",
+        keys: "wwge",
+    },
+    OracleCase {
+        name: "previous big word end",
+        initial_text: "alpha.beta gamma.delta omega\n",
+        keys: "WWgE",
     },
     OracleCase {
         name: "line start",
