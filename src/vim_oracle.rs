@@ -23,6 +23,7 @@ struct EditorSnapshot {
     lines: Vec<String>,
     cursor_line: usize,
     cursor_col: usize,
+    viewport_top: usize,
     mode: String,
 }
 
@@ -31,6 +32,11 @@ struct OracleComparison {
     passed: bool,
     report: String,
 }
+
+const ORACLE_TERM_WIDTH: u16 = 80;
+const ORACLE_TERM_HEIGHT: u16 = 24;
+const ORACLE_SHORT_TERM_HEIGHT: u16 = 12;
+const ORACLE_SCROLL_OFF: usize = 8;
 
 const SCREEN_POSITION_TEXT: &str = concat!(
     "line 001\n",
@@ -272,6 +278,21 @@ const MOTION_CASES: &[OracleCase] = &[
         keys: "50Gzz30L",
     },
     OracleCase {
+        name: "center cursor line",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz",
+    },
+    OracleCase {
+        name: "cursor line to top",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzt",
+    },
+    OracleCase {
+        name: "cursor line to bottom",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzb",
+    },
+    OracleCase {
         name: "enter next line first nonblank",
         initial_text: "zero\n    one\n  two\nthree\n",
         keys: "<CR>",
@@ -305,6 +326,19 @@ const MOTION_CASES: &[OracleCase] = &[
         name: "counted word forward",
         initial_text: "alpha beta gamma\n",
         keys: "2w",
+    },
+];
+
+const SHORT_VIEWPORT_CASES: &[OracleCase] = &[
+    OracleCase {
+        name: "short viewport cursor line to top",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzt",
+    },
+    OracleCase {
+        name: "short viewport cursor line to bottom",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzb",
     },
 ];
 
@@ -477,7 +511,13 @@ fn char_key(ch: char) -> KeyEvent {
 }
 
 fn run_nevi_case(case: &OracleCase) -> Result<EditorSnapshot, String> {
+    run_nevi_case_at_height(case, ORACLE_TERM_HEIGHT)
+}
+
+fn run_nevi_case_at_height(case: &OracleCase, term_height: u16) -> Result<EditorSnapshot, String> {
     let mut editor = Editor::default();
+    editor.set_size(ORACLE_TERM_WIDTH, term_height);
+    editor.settings.editor.scroll_off = ORACLE_SCROLL_OFF;
     editor.replace_buffer_content(case.initial_text);
 
     for key in parse_key_sequence(case.keys)? {
@@ -492,6 +532,7 @@ fn snapshot_nevi(editor: &Editor) -> EditorSnapshot {
         lines: normalized_lines(&editor.buffer().content()),
         cursor_line: editor.cursor.line,
         cursor_col: editor.cursor.col,
+        viewport_top: editor.viewport_offset,
         mode: nevi_mode_name(editor.mode).to_string(),
     }
 }
@@ -542,6 +583,12 @@ fn compare_snapshots(
         mismatches.push(format!(
             "cursor_col: nevi={} nvim={}",
             nevi.cursor_col, nvim.cursor_col
+        ));
+    }
+    if nevi.viewport_top != nvim.viewport_top {
+        mismatches.push(format!(
+            "viewport_top: nevi={} nvim={}",
+            nevi.viewport_top, nvim.viewport_top
         ));
     }
     if nevi.mode != nvim.mode {
@@ -606,25 +653,38 @@ fn format_snapshot(snapshot: &EditorSnapshot) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "  mode={} cursor=({}, {})\n{}",
-        snapshot.mode, snapshot.cursor_line, snapshot.cursor_col, lines
+        "  mode={} cursor=({}, {}) viewport_top={}\n{}",
+        snapshot.mode, snapshot.cursor_line, snapshot.cursor_col, snapshot.viewport_top, lines
     )
 }
 
 fn compare_with_neovim(case: &OracleCase) -> Result<OracleComparison, String> {
-    let nevi = run_nevi_case(case)?;
-    let nvim = run_neovim_case(case)?;
+    compare_with_neovim_at_height(case, ORACLE_TERM_HEIGHT)
+}
+
+fn compare_with_neovim_at_height(
+    case: &OracleCase,
+    term_height: u16,
+) -> Result<OracleComparison, String> {
+    let nevi = run_nevi_case_at_height(case, term_height)?;
+    let nvim = run_neovim_case_at_height(case, term_height)?;
     Ok(compare_snapshots(case, nevi, nvim))
 }
 
-fn run_neovim_case(case: &OracleCase) -> Result<EditorSnapshot, String> {
+fn run_neovim_case_at_height(
+    case: &OracleCase,
+    term_height: u16,
+) -> Result<EditorSnapshot, String> {
     let tmp = unique_temp_dir("nevi_vim_oracle");
     std::fs::create_dir_all(&tmp).map_err(|err| format!("create temp dir: {err}"))?;
     let file_path = tmp.join("case.txt");
     let script_path = tmp.join("snapshot.lua");
     std::fs::write(&file_path, case.initial_text).map_err(|err| format!("write case: {err}"))?;
-    std::fs::write(&script_path, neovim_snapshot_lua(case.keys))
-        .map_err(|err| format!("write lua script: {err}"))?;
+    std::fs::write(
+        &script_path,
+        neovim_snapshot_lua(case.keys, term_height.saturating_sub(2)),
+    )
+    .map_err(|err| format!("write lua script: {err}"))?;
 
     let output = Command::new("nvim")
         .args(["--headless", "-u", "NONE", "-i", "NONE", "-n"])
@@ -651,22 +711,29 @@ fn run_neovim_case(case: &OracleCase) -> Result<EditorSnapshot, String> {
     snapshot_from_neovim_json(json_line)
 }
 
-fn neovim_snapshot_lua(keys: &str) -> String {
+fn neovim_snapshot_lua(keys: &str, text_rows: u16) -> String {
     format!(
         r#"
 local keys = vim.api.nvim_replace_termcodes("{}", true, false, true)
-vim.o.scrolloff = 8
+vim.o.scrolloff = {}
+vim.o.wrap = false
+vim.api.nvim_win_set_width(0, {})
+vim.api.nvim_win_set_height(0, {})
 vim.api.nvim_feedkeys(keys, "xt", false)
 local pos = vim.api.nvim_win_get_cursor(0)
 local snapshot = {{
   lines = vim.api.nvim_buf_get_lines(0, 0, -1, false),
   cursor_line = pos[1] - 1,
   cursor_col = pos[2],
+  viewport_top = vim.fn.line("w0") - 1,
   mode = vim.api.nvim_get_mode().mode,
 }}
 io.stdout:write(vim.fn.json_encode(snapshot) .. "\n")
 "#,
-        lua_escape(keys)
+        lua_escape(keys),
+        ORACLE_SCROLL_OFF,
+        ORACLE_TERM_WIDTH,
+        text_rows
     )
 }
 
@@ -688,6 +755,7 @@ fn snapshot_from_neovim_json(line: &str) -> Result<EditorSnapshot, String> {
 
     let cursor_line = json_usize(&value, "cursor_line", line)?;
     let cursor_col = json_usize(&value, "cursor_col", line)?;
+    let viewport_top = json_usize(&value, "viewport_top", line)?;
     let raw_mode = value
         .get("mode")
         .and_then(|mode| mode.as_str())
@@ -697,6 +765,7 @@ fn snapshot_from_neovim_json(line: &str) -> Result<EditorSnapshot, String> {
         lines,
         cursor_line,
         cursor_col,
+        viewport_top,
         mode: normalize_neovim_mode(raw_mode).to_string(),
     })
 }
@@ -781,6 +850,7 @@ mod tests {
                 lines: vec!["alpha".to_string(), "eta".to_string()],
                 cursor_line: 1,
                 cursor_col: 0,
+                viewport_top: 0,
                 mode: "normal".to_string(),
             }
         );
@@ -797,12 +867,14 @@ mod tests {
             lines: vec!["abc".to_string()],
             cursor_line: 0,
             cursor_col: 1,
+            viewport_top: 0,
             mode: "normal".to_string(),
         };
         let nvim = EditorSnapshot {
             lines: vec!["abc".to_string()],
             cursor_line: 0,
             cursor_col: 2,
+            viewport_top: 0,
             mode: "normal".to_string(),
         };
 
@@ -813,6 +885,45 @@ mod tests {
         assert!(comparison.report.contains("cursor_col"));
         assert!(comparison.report.contains("nevi=1"));
         assert!(comparison.report.contains("nvim=2"));
+    }
+
+    #[test]
+    fn comparison_detects_viewport_top_mismatch() {
+        let case = OracleCase {
+            name: "viewport mismatch",
+            initial_text: SCREEN_POSITION_TEXT,
+            keys: "50Gzz",
+        };
+        let mut nevi_editor = Editor::default();
+        nevi_editor.replace_buffer_content(SCREEN_POSITION_TEXT);
+        nevi_editor.cursor.line = 49;
+        nevi_editor.viewport_offset = 39;
+
+        let mut nvim_editor = Editor::default();
+        nvim_editor.replace_buffer_content(SCREEN_POSITION_TEXT);
+        nvim_editor.cursor.line = 49;
+        nvim_editor.viewport_offset = 40;
+
+        let comparison = compare_snapshots(
+            &case,
+            snapshot_nevi(&nevi_editor),
+            snapshot_nevi(&nvim_editor),
+        );
+
+        assert!(!comparison.passed);
+        assert!(comparison.report.contains("viewport_top"));
+        assert!(comparison.report.contains("nevi=39"));
+        assert!(comparison.report.contains("nvim=40"));
+    }
+
+    #[test]
+    fn neovim_snapshot_parses_viewport_top() {
+        let snapshot = snapshot_from_neovim_json(
+            r#"{"lines":["alpha"],"cursor_line":0,"cursor_col":0,"viewport_top":4,"mode":"n"}"#,
+        )
+        .expect("parse snapshot");
+
+        assert_eq!(snapshot.viewport_top, 4);
     }
 
     #[test]
@@ -870,12 +981,14 @@ mod tests {
             lines: vec!["before!".to_string()],
             cursor_line: 0,
             cursor_col: 6,
+            viewport_top: 0,
             mode: "normal".to_string(),
         };
         let nvim = EditorSnapshot {
             lines: vec!["before".to_string()],
             cursor_line: 0,
             cursor_col: 5,
+            viewport_top: 0,
             mode: "normal".to_string(),
         };
 
@@ -906,6 +1019,13 @@ mod tests {
                 if !comparison.passed {
                     reports.push(format!("[{}] {}", category.name, comparison.report));
                 }
+            }
+        }
+        for case in SHORT_VIEWPORT_CASES {
+            let comparison = compare_with_neovim_at_height(case, ORACLE_SHORT_TERM_HEIGHT)
+                .expect("run short viewport oracle comparison");
+            if !comparison.passed {
+                reports.push(format!("[short-viewport] {}", comparison.report));
             }
         }
 

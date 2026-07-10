@@ -21,6 +21,76 @@ fn right_after_zt_near_eof_preserves_neovim_top_line() {
 }
 
 #[test]
+fn scroll_cursor_top_respects_scrolloff() {
+    let mut editor = Editor::default();
+    editor.set_size(80, 24);
+    editor.settings.editor.scroll_off = 8;
+    let content = (1..=100)
+        .map(|line| format!("line {line:03}\n"))
+        .collect::<String>();
+    editor.replace_buffer_content(&content);
+    editor.cursor.line = 49;
+
+    editor.scroll_cursor_top();
+
+    assert_eq!(editor.viewport_offset, 41);
+    assert_eq!(editor.panes[editor.active_pane].viewport_offset, 41);
+}
+
+#[test]
+fn scroll_cursor_bottom_respects_scrolloff() {
+    let mut editor = Editor::default();
+    editor.set_size(80, 24);
+    editor.settings.editor.scroll_off = 8;
+    let content = (1..=100)
+        .map(|line| format!("line {line:03}\n"))
+        .collect::<String>();
+    editor.replace_buffer_content(&content);
+    editor.cursor.line = 49;
+
+    editor.scroll_cursor_bottom();
+
+    assert_eq!(editor.viewport_offset, 36);
+    assert_eq!(editor.panes[editor.active_pane].viewport_offset, 36);
+}
+
+#[test]
+fn scroll_cursor_top_caps_scrolloff_for_even_height() {
+    let mut editor = Editor::default();
+    editor.set_size(80, 12);
+    editor.settings.editor.scroll_off = 8;
+    let content = (1..=100)
+        .map(|line| format!("line {line:03}\n"))
+        .collect::<String>();
+    editor.replace_buffer_content(&content);
+    editor.cursor.line = 49;
+
+    editor.scroll_cursor_top();
+
+    assert_eq!(editor.text_rows(), 10);
+    assert_eq!(editor.viewport_offset, 45);
+    assert_eq!(editor.panes[editor.active_pane].viewport_offset, 45);
+}
+
+#[test]
+fn scroll_cursor_bottom_caps_scrolloff_for_even_height() {
+    let mut editor = Editor::default();
+    editor.set_size(80, 12);
+    editor.settings.editor.scroll_off = 8;
+    let content = (1..=100)
+        .map(|line| format!("line {line:03}\n"))
+        .collect::<String>();
+    editor.replace_buffer_content(&content);
+    editor.cursor.line = 49;
+
+    editor.scroll_cursor_bottom();
+
+    assert_eq!(editor.text_rows(), 10);
+    assert_eq!(editor.viewport_offset, 44);
+    assert_eq!(editor.panes[editor.active_pane].viewport_offset, 44);
+}
+
+#[test]
 fn screen_bottom_motion_ignores_trailing_newline_line_near_eof() {
     let mut editor = Editor::default();
     let content = (1..=30)
