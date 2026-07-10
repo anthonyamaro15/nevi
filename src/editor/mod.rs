@@ -9708,23 +9708,31 @@ impl Editor {
         }
     }
 
-    /// Scroll viewport so cursor is at top of screen (zt command)
+    /// Scroll viewport so cursor is near the top, respecting scrolloff (zt command)
     pub fn scroll_cursor_top(&mut self) {
-        self.viewport_offset = self.cursor.line;
+        let text_rows = self.active_pane_text_rows();
+        let scroll_off = self
+            .settings
+            .editor
+            .scroll_off
+            .min(text_rows.saturating_sub(1) / 2);
+        self.viewport_offset = self.cursor.line.saturating_sub(scroll_off);
         // Sync to active pane for rendering
         if self.active_pane < self.panes.len() {
             self.panes[self.active_pane].viewport_offset = self.viewport_offset;
         }
     }
 
-    /// Scroll viewport so cursor is at bottom of screen (zb command)
+    /// Scroll viewport so cursor is near the bottom, respecting scrolloff (zb command)
     pub fn scroll_cursor_bottom(&mut self) {
         let text_rows = self.active_pane_text_rows();
-        if self.cursor.line >= text_rows.saturating_sub(1) {
-            self.viewport_offset = self.cursor.line - text_rows + 1;
-        } else {
-            self.viewport_offset = 0;
-        }
+        let scroll_off = self
+            .settings
+            .editor
+            .scroll_off
+            .min(text_rows.saturating_sub(1) / 2);
+        let target_row = text_rows.saturating_sub(1).saturating_sub(scroll_off);
+        self.viewport_offset = self.cursor.line.saturating_sub(target_row);
         // Sync to active pane for rendering
         if self.active_pane < self.panes.len() {
             self.panes[self.active_pane].viewport_offset = self.viewport_offset;

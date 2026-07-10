@@ -135,9 +135,9 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
     needs_oracle("<C-b>", "Scroll page up"),
     needs_oracle("<C-d>", "Scroll half page down"),
     needs_oracle("<C-u>", "Scroll half page up"),
-    needs_oracle("zz", "Center cursor line"),
-    needs_oracle("zt", "Move cursor line to top"),
-    needs_oracle("zb", "Move cursor line to bottom"),
+    vim_oracle("zz", "Center cursor line", "center cursor line"),
+    vim_oracle("zt", "Move cursor line to top", "cursor line to top"),
+    vim_oracle("zb", "Move cursor line to bottom", "cursor line to bottom"),
 ];
 
 const fn vim_oracle(
@@ -370,6 +370,29 @@ mod tests {
             ("H", "screen top"),
             ("M", "screen middle"),
             ("L", "screen bottom"),
+        ];
+
+        for (key, oracle_case) in expected {
+            let entry = coverage_for(KeybindMode::Normal, key)
+                .unwrap_or_else(|| panic!("missing coverage entry for `{key}`"));
+
+            assert_eq!(entry.kind, CoverageKind::VimOracle);
+            assert_eq!(
+                entry.state,
+                CoverageState::Protected {
+                    test_id: oracle_case,
+                },
+                "`{key}` should be protected by oracle case `{oracle_case}`"
+            );
+        }
+    }
+
+    #[test]
+    fn viewport_position_defaults_are_oracle_covered() {
+        let expected = [
+            ("zz", "center cursor line"),
+            ("zt", "cursor line to top"),
+            ("zb", "cursor line to bottom"),
         ];
 
         for (key, oracle_case) in expected {
