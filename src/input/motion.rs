@@ -286,9 +286,7 @@ pub fn apply_motion(
         }
 
         Motion::GotoLine(target) => {
-            let target_line = target
-                .saturating_sub(1)
-                .min(buffer.len_lines().saturating_sub(1));
+            let target_line = target.saturating_sub(1).min(last_addressable_line(buffer));
             Some((target_line, 0))
         }
 
@@ -922,7 +920,7 @@ fn find_first_non_blank(buffer: &Buffer, line: usize) -> usize {
     0
 }
 
-fn last_addressable_line(buffer: &Buffer) -> usize {
+pub(crate) fn last_addressable_line(buffer: &Buffer) -> usize {
     let last_line = buffer.len_lines().saturating_sub(1);
     if last_line > 0
         && buffer.line_len(last_line) == 0
@@ -1095,5 +1093,17 @@ mod tests {
         let position = apply_motion(&buffer, Motion::FileEnd, 0, 0, 1, 24);
 
         assert_eq!(position, Some((2, 0)));
+    }
+
+    #[test]
+    fn goto_line_beyond_eof_ignores_trailing_empty_rope_line() {
+        let content = (1..=30)
+            .map(|line| format!("line {line:02}\n"))
+            .collect::<String>();
+        let buffer = buffer_with(&content);
+
+        let position = apply_motion(&buffer, Motion::GotoLine(999), 0, 0, 1, 22);
+
+        assert_eq!(position, Some((29, 0)));
     }
 }

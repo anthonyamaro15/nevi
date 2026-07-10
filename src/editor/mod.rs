@@ -19,6 +19,7 @@ use crate::finder::FuzzyFinder;
 use crate::frecency::FrecencyDb;
 use crate::input::{
     CaseOperator, InputState, Motion, TextObject, TextObjectModifier, TextObjectType, apply_motion,
+    motion::last_addressable_line,
 };
 use crate::lsp::types::{CodeActionItem, CompletionItem, Diagnostic, Location, TextEdit};
 use crate::syntax::SyntaxManager;
@@ -3573,6 +3574,15 @@ impl Editor {
         self.term_height.saturating_sub(2) as usize // 1 for status, 1 for command line
     }
 
+    fn active_pane_text_rows(&self) -> usize {
+        self.panes
+            .get(self.active_pane)
+            .map(|pane| pane.rect.height as usize)
+            .filter(|height| *height > 0)
+            .unwrap_or_else(|| self.text_rows())
+            .max(1)
+    }
+
     /// Update pane rects based on current layout
     pub fn update_pane_rects(&mut self) {
         let text_height = self.text_rows() as u16;
@@ -3687,7 +3697,7 @@ impl Editor {
 
     /// Ensure cursor is visible by adjusting viewport
     pub fn scroll_to_cursor(&mut self) {
-        let text_rows = self.text_rows();
+        let text_rows = self.active_pane_text_rows();
         let scroll_off = self.settings.editor.scroll_off.min(text_rows / 2);
 
         // Scroll up if cursor is above viewport (with scroll_off margin)
@@ -3759,6 +3769,141 @@ impl Editor {
         if self.cursor.line != self.viewport_offset {
             self.h_offset = 0;
         }
+    }
+
+    fn pack_viewport_at_eof(&mut self) {
+        let text_rows = self.active_pane_text_rows();
+        let last_line = last_addressable_line(self.buffer());
+
+        if !self.settings.editor.wrap {
+            self.viewport_offset = last_line.saturating_add(1).saturating_sub(text_rows);
+            self.h_offset = 0;
+            return;
+        }
+
+        let wrap_width = self.effective_wrap_width();
+        if text_rows == 0 || wrap_width == 0 {
+            self.viewport_offset = last_line;
+            self.h_offset = 0;
+            return;
+        }
+
+        let tab_width = self.get_effective_tab_width();
+        let mut remaining_rows = text_rows;
+        let mut line_idx = last_line;
+
+        loop {
+            let Some(line) = self
+                .buffers
+                .get(self.current_buffer_idx)
+                .and_then(|buffer| buffer.line(line_idx))
+            else {
+                self.viewport_offset = last_line;
+                self.h_offset = 0;
+                return;
+            };
+            let (segment_count, capped) =
+                Self::capped_wrapped_segment_rows(line, wrap_width, tab_width, remaining_rows);
+
+            if capped {
+                self.viewport_offset = last_line;
+                self.h_offset = 0;
+                return;
+            }
+
+            if segment_count >= remaining_rows {
+                self.viewport_offset = line_idx;
+                self.h_offset = 0;
+                return;
+            }
+
+            remaining_rows = remaining_rows.saturating_sub(segment_count);
+            if line_idx == 0 {
+                self.viewport_offset = 0;
+                self.h_offset = 0;
+                return;
+            }
+            line_idx -= 1;
+        }
+    }
+
+    fn capped_wrapped_segment_rows(
+        line: ropey::RopeSlice<'_>,
+        max_width: usize,
+        tab_width: usize,
+        cap: usize,
+    ) -> (usize, bool) {
+        if cap == 0 {
+            return (0, true);
+        }
+        if max_width == 0 {
+            return (1, false);
+        }
+
+        let mut indent_width = 0;
+        for ch in line.chars() {
+            if ch == '\n' || !ch.is_whitespace() {
+                break;
+            }
+            let ch_width = Self::display_char_width(ch, tab_width);
+            if indent_width + ch_width >= max_width {
+                break;
+            }
+            indent_width += ch_width;
+        }
+
+        let mut rows = 0;
+        let mut row_width = 0;
+        let mut row_has_content = false;
+        let mut is_first = true;
+
+        let mut chars = line.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\n' {
+                break;
+            }
+
+            loop {
+                let available_width = if is_first {
+                    max_width
+                } else {
+                    max_width.saturating_sub(indent_width)
+                };
+
+                if available_width == 0 {
+                    rows += 1;
+                    if rows >= cap {
+                        return (cap, matches!(chars.peek(), Some(next) if *next != '\n'));
+                    }
+                    is_first = false;
+                    row_width = 0;
+                    row_has_content = false;
+                    break;
+                }
+
+                let ch_width = Self::display_char_width(ch, tab_width);
+                if row_has_content && row_width + ch_width > available_width {
+                    rows += 1;
+                    if rows >= cap {
+                        return (cap, true);
+                    }
+                    is_first = false;
+                    row_width = 0;
+                    row_has_content = false;
+                    continue;
+                }
+
+                row_width += ch_width;
+                row_has_content = true;
+                break;
+            }
+        }
+
+        if row_has_content {
+            rows += 1;
+        }
+
+        if rows == 0 { (1, false) } else { (rows, false) }
     }
 
     fn cursor_wrapped_segment_idx(&self, wrap_width: usize, tab_width: usize) -> usize {
@@ -9549,8 +9694,8 @@ impl Editor {
 
     /// Scroll viewport so cursor is at center of screen (zz command)
     pub fn scroll_cursor_center(&mut self) {
-        let text_rows = self.text_rows();
-        let half = text_rows / 2;
+        let text_rows = self.active_pane_text_rows();
+        let half = text_rows.saturating_sub(1) / 2;
 
         if self.cursor.line >= half {
             self.viewport_offset = self.cursor.line - half;
@@ -9574,7 +9719,7 @@ impl Editor {
 
     /// Scroll viewport so cursor is at bottom of screen (zb command)
     pub fn scroll_cursor_bottom(&mut self) {
-        let text_rows = self.text_rows();
+        let text_rows = self.active_pane_text_rows();
         if self.cursor.line >= text_rows.saturating_sub(1) {
             self.viewport_offset = self.cursor.line - text_rows + 1;
         } else {
@@ -9620,12 +9765,11 @@ impl Editor {
         match motion {
             Motion::ScreenTop => {
                 // H - move to top of visible screen (+ count lines from top)
-                let target_line = self.viewport_offset + count.saturating_sub(1);
-                let target_line = target_line.min(
-                    self.buffers[self.current_buffer_idx]
-                        .len_lines()
-                        .saturating_sub(1),
-                );
+                let (safe_top, safe_bottom) = self.screen_motion_safe_line_range();
+                let target_line = self
+                    .viewport_offset
+                    .saturating_add(count.saturating_sub(1))
+                    .clamp(safe_top, safe_bottom);
                 self.cursor.line = target_line;
                 // Move to first non-blank
                 self.cursor.col = self.find_first_non_blank(self.cursor.line);
@@ -9634,13 +9778,10 @@ impl Editor {
             }
             Motion::ScreenMiddle => {
                 // M - move to middle of visible screen
-                let text_rows = self.text_rows();
-                let middle = text_rows / 2;
-                let target_line = (self.viewport_offset + middle).min(
-                    self.buffers[self.current_buffer_idx]
-                        .len_lines()
-                        .saturating_sub(1),
-                );
+                let text_rows = self.active_pane_text_rows();
+                let middle = text_rows.saturating_sub(1) / 2;
+                let target_line =
+                    (self.viewport_offset + middle).min(last_addressable_line(self.buffer()));
                 self.cursor.line = target_line;
                 // Move to first non-blank
                 self.cursor.col = self.find_first_non_blank(self.cursor.line);
@@ -9649,14 +9790,13 @@ impl Editor {
             }
             Motion::ScreenBottom => {
                 // L - move to bottom of visible screen (- count lines from bottom)
-                let text_rows = self.text_rows();
-                let bottom_screen_line = self.viewport_offset + text_rows.saturating_sub(1);
-                let target_line = bottom_screen_line.saturating_sub(count.saturating_sub(1));
-                let target_line = target_line.min(
-                    self.buffers[self.current_buffer_idx]
-                        .len_lines()
-                        .saturating_sub(1),
-                );
+                let text_rows = self.active_pane_text_rows();
+                let (safe_top, safe_bottom) = self.screen_motion_safe_line_range();
+                let target_line = self
+                    .viewport_offset
+                    .saturating_add(text_rows.saturating_sub(1))
+                    .saturating_sub(count.saturating_sub(1))
+                    .clamp(safe_top, safe_bottom);
                 self.cursor.line = target_line;
                 // Move to first non-blank
                 self.cursor.col = self.find_first_non_blank(self.cursor.line);
@@ -9686,14 +9826,52 @@ impl Editor {
                     self.cursor.line,
                     self.cursor.col,
                     count,
-                    self.text_rows(),
+                    self.active_pane_text_rows(),
                 ) {
                     self.cursor.line = new_line;
                     self.cursor.col = new_col;
                     self.clamp_cursor();
-                    self.scroll_to_cursor();
+                    let reaches_eof = matches!(motion, Motion::FileEnd)
+                        || matches!(motion, Motion::GotoLine(_))
+                            && self.cursor.line == last_addressable_line(self.buffer());
+                    if reaches_eof {
+                        self.pack_viewport_at_eof();
+                        if self.active_pane < self.panes.len() {
+                            self.panes[self.active_pane].viewport_offset = self.viewport_offset;
+                            self.panes[self.active_pane].h_offset = self.h_offset;
+                            self.panes[self.active_pane].cursor = self.cursor;
+                        }
+                    } else {
+                        self.scroll_to_cursor();
+                    }
                 }
             }
+        }
+    }
+
+    fn screen_motion_safe_line_range(&self) -> (usize, usize) {
+        let text_rows = self.active_pane_text_rows();
+        let scroll_off = self.settings.editor.scroll_off.min(text_rows / 2);
+        let last_line = last_addressable_line(self.buffer());
+        let viewport_top = self.viewport_offset.min(last_line);
+        let viewport_bottom = viewport_top
+            .saturating_add(text_rows.saturating_sub(1))
+            .min(last_line);
+        let safe_top = if viewport_top == 0 {
+            viewport_top
+        } else {
+            viewport_top.saturating_add(scroll_off).min(viewport_bottom)
+        };
+        let safe_bottom = if viewport_bottom == last_line {
+            viewport_bottom
+        } else {
+            viewport_bottom.saturating_sub(scroll_off).max(viewport_top)
+        };
+
+        if safe_top > safe_bottom {
+            (safe_top, safe_top)
+        } else {
+            (safe_top, safe_bottom)
         }
     }
 
@@ -9706,7 +9884,7 @@ impl Editor {
                 self.cursor.line,
                 self.cursor.col,
                 count,
-                self.text_rows(),
+                self.active_pane_text_rows(),
             ) {
                 self.cursor.line = new_line;
                 self.cursor.col = new_col;
@@ -11738,6 +11916,190 @@ mod tests {
         assert_eq!(editor.buffer().content(), "");
         assert_eq!(editor.mode, Mode::Normal);
         assert_eq!((editor.cursor.line, editor.cursor.col), (0, 0));
+    }
+
+    #[test]
+    fn right_after_zt_near_eof_preserves_neovim_top_line() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 24);
+        editor.settings.editor.scroll_off = 8;
+        let content = (1..=30)
+            .map(|line| format!("line {line:02}\n"))
+            .collect::<String>();
+        editor.replace_buffer_content(&content);
+
+        editor.apply_motion(Motion::GotoLine(29), 1);
+        editor.scroll_cursor_top();
+        editor.apply_motion(Motion::Right, 1);
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), (28, 1));
+        assert_eq!(editor.viewport_offset, 20);
+        assert_eq!(editor.panes[editor.active_pane].viewport_offset, 20);
+    }
+
+    #[test]
+    fn screen_bottom_motion_ignores_trailing_newline_line_near_eof() {
+        let mut editor = Editor::default();
+        let content = (1..=30)
+            .map(|line| format!("line {line:02}\n"))
+            .collect::<String>();
+        editor.replace_buffer_content(&content);
+
+        editor.apply_motion(Motion::FileEnd, 1);
+        editor.apply_motion(Motion::ScreenBottom, 1);
+
+        assert_eq!(editor.cursor.line, 29);
+        assert_eq!(editor.cursor.col, 0);
+    }
+
+    #[test]
+    fn wrapped_file_end_packs_viewport_against_eof() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 24);
+        editor.settings.editor.scroll_off = 8;
+        editor.settings.editor.wrap = true;
+        editor.settings.editor.wrap_width = 80;
+        let content = (1..=100)
+            .map(|line| format!("line {line:03}\n"))
+            .collect::<String>();
+        editor.replace_buffer_content(&content);
+
+        editor.apply_motion(Motion::FileEnd, 1);
+
+        assert_eq!(editor.cursor.line, 99);
+        assert_eq!(
+            editor.viewport_offset, 78,
+            "G should fill the viewport from EOF instead of pinning the final line to the top"
+        );
+        assert_eq!(
+            editor.panes[editor.active_pane].viewport_offset, 78,
+            "rendered pane viewport should stay in sync with editor viewport"
+        );
+        assert_eq!(editor.panes[editor.active_pane].h_offset, 0);
+    }
+
+    #[test]
+    fn wrapped_file_end_on_tall_final_line_keeps_cursor_segment_visible() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 24);
+        editor.settings.editor.scroll_off = 8;
+        editor.settings.editor.wrap = true;
+        editor.settings.editor.wrap_width = 10;
+        editor.replace_buffer_content(&format!("context\nCURSOR_PREFIX{}\n", "x".repeat(5_000)));
+
+        editor.apply_motion(Motion::FileEnd, 1);
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), (1, 0));
+        assert_eq!(editor.viewport_offset, 1);
+        assert_eq!(editor.h_offset, 0);
+        assert_eq!(editor.panes[editor.active_pane].viewport_offset, 1);
+        assert_eq!(editor.panes[editor.active_pane].h_offset, 0);
+        assert_eq!(editor.panes[editor.active_pane].cursor, editor.cursor);
+    }
+
+    #[test]
+    fn file_end_packs_horizontal_split_to_active_pane_height() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 24);
+        editor.settings.editor.scroll_off = 8;
+        let content = (1..=100)
+            .map(|line| format!("line {line:03}\n"))
+            .collect::<String>();
+        editor.replace_buffer_content(&content);
+        editor.hsplit(None).expect("horizontal split");
+
+        editor.apply_motion(Motion::FileEnd, 1);
+
+        assert_eq!(editor.panes[editor.active_pane].rect.height, 11);
+        assert_eq!((editor.cursor.line, editor.cursor.col), (99, 0));
+        assert_eq!(editor.viewport_offset, 89);
+        assert_eq!(editor.panes[editor.active_pane].viewport_offset, 89);
+        assert_eq!(editor.panes[editor.active_pane].cursor, editor.cursor);
+    }
+
+    #[test]
+    fn wrapped_file_end_packs_horizontal_split_and_syncs_active_pane() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 24);
+        editor.settings.editor.scroll_off = 8;
+        editor.settings.editor.wrap = true;
+        editor.settings.editor.wrap_width = 80;
+        let content = (1..=100)
+            .map(|line| format!("line {line:03}\n"))
+            .collect::<String>();
+        editor.replace_buffer_content(&content);
+        editor.hsplit(None).expect("horizontal split");
+
+        editor.apply_motion(Motion::FileEnd, 1);
+
+        assert_eq!(editor.panes[editor.active_pane].rect.height, 11);
+        assert_eq!((editor.cursor.line, editor.cursor.col), (99, 0));
+        assert_eq!(editor.viewport_offset, 89);
+        assert_eq!(editor.h_offset, 0);
+        assert_eq!(editor.panes[editor.active_pane].viewport_offset, 89);
+        assert_eq!(editor.panes[editor.active_pane].h_offset, 0);
+        assert_eq!(editor.panes[editor.active_pane].cursor, editor.cursor);
+    }
+
+    #[test]
+    fn screen_position_motions_use_horizontal_split_height() {
+        for motion in [
+            Motion::ScreenTop,
+            Motion::ScreenMiddle,
+            Motion::ScreenBottom,
+        ] {
+            let mut editor = Editor::default();
+            editor.set_size(80, 24);
+            editor.settings.editor.scroll_off = 8;
+            let content = (1..=100)
+                .map(|line| format!("line {line:03}\n"))
+                .collect::<String>();
+            editor.replace_buffer_content(&content);
+            editor.hsplit(None).expect("horizontal split");
+            editor.cursor.line = 49;
+            editor.scroll_cursor_center();
+
+            editor.apply_motion(motion, 1);
+
+            assert_eq!(editor.panes[editor.active_pane].rect.height, 11);
+            assert_eq!(editor.cursor.line, 49, "motion={motion:?}");
+            assert_eq!(editor.viewport_offset, 44, "motion={motion:?}");
+            assert_eq!(
+                editor.panes[editor.active_pane].viewport_offset, 44,
+                "motion={motion:?}"
+            );
+            assert_eq!(editor.panes[editor.active_pane].cursor, editor.cursor);
+        }
+    }
+
+    #[test]
+    fn counted_g_beyond_eof_packs_last_real_line() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 24);
+        editor.settings.editor.scroll_off = 8;
+        let content = (1..=30)
+            .map(|line| format!("line {line:02}\n"))
+            .collect::<String>();
+        editor.replace_buffer_content(&content);
+
+        editor.apply_motion(Motion::GotoLine(999), 1);
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), (29, 0));
+        assert_eq!(editor.viewport_offset, 8);
+        assert_eq!(editor.panes[editor.active_pane].viewport_offset, 8);
+        assert_eq!(editor.panes[editor.active_pane].cursor, editor.cursor);
+    }
+
+    #[test]
+    fn capped_wrapped_segment_rows_stops_at_requested_viewport_cap() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content(&"x".repeat(5_000));
+        let line = editor.buffer().line(0).expect("long line");
+
+        assert_eq!(
+            Editor::capped_wrapped_segment_rows(line, 10, 4, 3),
+            (3, true)
+        );
     }
 
     #[test]
