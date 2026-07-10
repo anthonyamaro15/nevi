@@ -32,6 +32,39 @@ struct OracleComparison {
     report: String,
 }
 
+const SCREEN_POSITION_TEXT: &str = concat!(
+    "line 01\n",
+    "line 02\n",
+    "line 03\n",
+    "line 04\n",
+    "line 05\n",
+    "line 06\n",
+    "line 07\n",
+    "line 08\n",
+    "line 09\n",
+    "line 10\n",
+    "line 11\n",
+    "line 12\n",
+    "line 13\n",
+    "line 14\n",
+    "line 15\n",
+    "line 16\n",
+    "line 17\n",
+    "line 18\n",
+    "line 19\n",
+    "line 20\n",
+    "line 21\n",
+    "line 22\n",
+    "line 23\n",
+    "line 24\n",
+    "line 25\n",
+    "line 26\n",
+    "line 27\n",
+    "line 28\n",
+    "line 29\n",
+    "line 30\n",
+);
+
 const MOTION_CASES: &[OracleCase] = &[
     OracleCase {
         name: "move right",
@@ -142,6 +175,21 @@ const MOTION_CASES: &[OracleCase] = &[
         name: "matching bracket",
         initial_text: "(alpha)\n",
         keys: "%",
+    },
+    OracleCase {
+        name: "screen top",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "GH",
+    },
+    OracleCase {
+        name: "screen middle",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "GM",
+    },
+    OracleCase {
+        name: "screen bottom",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "GL",
     },
     OracleCase {
         name: "enter next line first nonblank",
@@ -522,6 +570,7 @@ fn neovim_snapshot_lua(keys: &str) -> String {
     format!(
         r#"
 local keys = vim.api.nvim_replace_termcodes("{}", true, false, true)
+vim.o.scrolloff = 8
 vim.api.nvim_feedkeys(keys, "xt", false)
 local pos = vim.api.nvim_win_get_cursor(0)
 local snapshot = {{

@@ -922,7 +922,7 @@ fn find_first_non_blank(buffer: &Buffer, line: usize) -> usize {
     0
 }
 
-fn last_addressable_line(buffer: &Buffer) -> usize {
+pub(crate) fn last_addressable_line(buffer: &Buffer) -> usize {
     let last_line = buffer.len_lines().saturating_sub(1);
     if last_line > 0
         && buffer.line_len(last_line) == 0

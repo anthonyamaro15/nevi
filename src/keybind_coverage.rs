@@ -98,9 +98,9 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
         "previous big word end",
     ),
     vim_oracle("%", "Jump to matching bracket", "matching bracket"),
-    needs_oracle("H", "Move to top of visible screen"),
-    needs_oracle("M", "Move to middle of visible screen"),
-    needs_oracle("L", "Move to bottom of visible screen"),
+    vim_oracle("H", "Move to top of visible screen", "screen top"),
+    vim_oracle("M", "Move to middle of visible screen", "screen middle"),
+    vim_oracle("L", "Move to bottom of visible screen", "screen bottom"),
     vim_oracle(
         "f{char}",
         "Find character forward on current line",
@@ -293,8 +293,8 @@ mod tests {
 
         assert!(
             gaps.iter()
-                .any(|entry| entry.mode == KeybindMode::Normal && entry.key == "H"),
-            "`H` should stay visible as a tracked Vim parity gap until oracle-covered"
+                .any(|entry| entry.mode == KeybindMode::Normal && entry.key == "<C-f>"),
+            "`<C-f>` should stay visible as a tracked Vim parity gap until oracle-covered"
         );
     }
 
@@ -362,5 +362,28 @@ mod tests {
             },
             "`%` should be protected by the matching-bracket oracle case"
         );
+    }
+
+    #[test]
+    fn screen_position_defaults_are_oracle_covered() {
+        let expected = [
+            ("H", "screen top"),
+            ("M", "screen middle"),
+            ("L", "screen bottom"),
+        ];
+
+        for (key, oracle_case) in expected {
+            let entry = coverage_for(KeybindMode::Normal, key)
+                .unwrap_or_else(|| panic!("missing coverage entry for `{key}`"));
+
+            assert_eq!(entry.kind, CoverageKind::VimOracle);
+            assert_eq!(
+                entry.state,
+                CoverageState::Protected {
+                    test_id: oracle_case,
+                },
+                "`{key}` should be protected by oracle case `{oracle_case}`"
+            );
+        }
     }
 }
