@@ -3784,17 +3784,27 @@ impl Editor {
         let mut line_idx = last_line;
 
         loop {
-            let line = self
+            let Some(line) = self
                 .buffers
                 .get(self.current_buffer_idx)
                 .and_then(|buffer| buffer.line(line_idx))
-                .map(|line| line.to_string())
-                .unwrap_or_default();
-            let segment_count = Self::display_line_segments(&line, wrap_width, tab_width).len();
+            else {
+                self.viewport_offset = last_line;
+                self.h_offset = 0;
+                return;
+            };
+            let (segment_count, capped) =
+                Self::capped_wrapped_segment_rows(line, wrap_width, tab_width, remaining_rows);
+
+            if capped {
+                self.viewport_offset = last_line;
+                self.h_offset = 0;
+                return;
+            }
 
             if segment_count >= remaining_rows {
                 self.viewport_offset = line_idx;
-                self.h_offset = segment_count.saturating_sub(remaining_rows);
+                self.h_offset = 0;
                 return;
             }
 
@@ -3806,6 +3816,85 @@ impl Editor {
             }
             line_idx -= 1;
         }
+    }
+
+    fn capped_wrapped_segment_rows(
+        line: ropey::RopeSlice<'_>,
+        max_width: usize,
+        tab_width: usize,
+        cap: usize,
+    ) -> (usize, bool) {
+        if cap == 0 {
+            return (0, true);
+        }
+        if max_width == 0 {
+            return (1, false);
+        }
+
+        let mut indent_width = 0;
+        for ch in line.chars() {
+            if ch == '\n' || !ch.is_whitespace() {
+                break;
+            }
+            let ch_width = Self::display_char_width(ch, tab_width);
+            if indent_width + ch_width >= max_width {
+                break;
+            }
+            indent_width += ch_width;
+        }
+
+        let mut rows = 0;
+        let mut row_width = 0;
+        let mut row_has_content = false;
+        let mut is_first = true;
+
+        let mut chars = line.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\n' {
+                break;
+            }
+
+            loop {
+                let available_width = if is_first {
+                    max_width
+                } else {
+                    max_width.saturating_sub(indent_width)
+                };
+
+                if available_width == 0 {
+                    rows += 1;
+                    if rows >= cap {
+                        return (cap, matches!(chars.peek(), Some(next) if *next != '\n'));
+                    }
+                    is_first = false;
+                    row_width = 0;
+                    row_has_content = false;
+                    break;
+                }
+
+                let ch_width = Self::display_char_width(ch, tab_width);
+                if row_has_content && row_width + ch_width > available_width {
+                    rows += 1;
+                    if rows >= cap {
+                        return (cap, true);
+                    }
+                    is_first = false;
+                    row_width = 0;
+                    row_has_content = false;
+                    continue;
+                }
+
+                row_width += ch_width;
+                row_has_content = true;
+                break;
+            }
+        }
+
+        if row_has_content {
+            rows += 1;
+        }
+
+        if rows == 0 { (1, false) } else { (rows, false) }
     }
 
     fn cursor_wrapped_segment_idx(&self, wrap_width: usize, tab_width: usize) -> usize {
@@ -11874,6 +11963,37 @@ mod tests {
             "rendered pane viewport should stay in sync with editor viewport"
         );
         assert_eq!(editor.panes[editor.active_pane].h_offset, 0);
+    }
+
+    #[test]
+    fn wrapped_file_end_on_tall_final_line_keeps_cursor_segment_visible() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 24);
+        editor.settings.editor.scroll_off = 8;
+        editor.settings.editor.wrap = true;
+        editor.settings.editor.wrap_width = 10;
+        editor.replace_buffer_content(&format!("context\nCURSOR_PREFIX{}\n", "x".repeat(5_000)));
+
+        editor.apply_motion(Motion::FileEnd, 1);
+
+        assert_eq!((editor.cursor.line, editor.cursor.col), (1, 0));
+        assert_eq!(editor.viewport_offset, 1);
+        assert_eq!(editor.h_offset, 0);
+        assert_eq!(editor.panes[editor.active_pane].viewport_offset, 1);
+        assert_eq!(editor.panes[editor.active_pane].h_offset, 0);
+        assert_eq!(editor.panes[editor.active_pane].cursor, editor.cursor);
+    }
+
+    #[test]
+    fn capped_wrapped_segment_rows_stops_at_requested_viewport_cap() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content(&"x".repeat(5_000));
+        let line = editor.buffer().line(0).expect("long line");
+
+        assert_eq!(
+            Editor::capped_wrapped_segment_rows(line, 10, 4, 3),
+            (3, true)
+        );
     }
 
     #[test]

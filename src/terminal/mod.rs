@@ -10942,6 +10942,24 @@ mod tests {
     }
 
     #[test]
+    fn full_render_after_wrapped_file_end_shows_tall_final_line_cursor_segment() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 24);
+        editor.settings.editor.scroll_off = 8;
+        editor.settings.editor.wrap = true;
+        editor.settings.editor.wrap_width = 20;
+        editor.replace_buffer_content(&format!("context\nCURSOR_PREFIX{}\n", "x".repeat(5_000)));
+        editor.apply_motion(Motion::FileEnd, 1);
+
+        let rendered = render_editor_to_string(&editor);
+
+        assert!(
+            rendered.contains("CURSOR_PREFIX"),
+            "render should include the final line cursor segment; output={rendered:?}"
+        );
+    }
+
+    #[test]
     #[ignore = "CI render frame-budget guard; run explicitly with cargo test render_frame_budget -- --ignored --nocapture"]
     fn render_frame_budget_large_multiline_file_stays_bounded() {
         let mut editor = Editor::default();
