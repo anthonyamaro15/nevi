@@ -25,6 +25,9 @@ pub(crate) enum CoverageState {
     ///
     /// Keeping explicit gaps in the inventory lets us grow coverage without
     /// pretending every documented key is already protected.
+    // Retained so a newly inventoried default can be tracked explicitly
+    // before its real-Neovim oracle case lands.
+    #[allow(dead_code)]
     NeedsCoverage { reason: &'static str },
 }
 
@@ -131,10 +134,10 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
         "Repeat latest find-character search in reverse",
         "reverse repeat find char",
     ),
-    needs_oracle("<C-f>", "Scroll page down"),
-    needs_oracle("<C-b>", "Scroll page up"),
-    needs_oracle("<C-d>", "Scroll half page down"),
-    needs_oracle("<C-u>", "Scroll half page up"),
+    vim_oracle("<C-f>", "Scroll page down", "page down"),
+    vim_oracle("<C-b>", "Scroll page up", "page up"),
+    vim_oracle("<C-d>", "Scroll half page down", "half page down"),
+    vim_oracle("<C-u>", "Scroll half page up", "half page up"),
     vim_oracle("zz", "Center cursor line", "center cursor line"),
     vim_oracle("zt", "Move cursor line to top", "cursor line to top"),
     vim_oracle("zb", "Move cursor line to bottom", "cursor line to bottom"),
@@ -156,6 +159,7 @@ const fn vim_oracle(
     }
 }
 
+#[allow(dead_code)]
 const fn needs_oracle(key: &'static str, description: &'static str) -> KeybindCoverage {
     KeybindCoverage {
         mode: KeybindMode::Normal,
@@ -288,14 +292,10 @@ mod tests {
     }
 
     #[test]
-    fn known_gaps_are_explicit_instead_of_silent() {
+    fn tracked_inventory_has_no_current_oracle_gaps() {
         let gaps = uncovered_entries();
 
-        assert!(
-            gaps.iter()
-                .any(|entry| entry.mode == KeybindMode::Normal && entry.key == "<C-f>"),
-            "`<C-f>` should stay visible as a tracked Vim parity gap until oracle-covered"
-        );
+        assert!(gaps.is_empty(), "unprotected Vim defaults: {gaps:#?}");
     }
 
     #[test]
@@ -393,6 +393,30 @@ mod tests {
             ("zz", "center cursor line"),
             ("zt", "cursor line to top"),
             ("zb", "cursor line to bottom"),
+        ];
+
+        for (key, oracle_case) in expected {
+            let entry = coverage_for(KeybindMode::Normal, key)
+                .unwrap_or_else(|| panic!("missing coverage entry for `{key}`"));
+
+            assert_eq!(entry.kind, CoverageKind::VimOracle);
+            assert_eq!(
+                entry.state,
+                CoverageState::Protected {
+                    test_id: oracle_case,
+                },
+                "`{key}` should be protected by oracle case `{oracle_case}`"
+            );
+        }
+    }
+
+    #[test]
+    fn page_scroll_defaults_are_oracle_covered() {
+        let expected = [
+            ("<C-f>", "page down"),
+            ("<C-b>", "page up"),
+            ("<C-d>", "half page down"),
+            ("<C-u>", "half page up"),
         ];
 
         for (key, oracle_case) in expected {
