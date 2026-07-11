@@ -60,15 +60,14 @@ jobs:
       - name: Run render frame-budget guard
         run: cargo test render_frame_budget -- --ignored --nocapture
 
-      - name: Install Neovim for parity smoke test on macOS
-        if: runner.os == 'macOS'
-        run: brew install neovim
+      - name: Install pinned Neovim for parity smoke test
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: v0.11.3
 
-      - name: Install Neovim for parity smoke test on Linux
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y neovim
+      - name: Report Neovim oracle version
+        run: nvim --version
 
       - name: Run Vim oracle smoke test
         run: NEVI_VIM_ORACLE=1 cargo test vim_oracle_smoke -- --ignored --nocapture
