@@ -1,3 +1,4 @@
+use crate::editor::register::RegisterContent;
 use crate::editor::{Editor, Mode};
 use crate::input::Motion;
 
@@ -50,9 +51,9 @@ fn redo_after_indented_change_line_returns_to_indentation() {
 fn counted_linewise_paste_leaves_cursor_on_first_pasted_line() {
     let mut editor = Editor::default();
     editor.replace_buffer_content("alpha\nbeta\n");
-    editor.delete_line(1, None);
+    editor.delete_line(1, Some('a'));
 
-    editor.paste_after_count(None, 2);
+    editor.paste_after_count(Some('a'), 2);
 
     assert_eq!(editor.buffer().content(), "beta\nalpha\nalpha\n");
     assert_eq!((editor.cursor.line, editor.cursor.col), (1, 0));
@@ -62,8 +63,8 @@ fn counted_linewise_paste_leaves_cursor_on_first_pasted_line() {
 fn counted_linewise_paste_is_one_undo_and_redo_change() {
     let mut editor = Editor::default();
     editor.replace_buffer_content("alpha\nbeta\n");
-    editor.delete_line(1, None);
-    editor.paste_after_count(None, 2);
+    editor.delete_line(1, Some('a'));
+    editor.paste_after_count(Some('a'), 2);
 
     editor.undo();
     assert_eq!(editor.buffer().content(), "beta\n");
@@ -78,8 +79,8 @@ fn counted_linewise_paste_is_one_undo_and_redo_change() {
 fn counted_linewise_paste_before_is_one_undo_change() {
     let mut editor = Editor::default();
     editor.replace_buffer_content("alpha\nbeta\n");
-    editor.delete_line(1, None);
-    editor.paste_before_count(None, 2);
+    editor.delete_line(1, Some('a'));
+    editor.paste_before_count(Some('a'), 2);
 
     editor.undo();
 
@@ -91,9 +92,9 @@ fn counted_linewise_paste_before_is_one_undo_change() {
 fn counted_multiline_linewise_paste_repeats_complete_blocks() {
     let mut editor = Editor::default();
     editor.replace_buffer_content("alpha\nbeta\ngamma\ndelta\n");
-    editor.yank_line(3, None);
+    editor.yank_line(3, Some('a'));
 
-    editor.paste_after_count(None, 2);
+    editor.paste_after_count(Some('a'), 2);
 
     assert_eq!(
         editor.buffer().content(),
@@ -106,9 +107,9 @@ fn counted_multiline_linewise_paste_repeats_complete_blocks() {
 fn counted_empty_linewise_paste_preserves_each_blank_line() {
     let mut editor = Editor::default();
     editor.replace_buffer_content("\nalpha\n");
-    editor.yank_line(1, None);
+    editor.yank_line(1, Some('a'));
 
-    editor.paste_after_count(None, 2);
+    editor.paste_after_count(Some('a'), 2);
 
     assert_eq!(editor.buffer().content(), "\n\n\nalpha\n");
     assert_eq!((editor.cursor.line, editor.cursor.col), (1, 0));
@@ -119,8 +120,11 @@ fn counted_characterwise_paste_keeps_cursor_on_last_inserted_character() {
     let mut editor = Editor::default();
     editor.replace_buffer_content("abcd\n");
     editor.delete_char_at();
+    editor
+        .registers
+        .set(Some('a'), RegisterContent::Chars("a".to_string()));
 
-    editor.paste_after_count(None, 2);
+    editor.paste_after_count(Some('a'), 2);
 
     assert_eq!(editor.buffer().content(), "baacd\n");
     assert_eq!((editor.cursor.line, editor.cursor.col), (0, 2));
@@ -130,9 +134,9 @@ fn counted_characterwise_paste_keeps_cursor_on_last_inserted_character() {
 fn multiline_characterwise_paste_before_stays_at_insert_start() {
     let mut editor = Editor::default();
     editor.replace_buffer_content("alpha\nbeta\ngamma\n");
-    editor.yank_motion(Motion::LineEnd, 2, None);
+    editor.yank_motion(Motion::LineEnd, 2, Some('a'));
 
-    editor.paste_before(None);
+    editor.paste_before(Some('a'));
 
     assert_eq!(editor.buffer().content(), "alpha\nbetaalpha\nbeta\ngamma\n");
     assert_eq!((editor.cursor.line, editor.cursor.col), (0, 0));
@@ -142,9 +146,9 @@ fn multiline_characterwise_paste_before_stays_at_insert_start() {
 fn linewise_paste_lands_on_first_nonblank_of_inserted_line() {
     let mut editor = Editor::default();
     editor.replace_buffer_content("  alpha\nsecond\n");
-    editor.yank_line(1, None);
+    editor.yank_line(1, Some('a'));
 
-    editor.paste_after(None);
+    editor.paste_after(Some('a'));
 
     assert_eq!(editor.buffer().content(), "  alpha\n  alpha\nsecond\n");
     assert_eq!((editor.cursor.line, editor.cursor.col), (1, 2));
@@ -155,11 +159,11 @@ fn counted_delete_to_line_end_from_column_zero_is_linewise() {
     let mut editor = Editor::default();
     editor.replace_buffer_content("alpha\nbeta\ngamma\n");
 
-    editor.delete_motion(Motion::LineEnd, 2, None);
+    editor.delete_motion(Motion::LineEnd, 2, Some('a'));
 
     assert_eq!(editor.buffer().content(), "gamma\n");
     assert_eq!((editor.cursor.line, editor.cursor.col), (0, 0));
 
-    editor.paste_after(None);
+    editor.paste_after(Some('a'));
     assert_eq!(editor.buffer().content(), "gamma\nalpha\nbeta\n");
 }
