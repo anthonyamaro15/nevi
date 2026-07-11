@@ -128,6 +128,8 @@ pub enum KeyAction {
     Pending,
     /// Execute a motion
     Motion(Motion, usize),
+    /// Execute a page motion while preserving whether a count was explicit.
+    PageMotion(Motion, Option<usize>),
     /// Execute an operator on a motion range
     OperatorMotion(Operator, Motion, usize),
     /// Execute an operator on the current line (dd, yy, cc)
@@ -1020,16 +1022,16 @@ impl InputState {
 
             // Page motions
             (KeyModifiers::CONTROL, KeyCode::Char('d')) => {
-                self.motion_or_operator(Motion::HalfPageDown, count)
+                self.page_motion_or_operator(Motion::HalfPageDown)
             }
             (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-                self.motion_or_operator(Motion::HalfPageUp, count)
+                self.page_motion_or_operator(Motion::HalfPageUp)
             }
             (KeyModifiers::CONTROL, KeyCode::Char('f')) => {
-                self.motion_or_operator(Motion::PageDown, count)
+                self.page_motion_or_operator(Motion::PageDown)
             }
             (KeyModifiers::CONTROL, KeyCode::Char('b')) => {
-                self.motion_or_operator(Motion::PageUp, count)
+                self.page_motion_or_operator(Motion::PageUp)
             }
 
             // Insert mode entry (or text object modifier if operator pending)
@@ -1495,6 +1497,16 @@ impl InputState {
             self.reset();
             KeyAction::Motion(motion, count)
         }
+    }
+
+    fn page_motion_or_operator(&mut self, motion: Motion) -> KeyAction {
+        if self.pending_operator.is_some() {
+            return self.motion_or_operator(motion, self.effective_count());
+        }
+
+        let explicit_count = self.count;
+        self.reset();
+        KeyAction::PageMotion(motion, explicit_count)
     }
 
     /// Handle text object type key after i/a modifier
@@ -1990,6 +2002,20 @@ mod tests {
         }
     }
 
+    fn assert_page_motion(
+        keys: &[KeyEvent],
+        expected_motion: Motion,
+        expected_count: Option<usize>,
+    ) {
+        match run(keys) {
+            KeyAction::PageMotion(motion, count) => {
+                assert_eq!(motion, expected_motion);
+                assert_eq!(count, expected_count);
+            }
+            other => panic!("expected page motion, got {:?}", other),
+        }
+    }
+
     fn assert_operator_motion(
         keys: &[KeyEvent],
         expected_operator: Operator,
@@ -2153,10 +2179,12 @@ mod tests {
             1,
         );
 
-        assert_motion(&[ctrl('f')], Motion::PageDown, 1);
-        assert_motion(&[ctrl('b')], Motion::PageUp, 1);
-        assert_motion(&[ctrl('d')], Motion::HalfPageDown, 1);
-        assert_motion(&[ctrl('u')], Motion::HalfPageUp, 1);
+        assert_page_motion(&[ctrl('f')], Motion::PageDown, None);
+        assert_page_motion(&[ctrl('b')], Motion::PageUp, None);
+        assert_page_motion(&[ctrl('d')], Motion::HalfPageDown, None);
+        assert_page_motion(&[ctrl('u')], Motion::HalfPageUp, None);
+        assert_page_motion(&[key('2'), ctrl('f')], Motion::PageDown, Some(2));
+        assert_page_motion(&[key('1'), ctrl('d')], Motion::HalfPageDown, Some(1));
 
         match run(&[key('z'), key('z')]) {
             KeyAction::ScrollCenter => {}

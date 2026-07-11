@@ -36,7 +36,9 @@ struct OracleComparison {
 const ORACLE_TERM_WIDTH: u16 = 80;
 const ORACLE_TERM_HEIGHT: u16 = 24;
 const ORACLE_SHORT_TERM_HEIGHT: u16 = 12;
+const ORACLE_SMALL_TERM_HEIGHTS: &[u16] = &[4, 5, 6];
 const ORACLE_SCROLL_OFF: usize = 8;
+const ORACLE_WRAP_WIDTH: usize = 9_999;
 
 const SCREEN_POSITION_TEXT: &str = concat!(
     "line 001\n",
@@ -293,6 +295,106 @@ const MOTION_CASES: &[OracleCase] = &[
         keys: "50Gzb",
     },
     OracleCase {
+        name: "page down",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz<C-f>",
+    },
+    OracleCase {
+        name: "page up",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz<C-b>",
+    },
+    OracleCase {
+        name: "half page down",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz<C-d>",
+    },
+    OracleCase {
+        name: "half page up",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz<C-u>",
+    },
+    OracleCase {
+        name: "page down near file end",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "95Gzz<C-f>",
+    },
+    OracleCase {
+        name: "page up near file start",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "5Gzz<C-b>",
+    },
+    OracleCase {
+        name: "half page down near file end",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "95Gzz<C-d>",
+    },
+    OracleCase {
+        name: "half page up near file start",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "5Gzz<C-u>",
+    },
+    OracleCase {
+        name: "counted page down",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz2<C-f>",
+    },
+    OracleCase {
+        name: "counted page up",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz2<C-b>",
+    },
+    OracleCase {
+        name: "counted half page down",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz3<C-d>",
+    },
+    OracleCase {
+        name: "counted half page up",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz3<C-u>",
+    },
+    OracleCase {
+        name: "explicit one half page down",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz1<C-d>",
+    },
+    OracleCase {
+        name: "remembered half page distance",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz2<C-d><C-d>",
+    },
+    OracleCase {
+        name: "shared half page distance",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz2<C-d><C-u>",
+    },
+    OracleCase {
+        name: "page down from file end",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "G<C-f>",
+    },
+    OracleCase {
+        name: "partial page up at file start",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "11Gzt<C-b>",
+    },
+    OracleCase {
+        name: "page back from file end",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "G<C-f><C-b>",
+    },
+    OracleCase {
+        name: "page down with file end visible",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "G13k<C-f>",
+    },
+    OracleCase {
+        name: "page down resets desired column",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50G7lzz<C-f>",
+    },
+    OracleCase {
         name: "enter next line first nonblank",
         initial_text: "zero\n    one\n  two\nthree\n",
         keys: "<CR>",
@@ -340,7 +442,51 @@ const SHORT_VIEWPORT_CASES: &[OracleCase] = &[
         initial_text: SCREEN_POSITION_TEXT,
         keys: "50Gzb",
     },
+    OracleCase {
+        name: "short viewport page down",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz<C-f>",
+    },
+    OracleCase {
+        name: "short viewport page up",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz<C-b>",
+    },
+    OracleCase {
+        name: "short viewport half page down",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz<C-d>",
+    },
+    OracleCase {
+        name: "short viewport half page up",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz<C-u>",
+    },
+    OracleCase {
+        name: "short viewport page up at file start",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "6Gzb<C-b>",
+    },
 ];
+
+const SMALL_VIEWPORT_CASES: &[OracleCase] = &[
+    OracleCase {
+        name: "two-row viewport page down",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz<C-f>",
+    },
+    OracleCase {
+        name: "two-row viewport page up",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz<C-b>",
+    },
+];
+
+const WRAP_ENABLED_CASES: &[OracleCase] = &[OracleCase {
+    name: "wrap enabled page down from file end",
+    initial_text: SCREEN_POSITION_TEXT,
+    keys: "G<C-f>",
+}];
 
 const EDITING_CASES: &[OracleCase] = &[
     OracleCase {
@@ -515,9 +661,19 @@ fn run_nevi_case(case: &OracleCase) -> Result<EditorSnapshot, String> {
 }
 
 fn run_nevi_case_at_height(case: &OracleCase, term_height: u16) -> Result<EditorSnapshot, String> {
+    run_nevi_case_with_options(case, term_height, false)
+}
+
+fn run_nevi_case_with_options(
+    case: &OracleCase,
+    term_height: u16,
+    wrap: bool,
+) -> Result<EditorSnapshot, String> {
     let mut editor = Editor::default();
     editor.set_size(ORACLE_TERM_WIDTH, term_height);
     editor.settings.editor.scroll_off = ORACLE_SCROLL_OFF;
+    editor.settings.editor.wrap = wrap;
+    editor.settings.editor.wrap_width = ORACLE_WRAP_WIDTH;
     editor.replace_buffer_content(case.initial_text);
 
     for key in parse_key_sequence(case.keys)? {
@@ -671,9 +827,27 @@ fn compare_with_neovim_at_height(
     Ok(compare_snapshots(case, nevi, nvim))
 }
 
+fn compare_with_neovim_with_options(
+    case: &OracleCase,
+    term_height: u16,
+    wrap: bool,
+) -> Result<OracleComparison, String> {
+    let nevi = run_nevi_case_with_options(case, term_height, wrap)?;
+    let nvim = run_neovim_case_with_options(case, term_height, wrap)?;
+    Ok(compare_snapshots(case, nevi, nvim))
+}
+
 fn run_neovim_case_at_height(
     case: &OracleCase,
     term_height: u16,
+) -> Result<EditorSnapshot, String> {
+    run_neovim_case_with_options(case, term_height, false)
+}
+
+fn run_neovim_case_with_options(
+    case: &OracleCase,
+    term_height: u16,
+    wrap: bool,
 ) -> Result<EditorSnapshot, String> {
     let tmp = unique_temp_dir("nevi_vim_oracle");
     std::fs::create_dir_all(&tmp).map_err(|err| format!("create temp dir: {err}"))?;
@@ -682,7 +856,7 @@ fn run_neovim_case_at_height(
     std::fs::write(&file_path, case.initial_text).map_err(|err| format!("write case: {err}"))?;
     std::fs::write(
         &script_path,
-        neovim_snapshot_lua(case.keys, term_height.saturating_sub(2)),
+        neovim_snapshot_lua(case.keys, term_height.saturating_sub(2), wrap),
     )
     .map_err(|err| format!("write lua script: {err}"))?;
 
@@ -711,12 +885,12 @@ fn run_neovim_case_at_height(
     snapshot_from_neovim_json(json_line)
 }
 
-fn neovim_snapshot_lua(keys: &str, text_rows: u16) -> String {
+fn neovim_snapshot_lua(keys: &str, text_rows: u16, wrap: bool) -> String {
     format!(
         r#"
 local keys = vim.api.nvim_replace_termcodes("{}", true, false, true)
 vim.o.scrolloff = {}
-vim.o.wrap = false
+vim.o.wrap = {}
 vim.api.nvim_win_set_width(0, {})
 vim.api.nvim_win_set_height(0, {})
 vim.api.nvim_feedkeys(keys, "xt", false)
@@ -732,6 +906,7 @@ io.stdout:write(vim.fn.json_encode(snapshot) .. "\n")
 "#,
         lua_escape(keys),
         ORACLE_SCROLL_OFF,
+        wrap,
         ORACLE_TERM_WIDTH,
         text_rows
     )
@@ -1026,6 +1201,25 @@ mod tests {
                 .expect("run short viewport oracle comparison");
             if !comparison.passed {
                 reports.push(format!("[short-viewport] {}", comparison.report));
+            }
+        }
+        for term_height in ORACLE_SMALL_TERM_HEIGHTS {
+            for case in SMALL_VIEWPORT_CASES {
+                let comparison = compare_with_neovim_at_height(case, *term_height)
+                    .expect("run small viewport oracle comparison");
+                if !comparison.passed {
+                    reports.push(format!(
+                        "[small-viewport height={term_height}] {}",
+                        comparison.report
+                    ));
+                }
+            }
+        }
+        for case in WRAP_ENABLED_CASES {
+            let comparison = compare_with_neovim_with_options(case, ORACLE_TERM_HEIGHT, true)
+                .expect("run wrap-enabled oracle comparison");
+            if !comparison.passed {
+                reports.push(format!("[wrap-enabled] {}", comparison.report));
             }
         }
 

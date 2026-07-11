@@ -159,6 +159,8 @@ pub struct Pane {
     pub viewport_offset: usize,
     /// Horizontal scroll offset for this pane
     pub h_offset: usize,
+    /// Explicit Vim half-page distance set by a counted Ctrl-d/Ctrl-u.
+    pub half_page_scroll_rows: Option<usize>,
     /// Screen region for this pane
     pub rect: Rect,
     /// Relative size in the active split axis.
@@ -172,6 +174,7 @@ impl Pane {
             cursor: Cursor::default(),
             viewport_offset: 0,
             h_offset: 0,
+            half_page_scroll_rows: None,
             rect: Rect::default(),
             size_weight: 1,
         }
@@ -3613,6 +3616,9 @@ impl Editor {
 
                 let mut x = explorer_offset;
                 for (pane, w) in self.panes.iter_mut().zip(widths) {
+                    if pane.rect.height != text_height {
+                        pane.half_page_scroll_rows = None;
+                    }
                     pane.rect = Rect::new(x, 0, w, text_height);
                     x += w;
                 }
@@ -3623,6 +3629,9 @@ impl Editor {
 
                 let mut y = 0u16;
                 for (pane, h) in self.panes.iter_mut().zip(heights) {
+                    if pane.rect.height != h {
+                        pane.half_page_scroll_rows = None;
+                    }
                     pane.rect = Rect::new(explorer_offset, y, available_width, h);
                     y += h;
                 }
@@ -9826,6 +9835,18 @@ impl Editor {
             Motion::DisplayLineFirstNonBlank => {
                 self.move_to_display_line_position(DisplayLineTarget::FirstNonBlank);
             }
+            Motion::PageDown if !self.settings.editor.wrap => {
+                self.scroll_full_page(true, count);
+            }
+            Motion::PageUp if !self.settings.editor.wrap => {
+                self.scroll_full_page(false, count);
+            }
+            Motion::HalfPageDown if !self.settings.editor.wrap => {
+                self.scroll_half_page(true, count);
+            }
+            Motion::HalfPageUp if !self.settings.editor.wrap => {
+                self.scroll_half_page(false, count);
+            }
             _ => {
                 // Use standard motion handling
                 if let Some((new_line, new_col)) = apply_motion(
@@ -9854,6 +9875,202 @@ impl Editor {
                     }
                 }
             }
+        }
+    }
+
+    pub fn apply_page_motion(&mut self, motion: Motion, explicit_count: Option<usize>) {
+        match motion {
+            Motion::PageDown | Motion::PageUp => {
+                let count = explicit_count.unwrap_or(1);
+                let travel_rows = self.active_pane_text_rows().saturating_mul(count);
+                if self.page_motion_range_has_no_wrapped_lines(motion, travel_rows) {
+                    self.scroll_full_page(matches!(motion, Motion::PageDown), count);
+                } else {
+                    self.apply_motion(motion, count);
+                }
+            }
+            Motion::HalfPageDown | Motion::HalfPageUp => {
+                let default_rows = (self.active_pane_text_rows() / 2).max(1);
+                let stored_rows = self
+                    .panes
+                    .get(self.active_pane)
+                    .and_then(|pane| pane.half_page_scroll_rows);
+                let distance = explicit_count
+                    .unwrap_or(stored_rows.unwrap_or(default_rows))
+                    .max(1);
+
+                if let Some(count) = explicit_count
+                    && let Some(pane) = self.panes.get_mut(self.active_pane)
+                {
+                    pane.half_page_scroll_rows = Some(count.max(1));
+                }
+
+                if self.page_motion_range_has_no_wrapped_lines(motion, distance) {
+                    self.scroll_half_page_by(matches!(motion, Motion::HalfPageDown), distance);
+                } else {
+                    self.apply_motion(motion, explicit_count.unwrap_or(1));
+                }
+            }
+            _ => self.apply_motion(motion, explicit_count.unwrap_or(1)),
+        }
+    }
+
+    fn page_motion_range_has_no_wrapped_lines(&self, motion: Motion, travel_rows: usize) -> bool {
+        if !self.settings.editor.wrap {
+            return true;
+        }
+
+        let wrap_width = self.effective_wrap_width();
+        if wrap_width == 0 {
+            return false;
+        }
+
+        let last_line = last_addressable_line(self.buffer());
+        let viewport_top = self.viewport_offset.min(last_line);
+        let span = travel_rows.saturating_add(self.active_pane_text_rows());
+        let moving_up = matches!(motion, Motion::PageUp | Motion::HalfPageUp);
+        let mut start = if moving_up {
+            viewport_top.saturating_sub(span)
+        } else {
+            viewport_top
+        };
+        let mut end = if moving_up {
+            viewport_top.saturating_add(self.active_pane_text_rows())
+        } else {
+            viewport_top.saturating_add(span)
+        }
+        .min(last_line);
+        start = start.min(self.cursor.line.min(last_line));
+        end = end.max(self.cursor.line.min(last_line));
+
+        let tab_width = self.get_effective_tab_width();
+        (start..=end).all(|line_idx| {
+            self.buffer()
+                .line(line_idx)
+                .map(|line| {
+                    let (rows, capped) =
+                        Self::capped_wrapped_segment_rows(line, wrap_width, tab_width, 2);
+                    rows == 1 && !capped
+                })
+                .unwrap_or(true)
+        })
+    }
+
+    fn scroll_full_page(&mut self, down: bool, count: usize) {
+        let text_rows = self.active_pane_text_rows();
+        let page_rows = match text_rows {
+            0 | 1 => 1,
+            2 => 2,
+            _ => text_rows.saturating_sub(2).max(3),
+        };
+        let last_line = last_addressable_line(self.buffer());
+        let scroll_off = self.settings.editor.scroll_off;
+
+        for _ in 0..count.max(1) {
+            let previous_top = self.viewport_offset;
+            if down {
+                let eof_visible =
+                    self.viewport_offset.saturating_add(text_rows) >= last_line.saturating_add(1);
+                self.viewport_offset = if eof_visible {
+                    last_line
+                } else {
+                    self.viewport_offset
+                        .saturating_add(page_rows)
+                        .min(last_line)
+                };
+                if self.viewport_offset == previous_top {
+                    break;
+                }
+
+                let top_margin = scroll_off.min(text_rows.saturating_sub(1) / 2);
+                self.cursor.line = self
+                    .viewport_offset
+                    .saturating_add(top_margin)
+                    .min(last_line);
+            } else {
+                if self.viewport_offset == 0 {
+                    let visible_bottom = text_rows.saturating_sub(1).min(last_line);
+                    let bottom_margin = if visible_bottom == last_line {
+                        0
+                    } else {
+                        scroll_off.min(text_rows / 2)
+                    };
+                    self.cursor.line = self
+                        .cursor
+                        .line
+                        .min(visible_bottom.saturating_sub(bottom_margin));
+                    break;
+                }
+
+                let distance = if self.viewport_offset == last_line {
+                    text_rows.max(1)
+                } else {
+                    page_rows
+                };
+                self.viewport_offset = self.viewport_offset.saturating_sub(distance);
+                let visible_bottom = self
+                    .viewport_offset
+                    .saturating_add(text_rows.saturating_sub(1))
+                    .min(last_line);
+                let bottom_margin = if visible_bottom == last_line {
+                    0
+                } else {
+                    scroll_off.min(text_rows / 2)
+                };
+                self.cursor.line = visible_bottom.saturating_sub(bottom_margin);
+            }
+        }
+
+        self.finish_page_scroll();
+    }
+
+    fn scroll_half_page(&mut self, down: bool, count: usize) {
+        let text_rows = self.active_pane_text_rows();
+        // Vim treats an explicit count as the new half-page distance. Nevi's
+        // input layer cannot distinguish an explicit count of one from the
+        // default command, so the default remains half a viewport.
+        let distance = if count > 1 { count } else { text_rows / 2 }.max(1);
+        self.scroll_half_page_by(down, distance);
+    }
+
+    fn scroll_half_page_by(&mut self, down: bool, distance: usize) {
+        let text_rows = self.active_pane_text_rows();
+        let last_line = last_addressable_line(self.buffer());
+        let last_packed_top = last_line.saturating_add(1).saturating_sub(text_rows);
+        if down {
+            self.cursor.line = self.cursor.line.saturating_add(distance).min(last_line);
+            let furthest_top = last_packed_top.max(self.viewport_offset);
+            self.viewport_offset = self
+                .viewport_offset
+                .saturating_add(distance)
+                .min(furthest_top);
+        } else {
+            self.cursor.line = self.cursor.line.saturating_sub(distance);
+            self.viewport_offset = self.viewport_offset.saturating_sub(distance);
+        }
+
+        self.finish_page_scroll();
+    }
+
+    fn finish_page_scroll(&mut self) {
+        self.clamp_cursor();
+        if !self.settings.editor.wrap {
+            let text_area_width = self.text_area_width();
+            if text_area_width > 0 {
+                if self.cursor.col >= self.h_offset.saturating_add(text_area_width) {
+                    self.h_offset = self.cursor.col - text_area_width + 1;
+                } else if self.cursor.col < self.h_offset {
+                    self.h_offset = self
+                        .cursor
+                        .col
+                        .saturating_sub(text_area_width.saturating_sub(1));
+                }
+            }
+        }
+        if self.active_pane < self.panes.len() {
+            self.panes[self.active_pane].viewport_offset = self.viewport_offset;
+            self.panes[self.active_pane].h_offset = self.h_offset;
+            self.panes[self.active_pane].cursor = self.cursor;
         }
     }
 

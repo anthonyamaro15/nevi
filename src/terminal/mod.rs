@@ -7217,6 +7217,11 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.clear_search_highlights();
         }
 
+        KeyAction::PageMotion(motion, explicit_count) => {
+            editor.apply_page_motion(motion, explicit_count);
+            editor.clear_search_highlights();
+        }
+
         KeyAction::OperatorMotion(op, motion, count) => {
             let register = editor
                 .input_state
