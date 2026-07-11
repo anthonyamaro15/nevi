@@ -7252,15 +7252,15 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             }
         }
 
-        KeyAction::OperatorTextObject(op, text_object) => {
+        KeyAction::OperatorTextObject(op, text_object, count) => {
             let register = editor
                 .input_state
                 .take_register()
                 .or(register_before_action);
             match op {
-                Operator::Delete => editor.delete_text_object(text_object, register),
-                Operator::Change => editor.change_text_object(text_object, register),
-                Operator::Yank => editor.yank_text_object(text_object, register),
+                Operator::Delete => editor.delete_text_object(text_object, count, register),
+                Operator::Change => editor.change_text_object(text_object, count, register),
+                Operator::Yank => editor.yank_text_object(text_object, count, register),
                 Operator::Indent => editor.indent_text_object(text_object),
                 Operator::Dedent => editor.dedent_text_object(text_object),
                 Operator::AutoIndent => editor.auto_indent_text_object(text_object),

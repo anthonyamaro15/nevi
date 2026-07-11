@@ -4265,8 +4265,19 @@ impl Editor {
 
     /// Delete from cursor to motion target
     pub fn delete_motion(&mut self, motion: Motion, count: usize, register: Option<char>) {
-        if let Some((start_line, start_col, end_line, end_col)) = self.motion_range(motion, count) {
-            let linewise = Self::motion_is_linewise(motion);
+        if let Some((start_line, start_col, end_line, mut end_col)) =
+            self.motion_range(motion, count)
+        {
+            // Neovim promotes a counted d$ from column zero to a linewise
+            // deletion, including the target line's trailing newline.
+            let counted_line_end_is_linewise =
+                motion == Motion::LineEnd && count > 1 && start_col == 0;
+            let linewise = Self::motion_is_linewise(motion) || counted_line_end_is_linewise;
+            if counted_line_end_is_linewise {
+                end_col = self.buffers[self.current_buffer_idx]
+                    .line_len_including_newline(end_line)
+                    .saturating_sub(1);
+            }
             let original_col = self.cursor.col;
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
@@ -4408,44 +4419,54 @@ impl Editor {
 
     /// Change count lines (cc operation)
     pub fn change_line(&mut self, count: usize, register: Option<char>) {
+        let indentation = self.buffers[self.current_buffer_idx]
+            .line(self.cursor.line)
+            .map(|line| {
+                line.chars()
+                    .take_while(|ch| ch.is_whitespace() && *ch != '\n')
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        let indentation_len = indentation.chars().count();
         let end_line = (self.cursor.line + count - 1).min(
             self.buffers[self.current_buffer_idx]
                 .len_lines()
                 .saturating_sub(1),
         );
 
-        // For cc, we delete the content but keep the line structure
-        // Get the text that will be deleted for undo
+        // Replace the changed lines with one line containing the original
+        // indentation. Modeling the operation as one replacement keeps the
+        // retained newline and undo/redo history consistent.
         let text = self.get_lines_text(self.cursor.line, end_line);
+        let replacement = if text.ends_with('\n') {
+            format!("{indentation}\n")
+        } else {
+            indentation.clone()
+        };
 
-        // Begin undo group (will include the delete and subsequent inserts)
+        // Vim anchors both undo and redo for cc at the retained indentation.
+        self.cursor.col = indentation_len;
         self.begin_change();
         self.undo_stack
-            .record_change(Change::delete(self.cursor.line, 0, text.clone()));
+            .prefer_current_cursor_after(self.cursor.line, indentation_len);
+        self.undo_stack.record_change(Change::new(
+            self.cursor.line,
+            0,
+            text.clone(),
+            replacement.clone(),
+        ));
 
+        self.buffers[self.current_buffer_idx].apply_change(
+            self.cursor.line,
+            0,
+            &text,
+            &replacement,
+        );
         self.registers
             .delete(register, RegisterContent::Lines(text), false);
 
-        // Delete all lines except keep one empty line
-        for _ in 0..count.saturating_sub(1) {
-            if self.cursor.line < self.buffers[self.current_buffer_idx].len_lines() - 1 {
-                self.delete_lines(self.cursor.line + 1, 1);
-            }
-        }
-
-        // Clear current line content (keep the newline)
-        let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
-        if line_len > 0 {
-            self.buffers[self.current_buffer_idx].delete_range(
-                self.cursor.line,
-                0,
-                self.cursor.line,
-                line_len,
-            );
-        }
-
         // Enter insert mode (don't start new undo group, reuse the one from change)
-        self.enter_insert_mode_at_change(self.cursor.line, 0);
+        self.enter_insert_mode_at_change(self.cursor.line, indentation_len);
     }
 
     /// Paste after cursor from a register
@@ -4493,66 +4514,79 @@ impl Editor {
 
     fn paste_after_with_cursor_after(&mut self, register: Option<char>, cursor_after: bool) {
         if let Some(content) = self.register_content_for_paste(register) {
-            self.begin_change();
+            self.paste_content_after(content, cursor_after, None);
+        }
+        self.check_clipboard_error();
+    }
 
-            match content {
-                RegisterContent::Lines(text) => {
-                    // Paste on new line below
-                    let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
+    fn paste_content_after(
+        &mut self,
+        content: RegisterContent,
+        cursor_after: bool,
+        preferred_redo_cursor: Option<(usize, usize)>,
+    ) {
+        self.begin_change();
+        if let Some((line, col)) = preferred_redo_cursor {
+            self.undo_stack.prefer_current_cursor_after(line, col);
+        }
 
-                    // Record the insertion for undo
-                    let trimmed = text.trim_end_matches('\n');
-                    let insert_text = format!("\n{}", trimmed);
-                    self.undo_stack.record_change(Change::insert(
-                        self.cursor.line,
-                        line_len,
-                        insert_text,
-                    ));
+        match content {
+            RegisterContent::Lines(text) => {
+                // Paste on new line below
+                let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
 
-                    self.buffers[self.current_buffer_idx].insert_char(
-                        self.cursor.line,
-                        line_len,
-                        '\n',
+                // Record the insertion for undo
+                let trimmed = text.strip_suffix('\n').unwrap_or(&text);
+                let insert_text = format!("\n{}", trimmed);
+                self.undo_stack.record_change(Change::insert(
+                    self.cursor.line,
+                    line_len,
+                    insert_text,
+                ));
+
+                self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, line_len, '\n');
+                self.cursor.line += 1;
+                self.cursor.col = 0;
+                let first_inserted_line = self.cursor.line;
+                let inserted_line_count = Self::linewise_paste_line_count(trimmed);
+
+                // Insert the lines (without trailing newline if present)
+                self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, 0, trimmed);
+                if cursor_after {
+                    self.cursor.line = (first_inserted_line + inserted_line_count).min(
+                        self.buffers[self.current_buffer_idx]
+                            .len_lines()
+                            .saturating_sub(1),
                     );
-                    self.cursor.line += 1;
                     self.cursor.col = 0;
-                    let first_inserted_line = self.cursor.line;
-                    let inserted_line_count = Self::linewise_paste_line_count(trimmed);
-
-                    // Insert the lines (without trailing newline if present)
-                    self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, 0, trimmed);
-                    if cursor_after {
-                        self.cursor.line = (first_inserted_line + inserted_line_count).min(
-                            self.buffers[self.current_buffer_idx]
-                                .len_lines()
-                                .saturating_sub(1),
-                        );
-                        self.cursor.col = 0;
-                    }
-
-                    self.scroll_to_cursor();
+                } else {
+                    self.cursor.col = self.find_first_non_blank(first_inserted_line);
                 }
-                RegisterContent::Chars(text) => {
-                    // Paste after cursor
-                    let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
-                    let insert_col = if line_len > 0 {
-                        (self.cursor.col + 1).min(line_len)
-                    } else {
-                        0
-                    };
 
-                    // Record the insertion for undo
-                    self.undo_stack.record_change(Change::insert(
-                        self.cursor.line,
-                        insert_col,
-                        text.clone(),
-                    ));
+                self.scroll_to_cursor();
+            }
+            RegisterContent::Chars(text) => {
+                // Paste after cursor
+                let insert_line = self.cursor.line;
+                let line_len = self.buffers[self.current_buffer_idx].line_len(insert_line);
+                let insert_col = if line_len > 0 {
+                    (self.cursor.col + 1).min(line_len)
+                } else {
+                    0
+                };
 
-                    self.buffers[self.current_buffer_idx].insert_str(
-                        self.cursor.line,
-                        insert_col,
-                        &text,
-                    );
+                // Record the insertion for undo
+                self.undo_stack.record_change(Change::insert(
+                    insert_line,
+                    insert_col,
+                    text.clone(),
+                ));
+
+                self.buffers[self.current_buffer_idx].insert_str(insert_line, insert_col, &text);
+                if cursor_after && text.contains('\n') {
+                    (self.cursor.line, self.cursor.col) =
+                        Self::text_position_after_insert(insert_line, insert_col, &text);
+                } else {
                     let pasted_len = text.chars().count();
                     self.cursor.col = insert_col
                         + if cursor_after {
@@ -4560,28 +4594,41 @@ impl Editor {
                         } else {
                             pasted_len.saturating_sub(1)
                         };
-                    self.clamp_cursor();
                 }
+                self.clamp_cursor();
             }
-
-            self.undo_stack
-                .end_undo_group(self.cursor.line, self.cursor.col);
         }
-        self.check_clipboard_error();
+
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
     }
 
     /// Paste after cursor count times.
     pub fn paste_after_count(&mut self, register: Option<char>, count: usize) {
-        for _ in 0..count.max(1) {
-            self.paste_after(register);
+        if let Some(content) = self.register_content_for_paste(register) {
+            let count = count.max(1);
+            let redo_cursor = (count > 1).then_some((self.cursor.line, self.cursor.col));
+            self.paste_content_after(
+                Self::repeat_register_content(content, count),
+                false,
+                redo_cursor,
+            );
         }
+        self.check_clipboard_error();
     }
 
     /// Paste after cursor count times and leave cursor after the pasted text.
     pub fn paste_after_move_count(&mut self, register: Option<char>, count: usize) {
-        for _ in 0..count.max(1) {
-            self.paste_after_move(register);
+        if let Some(content) = self.register_content_for_paste(register) {
+            let count = count.max(1);
+            let redo_cursor = (count > 1).then_some((self.cursor.line, self.cursor.col));
+            self.paste_content_after(
+                Self::repeat_register_content(content, count),
+                true,
+                redo_cursor,
+            );
         }
+        self.check_clipboard_error();
     }
 
     /// Paste before cursor from a register
@@ -4596,91 +4643,145 @@ impl Editor {
 
     fn paste_before_with_cursor_after(&mut self, register: Option<char>, cursor_after: bool) {
         if let Some(content) = self.register_content_for_paste(register) {
-            self.begin_change();
+            self.paste_content_before(content, cursor_after, None);
+        }
+        self.check_clipboard_error();
+    }
 
-            match content {
-                RegisterContent::Lines(text) => {
-                    // Paste on new line above
-                    let insert_line = self.cursor.line;
-                    let inserted_line_count = Self::linewise_paste_line_count(&text);
-                    let insert_text = if text.ends_with('\n') {
-                        text.clone()
-                    } else {
-                        format!("{}\n", text)
-                    };
+    fn paste_content_before(
+        &mut self,
+        content: RegisterContent,
+        cursor_after: bool,
+        preferred_redo_cursor: Option<(usize, usize)>,
+    ) {
+        self.begin_change();
+        if let Some((line, col)) = preferred_redo_cursor {
+            self.undo_stack.prefer_current_cursor_after(line, col);
+        }
 
-                    // Record the insertion for undo
-                    self.undo_stack.record_change(Change::insert(
+        match content {
+            RegisterContent::Lines(text) => {
+                // Paste on new line above
+                let insert_line = self.cursor.line;
+                let inserted_line_count = Self::linewise_paste_line_count(&text);
+                let insert_text = if text.ends_with('\n') {
+                    text.clone()
+                } else {
+                    format!("{}\n", text)
+                };
+
+                // Record the insertion for undo
+                self.undo_stack.record_change(Change::insert(
+                    self.cursor.line,
+                    0,
+                    insert_text.clone(),
+                ));
+
+                self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, 0, &text);
+                if !text.ends_with('\n') {
+                    self.buffers[self.current_buffer_idx].insert_char(
                         self.cursor.line,
-                        0,
-                        insert_text.clone(),
-                    ));
-
-                    self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, 0, &text);
-                    if !text.ends_with('\n') {
-                        self.buffers[self.current_buffer_idx].insert_char(
-                            self.cursor.line,
-                            text.len(),
-                            '\n',
-                        );
-                    }
-                    self.cursor.col = 0;
-                    if cursor_after {
-                        self.cursor.line = (insert_line + inserted_line_count).min(
-                            self.buffers[self.current_buffer_idx]
-                                .len_lines()
-                                .saturating_sub(1),
-                        );
-                    }
-                    self.scroll_to_cursor();
-                }
-                RegisterContent::Chars(text) => {
-                    // Record the insertion for undo
-                    self.undo_stack.record_change(Change::insert(
-                        self.cursor.line,
-                        self.cursor.col,
-                        text.clone(),
-                    ));
-
-                    // Paste before cursor
-                    self.buffers[self.current_buffer_idx].insert_str(
-                        self.cursor.line,
-                        self.cursor.col,
-                        &text,
+                        text.len(),
+                        '\n',
                     );
+                }
+                self.cursor.col = 0;
+                if cursor_after {
+                    self.cursor.line = (insert_line + inserted_line_count).min(
+                        self.buffers[self.current_buffer_idx]
+                            .len_lines()
+                            .saturating_sub(1),
+                    );
+                } else {
+                    self.cursor.col = self.find_first_non_blank(insert_line);
+                }
+                self.scroll_to_cursor();
+            }
+            RegisterContent::Chars(text) => {
+                let insert_line = self.cursor.line;
+                let insert_col = self.cursor.col;
+                // Record the insertion for undo
+                self.undo_stack.record_change(Change::insert(
+                    insert_line,
+                    insert_col,
+                    text.clone(),
+                ));
+
+                // Paste before cursor
+                self.buffers[self.current_buffer_idx].insert_str(insert_line, insert_col, &text);
+                if text.contains('\n') {
+                    if cursor_after {
+                        (self.cursor.line, self.cursor.col) =
+                            Self::text_position_after_insert(insert_line, insert_col, &text);
+                    } else {
+                        self.cursor.line = insert_line;
+                        self.cursor.col = insert_col;
+                    }
+                } else {
                     let pasted_len = text.chars().count();
-                    self.cursor.col = self.cursor.col
+                    self.cursor.col = insert_col
                         + if cursor_after {
                             pasted_len
                         } else {
                             pasted_len.saturating_sub(1)
                         };
-                    self.clamp_cursor();
                 }
+                self.clamp_cursor();
             }
-
-            self.undo_stack
-                .end_undo_group(self.cursor.line, self.cursor.col);
         }
-        self.check_clipboard_error();
+
+        self.undo_stack
+            .end_undo_group(self.cursor.line, self.cursor.col);
     }
 
     /// Paste before cursor count times.
     pub fn paste_before_count(&mut self, register: Option<char>, count: usize) {
-        for _ in 0..count.max(1) {
-            self.paste_before(register);
+        if let Some(content) = self.register_content_for_paste(register) {
+            let count = count.max(1);
+            let redo_cursor = (count > 1).then_some((self.cursor.line, self.cursor.col));
+            self.paste_content_before(
+                Self::repeat_register_content(content, count),
+                false,
+                redo_cursor,
+            );
         }
+        self.check_clipboard_error();
     }
 
     /// Paste before cursor count times and leave cursor after the pasted text.
     pub fn paste_before_move_count(&mut self, register: Option<char>, count: usize) {
-        for _ in 0..count.max(1) {
-            self.paste_before_move(register);
+        if let Some(content) = self.register_content_for_paste(register) {
+            let count = count.max(1);
+            let redo_cursor = (count > 1).then_some((self.cursor.line, self.cursor.col));
+            self.paste_content_before(
+                Self::repeat_register_content(content, count),
+                true,
+                redo_cursor,
+            );
+        }
+        self.check_clipboard_error();
+    }
+
+    fn repeat_register_content(content: RegisterContent, count: usize) -> RegisterContent {
+        match content {
+            RegisterContent::Chars(text) => RegisterContent::Chars(text.repeat(count.max(1))),
+            RegisterContent::Lines(text) => {
+                let block = if text.ends_with('\n') {
+                    text
+                } else {
+                    format!("{text}\n")
+                };
+                RegisterContent::Lines(block.repeat(count.max(1)))
+            }
         }
     }
 
     fn linewise_paste_line_count(text: &str) -> usize {
-        text.trim_end_matches('\n').split('\n').count().max(1)
+        text.strip_suffix('\n')
+            .unwrap_or(text)
+            .split('\n')
+            .count()
+            .max(1)
     }
 
     /// Enter insert mode
@@ -7631,9 +7732,17 @@ impl Editor {
         &self,
         text_object: TextObject,
     ) -> Option<(usize, usize, usize, usize)> {
+        self.find_text_object_range_with_count(text_object, 1)
+    }
+
+    fn find_text_object_range_with_count(
+        &self,
+        text_object: TextObject,
+        count: usize,
+    ) -> Option<(usize, usize, usize, usize)> {
         match text_object.object_type {
-            TextObjectType::Word => self.find_word_object(text_object.modifier, false),
-            TextObjectType::BigWord => self.find_word_object(text_object.modifier, true),
+            TextObjectType::Word => self.find_word_object(text_object.modifier, false, count),
+            TextObjectType::BigWord => self.find_word_object(text_object.modifier, true, count),
             TextObjectType::DoubleQuote => self.find_quote_object(text_object.modifier, '"'),
             TextObjectType::SingleQuote => self.find_quote_object(text_object.modifier, '\''),
             TextObjectType::BackTick => self.find_quote_object(text_object.modifier, '`'),
@@ -7654,6 +7763,7 @@ impl Editor {
         &self,
         modifier: TextObjectModifier,
         big_word: bool,
+        count: usize,
     ) -> Option<(usize, usize, usize, usize)> {
         let line = self.cursor.line;
         let col = self.cursor.col;
@@ -7718,6 +7828,37 @@ impl Editor {
             }
         } else {
             while end < chars.len() - 1 && chars[end + 1].is_whitespace() {
+                end += 1;
+            }
+        }
+
+        // A count extends the object through subsequent words while retaining
+        // the whitespace between them. Around-whitespace is applied once at
+        // the final boundary, matching Neovim's 2caw/c2aw behavior.
+        for _ in 1..count.max(1) {
+            let mut next = end.saturating_add(1);
+            while next < chars.len() && chars[next].is_whitespace() {
+                next += 1;
+            }
+            if next >= chars.len() {
+                break;
+            }
+
+            let next_is_word = is_word_char(chars[next]);
+            let next_is_whitespace = chars[next].is_whitespace();
+            end = next;
+            while end + 1 < chars.len() {
+                let following = chars[end + 1];
+                let same_class = if next_is_word {
+                    is_word_char(following)
+                } else if next_is_whitespace {
+                    following.is_whitespace()
+                } else {
+                    !is_word_char(following) && !following.is_whitespace()
+                };
+                if !same_class {
+                    break;
+                }
                 end += 1;
             }
         }
@@ -8212,9 +8353,14 @@ impl Editor {
     }
 
     /// Delete text object
-    pub fn delete_text_object(&mut self, text_object: TextObject, register: Option<char>) {
+    pub fn delete_text_object(
+        &mut self,
+        text_object: TextObject,
+        count: usize,
+        register: Option<char>,
+    ) {
         if let Some((start_line, start_col, end_line, end_col)) =
-            self.find_text_object_range(text_object)
+            self.find_text_object_range_with_count(text_object, count)
         {
             // Get text for register
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
@@ -8248,9 +8394,14 @@ impl Editor {
     }
 
     /// Change text object (delete and enter insert mode)
-    pub fn change_text_object(&mut self, text_object: TextObject, register: Option<char>) {
+    pub fn change_text_object(
+        &mut self,
+        text_object: TextObject,
+        count: usize,
+        register: Option<char>,
+    ) {
         if let Some((start_line, start_col, end_line, end_col)) =
-            self.find_text_object_range(text_object)
+            self.find_text_object_range_with_count(text_object, count)
         {
             // Get text for register
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
@@ -8279,9 +8430,14 @@ impl Editor {
     }
 
     /// Yank text object
-    pub fn yank_text_object(&mut self, text_object: TextObject, register: Option<char>) {
+    pub fn yank_text_object(
+        &mut self,
+        text_object: TextObject,
+        count: usize,
+        register: Option<char>,
+    ) {
         if let Some((start_line, start_col, end_line, end_col)) =
-            self.find_text_object_range(text_object)
+            self.find_text_object_range_with_count(text_object, count)
         {
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
             self.registers.yank(register, RegisterContent::Chars(text));
@@ -10993,6 +11149,7 @@ fn project_replace_display_path(root: &std::path::Path, path: &std::path::Path) 
 
 #[cfg(test)]
 mod tests {
+    mod editing_operators;
     mod screen_position;
 
     use super::{Editor, JumpList, Mode, SearchDirection, SplitLayout};

@@ -317,7 +317,7 @@ Operators are commands that wait for a motion. For example, `d` (delete) + `w` (
 | `cc` | Change entire line |
 | `C` | Change from cursor to end of line |
 | `yy` | Yank entire line |
-| `Y` | Yank entire line |
+| `Y` | Yank from cursor to end of line |
 | `x` / `{n}x` | Delete character(s) under cursor |
 | `X` / `{n}X` | Delete character(s) before cursor |
 | `s` / `{n}s` | Substitute character(s) under cursor |

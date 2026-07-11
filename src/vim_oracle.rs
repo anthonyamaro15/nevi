@@ -5,6 +5,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod editing_cases;
+
+use editing_cases::EDITING_CASES;
+
 #[derive(Debug, Clone, Copy)]
 struct OracleCase {
     name: &'static str,
@@ -487,74 +491,6 @@ const WRAP_ENABLED_CASES: &[OracleCase] = &[OracleCase {
     initial_text: SCREEN_POSITION_TEXT,
     keys: "G<C-f>",
 }];
-
-const EDITING_CASES: &[OracleCase] = &[
-    OracleCase {
-        name: "delete first char on second line",
-        initial_text: "alpha\nbeta\n",
-        keys: "j0x",
-    },
-    OracleCase {
-        name: "append punctuation at line end",
-        initial_text: "alpha\n",
-        keys: "A!<Esc>",
-    },
-    OracleCase {
-        name: "delete current line",
-        initial_text: "alpha\nbeta\n",
-        keys: "dd",
-    },
-    OracleCase {
-        name: "counted char delete",
-        initial_text: "abcdef\n",
-        keys: "4x",
-    },
-    OracleCase {
-        name: "counted line delete",
-        initial_text: "alpha\nbeta\ngamma\n",
-        keys: "2dd",
-    },
-    OracleCase {
-        name: "delete to line end",
-        initial_text: "alpha beta\n",
-        keys: "wD",
-    },
-    OracleCase {
-        name: "insert before cursor",
-        initial_text: "alpha\n",
-        keys: "iX<Esc>",
-    },
-    OracleCase {
-        name: "append after cursor",
-        initial_text: "alpha\n",
-        keys: "aX<Esc>",
-    },
-    OracleCase {
-        name: "open line below",
-        initial_text: "alpha\n",
-        keys: "ochild<Esc>",
-    },
-    OracleCase {
-        name: "open line above",
-        initial_text: "alpha\n",
-        keys: "Oparent<Esc>",
-    },
-    OracleCase {
-        name: "delete word",
-        initial_text: "alpha beta\n",
-        keys: "dw",
-    },
-    OracleCase {
-        name: "delete enter motion",
-        initial_text: "zero\n    one\n  two\nthree\n",
-        keys: "d<CR>",
-    },
-    OracleCase {
-        name: "change inner word",
-        initial_text: "alpha beta\n",
-        keys: "ciwdone<Esc>",
-    },
-];
 
 const UNDO_REDO_CASES: &[OracleCase] = &[
     OracleCase {

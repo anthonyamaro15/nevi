@@ -61,6 +61,8 @@ pub struct UndoEntry {
     pub cursor_before: (usize, usize),
     /// Cursor position after this entry
     pub cursor_after: (usize, usize),
+    /// Optional semantic cursor anchor used by Vim-compatible redo behavior.
+    preferred_cursor_after: Option<(usize, usize)>,
 }
 
 impl UndoEntry {
@@ -69,6 +71,7 @@ impl UndoEntry {
             changes: Vec::new(),
             cursor_before: (cursor_line, cursor_col),
             cursor_after: (cursor_line, cursor_col),
+            preferred_cursor_after: None,
         }
     }
 
@@ -84,6 +87,11 @@ impl UndoEntry {
 
     /// Set the cursor position after all changes
     pub fn set_cursor_after(&mut self, line: usize, col: usize) {
+        self.cursor_after = self.preferred_cursor_after.unwrap_or((line, col));
+    }
+
+    pub fn prefer_cursor_after(&mut self, line: usize, col: usize) {
+        self.preferred_cursor_after = Some((line, col));
         self.cursor_after = (line, col);
     }
 }
@@ -219,6 +227,13 @@ impl UndoStack {
             entry.push(change);
             self.undo_stack.push_back(entry);
             self.redo_stack.clear();
+        }
+    }
+
+    /// Keep group finalization from replacing an operation-specific redo cursor.
+    pub fn prefer_current_cursor_after(&mut self, line: usize, col: usize) {
+        if let Some(entry) = self.current_entry.as_mut() {
+            entry.prefer_cursor_after(line, col);
         }
     }
 

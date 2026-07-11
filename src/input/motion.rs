@@ -261,8 +261,12 @@ pub fn apply_motion(
         }
 
         Motion::LineEnd => {
-            let line_len = buffer.line_len(line);
-            Some((line, line_len.saturating_sub(1)))
+            let target_line = line.checked_add(count.max(1).saturating_sub(1))?;
+            if target_line > last_addressable_line(buffer) {
+                return None;
+            }
+            let line_len = buffer.line_len(target_line);
+            Some((target_line, line_len.saturating_sub(1)))
         }
 
         Motion::NextLineFirstNonBlank => {

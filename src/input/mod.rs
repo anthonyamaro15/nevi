@@ -135,7 +135,7 @@ pub enum KeyAction {
     /// Execute an operator on the current line (dd, yy, cc)
     OperatorLine(Operator, usize),
     /// Execute an operator on a text object (diw, ca", etc.)
-    OperatorTextObject(Operator, TextObject),
+    OperatorTextObject(Operator, TextObject, usize),
     /// Select a text object in visual mode
     SelectTextObject(TextObject),
     /// Enter insert mode
@@ -1158,10 +1158,10 @@ impl InputState {
                 self.reset();
                 KeyAction::OperatorMotion(Operator::Change, Motion::LineEnd, count)
             }
-            // Y = yy (yank line) - vim behavior
+            // Neovim defaults Y to y$ (characterwise yank through line end).
             (KeyModifiers::SHIFT, KeyCode::Char('Y')) => {
                 self.reset();
-                KeyAction::OperatorLine(Operator::Yank, count)
+                KeyAction::OperatorMotion(Operator::Yank, Motion::LineEnd, count)
             }
 
             // Undo/Redo
@@ -1543,8 +1543,9 @@ impl InputState {
             };
 
             if let Some(op) = self.pending_operator.take() {
+                let count = self.combined_count();
                 self.reset();
-                KeyAction::OperatorTextObject(op, text_object)
+                KeyAction::OperatorTextObject(op, text_object, count)
             } else if let Some(case_op) = self.pending_case_operator.take() {
                 self.reset();
                 KeyAction::CaseTextObject(case_op, text_object)
@@ -2078,10 +2079,11 @@ mod tests {
         expected_object_type: TextObjectType,
     ) {
         match run(keys) {
-            KeyAction::OperatorTextObject(operator, text_object) => {
+            KeyAction::OperatorTextObject(operator, text_object, count) => {
                 assert_eq!(operator, expected_operator);
                 assert_eq!(text_object.modifier, expected_modifier);
                 assert_eq!(text_object.object_type, expected_object_type);
+                assert_eq!(count, 1);
             }
             other => panic!("expected text object action, got {:?}", other),
         }
@@ -2252,7 +2254,7 @@ mod tests {
         assert_operator_line(&[key('c'), key('c')], Operator::Change, 1);
         assert_operator_motion(&[shift('C')], Operator::Change, Motion::LineEnd, 1);
         assert_operator_line(&[key('y'), key('y')], Operator::Yank, 1);
-        assert_operator_line(&[shift('Y')], Operator::Yank, 1);
+        assert_operator_motion(&[shift('Y')], Operator::Yank, Motion::LineEnd, 1);
         assert_operator_line(&[key('>'), key('>')], Operator::Indent, 1);
         assert_operator_motion(&[key('>'), key('j')], Operator::Indent, Motion::Down, 1);
         assert_operator_line(&[key('<'), key('<')], Operator::Dedent, 1);
@@ -2316,6 +2318,29 @@ mod tests {
         match run(&[shift('R')]) {
             KeyAction::EnterReplace => {}
             other => panic!("expected EnterReplace, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn uppercase_y_maps_to_yank_through_line_end_like_neovim() {
+        assert_operator_motion(&[shift('Y')], Operator::Yank, Motion::LineEnd, 1);
+    }
+
+    #[test]
+    fn text_object_operator_combines_counts_from_either_position() {
+        for keys in [
+            vec![key('2'), key('c'), key('a'), key('w')],
+            vec![key('c'), key('2'), key('a'), key('w')],
+        ] {
+            match run(&keys) {
+                KeyAction::OperatorTextObject(operator, text_object, count) => {
+                    assert_eq!(operator, Operator::Change);
+                    assert_eq!(text_object.modifier, TextObjectModifier::Around);
+                    assert_eq!(text_object.object_type, TextObjectType::Word);
+                    assert_eq!(count, 2);
+                }
+                other => panic!("expected counted text object action, got {other:?}"),
+            }
         }
     }
 

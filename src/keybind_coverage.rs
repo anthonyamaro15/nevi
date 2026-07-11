@@ -71,6 +71,24 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
     vim_oracle("O", "Open line above", "open line above"),
     vim_oracle("dw", "Delete word with motion", "delete word"),
     vim_oracle("ciw", "Change inner word", "change inner word"),
+    vim_oracle("cc", "Change current line", "change current line"),
+    vim_oracle("C", "Change to end of line", "change to line end"),
+    vim_oracle("yy", "Yank current line", "yank current line"),
+    vim_oracle("Y", "Yank through line end", "yank to line end"),
+    vim_oracle("p", "Paste after cursor", "paste after linewise yank"),
+    vim_oracle("P", "Paste before cursor", "paste before linewise yank"),
+    vim_oracle("de", "Delete through word end", "delete to word end"),
+    vim_oracle(
+        "db",
+        "Delete to previous word start",
+        "delete to previous word start",
+    ),
+    vim_oracle(
+        "d$",
+        "Delete through line end",
+        "delete with line-end motion",
+    ),
+    vim_oracle("caw", "Change around word", "change around word"),
     vim_oracle("u", "Undo latest change", "undo insert"),
     vim_oracle("<C-r>", "Redo latest undone change", "redo insert"),
     KeybindCoverage {
@@ -306,6 +324,36 @@ mod tests {
             ("E", "big word end"),
             ("ge", "previous word end"),
             ("gE", "previous big word end"),
+        ];
+
+        for (key, oracle_case) in expected {
+            let entry = coverage_for(KeybindMode::Normal, key)
+                .unwrap_or_else(|| panic!("missing coverage entry for `{key}`"));
+
+            assert_eq!(entry.kind, CoverageKind::VimOracle);
+            assert_eq!(
+                entry.state,
+                CoverageState::Protected {
+                    test_id: oracle_case,
+                },
+                "`{key}` should be protected by oracle case `{oracle_case}`"
+            );
+        }
+    }
+
+    #[test]
+    fn high_use_editing_operators_are_oracle_covered() {
+        let expected = [
+            ("cc", "change current line"),
+            ("C", "change to line end"),
+            ("yy", "yank current line"),
+            ("Y", "yank to line end"),
+            ("p", "paste after linewise yank"),
+            ("P", "paste before linewise yank"),
+            ("de", "delete to word end"),
+            ("db", "delete to previous word start"),
+            ("d$", "delete with line-end motion"),
+            ("caw", "change around word"),
         ];
 
         for (key, oracle_case) in expected {
