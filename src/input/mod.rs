@@ -138,8 +138,8 @@ pub enum KeyAction {
     OperatorTextObject(Operator, TextObject, usize),
     /// Select a text object in visual mode
     SelectTextObject(TextObject),
-    /// Enter insert mode
-    EnterInsert(InsertPosition),
+    /// Enter insert mode with the normal-mode numeric prefix.
+    EnterInsert(InsertPosition, usize),
     /// Delete character at cursor
     DeleteChar(usize),
     /// Delete character before cursor (X)
@@ -1042,12 +1042,12 @@ impl InputState {
                     KeyAction::Pending
                 } else {
                     self.reset();
-                    KeyAction::EnterInsert(InsertPosition::AtCursor)
+                    KeyAction::EnterInsert(InsertPosition::AtCursor, count)
                 }
             }
             (KeyModifiers::SHIFT, KeyCode::Char('I')) => {
                 self.reset();
-                KeyAction::EnterInsert(InsertPosition::LineStart)
+                KeyAction::EnterInsert(InsertPosition::LineStart, count)
             }
             (KeyModifiers::NONE, KeyCode::Char('a')) => {
                 if self.pending_operator.is_some() {
@@ -1056,20 +1056,20 @@ impl InputState {
                     KeyAction::Pending
                 } else {
                     self.reset();
-                    KeyAction::EnterInsert(InsertPosition::AfterCursor)
+                    KeyAction::EnterInsert(InsertPosition::AfterCursor, count)
                 }
             }
             (KeyModifiers::SHIFT, KeyCode::Char('A')) => {
                 self.reset();
-                KeyAction::EnterInsert(InsertPosition::LineEnd)
+                KeyAction::EnterInsert(InsertPosition::LineEnd, count)
             }
             (KeyModifiers::NONE, KeyCode::Char('o')) => {
                 self.reset();
-                KeyAction::EnterInsert(InsertPosition::NewLineBelow)
+                KeyAction::EnterInsert(InsertPosition::NewLineBelow, count)
             }
             (KeyModifiers::SHIFT, KeyCode::Char('O')) => {
                 self.reset();
-                KeyAction::EnterInsert(InsertPosition::NewLineAbove)
+                KeyAction::EnterInsert(InsertPosition::NewLineAbove, count)
             }
 
             // Simple operations
@@ -2043,9 +2043,9 @@ mod tests {
         }
     }
 
-    fn assert_insert(keys: &[KeyEvent], expected_position: InsertPosition) {
+    fn assert_insert(keys: &[KeyEvent], expected_position: InsertPosition, expected_count: usize) {
         match run(keys) {
-            KeyAction::EnterInsert(position) => {
+            KeyAction::EnterInsert(position, count) => {
                 assert!(
                     matches!(
                         (position, expected_position),
@@ -2060,6 +2060,7 @@ mod tests {
                     expected_position,
                     position
                 );
+                assert_eq!(count, expected_count);
             }
             other => panic!("expected insert action, got {:?}", other),
         }
@@ -2309,12 +2310,14 @@ mod tests {
             other => panic!("expected Redo, got {:?}", other),
         }
 
-        assert_insert(&[key('i')], InsertPosition::AtCursor);
-        assert_insert(&[key('a')], InsertPosition::AfterCursor);
-        assert_insert(&[shift('I')], InsertPosition::LineStart);
-        assert_insert(&[shift('A')], InsertPosition::LineEnd);
-        assert_insert(&[key('o')], InsertPosition::NewLineBelow);
-        assert_insert(&[shift('O')], InsertPosition::NewLineAbove);
+        assert_insert(&[key('i')], InsertPosition::AtCursor, 1);
+        assert_insert(&[key('a')], InsertPosition::AfterCursor, 1);
+        assert_insert(&[shift('I')], InsertPosition::LineStart, 1);
+        assert_insert(&[shift('A')], InsertPosition::LineEnd, 1);
+        assert_insert(&[key('o')], InsertPosition::NewLineBelow, 1);
+        assert_insert(&[shift('O')], InsertPosition::NewLineAbove, 1);
+        assert_insert(&[key('3'), shift('I')], InsertPosition::LineStart, 3);
+        assert_insert(&[key('3'), shift('A')], InsertPosition::LineEnd, 3);
         match run(&[shift('R')]) {
             KeyAction::EnterReplace => {}
             other => panic!("expected EnterReplace, got {:?}", other),
