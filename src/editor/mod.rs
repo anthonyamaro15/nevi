@@ -30,6 +30,27 @@ use unicode_width::UnicodeWidthChar;
 
 const MAX_VISIBLE_SEARCH_MATCHES: usize = 2048;
 
+fn comparable_file_path(path: &std::path::Path) -> std::path::PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+
+    absolute.canonicalize().unwrap_or_else(|_| {
+        let Some(file_name) = absolute.file_name() else {
+            return absolute.clone();
+        };
+        absolute
+            .parent()
+            .and_then(|parent| parent.canonicalize().ok())
+            .map(|parent| parent.join(file_name))
+            .unwrap_or(absolute)
+    })
+}
+
 /// The current mode of the editor
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
@@ -3396,12 +3417,13 @@ impl Editor {
         read_only: bool,
     ) -> anyhow::Result<()> {
         // Check if file is already open in an existing buffer
-        let canonical_path = path.canonicalize().ok();
-        if let Some(existing_idx) = self
-            .buffers
-            .iter()
-            .position(|b| b.path.as_ref().and_then(|p| p.canonicalize().ok()) == canonical_path)
-        {
+        let comparable_path = comparable_file_path(&path);
+        if let Some(existing_idx) = self.buffers.iter().position(|buffer| {
+            buffer
+                .path
+                .as_deref()
+                .is_some_and(|buffer_path| comparable_file_path(buffer_path) == comparable_path)
+        }) {
             // File already open, switch to that buffer
             if existing_idx != self.current_buffer_idx {
                 self.remember_current_file_as_alternate();
@@ -4534,10 +4556,18 @@ impl Editor {
             RegisterContent::Lines(text) => {
                 // Paste on new line below
                 let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
+                let line_has_terminator = self.buffers[self.current_buffer_idx]
+                    .line_len_including_newline(self.cursor.line)
+                    > line_len;
+                let trimmed = text.strip_suffix('\n').unwrap_or(&text);
+                let inserted_block = if line_has_terminator {
+                    trimmed.to_string()
+                } else {
+                    format!("{trimmed}\n")
+                };
 
                 // Record the insertion for undo
-                let trimmed = text.strip_suffix('\n').unwrap_or(&text);
-                let insert_text = format!("\n{}", trimmed);
+                let insert_text = format!("\n{inserted_block}");
                 self.undo_stack.record_change(Change::insert(
                     self.cursor.line,
                     line_len,
@@ -4550,8 +4580,13 @@ impl Editor {
                 let first_inserted_line = self.cursor.line;
                 let inserted_line_count = Self::linewise_paste_line_count(trimmed);
 
-                // Insert the lines (without trailing newline if present)
-                self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, 0, trimmed);
+                // The existing line terminator separates a following line. At EOF,
+                // the inserted block supplies its own terminator instead.
+                self.buffers[self.current_buffer_idx].insert_str(
+                    self.cursor.line,
+                    0,
+                    &inserted_block,
+                );
                 if cursor_after {
                     self.cursor.line = (first_inserted_line + inserted_line_count).min(
                         self.buffers[self.current_buffer_idx]
@@ -11150,6 +11185,7 @@ fn project_replace_display_path(root: &std::path::Path, path: &std::path::Path) 
 #[cfg(test)]
 mod tests {
     mod editing_operators;
+    mod file_lifecycle;
     mod screen_position;
 
     use super::{Editor, JumpList, Mode, SearchDirection, SplitLayout};

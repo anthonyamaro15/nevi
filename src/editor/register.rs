@@ -33,6 +33,30 @@ impl RegisterContent {
     }
 }
 
+fn clipboard_text_for_content(content: &RegisterContent) -> String {
+    match content {
+        RegisterContent::Chars(text) => text.clone(),
+        RegisterContent::Lines(text) if text.ends_with('\n') => text.clone(),
+        RegisterContent::Lines(text) => format!("{text}\n"),
+    }
+}
+
+fn register_content_from_clipboard_text(text: String) -> Option<RegisterContent> {
+    if text.is_empty() {
+        None
+    } else if text.ends_with('\n') {
+        Some(RegisterContent::Lines(text))
+    } else {
+        Some(RegisterContent::Chars(text))
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Default)]
+struct InMemoryClipboard {
+    text: Option<String>,
+}
+
 /// Vim-style register system
 #[derive(Debug, Clone, Default)]
 pub struct Registers {
@@ -46,11 +70,18 @@ pub struct Registers {
     numbered: [Option<RegisterContent>; 9],
     /// Last clipboard error (for display to user)
     clipboard_error: Option<String>,
+    #[cfg(test)]
+    in_memory_clipboard: Option<InMemoryClipboard>,
 }
 
 impl Registers {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn use_in_memory_clipboard_for_tests(&mut self) {
+        self.in_memory_clipboard = Some(InMemoryClipboard::default());
     }
 
     /// Get the content of a register
@@ -84,25 +115,26 @@ impl Registers {
 
     /// Get content from the system clipboard
     pub fn get_clipboard(&mut self) -> Option<RegisterContent> {
+        #[cfg(test)]
+        if let Some(clipboard) = &self.in_memory_clipboard {
+            self.clipboard_error = None;
+            return clipboard
+                .text
+                .clone()
+                .and_then(register_content_from_clipboard_text);
+        }
+
         match Clipboard::new() {
-            Ok(mut clipboard) => {
-                match clipboard.get_text() {
-                    Ok(text) if !text.is_empty() => {
-                        self.clipboard_error = None;
-                        // Determine if it's line-wise (ends with newline)
-                        if text.ends_with('\n') {
-                            Some(RegisterContent::Lines(text))
-                        } else {
-                            Some(RegisterContent::Chars(text))
-                        }
-                    }
-                    Ok(_) => None, // Empty clipboard
-                    Err(e) => {
-                        self.clipboard_error = Some(format!("Clipboard read failed: {}", e));
-                        None
-                    }
+            Ok(mut clipboard) => match clipboard.get_text() {
+                Ok(text) => {
+                    self.clipboard_error = None;
+                    register_content_from_clipboard_text(text)
                 }
-            }
+                Err(e) => {
+                    self.clipboard_error = Some(format!("Clipboard read failed: {}", e));
+                    None
+                }
+            },
             Err(e) => {
                 self.clipboard_error = Some(format!("Clipboard unavailable: {}", e));
                 None
@@ -112,9 +144,17 @@ impl Registers {
 
     /// Set content to the system clipboard
     pub fn set_clipboard(&mut self, content: &RegisterContent) {
+        let text = clipboard_text_for_content(content);
+        #[cfg(test)]
+        if let Some(clipboard) = &mut self.in_memory_clipboard {
+            clipboard.text = Some(text);
+            self.clipboard_error = None;
+            return;
+        }
+
         match Clipboard::new() {
             Ok(mut clipboard) => {
-                if let Err(e) = clipboard.set_text(content.as_str().to_string()) {
+                if let Err(e) = clipboard.set_text(text) {
                     self.clipboard_error = Some(format!("Clipboard write failed: {}", e));
                 } else {
                     self.clipboard_error = None;
@@ -258,5 +298,41 @@ impl Registers {
         } else {
             self.get(name).cloned()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        RegisterContent, clipboard_text_for_content, register_content_from_clipboard_text,
+    };
+
+    #[test]
+    fn linewise_clipboard_round_trip_preserves_shape_without_final_newline() {
+        let serialized = clipboard_text_for_content(&RegisterContent::Lines("abc".to_string()));
+
+        assert_eq!(serialized, "abc\n");
+        assert_eq!(
+            register_content_from_clipboard_text(serialized),
+            Some(RegisterContent::Lines("abc\n".to_string()))
+        );
+    }
+
+    #[test]
+    fn characterwise_clipboard_round_trip_does_not_add_a_newline() {
+        let serialized = clipboard_text_for_content(&RegisterContent::Chars("abc".to_string()));
+
+        assert_eq!(serialized, "abc");
+        assert_eq!(
+            register_content_from_clipboard_text(serialized),
+            Some(RegisterContent::Chars("abc".to_string()))
+        );
+    }
+
+    #[test]
+    fn linewise_clipboard_text_does_not_duplicate_an_existing_newline() {
+        let serialized = clipboard_text_for_content(&RegisterContent::Lines("abc\n".to_string()));
+
+        assert_eq!(serialized, "abc\n");
     }
 }

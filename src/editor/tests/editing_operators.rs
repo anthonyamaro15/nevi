@@ -155,6 +155,32 @@ fn linewise_paste_lands_on_first_nonblank_of_inserted_line() {
 }
 
 #[test]
+fn linewise_paste_after_unterminated_last_line_restores_final_newline() {
+    let mut editor = Editor::default();
+    editor.replace_buffer_content("abc");
+    editor.yank_line(1, Some('a'));
+
+    editor.paste_after(Some('a'));
+    editor.paste_after(Some('a'));
+
+    assert_eq!(editor.buffer().content(), "abc\nabc\nabc\n");
+}
+
+#[test]
+fn linewise_paste_after_unterminated_last_line_remains_undoable() {
+    let mut editor = Editor::default();
+    editor.replace_buffer_content("abc");
+    editor.yank_line(1, Some('a'));
+    editor.paste_after(Some('a'));
+
+    editor.undo();
+    assert_eq!(editor.buffer().content(), "abc");
+
+    editor.redo();
+    assert_eq!(editor.buffer().content(), "abc\nabc\n");
+}
+
+#[test]
 fn counted_delete_to_line_end_from_column_zero_is_linewise() {
     let mut editor = Editor::default();
     editor.replace_buffer_content("alpha\nbeta\ngamma\n");

@@ -119,6 +119,11 @@ pub(super) const EDITING_CASES: &[OracleCase] = &[
         keys: "yyp",
     },
     OracleCase {
+        name: "linewise yank without final newline",
+        initial_text: "abc",
+        keys: "yypp",
+    },
+    OracleCase {
         name: "yank to line end",
         initial_text: "alpha\nbeta\n",
         keys: "YP",
