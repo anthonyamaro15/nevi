@@ -1085,6 +1085,8 @@ pub struct Editor {
     pub last_inserted_text: Option<String>,
     /// Text inserted during the active insert session.
     current_inserted_text: String,
+    /// Number of times the active `I`/`A` insertion is repeated on exit.
+    insert_session_repeat_count: usize,
     /// Insert mode is waiting for a register name after `<C-r>`.
     pub pending_insert_register: bool,
     /// Expression register input is active after `"=` or `<C-r>=`.
@@ -1577,6 +1579,7 @@ impl Editor {
             last_insert_position: None,
             last_inserted_text: None,
             current_inserted_text: String::new(),
+            insert_session_repeat_count: 1,
             pending_insert_register: false,
             pending_expression_register: None,
             expression_register_input: String::new(),
@@ -4855,6 +4858,16 @@ impl Editor {
         self.mode = Mode::Insert;
         self.begin_insert_session();
         self.begin_change();
+        self.undo_stack
+            .prefer_current_cursor_after(self.cursor.line, self.cursor.col);
+    }
+
+    /// Enter insert mode at end of line with Vim's counted-insert semantics.
+    pub fn enter_insert_mode_end_counted(&mut self, count: usize) {
+        self.enter_insert_mode_end();
+        if self.mode == Mode::Insert {
+            self.insert_session_repeat_count = count.max(1);
+        }
     }
 
     /// Enter insert mode at start of line (first non-blank)
@@ -4872,15 +4885,27 @@ impl Editor {
                     self.mode = Mode::Insert;
                     self.begin_insert_session();
                     self.begin_change();
+                    self.undo_stack
+                        .prefer_current_cursor_after(self.cursor.line, self.cursor.col);
                     return;
                 }
             }
         }
-        self.cursor.col = 0;
+        self.cursor.col = line_len;
         self.last_insert_position = Some((self.cursor.line, self.cursor.col));
         self.mode = Mode::Insert;
         self.begin_insert_session();
         self.begin_change();
+        self.undo_stack
+            .prefer_current_cursor_after(self.cursor.line, self.cursor.col);
+    }
+
+    /// Enter insert mode at first non-blank with Vim's counted-insert semantics.
+    pub fn enter_insert_mode_start_counted(&mut self, count: usize) {
+        self.enter_insert_mode_start();
+        if self.mode == Mode::Insert {
+            self.insert_session_repeat_count = count.max(1);
+        }
     }
 
     /// Temporarily leave insert mode so the next normal command can run.
@@ -4903,9 +4928,16 @@ impl Editor {
 
     fn begin_insert_session(&mut self) {
         self.current_inserted_text.clear();
+        self.insert_session_repeat_count = 1;
     }
 
     fn finish_insert_session(&mut self) {
+        let repeat_count = std::mem::replace(&mut self.insert_session_repeat_count, 1);
+        if repeat_count > 1 && !self.current_inserted_text.is_empty() {
+            let repeated = self.current_inserted_text.repeat(repeat_count - 1);
+            self.insert_text_at_cursor(&repeated);
+        }
+
         if !self.current_inserted_text.is_empty() {
             self.last_inserted_text = Some(std::mem::take(&mut self.current_inserted_text));
         } else {
@@ -11186,6 +11218,7 @@ fn project_replace_display_path(root: &std::path::Path, path: &std::path::Path) 
 mod tests {
     mod editing_operators;
     mod file_lifecycle;
+    mod insert_entry;
     mod screen_position;
 
     use super::{Editor, JumpList, Mode, SearchDirection, SplitLayout};

@@ -7334,12 +7334,12 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             }
         }
 
-        KeyAction::EnterInsert(pos) => {
+        KeyAction::EnterInsert(pos, count) => {
             match pos {
                 InsertPosition::AtCursor => editor.enter_insert_mode(),
                 InsertPosition::AfterCursor => editor.enter_insert_mode_append(),
-                InsertPosition::LineStart => editor.enter_insert_mode_start(),
-                InsertPosition::LineEnd => editor.enter_insert_mode_end(),
+                InsertPosition::LineStart => editor.enter_insert_mode_start_counted(count),
+                InsertPosition::LineEnd => editor.enter_insert_mode_end_counted(count),
                 InsertPosition::NewLineBelow => editor.open_line_below(),
                 InsertPosition::NewLineAbove => editor.open_line_above(),
             }
