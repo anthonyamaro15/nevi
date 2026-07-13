@@ -453,8 +453,8 @@ Record and replay sequences of commands.
 | `a` | Insert after cursor |
 | `I` | Insert at first non-blank of line |
 | `A` | Insert at end of line |
-| `o` | Open new line below |
-| `O` | Open new line above |
+| `o` / `{n}o` | Open line(s) below; a count repeats the entered line |
+| `O` / `{n}O` | Open line(s) above; a count repeats the entered line |
 | `gi` | Go to last insert position and enter insert mode |
 
 **While in Insert Mode:**

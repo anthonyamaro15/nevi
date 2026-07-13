@@ -7,9 +7,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod editing_cases;
 mod insert_entry_cases;
+mod open_line_cases;
 
 use editing_cases::EDITING_CASES;
 use insert_entry_cases::INSERT_ENTRY_CASES;
+use open_line_cases::OPEN_LINE_CASES;
 
 #[derive(Debug, Clone, Copy)]
 struct OracleCase {
@@ -519,6 +521,10 @@ const ORACLE_CATEGORIES: &[OracleCategory] = &[
     OracleCategory {
         name: "insert-entry",
         cases: INSERT_ENTRY_CASES,
+    },
+    OracleCategory {
+        name: "open-line",
+        cases: OPEN_LINE_CASES,
     },
     OracleCategory {
         name: "undo-redo",

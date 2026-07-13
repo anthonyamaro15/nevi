@@ -2316,6 +2316,8 @@ mod tests {
         assert_insert(&[shift('A')], InsertPosition::LineEnd, 1);
         assert_insert(&[key('o')], InsertPosition::NewLineBelow, 1);
         assert_insert(&[shift('O')], InsertPosition::NewLineAbove, 1);
+        assert_insert(&[key('3'), key('o')], InsertPosition::NewLineBelow, 3);
+        assert_insert(&[key('3'), shift('O')], InsertPosition::NewLineAbove, 3);
         assert_insert(&[key('3'), shift('I')], InsertPosition::LineStart, 3);
         assert_insert(&[key('3'), shift('A')], InsertPosition::LineEnd, 3);
         match run(&[shift('R')]) {

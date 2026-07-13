@@ -1023,7 +1023,7 @@ vim_default = true
 [[normal.mode]]
 key = "o"
 action = "open_below"
-desc = "Open new line below and enter insert"
+desc = "Open line(s) below and enter insert (count repeats)"
 status = "implemented"
 vim_default = true
 locked = true
@@ -1031,7 +1031,7 @@ locked = true
 [[normal.mode]]
 key = "O"
 action = "open_above"
-desc = "Open new line above and enter insert"
+desc = "Open line(s) above and enter insert (count repeats)"
 status = "implemented"
 vim_default = true
 locked = true

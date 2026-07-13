@@ -1085,8 +1085,10 @@ pub struct Editor {
     pub last_inserted_text: Option<String>,
     /// Text inserted during the active insert session.
     current_inserted_text: String,
-    /// Number of times the active `I`/`A` insertion is repeated on exit.
+    /// Number of times the active counted insertion is repeated on exit.
     insert_session_repeat_count: usize,
+    /// Inherited indentation when the active session was started by `o` or `O`.
+    insert_session_open_line_indent: Option<String>,
     /// Insert mode is waiting for a register name after `<C-r>`.
     pub pending_insert_register: bool,
     /// Expression register input is active after `"=` or `<C-r>=`.
@@ -1580,6 +1582,7 @@ impl Editor {
             last_inserted_text: None,
             current_inserted_text: String::new(),
             insert_session_repeat_count: 1,
+            insert_session_open_line_indent: None,
             pending_insert_register: false,
             pending_expression_register: None,
             expression_register_input: String::new(),
@@ -4929,13 +4932,25 @@ impl Editor {
     fn begin_insert_session(&mut self) {
         self.current_inserted_text.clear();
         self.insert_session_repeat_count = 1;
+        self.insert_session_open_line_indent = None;
     }
 
     fn finish_insert_session(&mut self) {
         let repeat_count = std::mem::replace(&mut self.insert_session_repeat_count, 1);
         if repeat_count > 1 && !self.current_inserted_text.is_empty() {
-            let repeated = self.current_inserted_text.repeat(repeat_count - 1);
+            let repeated = if let Some(indent) = self.insert_session_open_line_indent.take() {
+                let structural_len = indent.len() + 1;
+                let typed_text = self
+                    .current_inserted_text
+                    .get(structural_len..)
+                    .unwrap_or_default();
+                format!("\n{indent}{typed_text}").repeat(repeat_count - 1)
+            } else {
+                self.current_inserted_text.repeat(repeat_count - 1)
+            };
             self.insert_text_at_cursor(&repeated);
+        } else {
+            self.insert_session_open_line_indent = None;
         }
 
         if !self.current_inserted_text.is_empty() {
@@ -5759,6 +5774,7 @@ impl Editor {
 
     /// Open a new line below and enter insert mode
     pub fn open_line_below(&mut self) {
+        let redo_cursor = (self.cursor.line, self.cursor.col);
         let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
 
         // Calculate indent for new line
@@ -5780,6 +5796,8 @@ impl Editor {
         // Start undo group and record the insertion
         let insert_text = format!("\n{}", indent);
         self.begin_change();
+        self.undo_stack
+            .prefer_current_cursor_after(redo_cursor.0, redo_cursor.1);
         self.undo_stack.record_change(Change::insert(
             self.cursor.line,
             line_len,
@@ -5792,12 +5810,22 @@ impl Editor {
         self.last_insert_position = Some((self.cursor.line, self.cursor.col));
         self.mode = Mode::Insert;
         self.begin_insert_session();
+        self.insert_session_open_line_indent = Some(indent);
         self.record_inserted_text(&insert_text);
         self.scroll_to_cursor();
     }
 
+    /// Open a line below and repeat the completed insertion `count` times.
+    pub fn open_line_below_counted(&mut self, count: usize) {
+        self.open_line_below();
+        if self.mode == Mode::Insert {
+            self.insert_session_repeat_count = count.max(1);
+        }
+    }
+
     /// Open a new line above and enter insert mode
     pub fn open_line_above(&mut self) {
+        let redo_cursor = (self.cursor.line, self.cursor.col);
         // Calculate indent for new line (match current line's indent)
         let indent = if self.settings.editor.auto_indent {
             let buffer = &self.buffers[self.current_buffer_idx];
@@ -5810,6 +5838,8 @@ impl Editor {
         let insert_text = format!("{}\n", indent);
         self.begin_change();
         self.undo_stack
+            .prefer_current_cursor_after(redo_cursor.0, redo_cursor.1);
+        self.undo_stack
             .record_change(Change::insert(self.cursor.line, 0, insert_text.clone()));
 
         self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, 0, &insert_text);
@@ -5818,8 +5848,17 @@ impl Editor {
         self.last_insert_position = Some((self.cursor.line, self.cursor.col));
         self.mode = Mode::Insert;
         self.begin_insert_session();
+        self.insert_session_open_line_indent = Some(indent);
         self.record_inserted_text(&insert_text);
         self.scroll_to_cursor();
+    }
+
+    /// Open a line above and repeat the completed insertion `count` times.
+    pub fn open_line_above_counted(&mut self, count: usize) {
+        self.open_line_above();
+        if self.mode == Mode::Insert {
+            self.insert_session_repeat_count = count.max(1);
+        }
     }
 
     /// Save the current buffer
@@ -11219,6 +11258,7 @@ mod tests {
     mod editing_operators;
     mod file_lifecycle;
     mod insert_entry;
+    mod open_line;
     mod screen_position;
 
     use super::{Editor, JumpList, Mode, SearchDirection, SplitLayout};
