@@ -8,10 +8,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod editing_cases;
 mod insert_entry_cases;
 mod open_line_cases;
+mod replace_cases;
 
 use editing_cases::EDITING_CASES;
 use insert_entry_cases::INSERT_ENTRY_CASES;
 use open_line_cases::OPEN_LINE_CASES;
+use replace_cases::REPLACE_CASES;
 
 #[derive(Debug, Clone, Copy)]
 struct OracleCase {
@@ -527,6 +529,10 @@ const ORACLE_CATEGORIES: &[OracleCategory] = &[
         cases: OPEN_LINE_CASES,
     },
     OracleCategory {
+        name: "replace",
+        cases: REPLACE_CASES,
+    },
+    OracleCategory {
         name: "undo-redo",
         cases: UNDO_REDO_CASES,
     },
@@ -579,6 +585,10 @@ fn parse_key_token(token: &str) -> Result<KeyEvent, String> {
         "cr" | "enter" | "return" => Ok(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         "tab" => Ok(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
         "bs" | "backspace" => Ok(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
+        "left" => Ok(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
+        "right" => Ok(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
+        "up" => Ok(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+        "down" => Ok(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
         "space" => Ok(char_key(' ')),
         "lt" => Ok(char_key('<')),
         _ => {
@@ -944,9 +954,10 @@ mod tests {
 
     #[test]
     fn parses_plain_shift_control_and_named_keys() {
-        let keys = parse_key_sequence("jG<C-d><Esc><CR>").expect("parse keys");
+        let keys =
+            parse_key_sequence("jG<C-d><Esc><CR><Left><Right><Up><Down>").expect("parse keys");
 
-        assert_eq!(keys.len(), 5);
+        assert_eq!(keys.len(), 9);
         assert_eq!(keys[0].code, KeyCode::Char('j'));
         assert_eq!(keys[0].modifiers, KeyModifiers::NONE);
         assert_eq!(keys[1].code, KeyCode::Char('G'));
@@ -955,6 +966,10 @@ mod tests {
         assert_eq!(keys[2].modifiers, KeyModifiers::CONTROL);
         assert_eq!(keys[3].code, KeyCode::Esc);
         assert_eq!(keys[4].code, KeyCode::Enter);
+        assert_eq!(keys[5].code, KeyCode::Left);
+        assert_eq!(keys[6].code, KeyCode::Right);
+        assert_eq!(keys[7].code, KeyCode::Up);
+        assert_eq!(keys[8].code, KeyCode::Down);
     }
 
     #[test]
@@ -1071,6 +1086,12 @@ mod tests {
                 .any(|category| category.name == "undo-redo" && category.cases.len() >= 2),
             "undo-redo category should cover timeline basics"
         );
+        assert!(
+            categories
+                .iter()
+                .any(|category| category.name == "replace" && category.cases.len() >= 15),
+            "replace category should cover one-shot and interactive replacement"
+        );
 
         let all_keys = categories
             .iter()
@@ -1083,6 +1104,8 @@ mod tests {
             "G",
             "2dd",
             "ciwdone<Esc>",
+            "2r<CR>",
+            "2RXY<Esc>",
             "A!<Esc>u",
             "A!<Esc>u<C-r>",
         ] {

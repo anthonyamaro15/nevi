@@ -3,6 +3,7 @@ mod cursor;
 mod macros;
 mod marks;
 mod register;
+mod replace;
 mod undo;
 
 pub use buffer::Buffer;
@@ -11,6 +12,8 @@ pub use macros::MacroState;
 pub use marks::{Mark, Marks};
 pub use register::{RegisterContent, Registers};
 pub use undo::{Change, UndoEntry, UndoStack};
+
+use replace::ReplaceSession;
 
 use crate::commands::CommandLine;
 use crate::config::{KeymapLookup, LeaderAction, LeaderHint, Settings};
@@ -1089,6 +1092,8 @@ pub struct Editor {
     insert_session_repeat_count: usize,
     /// Inherited indentation when the active session was started by `o` or `O`.
     insert_session_open_line_indent: Option<String>,
+    /// State needed to reproduce Vim's interactive `R` replace semantics.
+    replace_session: ReplaceSession,
     /// Insert mode is waiting for a register name after `<C-r>`.
     pub pending_insert_register: bool,
     /// Expression register input is active after `"=` or `<C-r>=`.
@@ -1583,6 +1588,7 @@ impl Editor {
             current_inserted_text: String::new(),
             insert_session_repeat_count: 1,
             insert_session_open_line_indent: None,
+            replace_session: ReplaceSession::default(),
             pending_insert_register: false,
             pending_expression_register: None,
             expression_register_input: String::new(),
@@ -5104,47 +5110,6 @@ impl Editor {
         true
     }
 
-    /// Enter replace mode
-    pub fn enter_replace_mode(&mut self) {
-        self.begin_change();
-        self.mode = Mode::Replace;
-    }
-
-    /// Replace character at cursor position (for replace mode)
-    pub fn replace_mode_char(&mut self, ch: char) {
-        let buffer = &self.buffers[self.current_buffer_idx];
-        let line_len = buffer.line_len(self.cursor.line);
-
-        if ch == '\n' {
-            // Newline exits replace mode and goes to next line
-            self.enter_normal_mode();
-            return;
-        }
-
-        if self.cursor.col < line_len {
-            // Replace existing character
-            if let Some(old_char) = buffer.char_at(self.cursor.line, self.cursor.col) {
-                self.undo_stack.record_change(Change::delete(
-                    self.cursor.line,
-                    self.cursor.col,
-                    old_char.to_string(),
-                ));
-            }
-            self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
-        }
-
-        // Insert the new character
-        self.undo_stack.record_change(Change::insert(
-            self.cursor.line,
-            self.cursor.col,
-            ch.to_string(),
-        ));
-        self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, self.cursor.col, ch);
-        self.cursor.col += 1;
-
-        self.scroll_to_cursor();
-    }
-
     /// Enter rename prompt mode with the word under cursor
     pub fn enter_rename_prompt(&mut self) {
         let word = self.get_word_under_cursor().unwrap_or_default();
@@ -5194,6 +5159,8 @@ impl Editor {
         if self.mode == Mode::Insert {
             self.replay_pending_visual_block_edit();
             self.finish_insert_session();
+        } else if self.mode == Mode::Replace {
+            self.finish_replace_session();
         }
 
         // End any current undo group
@@ -8575,51 +8542,6 @@ impl Editor {
     // New Commands (r, J, zz/zt/zb, .)
     // ============================================
 
-    /// Replace character at cursor with given character (r command)
-    pub fn replace_char(&mut self, ch: char) {
-        self.replace_chars(ch, 1);
-    }
-
-    /// Replace count characters at cursor with the given character (r with count)
-    pub fn replace_chars(&mut self, ch: char, count: usize) {
-        let count = count.max(1);
-        let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
-        if line_len == 0 || self.cursor.col >= line_len {
-            return;
-        }
-
-        let start_col = self.cursor.col;
-        let end_col = (start_col + count - 1).min(line_len.saturating_sub(1));
-        let old_text = self.get_range_text(self.cursor.line, start_col, self.cursor.line, end_col);
-        if old_text.is_empty() {
-            return;
-        }
-        let replacement: String = std::iter::repeat(ch)
-            .take(old_text.chars().count())
-            .collect();
-
-        self.begin_change();
-        self.undo_stack
-            .record_change(Change::delete(self.cursor.line, start_col, old_text));
-        self.undo_stack.record_change(Change::insert(
-            self.cursor.line,
-            start_col,
-            replacement.clone(),
-        ));
-
-        self.buffers[self.current_buffer_idx].delete_range(
-            self.cursor.line,
-            start_col,
-            self.cursor.line,
-            end_col + 1,
-        );
-        self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, start_col, &replacement);
-        self.cursor.col = start_col + replacement.chars().count().saturating_sub(1);
-        self.undo_stack
-            .end_undo_group(self.cursor.line, self.cursor.col);
-        self.clamp_cursor();
-    }
-
     /// Join current line with next line (J command)
     pub fn join_lines(&mut self) {
         let total_lines = self.buffers[self.current_buffer_idx].len_lines();
@@ -11259,6 +11181,7 @@ mod tests {
     mod file_lifecycle;
     mod insert_entry;
     mod open_line;
+    mod replace;
     mod screen_position;
 
     use super::{Editor, JumpList, Mode, SearchDirection, SplitLayout};

@@ -198,8 +198,8 @@ pub enum KeyAction {
     EnterVisualLine,
     /// Enter visual block mode
     EnterVisualBlock,
-    /// Enter replace mode
-    EnterReplace,
+    /// Enter replace mode with the normal-mode numeric prefix.
+    EnterReplace(usize),
     /// Quit
     Quit,
     /// Save
@@ -488,6 +488,9 @@ impl InputState {
             if let KeyCode::Char(c) = key.code {
                 self.reset();
                 return KeyAction::ReplaceChar(c, count);
+            } else if key.code == KeyCode::Enter {
+                self.reset();
+                return KeyAction::ReplaceChar('\n', count);
             } else if key.code == KeyCode::Esc {
                 self.reset();
                 return KeyAction::Pending;
@@ -1098,7 +1101,7 @@ impl InputState {
             | (KeyModifiers::NONE, KeyCode::Char('R')) => {
                 // R - enter replace mode
                 self.reset();
-                KeyAction::EnterReplace
+                KeyAction::EnterReplace(count)
             }
             (KeyModifiers::SHIFT, KeyCode::Char('J')) => {
                 // J - join lines
@@ -2297,6 +2300,14 @@ mod tests {
             KeyAction::ReplaceChar('x', 1) => {}
             other => panic!("expected ReplaceChar, got {:?}", other),
         }
+        match run(&[key('r'), enter()]) {
+            KeyAction::ReplaceChar('\n', 1) => {}
+            other => panic!("expected newline ReplaceChar, got {:?}", other),
+        }
+        match run(&[key('2'), key('r'), enter()]) {
+            KeyAction::ReplaceChar('\n', 2) => {}
+            other => panic!("expected counted newline ReplaceChar, got {:?}", other),
+        }
         match run(&[key('.')]) {
             KeyAction::RepeatLastChange => {}
             other => panic!("expected RepeatLastChange, got {:?}", other),
@@ -2321,8 +2332,12 @@ mod tests {
         assert_insert(&[key('3'), shift('I')], InsertPosition::LineStart, 3);
         assert_insert(&[key('3'), shift('A')], InsertPosition::LineEnd, 3);
         match run(&[shift('R')]) {
-            KeyAction::EnterReplace => {}
+            KeyAction::EnterReplace(1) => {}
             other => panic!("expected EnterReplace, got {:?}", other),
+        }
+        match run(&[key('3'), shift('R')]) {
+            KeyAction::EnterReplace(3) => {}
+            other => panic!("expected counted EnterReplace, got {:?}", other),
         }
     }
 

@@ -549,7 +549,7 @@ vim_default = true
 [[normal.editing]]
 key = "r{char}"
 action = "replace_char"
-desc = "Replace character under cursor"
+desc = "Replace character(s); Enter inserts one newline"
 status = "implemented"
 vim_default = true
 
@@ -1070,7 +1070,7 @@ locked = true
 [[normal.mode]]
 key = "R"
 action = "enter_replace"
-desc = "Enter replace mode"
+desc = "Replace mode; a count repeats straight-line input"
 status = "implemented"
 vim_default = true
 

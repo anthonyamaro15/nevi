@@ -161,6 +161,7 @@ When specifying keys, use these formats:
 - [Marks](#marks)
 - [Macros](#macros)
 - [Insert Mode](#insert-mode)
+- [Replace Mode](#replace-mode)
 - [Visual Mode](#visual-mode)
 - [Text Objects](#text-objects)
 - [Registers](#registers)
@@ -326,7 +327,8 @@ Operators are commands that wait for a motion. For example, `d` (delete) + `w` (
 | `P` / `{n}P` | Paste before cursor |
 | `gp` / `{n}gp` | Paste after and leave cursor after pasted text |
 | `gP` / `{n}gP` | Paste before and leave cursor after pasted text |
-| `r{char}` / `{n}r{char}` | Replace character(s) under cursor |
+| `r{char}` / `{n}r{char}` | Replace exactly one/count characters; `Enter` replaces them with one newline |
+| `R` / `{n}R` | Enter replace mode; a count repeats the entered replacement text |
 | `.` | Repeat last change |
 
 > **Examples:**
@@ -478,6 +480,22 @@ Record and replay sequences of commands.
 | `Ctrl+l` | Accept visible Copilot suggestion |
 | `Alt+]` | Next visible Copilot suggestion |
 | `Alt+[` | Previous visible Copilot suggestion |
+
+---
+
+## Replace Mode
+
+Enter replace mode with `R`. Printable characters overwrite existing text and
+extend the line when the cursor reaches its end. `Enter` inserts a newline and
+keeps replace mode active. During straight-line input, `Backspace` restores
+text overwritten in the current session and a count repeats the entered text.
+Moving the cursor cancels that restoration and counted replay history.
+
+| Key | Action |
+|-----|--------|
+| `Esc` or `Ctrl+[` | Exit replace mode |
+| `Backspace` | Restore the previous straight-line replacement, or navigate backward after cursor movement |
+| `Enter` | Insert a newline and continue replacing |
 
 ---
 

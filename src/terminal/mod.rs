@@ -7497,8 +7497,8 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.enter_visual_block_mode();
         }
 
-        KeyAction::EnterReplace => {
-            editor.enter_replace_mode();
+        KeyAction::EnterReplace(count) => {
+            editor.enter_replace_mode(count);
         }
 
         KeyAction::Quit => {
@@ -8307,23 +8307,28 @@ fn handle_replace_mode(editor: &mut Editor, key: KeyEvent) {
             editor.enter_normal_mode();
         }
 
-        // Backspace - move back (don't undo replacement)
+        // Backspace restores text overwritten during this replace session.
         (KeyModifiers::NONE, KeyCode::Backspace) => {
-            if editor.cursor.col > 0 {
-                editor.cursor.col -= 1;
-            }
+            editor.replace_mode_backspace();
+        }
+
+        // Enter inserts a newline and keeps replace mode active.
+        (KeyModifiers::NONE, KeyCode::Enter) => {
+            editor.replace_mode_newline();
         }
 
         // Arrow keys for navigation
         (_, KeyCode::Left) => {
             if editor.cursor.col > 0 {
                 editor.cursor.col -= 1;
+                editor.replace_mode_cursor_moved();
             }
         }
         (_, KeyCode::Right) => {
             let line_len = editor.buffer().line_len(editor.cursor.line);
             if editor.cursor.col < line_len {
                 editor.cursor.col += 1;
+                editor.replace_mode_cursor_moved();
             }
         }
         (_, KeyCode::Up) => {
@@ -8331,6 +8336,7 @@ fn handle_replace_mode(editor: &mut Editor, key: KeyEvent) {
                 editor.cursor.line -= 1;
                 editor.clamp_cursor();
                 editor.scroll_to_cursor();
+                editor.replace_mode_cursor_moved();
             }
         }
         (_, KeyCode::Down) => {
@@ -8338,6 +8344,7 @@ fn handle_replace_mode(editor: &mut Editor, key: KeyEvent) {
                 editor.cursor.line += 1;
                 editor.clamp_cursor();
                 editor.scroll_to_cursor();
+                editor.replace_mode_cursor_moved();
             }
         }
 
