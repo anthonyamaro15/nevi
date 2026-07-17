@@ -116,7 +116,7 @@ pub fn apply_motion(
         Motion::Up => Some((line.saturating_sub(count), col)),
 
         Motion::Down => {
-            let max_line = buffer.len_lines().saturating_sub(1);
+            let max_line = last_addressable_line(buffer);
             let new_line = (line + count).min(max_line);
             Some((new_line, col))
         }
@@ -124,7 +124,7 @@ pub fn apply_motion(
         Motion::DisplayLineUp => Some((line.saturating_sub(count), col)),
 
         Motion::DisplayLineDown => {
-            let max_line = buffer.len_lines().saturating_sub(1);
+            let max_line = last_addressable_line(buffer);
             let new_line = (line + count).min(max_line);
             Some((new_line, col))
         }
@@ -270,7 +270,7 @@ pub fn apply_motion(
         }
 
         Motion::NextLineFirstNonBlank => {
-            let max_line = buffer.len_lines().saturating_sub(1);
+            let max_line = last_addressable_line(buffer);
             let target_line = (line + count).min(max_line);
             let first_non_blank = find_first_non_blank(buffer, target_line);
             Some((target_line, first_non_blank))
@@ -296,7 +296,7 @@ pub fn apply_motion(
 
         Motion::HalfPageDown => {
             let half = text_rows / 2;
-            let max_line = buffer.len_lines().saturating_sub(1);
+            let max_line = last_addressable_line(buffer);
             let new_line = (line + half * count).min(max_line);
             Some((new_line, col))
         }
@@ -308,7 +308,7 @@ pub fn apply_motion(
         }
 
         Motion::PageDown => {
-            let max_line = buffer.len_lines().saturating_sub(1);
+            let max_line = last_addressable_line(buffer);
             let new_line = (line + text_rows * count).min(max_line);
             Some((new_line, col))
         }
@@ -351,7 +351,7 @@ pub fn apply_motion(
         Motion::ParagraphForward => {
             // } - move to next paragraph (next blank line after non-blank content)
             let mut l = line;
-            let total_lines = buffer.len_lines();
+            let total_lines = buffer.addressable_line_count();
 
             // Apply count times
             for _ in 0..count {
@@ -658,7 +658,7 @@ fn find_word_forward(
 ) -> Option<(usize, usize)> {
     let mut l = line;
     let mut c = col;
-    let total_lines = buffer.len_lines();
+    let total_lines = buffer.addressable_line_count();
 
     // Get current character class
     let start_class = buffer.char_at(l, c).map(|ch| classify_char(ch));
@@ -828,7 +828,7 @@ fn find_word_end(
 ) -> Option<(usize, usize)> {
     let mut l = line;
     let mut c = col;
-    let total_lines = buffer.len_lines();
+    let total_lines = buffer.addressable_line_count();
 
     // Move forward one character first
     c += 1;
@@ -925,15 +925,7 @@ fn find_first_non_blank(buffer: &Buffer, line: usize) -> usize {
 }
 
 pub(crate) fn last_addressable_line(buffer: &Buffer) -> usize {
-    let last_line = buffer.len_lines().saturating_sub(1);
-    if last_line > 0
-        && buffer.line_len(last_line) == 0
-        && buffer.line_len_including_newline(last_line) == 0
-    {
-        last_line - 1
-    } else {
-        last_line
-    }
+    buffer.addressable_line_count().saturating_sub(1)
 }
 
 /// Find character forward on the same line (f/t motions)
@@ -1109,5 +1101,39 @@ mod tests {
         let position = apply_motion(&buffer, Motion::GotoLine(999), 0, 0, 1, 22);
 
         assert_eq!(position, Some((29, 0)));
+    }
+
+    #[test]
+    fn downward_motions_ignore_trailing_empty_rope_line() {
+        let buffer = buffer_with("alpha\nbeta\n");
+
+        for motion in [
+            Motion::Down,
+            Motion::DisplayLineDown,
+            Motion::NextLineFirstNonBlank,
+            Motion::HalfPageDown,
+            Motion::PageDown,
+        ] {
+            let position = apply_motion(&buffer, motion, 1, 0, 1, 24);
+
+            assert_eq!(position, Some((1, 0)), "motion={motion:?}");
+        }
+    }
+
+    #[test]
+    fn downward_motions_reach_real_final_blank_line() {
+        let buffer = buffer_with("alpha\nbeta\n\n");
+
+        for motion in [
+            Motion::Down,
+            Motion::DisplayLineDown,
+            Motion::NextLineFirstNonBlank,
+            Motion::HalfPageDown,
+            Motion::PageDown,
+        ] {
+            let position = apply_motion(&buffer, motion, 1, 0, 1, 24);
+
+            assert_eq!(position, Some((2, 0)), "motion={motion:?}");
+        }
     }
 }

@@ -2,6 +2,38 @@ use super::render_editor_to_string;
 use crate::editor::Editor;
 use crate::input::Motion;
 
+fn rendered_tilde_count(content: &str, wrap: bool) -> usize {
+    let mut editor = Editor::default();
+    editor.set_size(80, 12);
+    editor.settings.editor.wrap = wrap;
+    editor.settings.editor.wrap_width = 80;
+    editor.replace_buffer_content(content);
+
+    render_editor_to_string(&editor).matches('~').count()
+}
+
+#[test]
+fn full_render_treats_trailing_empty_rope_line_as_end_of_buffer() {
+    for wrap in [false, true] {
+        assert_eq!(
+            rendered_tilde_count("alpha\nbeta\n", wrap),
+            8,
+            "wrap={wrap}"
+        );
+    }
+}
+
+#[test]
+fn full_render_keeps_real_final_blank_line_visible() {
+    for wrap in [false, true] {
+        assert_eq!(
+            rendered_tilde_count("alpha\nbeta\n\n", wrap),
+            7,
+            "wrap={wrap}"
+        );
+    }
+}
+
 #[test]
 fn full_render_after_wrapped_file_end_shows_context_above_last_line() {
     let mut editor = Editor::default();

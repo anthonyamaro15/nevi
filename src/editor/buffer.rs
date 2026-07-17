@@ -203,6 +203,20 @@ impl Buffer {
         self.text.len_lines()
     }
 
+    /// Get the number of user-addressable lines.
+    ///
+    /// Ropey represents a trailing newline with an additional empty line slice.
+    /// That slice is a storage boundary, not a line the cursor can enter or the
+    /// terminal should render. An empty buffer still has one addressable line.
+    pub fn addressable_line_count(&self) -> usize {
+        let line_count = self.text.len_lines();
+        if line_count > 1 && self.text.line(line_count - 1).len_chars() == 0 {
+            line_count - 1
+        } else {
+            line_count
+        }
+    }
+
     /// Get a specific line (0-indexed)
     pub fn line(&self, idx: usize) -> Option<ropey::RopeSlice<'_>> {
         if idx < self.text.len_lines() {
@@ -570,7 +584,7 @@ fn sync_parent_dir(_parent: &Path) {}
 
 #[cfg(test)]
 mod tests {
-    use super::write_file_atomically;
+    use super::{Buffer, write_file_atomically};
     use std::io;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -581,6 +595,28 @@ mod tests {
             .expect("system time")
             .as_nanos();
         std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos))
+    }
+
+    #[test]
+    fn addressable_line_count_ignores_only_the_trailing_rope_sentinel() {
+        let cases = [
+            ("", 1),
+            ("alpha", 1),
+            ("alpha\n", 1),
+            ("alpha\nbeta\n", 2),
+            ("alpha\nbeta\n\n", 3),
+        ];
+
+        for (content, expected) in cases {
+            let mut buffer = Buffer::new();
+            buffer.insert_str(0, 0, content);
+
+            assert_eq!(
+                buffer.addressable_line_count(),
+                expected,
+                "content={content:?}"
+            );
+        }
     }
 
     #[test]

@@ -2842,7 +2842,7 @@ impl Editor {
         self.reset_current_undo_stack();
 
         // Try to restore cursor position (clamp to valid range)
-        let max_line = self.buffer().len_lines().saturating_sub(1);
+        let max_line = self.buffer().addressable_line_count().saturating_sub(1);
         self.cursor.line = cursor_line.min(max_line);
         let max_col = self.buffer().line_len(self.cursor.line);
         self.cursor.col = cursor_col.min(max_col);
@@ -2867,7 +2867,7 @@ impl Editor {
 
         self.buffer_mut().set_content(content);
 
-        let max_line = self.buffer().len_lines().saturating_sub(1);
+        let max_line = self.buffer().addressable_line_count().saturating_sub(1);
         self.cursor.line = cursor_line.min(max_line);
         let max_col = self.buffer().line_len(self.cursor.line);
         self.cursor.col = cursor_col.min(max_col);
@@ -3700,7 +3700,7 @@ impl Editor {
     pub fn clamp_cursor(&mut self) {
         // Clamp line
         let max_line = self.buffers[self.current_buffer_idx]
-            .len_lines()
+            .addressable_line_count()
             .saturating_sub(1);
         if self.cursor.line > max_line {
             self.cursor.line = max_line;
@@ -3729,7 +3729,7 @@ impl Editor {
         self.begin_insert_session();
         self.cursor.line = line.min(
             self.buffers[self.current_buffer_idx]
-                .len_lines()
+                .addressable_line_count()
                 .saturating_sub(1),
         );
         self.cursor.col = col.min(self.buffers[self.current_buffer_idx].line_len(self.cursor.line));
@@ -4003,7 +4003,12 @@ impl Editor {
             self.term_width as usize
         };
         const SIGN_COLUMN_WIDTH: usize = 2;
-        let line_num_width = self.buffer().len_lines().to_string().len().max(3);
+        let line_num_width = self
+            .buffer()
+            .addressable_line_count()
+            .to_string()
+            .len()
+            .max(3);
         if self.settings.editor.line_numbers {
             pane_width.saturating_sub(SIGN_COLUMN_WIDTH + line_num_width + 1)
         } else {
@@ -4602,7 +4607,7 @@ impl Editor {
                 if cursor_after {
                     self.cursor.line = (first_inserted_line + inserted_line_count).min(
                         self.buffers[self.current_buffer_idx]
-                            .len_lines()
+                            .addressable_line_count()
                             .saturating_sub(1),
                     );
                     self.cursor.col = 0;
@@ -4736,7 +4741,7 @@ impl Editor {
                 if cursor_after {
                     self.cursor.line = (insert_line + inserted_line_count).min(
                         self.buffers[self.current_buffer_idx]
-                            .len_lines()
+                            .addressable_line_count()
                             .saturating_sub(1),
                     );
                 } else {

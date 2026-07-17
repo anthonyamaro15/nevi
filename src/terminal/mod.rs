@@ -1169,7 +1169,12 @@ impl Terminal {
             }
 
             // Render status line
-            let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+            let line_num_width = editor
+                .buffer()
+                .addressable_line_count()
+                .to_string()
+                .len()
+                .max(3);
             self.render_status_line(editor, line_num_width)?;
 
             // Render command/message line
@@ -1314,7 +1319,12 @@ impl Terminal {
 
         match kind {
             PartialRenderKind::StatusLine => {
-                let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+                let line_num_width = editor
+                    .buffer()
+                    .addressable_line_count()
+                    .to_string()
+                    .len()
+                    .max(3);
                 self.render_status_line(editor, line_num_width)?;
             }
             PartialRenderKind::EditorRows(rows) => {
@@ -1322,7 +1332,12 @@ impl Terminal {
             }
             PartialRenderKind::EditorRowsAndStatusLine(rows) => {
                 self.render_editor_rows_partial(editor, &rows)?;
-                let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+                let line_num_width = editor
+                    .buffer()
+                    .addressable_line_count()
+                    .to_string()
+                    .len()
+                    .max(3);
                 self.render_status_line(editor, line_num_width)?;
             }
         }
@@ -1347,7 +1362,8 @@ impl Terminal {
             return Ok(());
         };
         let buffer_path = buffer.path.clone();
-        let line_num_width = buffer.len_lines().to_string().len().max(3);
+        let line_count = buffer.addressable_line_count();
+        let line_num_width = line_count.to_string().len().max(3);
 
         let show_line_numbers = editor.settings.editor.line_numbers;
         let show_relative = editor.settings.editor.relative_numbers;
@@ -1528,7 +1544,8 @@ impl Terminal {
         let rect = &pane.rect;
 
         // Calculate line number width for this buffer
-        let line_num_width = buffer.len_lines().to_string().len().max(3);
+        let line_count = buffer.addressable_line_count();
+        let line_num_width = line_count.to_string().len().max(3);
 
         // Get visual selection range if in visual mode and this is active pane
         let visual_range = if is_active && editor.mode.is_visual() {
@@ -1630,6 +1647,7 @@ impl Terminal {
         let editor_bg = theme.ui.background;
         let editor_fg = theme.ui.foreground;
         let tab_width = editor.get_effective_tab_width();
+        let line_count = buffer.addressable_line_count();
         let line_context_factory = RenderLineContextFactory::new(editor, visual_range, tab_width);
 
         // Pre-compute URI for diagnostic lookups (avoids repeated string allocations)
@@ -1642,7 +1660,7 @@ impl Terminal {
         let mut current_row = 0;
         let mut file_line = pane.viewport_offset;
 
-        while current_row < pane_height && file_line < buffer.len_lines() {
+        while current_row < pane_height && file_line < line_count {
             let is_cursor_line = is_active && file_line == pane.cursor.line;
 
             // Get line content
@@ -1983,6 +2001,7 @@ impl Terminal {
         let editor_bg = theme.ui.background;
         let editor_fg = theme.ui.foreground;
         let tab_width = editor.get_effective_tab_width();
+        let line_count = buffer.addressable_line_count();
         let line_context_factory = RenderLineContextFactory::new(editor, visual_range, tab_width);
 
         // Pre-compute URI for diagnostic lookups (avoids repeated string allocations)
@@ -2002,12 +2021,11 @@ impl Terminal {
             execute!(self.stdout, cursor::MoveTo(rect.x, screen_y))?;
 
             // Set background color for this row (cursor line or normal)
-            let row_bg =
-                if highlight_cursor_line && is_cursor_line && file_line < buffer.len_lines() {
-                    cursor_line_bg
-                } else {
-                    editor_bg
-                };
+            let row_bg = if highlight_cursor_line && is_cursor_line && file_line < line_count {
+                cursor_line_bg
+            } else {
+                editor_bg
+            };
             execute!(
                 self.stdout,
                 SetAttribute(Attribute::Reset),
@@ -2015,7 +2033,7 @@ impl Terminal {
                 SetForegroundColor(editor_fg)
             )?;
 
-            if file_line < buffer.len_lines() {
+            if file_line < line_count {
                 // Check for diagnostics on this line (only for active pane)
                 let line_diagnostics = match &cached_uri {
                     Some(uri) => editor.diagnostics_for_line_cached(file_line, uri),
@@ -2775,7 +2793,12 @@ impl Terminal {
     /// Position the cursor based on editor mode
     fn position_cursor(&mut self, editor: &Editor) -> anyhow::Result<()> {
         let show_line_numbers = editor.settings.editor.line_numbers;
-        let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+        let line_num_width = editor
+            .buffer()
+            .addressable_line_count()
+            .to_string()
+            .len()
+            .max(3);
 
         match editor.mode {
             Mode::Command => {
@@ -3412,7 +3435,12 @@ impl Terminal {
         let pane_x = active_pane.rect.x;
         let pane_y = active_pane.rect.y;
 
-        let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+        let line_num_width = editor
+            .buffer()
+            .addressable_line_count()
+            .to_string()
+            .len()
+            .max(3);
         let cursor_in_pane_col = (line_num_width + 1 + completion.trigger_col) as u16;
         let cursor_in_pane_row = (editor
             .cursor
@@ -3920,7 +3948,12 @@ impl Terminal {
         let pane_x = active_pane.rect.x;
         let pane_y = active_pane.rect.y;
 
-        let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+        let line_num_width = editor
+            .buffer()
+            .addressable_line_count()
+            .to_string()
+            .len()
+            .max(3);
         let cursor_in_pane_col = (line_num_width + 1 + editor.cursor.col) as u16;
         let cursor_in_pane_row = (editor.cursor.line - editor.viewport_offset) as u16;
 
@@ -4190,7 +4223,12 @@ impl Terminal {
         let signature = &help.signatures[active_idx];
 
         // Calculate popup position (above cursor)
-        let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+        let line_num_width = editor
+            .buffer()
+            .addressable_line_count()
+            .to_string()
+            .len()
+            .max(3);
         let cursor_screen_col = (line_num_width + 1 + editor.cursor.col) as u16;
         let cursor_screen_row = (editor.cursor.line - editor.viewport_offset) as u16;
 
@@ -4321,7 +4359,12 @@ impl Terminal {
 
     fn diagnostic_float_text_area_x(editor: &Editor) -> u16 {
         let active_pane = &editor.panes()[editor.active_pane_idx()];
-        let line_num_width = editor.buffer().len_lines().to_string().len().max(3) as u16;
+        let line_num_width = editor
+            .buffer()
+            .addressable_line_count()
+            .to_string()
+            .len()
+            .max(3) as u16;
         active_pane.rect.x.saturating_add(2 + line_num_width + 1)
     }
 
@@ -4921,7 +4964,12 @@ impl Terminal {
         let popup_height = (picker.items.len() as u16 + 2).min(max_height);
 
         // Position near cursor
-        let line_num_width = editor.buffer().len_lines().to_string().len().max(3);
+        let line_num_width = editor
+            .buffer()
+            .addressable_line_count()
+            .to_string()
+            .len()
+            .max(3);
         let cursor_screen_col = (2 + line_num_width + 1 + editor.cursor.col) as u16;
         let cursor_screen_row = (editor.cursor.line - editor.viewport_offset) as u16;
 
@@ -8226,7 +8274,7 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
             }
         }
         (_, KeyCode::Down) => {
-            if editor.cursor.line < editor.buffer().len_lines() - 1 {
+            if editor.cursor.line + 1 < editor.buffer().addressable_line_count() {
                 editor.cursor.line += 1;
                 editor.clamp_cursor();
                 editor.scroll_to_cursor();
@@ -8340,7 +8388,7 @@ fn handle_replace_mode(editor: &mut Editor, key: KeyEvent) {
             }
         }
         (_, KeyCode::Down) => {
-            if editor.cursor.line < editor.buffer().len_lines() - 1 {
+            if editor.cursor.line + 1 < editor.buffer().addressable_line_count() {
                 editor.cursor.line += 1;
                 editor.clamp_cursor();
                 editor.scroll_to_cursor();

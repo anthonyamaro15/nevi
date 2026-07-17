@@ -124,6 +124,11 @@ pub(super) const EDITING_CASES: &[OracleCase] = &[
         keys: "yypp",
     },
     OracleCase {
+        name: "linewise paste does not expose trailing newline as a line",
+        initial_text: "",
+        keys: "iabc<Esc>yypj",
+    },
+    OracleCase {
         name: "yank to line end",
         initial_text: "alpha\nbeta\n",
         keys: "YP",
