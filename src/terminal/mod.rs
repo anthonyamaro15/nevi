@@ -3852,6 +3852,7 @@ impl Terminal {
             Some(c) => c,
             None => return Ok(()),
         };
+        let theme = editor.theme();
 
         // Parse content into sections
         let sections = Self::parse_hover_content(content);
@@ -3914,47 +3915,14 @@ impl Terminal {
             .saturating_sub(2)
             .min(editor.term_width.saturating_sub(popup_width + 1));
 
-        // Colors (Neovim-inspired)
-        let border_color = Color::Rgb {
-            r: 90,
-            g: 90,
-            b: 120,
-        };
-        let bg_color = Color::Rgb {
-            r: 25,
-            g: 25,
-            b: 35,
-        };
-        let code_bg = Color::Rgb {
-            r: 35,
-            g: 35,
-            b: 50,
-        };
-        let text_color = Color::Rgb {
-            r: 200,
-            g: 200,
-            b: 210,
-        };
-        let code_color = Color::Rgb {
-            r: 150,
-            g: 200,
-            b: 255,
-        }; // Blue for signatures
-        let keyword_color = Color::Rgb {
-            r: 255,
-            g: 150,
-            b: 150,
-        }; // Red/pink for keywords
-        let type_color = Color::Rgb {
-            r: 180,
-            g: 220,
-            b: 180,
-        }; // Green for types
-        let separator_color = Color::Rgb {
-            r: 70,
-            g: 70,
-            b: 90,
-        };
+        let border_color = theme.ui.popup_border;
+        let bg_color = theme.ui.popup_bg;
+        let code_bg = theme.ui.popup_bg;
+        let text_color = theme.ui.foreground;
+        let code_color = theme.syntax.function.fg;
+        let keyword_color = theme.syntax.keyword.fg;
+        let type_color = theme.syntax.type_.fg;
+        let separator_color = theme.ui.popup_border;
 
         // Draw top border (rounded corners)
         execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
@@ -10821,6 +10789,16 @@ mod tests {
         output.into_string()
     }
 
+    fn render_hover_to_string(editor: &Editor) -> String {
+        crossterm::style::force_color_output(true);
+        let output = SharedOutput::default();
+        let mut terminal = Terminal::new_for_test(Box::new(output.clone()));
+        terminal
+            .render_hover(editor)
+            .expect("hover render should succeed");
+        output.into_string()
+    }
+
     fn measure_render(editor: &Editor) -> Duration {
         crossterm::style::force_color_output(true);
         let output = SharedOutput::default();
@@ -10969,6 +10947,87 @@ mod tests {
         let dark_render = render_completion_to_string(&editor);
         assert!(dark_render.contains(&background_sequence(dark_theme.ui.completion_bg)));
         assert_ne!(light_theme.ui.completion_bg, dark_theme.ui.completion_bg);
+        assert_ne!(light_render, dark_render);
+    }
+
+    #[test]
+    fn hover_render_uses_active_theme_colors() {
+        let mut editor = Editor::default();
+        editor.set_size(120, 30);
+        editor.replace_buffer_content("demo\n");
+        editor.hover_content = Some(
+            "```rust\npub fn demo(value: ExampleType)\n```\nReturns an example value.".to_string(),
+        );
+        assert!(editor.set_theme("github-light"));
+
+        let light_theme = editor.theme().clone();
+        let light_render = render_hover_to_string(&editor);
+        for sequence in [
+            background_sequence(light_theme.ui.popup_bg),
+            foreground_sequence(light_theme.ui.popup_border),
+            foreground_sequence(light_theme.ui.foreground),
+            foreground_sequence(light_theme.syntax.function.fg),
+            foreground_sequence(light_theme.syntax.keyword.fg),
+            foreground_sequence(light_theme.syntax.type_.fg),
+        ] {
+            assert!(
+                light_render.contains(&sequence),
+                "hover render is missing theme sequence {sequence:?}"
+            );
+        }
+        for old_sequence in [
+            foreground_sequence(Color::Rgb {
+                r: 90,
+                g: 90,
+                b: 120,
+            }),
+            background_sequence(Color::Rgb {
+                r: 25,
+                g: 25,
+                b: 35,
+            }),
+            background_sequence(Color::Rgb {
+                r: 35,
+                g: 35,
+                b: 50,
+            }),
+            foreground_sequence(Color::Rgb {
+                r: 200,
+                g: 200,
+                b: 210,
+            }),
+            foreground_sequence(Color::Rgb {
+                r: 150,
+                g: 200,
+                b: 255,
+            }),
+            foreground_sequence(Color::Rgb {
+                r: 255,
+                g: 150,
+                b: 150,
+            }),
+            foreground_sequence(Color::Rgb {
+                r: 180,
+                g: 220,
+                b: 180,
+            }),
+            foreground_sequence(Color::Rgb {
+                r: 70,
+                g: 70,
+                b: 90,
+            }),
+        ] {
+            assert!(
+                !light_render.contains(&old_sequence),
+                "hover render leaked old palette sequence {old_sequence:?}"
+            );
+        }
+
+        assert!(editor.set_theme("onedark"));
+        let dark_theme = editor.theme().clone();
+        let dark_render = render_hover_to_string(&editor);
+        assert!(dark_render.contains(&background_sequence(dark_theme.ui.popup_bg)));
+        assert_ne!(light_theme.ui.popup_bg, dark_theme.ui.popup_bg);
         assert_ne!(light_render, dark_render);
     }
 
