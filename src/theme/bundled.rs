@@ -19,6 +19,7 @@ const KANAGAWA_TOML: &str = include_str!("../../themes/kanagawa.toml");
 const MONOKAI_TOML: &str = include_str!("../../themes/monokai.toml");
 const EVERFOREST_TOML: &str = include_str!("../../themes/everforest.toml");
 const GITHUB_DARK_TOML: &str = include_str!("../../themes/github-dark.toml");
+const GITHUB_LIGHT_TOML: &str = include_str!("../../themes/github-light.toml");
 const AYU_DARK_TOML: &str = include_str!("../../themes/ayu-dark.toml");
 const PALENIGHT_TOML: &str = include_str!("../../themes/palenight.toml");
 const NIGHTFOX_TOML: &str = include_str!("../../themes/nightfox.toml");
@@ -82,6 +83,10 @@ pub fn get_bundled_themes() -> Vec<Theme> {
         themes.push(theme);
     }
 
+    if let Some(theme) = load_theme_from_toml("github-light", GITHUB_LIGHT_TOML) {
+        themes.push(theme);
+    }
+
     if let Some(theme) = load_theme_from_toml("ayu-dark", AYU_DARK_TOML) {
         themes.push(theme);
     }
@@ -113,8 +118,67 @@ pub fn bundled_theme_names() -> Vec<&'static str> {
         "monokai",
         "everforest",
         "github-dark",
+        "github-light",
         "ayu-dark",
         "palenight",
         "nightfox",
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bundled_theme_names, get_bundled_themes};
+    use crossterm::style::Color;
+
+    #[test]
+    fn github_light_is_a_complete_bundled_theme() {
+        assert!(bundled_theme_names().contains(&"github-light"));
+
+        let themes = get_bundled_themes();
+        let theme = themes
+            .iter()
+            .find(|theme| theme.name == "github-light")
+            .expect("github-light should load");
+
+        assert_eq!(
+            theme.ui.background,
+            Color::Rgb {
+                r: 255,
+                g: 255,
+                b: 255
+            }
+        );
+        assert_eq!(
+            theme.ui.foreground,
+            Color::Rgb {
+                r: 31,
+                g: 35,
+                b: 40
+            }
+        );
+        assert_eq!(
+            theme.ui.popup_bg,
+            Color::Rgb {
+                r: 246,
+                g: 248,
+                b: 250
+            }
+        );
+        assert_eq!(
+            theme.ui.completion_bg,
+            Color::Rgb {
+                r: 246,
+                g: 248,
+                b: 250
+            }
+        );
+        assert_eq!(
+            theme.syntax.keyword.fg,
+            Color::Rgb {
+                r: 207,
+                g: 34,
+                b: 46
+            }
+        );
+    }
 }

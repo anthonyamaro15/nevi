@@ -301,7 +301,7 @@ Nevi comes with 15+ built-in themes. You can also create your own custom themes.
 
 Select a theme with `:theme <name>` or `<Space>ft` to open the theme picker.
 
-Available themes: `onedark`, `dracula`, `gruvbox`, `nord`, `tokyonight`, `catppuccin-mocha`, `rose-pine`, `solarized-dark`, `kanagawa`, `monokai`, `everforest`, `github-dark`, `ayu-dark`, `palenight`, `nightfox`
+Available themes: `onedark`, `dracula`, `gruvbox`, `nord`, `tokyonight`, `catppuccin-mocha`, `rose-pine`, `solarized-dark`, `kanagawa`, `monokai`, `everforest`, `github-dark`, `github-light`, `ayu-dark`, `palenight`, `nightfox`
 
 ### Creating Custom Themes
 

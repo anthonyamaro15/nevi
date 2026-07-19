@@ -534,38 +534,6 @@ impl CompletionKind {
             CompletionKind::TypeParameter => "t",
         }
     }
-
-    /// Get the color for this kind (RGB values)
-    pub fn color(&self) -> (u8, u8, u8) {
-        match self {
-            // Functions/Methods - Blue
-            CompletionKind::Method | CompletionKind::Function => (97, 175, 239),
-            // Types/Classes - Yellow/Orange
-            CompletionKind::Class | CompletionKind::Interface | CompletionKind::Struct => {
-                (229, 192, 123)
-            }
-            // Variables/Fields - Cyan
-            CompletionKind::Variable | CompletionKind::Field | CompletionKind::Property => {
-                (86, 182, 194)
-            }
-            // Constants/Values - Purple
-            CompletionKind::Constant | CompletionKind::Value | CompletionKind::EnumMember => {
-                (198, 120, 221)
-            }
-            // Enums - Green
-            CompletionKind::Enum => (152, 195, 121),
-            // Keywords - Red/Pink
-            CompletionKind::Keyword => (224, 108, 117),
-            // Snippets - Gray
-            CompletionKind::Snippet => (150, 150, 160),
-            // Modules - Teal
-            CompletionKind::Module => (78, 201, 176),
-            // Constructors - Orange
-            CompletionKind::Constructor => (209, 154, 102),
-            // Default - Light blue
-            _ => (130, 180, 250),
-        }
-    }
 }
 
 /// A location in a document
