@@ -480,6 +480,16 @@ fn terminal_cursor_style(
     }
 }
 
+fn should_show_floating_terminal_cursor(
+    has_selection: bool,
+    is_searching: bool,
+    shape: crate::floating_terminal::TerminalCursorShape,
+) -> bool {
+    !has_selection
+        && !is_searching
+        && shape != crate::floating_terminal::TerminalCursorShape::Hidden
+}
+
 fn diagnostic_severity_priority(severity: DiagnosticSeverity) -> u8 {
     match severity {
         DiagnosticSeverity::Error => 0,
@@ -5310,10 +5320,16 @@ impl Terminal {
         let title_color = theme.ui.finder_prompt;
         let hint_color = theme.ui.line_number;
 
+        // Assemble the logical popup frame before exposing it to the host terminal.
+        // Crossterm's execute! macro flushes after every command, which otherwise
+        // lets terminal emulators present intermediate cursor-positioned states.
+        let mut frame = Vec::new();
+        queue!(&mut frame, cursor::Hide)?;
+
         // Draw top border with title
-        execute!(self.stdout, cursor::MoveTo(term_x, term_y))?;
-        execute!(
-            self.stdout,
+        queue!(&mut frame, cursor::MoveTo(term_x, term_y))?;
+        queue!(
+            &mut frame,
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
@@ -5333,26 +5349,26 @@ impl Terminal {
         }
         let title_width = title.chars().count();
 
-        terminal_print!(self, "╭");
+        write!(&mut frame, "╭")?;
         for i in 1..(term_width - 1) {
             let i = i as usize;
             if i == title_start {
-                execute!(self.stdout, SetForegroundColor(title_color))?;
-                terminal_print!(self, "{}", title);
-                execute!(self.stdout, SetForegroundColor(border_color))?;
+                queue!(&mut frame, SetForegroundColor(title_color))?;
+                write!(&mut frame, "{}", title)?;
+                queue!(&mut frame, SetForegroundColor(border_color))?;
             } else if i > title_start && i < title_start + title_width {
                 // Skip - title already printed
             } else if i == close_start {
-                execute!(self.stdout, SetForegroundColor(hint_color))?;
-                terminal_print!(self, "{}", close_hint);
-                execute!(self.stdout, SetForegroundColor(border_color))?;
+                queue!(&mut frame, SetForegroundColor(hint_color))?;
+                write!(&mut frame, "{}", close_hint)?;
+                queue!(&mut frame, SetForegroundColor(border_color))?;
             } else if i > close_start && i < close_start + close_hint.len() {
                 // Skip - close hint already printed
             } else {
-                terminal_print!(self, "─");
+                write!(&mut frame, "─")?;
             }
         }
-        terminal_print!(self, "╮");
+        write!(&mut frame, "╮")?;
 
         // Get terminal content
         let content_height = (term_height - 2) as usize;
@@ -5364,13 +5380,13 @@ impl Terminal {
 
         // Draw terminal content
         for (row, line) in cells.iter().enumerate() {
-            execute!(self.stdout, cursor::MoveTo(term_x, term_y + 1 + row as u16))?;
-            execute!(
-                self.stdout,
+            queue!(&mut frame, cursor::MoveTo(term_x, term_y + 1 + row as u16))?;
+            queue!(
+                &mut frame,
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            terminal_print!(self, "│");
+            write!(&mut frame, "│")?;
 
             let mut active_style = None;
             for cell in line {
@@ -5387,109 +5403,114 @@ impl Terminal {
                     style.bg = theme.ui.selection;
                 }
                 if active_style != Some(style) {
-                    self.apply_terminal_cell_style(style)?;
+                    Self::apply_terminal_cell_style(&mut frame, style)?;
                     active_style = Some(style);
                 }
-                terminal_print!(self, "{}", if cell.hidden { ' ' } else { cell.ch });
+                if !cell.wide_char_spacer {
+                    write!(&mut frame, "{}", if cell.hidden { ' ' } else { cell.ch })?;
+                }
             }
 
-            execute!(
-                self.stdout,
+            queue!(
+                &mut frame,
                 SetAttribute(Attribute::Reset),
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            terminal_print!(self, "│");
+            write!(&mut frame, "│")?;
         }
 
         // Fill remaining rows if content is shorter
         for row in cells.len()..content_height {
-            execute!(self.stdout, cursor::MoveTo(term_x, term_y + 1 + row as u16))?;
-            execute!(
-                self.stdout,
+            queue!(&mut frame, cursor::MoveTo(term_x, term_y + 1 + row as u16))?;
+            queue!(
+                &mut frame,
                 SetForegroundColor(border_color),
                 SetBackgroundColor(bg_color)
             )?;
-            terminal_print!(self, "│");
-            execute!(self.stdout, SetForegroundColor(text_color))?;
-            terminal_print!(self, "{:<width$}", "", width = content_width);
-            execute!(self.stdout, SetForegroundColor(border_color))?;
-            terminal_print!(self, "│");
+            write!(&mut frame, "│")?;
+            queue!(&mut frame, SetForegroundColor(text_color))?;
+            write!(&mut frame, "{:<width$}", "", width = content_width)?;
+            queue!(&mut frame, SetForegroundColor(border_color))?;
+            write!(&mut frame, "│")?;
         }
 
         // Draw bottom border
-        execute!(
-            self.stdout,
-            cursor::MoveTo(term_x, term_y + term_height - 1)
-        )?;
-        execute!(
-            self.stdout,
+        queue!(&mut frame, cursor::MoveTo(term_x, term_y + term_height - 1))?;
+        queue!(
+            &mut frame,
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        terminal_print!(self, "╰");
+        write!(&mut frame, "╰")?;
         for _ in 1..(term_width - 1) {
-            terminal_print!(self, "─");
+            write!(&mut frame, "─")?;
         }
-        terminal_print!(self, "╯");
+        write!(&mut frame, "╯")?;
 
-        execute!(self.stdout, ResetColor)?;
+        queue!(&mut frame, ResetColor)?;
 
         // Position cursor inside the terminal
-        if editor.floating_terminal.has_selection()
-            || editor.floating_terminal.is_searching()
-            || cursor_info.shape == crate::floating_terminal::TerminalCursorShape::Hidden
-        {
-            execute!(self.stdout, cursor::Hide)?;
+        let show_cursor = should_show_floating_terminal_cursor(
+            editor.floating_terminal.has_selection(),
+            editor.floating_terminal.is_searching(),
+            cursor_info.shape,
+        );
+        if !show_cursor {
+            queue!(&mut frame, cursor::Hide)?;
         } else {
             let cursor_x = term_x + 1 + cursor_info.col.min(content_width.saturating_sub(1)) as u16;
             let cursor_y =
                 term_y + 1 + cursor_info.row.min(content_height.saturating_sub(1)) as u16;
-            execute!(
-                self.stdout,
+            queue!(
+                &mut frame,
                 cursor::MoveTo(cursor_x, cursor_y),
                 terminal_cursor_style(cursor_info),
                 cursor::Show
             )?;
         }
 
+        self.stdout.write_all(&frame)?;
         Ok(())
     }
 
-    fn apply_terminal_cell_style(&mut self, style: TerminalRenderStyle) -> anyhow::Result<()> {
-        execute!(
-            self.stdout,
+    fn apply_terminal_cell_style(
+        writer: &mut impl Write,
+        style: TerminalRenderStyle,
+    ) -> anyhow::Result<()> {
+        queue!(
+            writer,
             SetAttribute(Attribute::Reset),
             SetForegroundColor(style.fg),
             SetBackgroundColor(style.bg)
         )?;
 
         if style.bold {
-            execute!(self.stdout, SetAttribute(Attribute::Bold))?;
+            queue!(writer, SetAttribute(Attribute::Bold))?;
         }
         if style.dim {
-            execute!(self.stdout, SetAttribute(Attribute::Dim))?;
+            queue!(writer, SetAttribute(Attribute::Dim))?;
         }
         if style.italic {
-            execute!(self.stdout, SetAttribute(Attribute::Italic))?;
+            queue!(writer, SetAttribute(Attribute::Italic))?;
         }
         if style.underline {
-            execute!(self.stdout, SetAttribute(Attribute::Underlined))?;
+            queue!(writer, SetAttribute(Attribute::Underlined))?;
         }
         if style.double_underline {
-            execute!(self.stdout, SetAttribute(Attribute::DoubleUnderlined))?;
+            queue!(writer, SetAttribute(Attribute::DoubleUnderlined))?;
         }
         if style.undercurl {
-            execute!(self.stdout, SetAttribute(Attribute::Undercurled))?;
+            queue!(writer, SetAttribute(Attribute::Undercurled))?;
         }
         if style.underdotted {
-            execute!(self.stdout, SetAttribute(Attribute::Underdotted))?;
+            queue!(writer, SetAttribute(Attribute::Underdotted))?;
         }
         if style.underdashed {
-            execute!(self.stdout, SetAttribute(Attribute::Underdashed))?;
+            queue!(writer, SetAttribute(Attribute::Underdashed))?;
         }
         if style.strikeout {
-            execute!(self.stdout, SetAttribute(Attribute::CrossedOut))?;
+            queue!(writer, SetAttribute(Attribute::CrossedOut))?;
         }
 
         Ok(())
@@ -10728,15 +10749,22 @@ mod tests {
         apply_labeled_jump_style, diagnostic_at_col, diagnostic_underline_color, execute_command,
         execute_leader_action, finder_preview_match_ranges, handle_insert_mode, handle_key,
         render_line_text_with_context, replace_completion_text, restore_after_labeled_jump,
+        should_show_floating_terminal_cursor,
     };
     use crate::commands::{Command, CommandPopupMode};
     use crate::config::{KeymapEntry, Settings};
     use crate::editor::{Editor, Mode, RegisterContent};
     use crate::explorer::{ExplorerAction, FlatNode};
     use crate::finder::FinderMode;
+    use crate::floating_terminal::TerminalCursorShape;
     use crate::input::Motion;
     use crate::lsp::types::{CompletionItem, CompletionKind, Diagnostic, DiagnosticSeverity};
     use crate::syntax::{HighlightSpan, SyntaxStyle};
+    use alacritty_terminal::event::VoidListener;
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line};
+    use alacritty_terminal::term::{Config as AlacrittyConfig, Term as AlacrittyTerm};
+    use alacritty_terminal::vte::ansi::Processor as VteProcessor;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use crossterm::style::{Color, SetBackgroundColor, SetForegroundColor};
     use std::cell::RefCell;
@@ -10746,6 +10774,26 @@ mod tests {
     use std::path::PathBuf;
     use std::rc::Rc;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    #[derive(Clone, Copy)]
+    struct ReplayDimensions {
+        rows: usize,
+        cols: usize,
+    }
+
+    impl Dimensions for ReplayDimensions {
+        fn total_lines(&self) -> usize {
+            self.rows
+        }
+
+        fn screen_lines(&self) -> usize {
+            self.rows
+        }
+
+        fn columns(&self) -> usize {
+            self.cols
+        }
+    }
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
@@ -10795,22 +10843,41 @@ mod tests {
         (1..=count).map(|line| format!("line {}", line)).collect()
     }
 
+    #[derive(Default)]
+    struct SharedOutputState {
+        bytes: Vec<u8>,
+        writes: usize,
+        flushes: usize,
+    }
+
     #[derive(Clone, Default)]
-    struct SharedOutput(Rc<RefCell<Vec<u8>>>);
+    struct SharedOutput(Rc<RefCell<SharedOutputState>>);
 
     impl SharedOutput {
         fn into_string(&self) -> String {
-            String::from_utf8(self.0.borrow().clone()).expect("terminal output should be utf-8")
+            String::from_utf8(self.0.borrow().bytes.clone())
+                .expect("terminal output should be utf-8")
+        }
+
+        fn write_count(&self) -> usize {
+            self.0.borrow().writes
+        }
+
+        fn flush_count(&self) -> usize {
+            self.0.borrow().flushes
         }
     }
 
     impl Write for SharedOutput {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0.borrow_mut().extend_from_slice(buf);
+            let mut state = self.0.borrow_mut();
+            state.writes += 1;
+            state.bytes.extend_from_slice(buf);
             Ok(buf.len())
         }
 
         fn flush(&mut self) -> io::Result<()> {
+            self.0.borrow_mut().flushes += 1;
             Ok(())
         }
     }
@@ -10821,6 +10888,197 @@ mod tests {
         let mut terminal = Terminal::new_for_test(Box::new(output.clone()));
         terminal.render(editor).expect("render should succeed");
         output.into_string()
+    }
+
+    #[test]
+    fn floating_terminal_cursor_visibility_respects_child_and_local_state() {
+        assert!(should_show_floating_terminal_cursor(
+            false,
+            false,
+            TerminalCursorShape::Block,
+        ));
+        assert!(!should_show_floating_terminal_cursor(
+            true,
+            false,
+            TerminalCursorShape::Block,
+        ));
+        assert!(!should_show_floating_terminal_cursor(
+            false,
+            true,
+            TerminalCursorShape::Block,
+        ));
+        assert!(!should_show_floating_terminal_cursor(
+            false,
+            false,
+            TerminalCursorShape::Hidden,
+        ));
+    }
+
+    #[test]
+    fn terminal_only_render_writes_one_complete_frame() {
+        crossterm::style::force_color_output(true);
+        let mut editor = Editor::default();
+        editor.set_size(100, 40);
+        editor
+            .floating_terminal
+            .create_session(Some("single-write-frame".to_string()))
+            .expect("test terminal session");
+
+        let output = SharedOutput::default();
+        let mut terminal = Terminal::new_for_test(Box::new(output.clone()));
+        terminal
+            .render_terminal_only(&editor)
+            .expect("terminal-only render");
+
+        assert_eq!(
+            output.write_count(),
+            1,
+            "one logical popup frame must reach the host in one write"
+        );
+        assert_eq!(
+            output.flush_count(),
+            1,
+            "one logical popup frame must be presented by one final flush"
+        );
+    }
+
+    #[test]
+    fn terminal_only_render_hides_cursor_without_synchronized_updates() {
+        crossterm::style::force_color_output(true);
+        let mut editor = Editor::default();
+        editor.set_size(100, 40);
+        editor
+            .floating_terminal
+            .create_session(Some("atomic-frame".to_string()))
+            .expect("test terminal session");
+
+        let output = SharedOutput::default();
+        let mut terminal = Terminal::new_for_test(Box::new(output.clone()));
+        terminal
+            .render_terminal_only(&editor)
+            .expect("terminal-only render");
+
+        let rendered = output.into_string();
+        assert!(
+            rendered.starts_with("\x1b[?25l"),
+            "frame must hide the host cursor before painting: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("\x1b[?2026h") && !rendered.contains("\x1b[?2026l"),
+            "incremental cursor-positioned redraws must not use DEC 2026: {rendered:?}"
+        );
+        assert!(
+            rendered.ends_with("\x1b[?25h"),
+            "visible child cursor should be restored after painting: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn terminal_only_frame_replaces_every_underlying_popup_cell() {
+        crossterm::style::force_color_output(true);
+        let mut editor = Editor::default();
+        editor.set_size(100, 40);
+        editor
+            .floating_terminal
+            .create_session(Some("coverage-frame".to_string()))
+            .expect("test terminal session");
+
+        let output = SharedOutput::default();
+        let mut terminal = Terminal::new_for_test(Box::new(output.clone()));
+        terminal
+            .render_terminal_only(&editor)
+            .expect("terminal-only render");
+
+        let dimensions = ReplayDimensions {
+            rows: 40,
+            cols: 100,
+        };
+        let mut replay = AlacrittyTerm::new(AlacrittyConfig::default(), &dimensions, VoidListener);
+        let mut processor: VteProcessor = VteProcessor::new();
+        let mut seeded_background = String::new();
+        for row in 1..=dimensions.rows {
+            write!(
+                seeded_background,
+                "\x1b[{row};1H{}",
+                "X".repeat(dimensions.cols)
+            )
+            .expect("seed background");
+        }
+        processor.advance(&mut replay, seeded_background.as_bytes());
+        processor.advance(&mut replay, output.into_string().as_bytes());
+
+        let (popup_width, popup_height) =
+            crate::floating_terminal::popup_size_for_screen(100, 40, 0.9, 0.9);
+        let popup_x = (100 - popup_width) / 2;
+        let popup_y = (40 - popup_height) / 2;
+        let mut stale = Vec::new();
+        for row in popup_y..popup_y + popup_height {
+            for col in popup_x..popup_x + popup_width {
+                if replay.grid()[Line(row as i32)][Column(col as usize)].c == 'X' {
+                    stale.push((row, col));
+                }
+            }
+        }
+
+        assert!(
+            stale.is_empty(),
+            "floating terminal left underlying cells visible at {stale:?}"
+        );
+    }
+
+    #[test]
+    fn floating_terminal_wide_glyph_does_not_overflow_right_border() {
+        crossterm::style::force_color_output(true);
+        let mut editor = Editor::default();
+        editor.set_size(100, 40);
+        editor
+            .floating_terminal
+            .create_session(Some("wide-glyph-frame".to_string()))
+            .expect("test terminal session");
+        editor.floating_terminal.process_bytes("🦀".as_bytes());
+
+        let output = SharedOutput::default();
+        let mut terminal = Terminal::new_for_test(Box::new(output.clone()));
+        terminal
+            .render_terminal_only(&editor)
+            .expect("terminal-only render");
+
+        let dimensions = ReplayDimensions {
+            rows: 40,
+            cols: 100,
+        };
+        let mut replay = AlacrittyTerm::new(AlacrittyConfig::default(), &dimensions, VoidListener);
+        let mut processor: VteProcessor = VteProcessor::new();
+        let mut seeded_background = String::new();
+        for row in 1..=dimensions.rows {
+            write!(
+                seeded_background,
+                "\x1b[{row};1H{}",
+                "X".repeat(dimensions.cols)
+            )
+            .expect("seed background");
+        }
+        processor.advance(&mut replay, seeded_background.as_bytes());
+        processor.advance(&mut replay, output.into_string().as_bytes());
+
+        let (popup_width, popup_height) =
+            crate::floating_terminal::popup_size_for_screen(100, 40, 0.9, 0.9);
+        let popup_x = (100 - popup_width) / 2;
+        let popup_y = (40 - popup_height) / 2;
+        let content_row = Line((popup_y + 1) as i32);
+        let right_border_col = Column((popup_x + popup_width - 1) as usize);
+        let outside_col = Column((popup_x + popup_width) as usize);
+
+        assert_eq!(
+            replay.grid()[content_row][right_border_col].c,
+            '│',
+            "wide glyph must not displace the configured right border"
+        );
+        assert_eq!(
+            replay.grid()[content_row][outside_col].c,
+            'X',
+            "wide glyph must not paint beyond the popup"
+        );
     }
 
     fn render_completion_to_string(editor: &Editor) -> String {

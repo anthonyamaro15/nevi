@@ -446,6 +446,7 @@ pub struct TerminalCell {
     pub inverse: bool,
     pub hidden: bool,
     pub strikeout: bool,
+    pub wide_char_spacer: bool,
     pub selected: bool,
     pub search_match: bool,
     pub active_search_match: bool,
@@ -503,6 +504,7 @@ impl Default for TerminalCell {
             inverse: false,
             hidden: false,
             strikeout: false,
+            wide_char_spacer: false,
             selected: false,
             search_match: false,
             active_search_match: false,
@@ -1447,9 +1449,18 @@ impl TerminalSession {
     fn terminal_cell_from_alacritty(cell: &Cell, colors: &Colors) -> TerminalCell {
         let flags = cell.flags;
         let hidden = flags.contains(Flags::HIDDEN);
+        let wide_char_spacer = flags.contains(Flags::WIDE_CHAR_SPACER);
         let is_spacer = flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER);
+        // Alacritty keeps a tab marker in the first grid cell and fills the
+        // remaining cells through the next tab stop with spaces. Re-emitting
+        // the marker would make the host terminal perform a second tab jump.
+        let is_tab_marker = cell.c == '\t';
         TerminalCell {
-            ch: if hidden || is_spacer { ' ' } else { cell.c },
+            ch: if hidden || is_spacer || is_tab_marker {
+                ' '
+            } else {
+                cell.c
+            },
             fg: Self::resolve_color(cell.fg, colors),
             bg: Self::resolve_color(cell.bg, colors),
             bold: flags.contains(Flags::BOLD),
@@ -1463,6 +1474,7 @@ impl TerminalSession {
             inverse: flags.contains(Flags::INVERSE),
             hidden,
             strikeout: flags.contains(Flags::STRIKEOUT),
+            wide_char_spacer,
             selected: false,
             search_match: false,
             active_search_match: false,
@@ -2216,7 +2228,7 @@ impl FloatingTerminal {
 
     /// Feed bytes directly into the active emulator. Used by unit tests.
     #[cfg(test)]
-    fn process_bytes(&mut self, data: &[u8]) {
+    pub(crate) fn process_bytes(&mut self, data: &[u8]) {
         let idx = self.ensure_active_index();
         self.sessions[idx].process_bytes(data);
     }
@@ -3145,6 +3157,21 @@ mod tests {
         assert!(session.process_output(3));
         assert_eq!(session.get_visible_lines(1, 20)[0], "abcdef");
         assert!(session.output_buffer.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn terminal_render_cells_replace_tab_markers_with_spaces() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.resize(3, 20);
+        terminal.process_bytes(b"left\tmiddle");
+
+        let rendered: String = terminal.get_visible_cells(1, 20)[0]
+            .iter()
+            .map(|cell| cell.ch)
+            .collect();
+
+        assert!(rendered.starts_with("left    middle"));
+        assert!(!rendered.contains('\t'));
     }
 
     #[test]
