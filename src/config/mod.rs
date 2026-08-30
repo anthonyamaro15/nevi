@@ -131,6 +131,11 @@ pub struct EditorSettings {
     /// Use Nerd Font icons in explorer (default: true)
     /// Set to false to use Unicode fallback icons
     pub use_nerd_font_icons: bool,
+    /// Capture the mouse: wheel scrolls the view, clicks move the cursor
+    /// (default: true, matching nvim's `mouse=nvi`). When enabled,
+    /// terminal-native text selection needs the terminal's bypass modifier
+    /// (Option in iTerm2, Shift in most others). See ADR 0001.
+    pub mouse: bool,
 }
 
 impl Default for EditorSettings {
@@ -149,6 +154,7 @@ impl Default for EditorSettings {
             autosave: AutosaveMode::Off,
             autosave_delay_ms: 1000,
             use_nerd_font_icons: true,
+            mouse: true,
         }
     }
 }
@@ -1762,6 +1768,15 @@ fn merge_explorer_mappings(user_mappings: &[ExplorerModeMapping]) -> Vec<Explore
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mouse_defaults_on_and_toml_can_disable() {
+        assert!(EditorSettings::default().mouse);
+        let s: Settings = toml::from_str("[editor]\nmouse = false\n").expect("parse [editor]");
+        assert!(!s.editor.mouse);
+        let s: Settings = toml::from_str("").expect("parse empty");
+        assert!(s.editor.mouse);
+    }
 
     #[test]
     fn ui_style_resolution_combinations() {

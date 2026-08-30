@@ -212,6 +212,8 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
     vim_oracle("<C-b>", "Scroll page up", "page up"),
     vim_oracle("<C-d>", "Scroll half page down", "half page down"),
     vim_oracle("<C-u>", "Scroll half page up", "half page up"),
+    vim_oracle("<C-e>", "Scroll view down one line", "line scroll down"),
+    vim_oracle("<C-y>", "Scroll view up one line", "line scroll up"),
     vim_oracle("zz", "Center cursor line", "center cursor line"),
     vim_oracle("zt", "Move cursor line to top", "cursor line to top"),
     vim_oracle("zb", "Move cursor line to bottom", "cursor line to bottom"),

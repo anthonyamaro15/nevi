@@ -405,6 +405,46 @@ const MOTION_CASES: &[OracleCase] = &[
         keys: "50G7lzz<C-f>",
     },
     OracleCase {
+        name: "line scroll down",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz<C-e>",
+    },
+    OracleCase {
+        name: "line scroll up",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz<C-y>",
+    },
+    OracleCase {
+        name: "counted line scroll down",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz5<C-e>",
+    },
+    OracleCase {
+        name: "counted line scroll up",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz5<C-y>",
+    },
+    OracleCase {
+        name: "line scroll drags cursor from top edge",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz20<C-e>",
+    },
+    OracleCase {
+        name: "line scroll drags cursor from bottom edge",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50Gzz20<C-y>",
+    },
+    OracleCase {
+        name: "line scroll down clamps at file end",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "95Gzz200<C-e>",
+    },
+    OracleCase {
+        name: "line scroll up clamps at file start",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "5Gzz20<C-y>",
+    },
+    OracleCase {
         name: "enter next line first nonblank",
         initial_text: "zero\n    one\n  two\nthree\n",
         keys: "<CR>",

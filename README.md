@@ -4,7 +4,7 @@ A fast, Neovim-inspired terminal editor written in Rust.
 
 *Your vim muscle memory, without the configuration overhead.*
 
-![Nevi demo — fuzzy file finder with preview, vim motions, Harpoon quick-switch, live grep, and live theme switching](nevi-demo.gif)
+![Nevi demo — file explorer with git status and diagnostic badges, LSP hover and goto-definition, vim motions, live grep, and live theme switching](nevi-demo.gif)
 
 > **Tip:** To see every keybinding available in Nevi, run `:Keymaps` (or press `<Space>fk`) — a searchable list with a description for each one.
 > See [CHANGELOG.md](CHANGELOG.md) for release notes and upgrade highlights.
@@ -271,6 +271,10 @@ tab_width = 2
 format_on_save = true
 relative_numbers = true
 scroll_off = 8
+# Wheel scrolls the buffer, clicks move the cursor (like nvim's mouse=nvi).
+# Set to false to leave the mouse to the terminal; at runtime `:set nomouse`
+# and `:set mouse=` toggle it too.
+mouse = true
 
 [theme]
 colorscheme = "onedark"

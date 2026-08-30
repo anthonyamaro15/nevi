@@ -185,6 +185,11 @@ impl Rect {
             height,
         }
     }
+
+    /// Whether the screen cell (x, y) falls inside this region.
+    pub fn contains(&self, x: u16, y: u16) -> bool {
+        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
+    }
 }
 
 /// A pane/window in the editor showing a buffer
@@ -3287,6 +3292,110 @@ impl Editor {
     }
 
     /// Switch to the previous pane
+    /// Focus a pane by index (mouse click), preserving each pane's state.
+    /// Unlike the cycling commands this stays quiet: vim does not announce
+    /// window changes made with the mouse.
+    pub fn focus_pane(&mut self, pane_idx: usize) {
+        if pane_idx < self.panes.len() && pane_idx != self.active_pane {
+            self.save_pane_state();
+            self.active_pane = pane_idx;
+            self.load_pane_state();
+        }
+    }
+
+    /// Left click inside a pane: focus it and move the cursor to the clicked
+    /// cell, like nvim with 'mouse' enabled. A plain click drops visual mode;
+    /// insert mode stays insert. The view never scrolls (mouse positioning
+    /// ignores 'scrolloff'), so only the cursor and pane mirror change.
+    pub fn click_at(&mut self, pane_idx: usize, screen_col: u16, screen_row: u16) {
+        self.focus_pane(pane_idx);
+        if matches!(
+            self.mode,
+            Mode::Visual | Mode::VisualLine | Mode::VisualBlock
+        ) {
+            self.exit_visual_mode();
+        }
+        if let Some((line, col)) = self.position_for_click(pane_idx, screen_col, screen_row) {
+            self.cursor.line = line;
+            self.cursor.col = col;
+            self.desired_col = None;
+            if self.active_pane < self.panes.len() {
+                self.panes[self.active_pane].cursor = self.cursor;
+                self.panes[self.active_pane].desired_col = None;
+            }
+        }
+    }
+
+    /// Map a screen cell inside a pane to a buffer (line, col), mirroring
+    /// what rendering shows: gutter, h_offset (nowrap) or wrapped display
+    /// segments (wrap). Clicks in the gutter map to the row's first column;
+    /// clicks past the end of text clamp like vim's normal-mode cursor.
+    fn position_for_click(
+        &self,
+        pane_idx: usize,
+        screen_col: u16,
+        screen_row: u16,
+    ) -> Option<(usize, usize)> {
+        let pane = self.panes.get(pane_idx)?;
+        if !pane.rect.contains(screen_col, screen_row) {
+            return None;
+        }
+        let buffer = self.buffers.get(pane.buffer_idx)?;
+        let text_width = self.pane_text_area_width(pane_idx);
+        let gutter = (pane.rect.width as usize).saturating_sub(text_width);
+        let cell = ((screen_col - pane.rect.x) as usize).saturating_sub(gutter);
+        let row = (screen_row - pane.rect.y) as usize;
+        let last_line = last_addressable_line(buffer);
+        let tab_width = self.get_effective_tab_width();
+
+        let line_text = |line: usize| {
+            let mut text = buffer.line(line).map(|l| l.to_string()).unwrap_or_default();
+            // Ropey lines keep their newline; the cursor must not land on it.
+            while text.ends_with(['\n', '\r']) {
+                text.pop();
+            }
+            text
+        };
+
+        if self.settings.editor.wrap {
+            let wrap_width = self.settings.editor.wrap_width.min(text_width);
+            let mut line = pane.viewport_offset.min(last_line);
+            let mut rows_left = row;
+            loop {
+                let text = line_text(line);
+                let segments = Self::display_line_segments(&text, wrap_width, tab_width);
+                if rows_left < segments.len() {
+                    let col = Self::display_col_to_buffer_col(
+                        &text,
+                        segments[rows_left],
+                        cell,
+                        tab_width,
+                    );
+                    return Some((line, col));
+                }
+                if line == last_line {
+                    // Clicked below the end of the buffer: last segment.
+                    let segment = *segments.last()?;
+                    let col = Self::display_col_to_buffer_col(&text, segment, cell, tab_width);
+                    return Some((line, col));
+                }
+                rows_left -= segments.len();
+                line += 1;
+            }
+        } else {
+            let line = pane.viewport_offset.saturating_add(row).min(last_line);
+            let text = line_text(line);
+            let len = text.chars().count();
+            let segment = DisplayLineSegment {
+                start_col: pane.h_offset.min(len),
+                end_col: len,
+                indent_width: 0,
+            };
+            let col = Self::display_col_to_buffer_col(&text, segment, cell, tab_width);
+            Some((line, col))
+        }
+    }
+
     pub fn prev_pane(&mut self) {
         if self.panes.len() > 1 {
             self.save_pane_state();
@@ -4248,18 +4357,22 @@ impl Editor {
 
     /// Calculate the text area width (columns available for text) for the active pane
     fn text_area_width(&self) -> usize {
-        let pane_width = if self.active_pane < self.panes.len() {
-            self.panes[self.active_pane].rect.width as usize
+        self.pane_text_area_width(self.active_pane)
+    }
+
+    /// Text area width for an arbitrary pane (its rect minus sign column,
+    /// line numbers, and separator).
+    fn pane_text_area_width(&self, pane_idx: usize) -> usize {
+        let (pane_width, buffer) = if pane_idx < self.panes.len() {
+            (
+                self.panes[pane_idx].rect.width as usize,
+                &self.buffers[self.panes[pane_idx].buffer_idx],
+            )
         } else {
-            self.term_width as usize
+            (self.term_width as usize, self.buffer())
         };
         const SIGN_COLUMN_WIDTH: usize = 2;
-        let line_num_width = self
-            .buffer()
-            .addressable_line_count()
-            .to_string()
-            .len()
-            .max(3);
+        let line_num_width = buffer.addressable_line_count().to_string().len().max(3);
         if self.settings.editor.line_numbers {
             pane_width.saturating_sub(SIGN_COLUMN_WIDTH + line_num_width + 1)
         } else {
@@ -10536,6 +10649,103 @@ impl Editor {
         self.finish_page_scroll();
     }
 
+    /// Scroll one pane's viewport by `delta` lines (mouse wheel, <C-e>/<C-y>).
+    /// Vim semantics: the view moves, the cursor moves only when it would
+    /// leave the visible area, kept `scroll_off` lines from the edge; the
+    /// bottom margin collapses when the last line is visible, and the view
+    /// can scroll until the last line sits at the top. The active pane goes
+    /// through the Editor mirror; inactive panes are mutated directly.
+    pub fn scroll_pane_viewport(&mut self, pane_idx: usize, delta: isize) {
+        if pane_idx >= self.panes.len() {
+            return;
+        }
+        let buffer_idx = self.panes[pane_idx].buffer_idx;
+        let last_line = last_addressable_line(&self.buffers[buffer_idx]);
+        let rows = (self.panes[pane_idx].rect.height as usize).max(1);
+        let scroll_off = self.settings.editor.scroll_off;
+
+        let offset = self.panes[pane_idx]
+            .viewport_offset
+            .saturating_add_signed(delta)
+            .min(last_line);
+        // Vim relaxes the scrolloff margin at the buffer boundaries: with the
+        // view at the top of the file the cursor may sit inside the margin
+        // (mirrored below for the last line at the bottom).
+        let top_margin = if offset == 0 {
+            0
+        } else {
+            scroll_off.min(rows.saturating_sub(1) / 2)
+        };
+        let visible_bottom = offset.saturating_add(rows.saturating_sub(1)).min(last_line);
+        let bottom_margin = if visible_bottom == last_line {
+            0
+        } else {
+            scroll_off.min(rows / 2)
+        };
+        let lo = offset.saturating_add(top_margin).min(visible_bottom);
+        let hi = visible_bottom.saturating_sub(bottom_margin).max(lo);
+
+        if pane_idx == self.active_pane {
+            self.viewport_offset = offset;
+            self.cursor.line = self.cursor.line.clamp(lo, hi);
+            self.finish_page_scroll();
+        } else {
+            let line = self.panes[pane_idx].cursor.line.clamp(lo, hi);
+            let max_col = self.buffers[buffer_idx].line_len(line).saturating_sub(1);
+            let pane = &mut self.panes[pane_idx];
+            pane.viewport_offset = offset;
+            pane.cursor.line = line;
+            pane.cursor.col = pane.cursor.col.min(max_col);
+        }
+    }
+
+    /// Scroll one pane's view horizontally by `delta` columns (horizontal
+    /// wheel). No-op with wrap on. The cursor is dragged along only when it
+    /// would leave the visible columns; the view clamps to the longest
+    /// visible line so it cannot scroll into permanently blank space.
+    pub fn scroll_pane_columns(&mut self, pane_idx: usize, delta: isize) {
+        if pane_idx >= self.panes.len() || self.settings.editor.wrap {
+            return;
+        }
+        let width = self.pane_text_area_width(pane_idx).max(1);
+        let buffer_idx = self.panes[pane_idx].buffer_idx;
+        let rows = (self.panes[pane_idx].rect.height as usize).max(1);
+        let top = self.panes[pane_idx].viewport_offset;
+        let buffer = &self.buffers[buffer_idx];
+        let last_line = last_addressable_line(buffer);
+        // Bounded scan: visible rows only, per the hot-path rules.
+        let longest_visible = (top..=(top + rows - 1).min(last_line))
+            .map(|line| buffer.line_len(line))
+            .max()
+            .unwrap_or(0);
+        let max_offset = longest_visible.saturating_sub(1);
+
+        let offset = self.panes[pane_idx]
+            .h_offset
+            .saturating_add_signed(delta)
+            .min(max_offset);
+        let lo = offset;
+        let hi = offset + width - 1;
+
+        if pane_idx == self.active_pane {
+            let line_cap = self.buffers[buffer_idx]
+                .line_len(self.cursor.line)
+                .saturating_sub(1);
+            self.h_offset = offset;
+            self.cursor.col = self.cursor.col.clamp(lo, hi).min(line_cap);
+            // finish_page_scroll would re-derive h_offset from the cursor,
+            // undoing the scroll; sync the pane mirror directly instead.
+            self.panes[pane_idx].h_offset = self.h_offset;
+            self.panes[pane_idx].cursor = self.cursor;
+        } else {
+            let line = self.panes[pane_idx].cursor.line;
+            let line_cap = self.buffers[buffer_idx].line_len(line).saturating_sub(1);
+            let pane = &mut self.panes[pane_idx];
+            pane.h_offset = offset;
+            pane.cursor.col = pane.cursor.col.clamp(lo, hi).min(line_cap);
+        }
+    }
+
     fn finish_page_scroll(&mut self) {
         self.clamp_cursor();
         if !self.settings.editor.wrap {
@@ -11506,6 +11716,7 @@ mod tests {
     mod open_line;
     mod replace;
     mod screen_position;
+    mod viewport_scroll;
 
     use super::{Editor, JumpList, Mode, SearchDirection, SplitLayout};
     use crate::input::Motion;

@@ -253,6 +253,34 @@ impl FileExplorer {
         }
     }
 
+    /// Scroll offset of the visible window for a list of `list_height` rows,
+    /// keeping the selection roughly centered. Rendering and mouse hit
+    /// testing must share this so a click lands on the row it appears on.
+    pub fn scroll_offset(&self, list_height: usize) -> usize {
+        if self.selected < list_height / 2 {
+            0
+        } else if self.selected >= self.flat_view.len().saturating_sub(list_height / 2) {
+            self.flat_view.len().saturating_sub(list_height)
+        } else {
+            self.selected.saturating_sub(list_height / 2)
+        }
+    }
+
+    /// Select the entry shown on screen row `row` (row 0 is the header).
+    /// Returns false for the header or rows past the last entry.
+    pub fn select_visible_row(&mut self, row: usize, list_height: usize) -> bool {
+        if row == 0 {
+            return false;
+        }
+        let idx = self.scroll_offset(list_height) + (row - 1);
+        if idx < self.flat_view.len() {
+            self.selected = idx;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Move selection to the first visible explorer row.
     pub fn move_to_top(&mut self) {
         self.selected = 0;
