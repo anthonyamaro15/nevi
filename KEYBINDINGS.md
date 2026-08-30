@@ -273,9 +273,29 @@ When specifying keys, use these formats:
 | `Ctrl+b` | Scroll page up |
 | `Ctrl+d` | Scroll half page down |
 | `Ctrl+u` | Scroll half page up |
+| `Ctrl+e` | Scroll view down one line (cursor stays put) |
+| `Ctrl+y` | Scroll view up one line (cursor stays put) |
 | `zz` | Center cursor on screen |
 | `zt` | Move cursor line to top of screen |
 | `zb` | Move cursor line to bottom of screen |
+
+### Mouse
+
+The mouse works like nvim's `mouse=nvi` (on by default). Turn it off with
+`mouse = false` under `[editor]`, or at runtime with `:set nomouse` /
+`:set mouse=` (any flags, like `:set mouse=a`, turn it back on).
+
+| Input | Action |
+|-------|--------|
+| Wheel | Scroll the pane under the pointer 3 lines (cursor stays put) |
+| Horizontal wheel | Scroll 6 columns (with wrap off) |
+| Left click | Focus that pane and move the cursor there |
+| Wheel / click on explorer | Move / set the selection |
+| Wheel in finder | Scroll the preview pane |
+| Wheel in markdown preview | Scroll the preview |
+
+While the mouse is captured, use your terminal's bypass modifier for native
+text selection and scrollback: Option on iTerm2, Shift on most others.
 
 ### Jump List
 

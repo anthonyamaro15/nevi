@@ -218,7 +218,7 @@ impl FlightRecorder {
 
 fn slow_threshold_us(name: &str) -> u128 {
     match name {
-        "handle_key" => 1_000,
+        "handle_key" | "handle_mouse" => 1_000,
         "render" | "render_after_lsp" | "syntax_update" => 16_000,
         "finder_preview" | "finder_grep" | "terminal_tick" | "terminal_render" => 5_000,
         "lsp_poll" | "copilot_poll" => 10_000,

@@ -161,6 +161,10 @@ pub enum KeyAction {
     ScrollTop,
     /// Scroll cursor to bottom of screen (zb)
     ScrollBottom,
+    /// Scroll viewport down count lines without moving the cursor (<C-e>)
+    ScrollLineDown(usize),
+    /// Scroll viewport up count lines without moving the cursor (<C-y>)
+    ScrollLineUp(usize),
     /// Repeat last change (.)
     RepeatLastChange,
     /// Paste after cursor
@@ -1037,6 +1041,16 @@ impl InputState {
             }
             (KeyModifiers::CONTROL, KeyCode::Char('b')) => {
                 self.page_motion_or_operator(Motion::PageUp)
+            }
+
+            // <C-e>/<C-y> - scroll the view without moving the cursor
+            (KeyModifiers::CONTROL, KeyCode::Char('e')) => {
+                self.reset();
+                KeyAction::ScrollLineDown(count)
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('y')) => {
+                self.reset();
+                KeyAction::ScrollLineUp(count)
             }
 
             // Insert mode entry (or text object modifier if operator pending)
@@ -2284,6 +2298,26 @@ mod tests {
     #[test]
     fn normal_zz_maps_to_write_quit_if_modified() {
         assert_write_quit_if_modified(&[shift('Z'), shift('Z')]);
+    }
+
+    #[test]
+    fn ctrl_e_and_ctrl_y_map_to_line_scroll_actions_with_counts() {
+        match run(&[ctrl('e')]) {
+            KeyAction::ScrollLineDown(1) => {}
+            other => panic!("expected ScrollLineDown(1), got {:?}", other),
+        }
+        match run(&[key('3'), ctrl('e')]) {
+            KeyAction::ScrollLineDown(3) => {}
+            other => panic!("expected ScrollLineDown(3), got {:?}", other),
+        }
+        match run(&[ctrl('y')]) {
+            KeyAction::ScrollLineUp(1) => {}
+            other => panic!("expected ScrollLineUp(1), got {:?}", other),
+        }
+        match run(&[key('5'), ctrl('y')]) {
+            KeyAction::ScrollLineUp(5) => {}
+            other => panic!("expected ScrollLineUp(5), got {:?}", other),
+        }
     }
 
     #[test]

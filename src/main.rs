@@ -686,6 +686,24 @@ fn main() -> anyhow::Result<()> {
                                         terminal_redraw_pending = true;
                                     }
                                 }
+                            } else {
+                                let t_handle_mouse = Instant::now();
+                                let handled = nevi::mouse::handle_mouse_event(&mut editor, mouse);
+                                record_metric!(
+                                    editor,
+                                    profile_stats,
+                                    profile_file,
+                                    "handle_mouse",
+                                    t_handle_mouse.elapsed()
+                                );
+                                if handled {
+                                    // Multiple wheel ticks in one input batch
+                                    // each mutate state here; a single render
+                                    // follows the batch.
+                                    needs_redraw = true;
+                                    redraw_from_input = true;
+                                    last_input_at = Some(Instant::now());
+                                }
                             }
                             if !finish_input_batch_event(
                                 &terminal,

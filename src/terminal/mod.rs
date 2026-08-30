@@ -2515,14 +2515,8 @@ impl Terminal {
         let selected = editor.explorer.selected;
         let list_height = height.saturating_sub(1); // -1 for header
 
-        // Calculate scroll offset to keep selection visible
-        let scroll_offset = if selected < list_height / 2 {
-            0
-        } else if selected >= flat_view.len().saturating_sub(list_height / 2) {
-            flat_view.len().saturating_sub(list_height)
-        } else {
-            selected.saturating_sub(list_height / 2)
-        };
+        // Shared with mouse hit testing so clicks land on the row they show on.
+        let scroll_offset = editor.explorer.scroll_offset(list_height);
 
         // Available width for file entries (subtract line number column)
         let content_width = width.saturating_sub(line_num_width);
@@ -4412,7 +4406,7 @@ impl Terminal {
         )
     }
 
-    fn markdown_preview_visible_rows(editor: &Editor) -> usize {
+    pub(crate) fn markdown_preview_visible_rows(editor: &Editor) -> usize {
         Self::markdown_preview_rect(editor).height.saturating_sub(3) as usize
     }
 
@@ -4436,7 +4430,7 @@ impl Terminal {
     }
 
     fn should_capture_mouse(editor: &Editor) -> bool {
-        editor.floating_terminal.is_visible()
+        editor.settings.editor.mouse || editor.floating_terminal.is_visible()
     }
 
     fn should_skip_background(editor: &Editor) -> bool {
@@ -7445,6 +7439,15 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.scroll_cursor_bottom();
         }
 
+        KeyAction::ScrollLineDown(count) => {
+            editor.scroll_pane_viewport(editor.active_pane_idx(), count as isize);
+        }
+
+        KeyAction::ScrollLineUp(count) => {
+            let delta = -(count.min(isize::MAX as usize) as isize);
+            editor.scroll_pane_viewport(editor.active_pane_idx(), delta);
+        }
+
         KeyAction::RepeatLastChange => {
             editor.repeat_last_change();
         }
@@ -10238,7 +10241,21 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             }
         }
 
-        Command::Set(option, _value) => CommandResult::Error(format!("Unknown option: {}", option)),
+        Command::Set(option, value) => match option.as_str() {
+            // Vim's 'mouse' is a string option: `:set mouse=` (empty) disables,
+            // any flag characters (`=a`, `=nvi`) enable. The bool-style
+            // `:set mouse` / `:set nomouse` forms work too. Capture is synced
+            // from this setting on the next render.
+            "mouse" => {
+                editor.settings.editor.mouse = value.as_deref().is_none_or(|v| !v.is_empty());
+                CommandResult::Ok
+            }
+            "nomouse" => {
+                editor.settings.editor.mouse = false;
+                CommandResult::Ok
+            }
+            _ => CommandResult::Error(format!("Unknown option: {}", option)),
+        },
 
         Command::LazyGit => CommandResult::RunExternal("lazygit".to_string()),
 
@@ -10900,6 +10917,40 @@ mod tests {
         let mut terminal = Terminal::new_for_test(Box::new(output.clone()));
         terminal.render(editor).expect("render should succeed");
         output.into_string()
+    }
+
+    #[test]
+    fn wheel_scrolled_frame_renders_from_new_viewport() {
+        let mut editor = Editor::default();
+        let content: String = (1..=100).map(|i| format!("line{i}\n")).collect();
+        editor.replace_buffer_content(&content);
+        editor.set_size(120, 40);
+        editor.update_pane_rects();
+
+        // Three wheel ticks = 9 lines; the frame must start at line 10.
+        let (col, row) = (30, 10);
+        for _ in 0..3 {
+            crate::mouse::handle_mouse_event(
+                &mut editor,
+                crossterm::event::MouseEvent {
+                    kind: crossterm::event::MouseEventKind::ScrollDown,
+                    column: col,
+                    row,
+                    modifiers: crossterm::event::KeyModifiers::empty(),
+                },
+            );
+        }
+        assert_eq!(editor.viewport_offset, 9);
+
+        let rendered = render_editor_to_string(&editor);
+        assert!(
+            rendered.contains("line10"),
+            "scrolled frame shows line 10 first"
+        );
+        assert!(
+            !rendered.contains("line1\x1b") && !rendered.contains(" 1 "),
+            "line 1 no longer on screen"
+        );
     }
 
     #[test]
@@ -15086,6 +15137,39 @@ mod tests {
     }
 
     #[test]
+    fn mouse_capture_follows_editor_setting() {
+        let mut editor = Editor::default();
+        assert!(
+            Terminal::should_capture_mouse(&editor),
+            "capture is on by default (ADR 0001)"
+        );
+
+        editor.settings.editor.mouse = false;
+        assert!(!Terminal::should_capture_mouse(&editor));
+    }
+
+    #[test]
+    fn set_mouse_accepts_vim_string_forms() {
+        let mut editor = Editor::default();
+        for (option, value, expect) in [
+            ("nomouse", None, false),
+            ("mouse", None, true),
+            ("mouse", Some(""), false), // vim reflex `:set mouse=` disables
+            ("mouse", Some("a"), true),
+            ("mouse", Some("nvi"), true),
+        ] {
+            execute_command(
+                &mut editor,
+                Command::Set(option.to_string(), value.map(str::to_string)),
+            );
+            assert_eq!(
+                editor.settings.editor.mouse, expect,
+                ":set {option}={value:?}"
+            );
+        }
+    }
+
+    #[test]
     fn markdown_preview_does_not_capture_mouse_while_overlay_is_open() {
         let tmp = unique_temp_dir("nevi_markdown_preview_mouse_capture");
         std::fs::create_dir_all(&tmp).expect("create temp dir");
@@ -15093,6 +15177,9 @@ mod tests {
         std::fs::write(&markdown_path, "# Notes\n").expect("write markdown");
 
         let mut editor = Editor::default();
+        // The preview alone must not force capture; disable the default-on
+        // mouse setting so that is what this test observes.
+        editor.settings.editor.mouse = false;
         editor.open_file(markdown_path).expect("open markdown");
         assert!(!Terminal::should_capture_mouse(&editor));
 

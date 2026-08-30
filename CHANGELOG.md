@@ -4,6 +4,8 @@
 
 ### Vim Compatibility
 
+- The mouse now works like nvim with `mouse=nvi`: the wheel scrolls the file instead of the terminal scrollback, targeting the pane under the pointer, 3 lines per tick. Horizontal wheel scrolls 6 columns with wrap off. Left click focuses a pane and moves the cursor (insert mode stays insert, a plain click drops visual mode), the wheel and clicks also drive the explorer selection, and the wheel scrolls the finder and markdown previews. On by default; `mouse = false` under `[editor]` or `:set nomouse` / `:set mouse=` turns it off, which also makes `mouse` the first option `:set` actually applies. While captured, terminal-native selection needs the terminal's bypass key (Option in iTerm2, Shift elsewhere). (#274)
+- Added `Ctrl+e` / `Ctrl+y` to scroll the view one line (or a count of lines) without moving the cursor until it would leave the screen. Verified against real Neovim in the oracle suite, including the scrolloff edge cases at the top and bottom of the file.
 - `cw` and `cW` now follow Vim's special case (`:h cw`): on a non-blank they change only up to the end of the word, leaving the trailing whitespace in place, and on the last character of a word they change just that character. On whitespace they still behave like `dw` plus insert. (#272)
 - Added the method motions `[m`, `]m`, `[M`, and `]M`. They jump between tree-sitter function boundaries instead of using Vim's brace heuristic, so they land on real functions and methods in Rust-style code. They work with operators (`d]m`, `y[m`) and counts, and do nothing in files without tree-sitter support.
 - Fixed `~` to advance the cursor past the last toggled character, as in Vim.
