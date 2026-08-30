@@ -4,7 +4,7 @@ Nevi aims for full vim/neovim keybind compatibility. Defaults follow Neovim, and
 keybinds are configurable — sensible defaults out of the box, overridable to your
 own taste.
 
-**Status: 332 keybinds implemented, 36 planned Vim/Neovim parity defaults.**
+**Status: 329 keybinds implemented, 39 planned Vim/Neovim parity defaults.**
 
 This file tracks what's **planned** (not yet implemented). For the full list of
 keybinds that already work, see [KEYBINDINGS.md](KEYBINDINGS.md).
@@ -32,11 +32,17 @@ These apply while editing the command prompt after `:`.
 | `q/` | Open `/` search history in the command-line window |
 | `q?` | Open `?` search history in the command-line window |
 
-### Editing
+### Advanced Motions
+
+These are Vim/Neovim defaults that are useful but lower priority than command-line
+mode parity.
 
 | Keybind | Planned behavior |
 |---------|------------------|
-| `.` | Repeat the last change (dot repeat; the key currently only shows a status note) |
+| `[m` | Go to previous method/function start |
+| `]m` | Go to next method/function start |
+| `[M` | Go to previous method/function end |
+| `]M` | Go to next method/function end |
 
 ### Larger Feature Areas
 

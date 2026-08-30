@@ -70,29 +70,6 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
         "Move to next unmatched )",
         "unmatched close paren skips nested pair",
     ),
-    // Method motions deliberately deviate from Vim's brace heuristic (they
-    // use tree-sitter function boundaries), so they carry Nevi regression
-    // tests instead of oracle cases.
-    nevi_regression(
-        "]m",
-        "Move to next method/function start (tree-sitter)",
-        "method_motion_jumps_between_function_starts",
-    ),
-    nevi_regression(
-        "[m",
-        "Move to previous method/function start (tree-sitter)",
-        "method_motion_jumps_between_function_starts",
-    ),
-    nevi_regression(
-        "]M",
-        "Move to next method/function end (tree-sitter)",
-        "method_motion_ends_land_on_closing_brace",
-    ),
-    nevi_regression(
-        "[M",
-        "Move to previous method/function end (tree-sitter)",
-        "method_motion_ends_land_on_closing_brace",
-    ),
     vim_oracle(
         "gm",
         "Move to middle of the screen line",
@@ -149,16 +126,6 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
     vim_oracle("o", "Open line below", "open line below"),
     vim_oracle("O", "Open line above", "open line above"),
     vim_oracle("dw", "Delete word with motion", "delete word"),
-    vim_oracle(
-        "cw",
-        "Change word without trailing spaces",
-        "change word excludes trailing spaces",
-    ),
-    vim_oracle(
-        "cW",
-        "Change big word without trailing spaces",
-        "change big word excludes trailing spaces",
-    ),
     vim_oracle("ciw", "Change inner word", "change inner word"),
     vim_oracle("cc", "Change current line", "change current line"),
     vim_oracle("C", "Change to end of line", "change to line end"),
@@ -178,71 +145,6 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
         "delete with line-end motion",
     ),
     vim_oracle("caw", "Change around word", "change around word"),
-    // Editing-core batch: bare operators, substitute family, paste
-    // variants, replace, case changing, joins.
-    vim_oracle("d", "Delete with a motion", "delete word"),
-    vim_oracle("c", "Change with a motion", "change inner word"),
-    vim_oracle("y", "Yank with a motion", "yank to line end"),
-    vim_oracle(
-        "X",
-        "Delete character before cursor",
-        "delete char before cursor",
-    ),
-    vim_oracle("s", "Substitute character and insert", "substitute char"),
-    vim_oracle("S", "Substitute entire line", "substitute line"),
-    vim_oracle(
-        "gp",
-        "Paste after, cursor after pasted text",
-        "linewise paste after and move",
-    ),
-    vim_oracle(
-        "gP",
-        "Paste before, cursor after pasted text",
-        "linewise paste before and move",
-    ),
-    vim_oracle(
-        "r{char}",
-        "Replace exactly one character",
-        "replace character",
-    ),
-    vim_oracle(
-        "R",
-        "Enter replace mode",
-        "counted replace mode repeats inserted text",
-    ),
-    vim_oracle(
-        "~",
-        "Toggle case of character under cursor",
-        "toggle case single char",
-    ),
-    vim_oracle(
-        "gu{motion}",
-        "Lowercase with a motion",
-        "lowercase to word end",
-    ),
-    vim_oracle("guu", "Lowercase entire line", "lowercase entire line"),
-    vim_oracle(
-        "gU{motion}",
-        "Uppercase with a motion",
-        "uppercase to word end",
-    ),
-    vim_oracle("gUU", "Uppercase entire line", "uppercase entire line"),
-    vim_oracle(
-        "g~{motion}",
-        "Toggle case with a motion",
-        "toggle case to word end",
-    ),
-    vim_oracle(
-        "g~~",
-        "Toggle case of entire line",
-        "toggle case entire line",
-    ),
-    vim_oracle("J", "Join lines with a space", "join lines with space"),
-    vim_oracle(
-        "gJ",
-        "Join lines without a space",
-        "join without added space",
-    ),
     vim_oracle("u", "Undo latest change", "undo insert"),
     vim_oracle("<C-r>", "Redo latest undone change", "redo insert"),
     KeybindCoverage {
@@ -313,24 +215,6 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
     vim_oracle("zz", "Center cursor line", "center cursor line"),
     vim_oracle("zt", "Move cursor line to top", "cursor line to top"),
     vim_oracle("zb", "Move cursor line to bottom", "cursor line to bottom"),
-    KeybindCoverage {
-        mode: KeybindMode::Normal,
-        key: "1-9 (start screen)",
-        description: "Open the numbered start screen entry",
-        kind: CoverageKind::NeviRegression,
-        state: CoverageState::Protected {
-            test_id: "dashboard_digit_opens_numbered_entry_via_key",
-        },
-    },
-    KeybindCoverage {
-        mode: KeybindMode::Normal,
-        key: "h1-h9 (start screen)",
-        description: "Jump to the numbered harpoon slot from the start screen",
-        kind: CoverageKind::NeviRegression,
-        state: CoverageState::Protected {
-            test_id: "dashboard_h_digit_opens_harpoon_slot",
-        },
-    },
 ];
 
 const fn vim_oracle(
@@ -346,22 +230,6 @@ const fn vim_oracle(
         state: CoverageState::Protected {
             test_id: oracle_case,
         },
-    }
-}
-
-/// Nevi-owned behavior protected by a focused regression test rather than an
-/// oracle case (used where we deliberately deviate from Vim).
-const fn nevi_regression(
-    key: &'static str,
-    description: &'static str,
-    test_id: &'static str,
-) -> KeybindCoverage {
-    KeybindCoverage {
-        mode: KeybindMode::Normal,
-        key,
-        description,
-        kind: CoverageKind::NeviRegression,
-        state: CoverageState::Protected { test_id },
     }
 }
 

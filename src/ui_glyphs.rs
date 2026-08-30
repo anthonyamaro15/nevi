@@ -39,14 +39,6 @@ pub struct UiGlyphs {
     pub finder_selection_bar: &'static str,
     /// Prefix inside floating-window border titles.
     pub finder_title_icon: &'static str,
-    /// Border-title icons for the leader/which-key popup, the command
-    /// suggestions/history popup, and the floating terminal. Empty in
-    /// minimal = plain text titles.
-    pub leader_title_icon: &'static str,
-    pub command_title_icon: &'static str,
-    pub terminal_title_icon: &'static str,
-    /// Bolt on the start screen's "ready in Nms" line. Empty in minimal.
-    pub dashboard_bolt: &'static str,
     /// Buffer gutter diagnostic signs (error/warning/info/hint priority).
     pub gutter_error: &'static str,
     pub gutter_warn: &'static str,
@@ -75,10 +67,6 @@ pub static RICH: UiGlyphs = UiGlyphs {
     finder_prompt: " \u{f002} ",
     finder_selection_bar: "▌",
     finder_title_icon: "\u{f002} ",
-    leader_title_icon: "\u{f11c} ",
-    command_title_icon: "\u{f120} ",
-    terminal_title_icon: "\u{f120} ",
-    dashboard_bolt: "\u{f0e7}",
     gutter_error: "\u{f057}",
     gutter_warn: "\u{f071}",
     gutter_info: "\u{f05a}",
@@ -105,10 +93,6 @@ pub static MINIMAL: UiGlyphs = UiGlyphs {
     finder_prompt: " > ",
     finder_selection_bar: "",
     finder_title_icon: "",
-    leader_title_icon: "",
-    command_title_icon: "",
-    terminal_title_icon: "",
-    dashboard_bolt: "",
     gutter_error: "●",
     gutter_warn: "▲",
     gutter_info: "■",
@@ -253,10 +237,6 @@ mod tests {
             g.finder_prompt,
             g.finder_selection_bar,
             g.finder_title_icon,
-            g.leader_title_icon,
-            g.command_title_icon,
-            g.terminal_title_icon,
-            g.dashboard_bolt,
             g.gutter_error,
             g.gutter_warn,
             g.gutter_info,

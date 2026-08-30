@@ -31,21 +31,6 @@ impl RegisterContent {
     pub fn is_linewise(&self) -> bool {
         matches!(self, RegisterContent::Lines(_))
     }
-
-    pub fn to_shada_entry(&self) -> crate::shada::RegisterEntry {
-        crate::shada::RegisterEntry {
-            text: self.as_str().to_string(),
-            linewise: self.is_linewise(),
-        }
-    }
-
-    pub fn from_shada_entry(entry: crate::shada::RegisterEntry) -> Self {
-        if entry.linewise {
-            RegisterContent::Lines(entry.text)
-        } else {
-            RegisterContent::Chars(entry.text)
-        }
-    }
 }
 
 fn clipboard_text_for_content(content: &RegisterContent) -> String {

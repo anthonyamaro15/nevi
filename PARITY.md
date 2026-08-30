@@ -9,14 +9,14 @@ the test suite enforces, so it cannot drift from what is actually verified.
 
 ## Summary
 
-- **332 keybinds implemented** ([KEYBINDINGS.md](KEYBINDINGS.md)), **36 planned** ([KEYBINDS_ROADMAP.md](KEYBINDS_ROADMAP.md))
-- **105 keybinds in the coverage inventory**, each mapped to the automated test that protects it:
-  - 97 verified against real Neovim (v0.11.3) by the Vim oracle
-  - 7 protected by focused Nevi regression tests
+- **329 keybinds implemented** ([KEYBINDINGS.md](KEYBINDINGS.md)), **39 planned** ([KEYBINDS_ROADMAP.md](KEYBINDS_ROADMAP.md))
+- **78 keybinds in the coverage inventory**, each mapped to the automated test that protects it:
+  - 76 verified against real Neovim (v0.11.3) by the Vim oracle
+  - 1 protected by focused Nevi regression tests
   - 1 covered as default-keymap plumbing with dedicated tests
-- **259 oracle cases**: motions (113), editing (86), insert-entry (11), open-line (20), replace (27), undo-redo (2)
+- **233 oracle cases**: motions (113), editing (60), insert-entry (11), open-line (20), replace (27), undo-redo (2)
 - **0 tracked coverage gaps**
-- **141 of 431 documented keybind rows map to an inventoried keybind**; the rest work today but are not yet individually tracked ([full list below](#documented-but-not-yet-inventoried))
+- **108 of 426 documented keybind rows map to an inventoried keybind**; the rest work today but are not yet individually tracked ([full list below](#documented-but-not-yet-inventoried))
 
 ## How the Vim oracle works
 
@@ -77,8 +77,6 @@ claim protection.
 | `o` | Open line below | `open line below` |
 | `O` | Open line above | `open line above` |
 | `dw` | Delete word with motion | `delete word` |
-| `cw` | Change word without trailing spaces | `change word excludes trailing spaces` |
-| `cW` | Change big word without trailing spaces | `change big word excludes trailing spaces` |
 | `ciw` | Change inner word | `change inner word` |
 | `cc` | Change current line | `change current line` |
 | `C` | Change to end of line | `change to line end` |
@@ -90,25 +88,6 @@ claim protection.
 | `db` | Delete to previous word start | `delete to previous word start` |
 | `d$` | Delete through line end | `delete with line-end motion` |
 | `caw` | Change around word | `change around word` |
-| `d` | Delete with a motion | `delete word` |
-| `c` | Change with a motion | `change inner word` |
-| `y` | Yank with a motion | `yank to line end` |
-| `X` | Delete character before cursor | `delete char before cursor` |
-| `s` | Substitute character and insert | `substitute char` |
-| `S` | Substitute entire line | `substitute line` |
-| `gp` | Paste after, cursor after pasted text | `linewise paste after and move` |
-| `gP` | Paste before, cursor after pasted text | `linewise paste before and move` |
-| `r{char}` | Replace exactly one character | `replace character` |
-| `R` | Enter replace mode | `counted replace mode repeats inserted text` |
-| `~` | Toggle case of character under cursor | `toggle case single char` |
-| `gu{motion}` | Lowercase with a motion | `lowercase to word end` |
-| `guu` | Lowercase entire line | `lowercase entire line` |
-| `gU{motion}` | Uppercase with a motion | `uppercase to word end` |
-| `gUU` | Uppercase entire line | `uppercase entire line` |
-| `g~{motion}` | Toggle case with a motion | `toggle case to word end` |
-| `g~~` | Toggle case of entire line | `toggle case entire line` |
-| `J` | Join lines with a space | `join lines with space` |
-| `gJ` | Join lines without a space | `join without added space` |
 | `u` | Undo latest change | `undo insert` |
 | `<C-r>` | Redo latest undone change | `redo insert` |
 | `W` | Move to start of next WORD | `big word forward` |
@@ -140,13 +119,7 @@ Nevi-owned behavior with no Vim equivalent to compare against.
 
 | Keybind | Behavior | Test |
 |---------|----------|----|
-| `]m` | Move to next method/function start (tree-sitter) | `method_motion_jumps_between_function_starts` |
-| `[m` | Move to previous method/function start (tree-sitter) | `method_motion_jumps_between_function_starts` |
-| `]M` | Move to next method/function end (tree-sitter) | `method_motion_ends_land_on_closing_brace` |
-| `[M` | Move to previous method/function end (tree-sitter) | `method_motion_ends_land_on_closing_brace` |
 | `<leader>j` | Start labeled jump navigation | `labeled_jump_jumps_to_selected_visible_match` |
-| `1-9 (start screen)` | Open the numbered start screen entry | `dashboard_digit_opens_numbered_entry_via_key` |
-| `h1-h9 (start screen)` | Jump to the numbered harpoon slot from the start screen | `dashboard_h_digit_opens_harpoon_slot` |
 
 ## Default-keymap plumbing
 
@@ -168,7 +141,7 @@ like `dw` are tracked as single inventory entries, so their building-block
 rows may already be covered compositionally.)
 
 <details>
-<summary>290 untracked rows</summary>
+<summary>318 untracked rows</summary>
 
 | Keybind | Behavior |
 |---------|----------|
@@ -187,18 +160,38 @@ rows may already be covered compositionally.)
 | `'.` | Jump to the line of the last change |
 | `'^` | Jump to the line of the last insert |
 | `gi` | Go to last insert position and enter insert mode |
+| `d` | Delete |
+| `c` | Change (delete and enter insert mode) |
+| `y` | Yank (copy) |
 | `>` | Indent right |
 | `<` | Indent left |
 | `=` | Auto-indent |
 | `gu` | Lowercase |
 | `gU` | Uppercase |
 | `g~` | Toggle case |
+| `X` / `{n}X` | Delete character(s) before cursor |
+| `s` / `{n}s` | Substitute character(s) under cursor |
+| `S` / `{n}S` | Substitute entire line(s) |
+| `gp` / `{n}gp` | Paste after and leave cursor after pasted text |
+| `gP` / `{n}gP` | Paste before and leave cursor after pasted text |
+| `r{char}` / `{n}r{char}` | Replace exactly one/count characters; `Enter` replaces them with one newline |
+| `R` / `{n}R` | Enter replace mode; a count repeats the entered replacement text |
+| `.` | Repeat last change |
 | `>>` | Indent current line |
 | `<<` | Dedent current line |
 | `>{motion}` | Indent with motion (e.g., `>j` indents current and next line) |
 | `<{motion}` | Dedent with motion |
 | `==` | Auto-indent current line |
 | `={motion}` | Auto-indent with motion |
+| `~` / `{n}~` | Toggle case of character(s) under cursor |
+| `gu{motion}` | Lowercase with motion |
+| `guu` | Lowercase entire line |
+| `gU{motion}` | Uppercase with motion |
+| `gUU` | Uppercase entire line |
+| `g~{motion}` | Toggle case with motion |
+| `g~~` | Toggle case of entire line |
+| `J` / `{n}J` | Join lines with spaces |
+| `gJ` / `{n}gJ` | Join lines without adding spaces |
 | `/` | Search forward |
 | `?` | Search backward |
 | `n` | Go to next match |
@@ -242,6 +235,9 @@ rows may already be covered compositionally.)
 | `V` | Enter line-wise visual mode |
 | `Ctrl+v` | Enter block visual mode |
 | `Esc` | Exit visual mode |
+| `d` | Delete selection |
+| `c` | Change selection |
+| `y` | Yank selection |
 | `>` | Indent selection |
 | `<` | Dedent selection |
 | `gc` | Toggle comment on selection |
@@ -340,6 +336,7 @@ rows may already be covered compositionally.)
 | `Ctrl+Tab` | Next terminal session |
 | `Ctrl+Shift+Tab` | Previous terminal session |
 | `Ctrl+Shift+W` | Close current terminal session |
+| `y` | Copy the current terminal selection |
 | `Ctrl+Shift+C` | Copy the current terminal selection |
 | `Cmd+C` | Copy the current terminal selection when the outer terminal forwards the key to Nevi |
 | `Esc` / `Ctrl+[` | Clear the current terminal selection |
@@ -362,9 +359,12 @@ rows may already be covered compositionally.)
 | `Ctrl+t` | Toggle preview panel |
 | `g` | Go to first result |
 | `Esc` / `Ctrl+[` / `Ctrl+c` | Close finder |
+| `d` | Delete selected Harpoon item or mark |
 | `K` | Move selected Harpoon item up |
+| `J` | Move selected Harpoon item down |
 | `Esc` / `Ctrl+[` / `q` | Close explorer |
 | `Tab` | Toggle expand/collapse |
+| `R` | Refresh explorer and git status |
 | `?` | Show explorer keymaps |
 | `-` | Go to parent directory |
 | `Ctrl+l` | Focus editor and keep explorer open |
@@ -372,11 +372,12 @@ rows may already be covered compositionally.)
 | `<` | Narrow explorer sidebar |
 | `=` | Reset explorer sidebar width |
 | `r` | Rename selected item |
+| `d` | Delete selected item |
 | `/` | Search explorer |
 | `n` / `N` | Next/previous search match |
+| `c` | Copy selected item |
 | `]h` | Go to next harpoon file |
 | `[h` | Go to previous harpoon file |
-| `1` - `9` | Open the numbered recent file |
 | `Ctrl+e` | Move to end of command line |
 | `Ctrl+w` | Delete word before cursor |
 | `Ctrl+r {reg}` | Insert register contents |

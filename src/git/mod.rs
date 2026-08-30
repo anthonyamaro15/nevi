@@ -8,18 +8,6 @@ use std::path::{Path, PathBuf};
 const TEXT_SAMPLE_LIMIT: usize = 8 * 1024;
 const PREVIEW_BYTE_LIMIT: usize = 16 * 1024;
 
-/// Nearest ancestor of `start` containing `.git` (dir or worktree file) —
-/// the repository checkout root. Pure path walk; no repo is opened.
-pub fn find_repo_root(start: &Path) -> Option<PathBuf> {
-    let mut dir = start;
-    loop {
-        if dir.join(".git").exists() {
-            return Some(dir.to_path_buf());
-        }
-        dir = dir.parent()?;
-    }
-}
-
 /// Status of a line compared to the HEAD version
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitLineStatus {
@@ -653,33 +641,6 @@ mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn find_repo_root_walks_to_nearest_git_marker() {
-        let base = unique_temp_dir("nevi_find_repo_root");
-        let nested = base.join("repo/src/deep");
-        std::fs::create_dir_all(&nested).expect("create dirs");
-        std::fs::create_dir_all(base.join("repo/.git")).expect("create .git dir");
-
-        assert_eq!(find_repo_root(&nested), Some(base.join("repo")));
-
-        // A `.git` file (linked worktree) counts as a root marker too.
-        let wt = base.join("wt/src");
-        std::fs::create_dir_all(&wt).expect("create worktree dirs");
-        std::fs::write(
-            base.join("wt/.git"),
-            "gitdir: /elsewhere/.git/worktrees/wt\n",
-        )
-        .expect("write .git file");
-        assert_eq!(find_repo_root(&wt), Some(base.join("wt")));
-
-        // Outside any repo: no root.
-        let stray = base.join("stray");
-        std::fs::create_dir_all(&stray).expect("create stray dir");
-        assert_eq!(find_repo_root(&stray), None);
-
-        let _ = std::fs::remove_dir_all(&base);
-    }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()

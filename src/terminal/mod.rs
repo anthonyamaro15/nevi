@@ -491,63 +491,6 @@ fn should_show_floating_terminal_cursor(
         && shape != crate::floating_terminal::TerminalCursorShape::Hidden
 }
 
-/// Top border row for full-width bottom popups (leader/which-key, command
-/// suggestions/history): corners from the glyph table, a left-aligned title,
-/// and a right-aligned key hint. `width` is the full popup width in columns.
-/// Assumes single-column glyphs (same as the finder's title math).
-fn draw_popup_top_border<W: Write>(
-    w: &mut W,
-    glyphs: &crate::ui_glyphs::UiGlyphs,
-    width: usize,
-    title: &str,
-    hint: &str,
-    border_color: Color,
-    title_color: Color,
-    hint_color: Color,
-    bg: Color,
-) -> anyhow::Result<()> {
-    let inner = width.saturating_sub(2);
-    let title: String = title.chars().take(inner.saturating_sub(2)).collect();
-    let title_cols = title.chars().count();
-    // Drop the hint entirely when it would collide with the title.
-    let hint = if title_cols + hint.chars().count() + 2 <= inner {
-        hint
-    } else {
-        ""
-    };
-    let hint_cols = hint.chars().count();
-
-    queue!(w, SetForegroundColor(border_color), SetBackgroundColor(bg))?;
-    write!(w, "{}\u{2500}", glyphs.corner_tl)?;
-    queue!(w, SetForegroundColor(title_color))?;
-    write!(w, "{title}")?;
-    queue!(w, SetForegroundColor(border_color))?;
-    for _ in 0..inner.saturating_sub(title_cols + hint_cols + 2) {
-        write!(w, "\u{2500}")?;
-    }
-    queue!(w, SetForegroundColor(hint_color))?;
-    write!(w, "{hint}")?;
-    queue!(w, SetForegroundColor(border_color))?;
-    write!(w, "\u{2500}{}", glyphs.corner_tr)?;
-    Ok(())
-}
-
-fn draw_popup_bottom_border<W: Write>(
-    w: &mut W,
-    glyphs: &crate::ui_glyphs::UiGlyphs,
-    width: usize,
-    border_color: Color,
-    bg: Color,
-) -> anyhow::Result<()> {
-    queue!(w, SetForegroundColor(border_color), SetBackgroundColor(bg))?;
-    write!(w, "{}", glyphs.corner_bl)?;
-    for _ in 0..width.saturating_sub(2) {
-        write!(w, "\u{2500}")?;
-    }
-    write!(w, "{}", glyphs.corner_br)?;
-    Ok(())
-}
-
 fn diagnostic_severity_priority(severity: DiagnosticSeverity) -> u8 {
     match severity {
         DiagnosticSeverity::Error => 0,
@@ -1252,17 +1195,10 @@ impl Terminal {
                 self.render_explorer(editor)?;
             }
 
-            // While the start screen owns the single pane, draw it INSTEAD of
-            // the buffer: painting tildes/line numbers first and covering
-            // them afterwards flashes on every full render, and dashboard
-            // keypresses force full renders.
-            if editor.dashboard_active() {
-                self.render_dashboard(editor)?;
-            } else {
-                for (pane_idx, pane) in editor.panes().iter().enumerate() {
-                    let is_active = pane_idx == editor.active_pane_idx();
-                    self.render_pane(editor, pane, is_active)?;
-                }
+            // Render all panes
+            for (pane_idx, pane) in editor.panes().iter().enumerate() {
+                let is_active = pane_idx == editor.active_pane_idx();
+                self.render_pane(editor, pane, is_active)?;
             }
 
             // Draw separators between panes if we have multiple panes
@@ -1399,7 +1335,6 @@ impl Terminal {
             || editor.command_line.popup_mode != CommandPopupMode::None
             || !editor.search_matches.is_empty()
             || editor.mode.is_visual()
-            || editor.dashboard_active()
     }
 
     fn can_partial_render_editor_rows(editor: &Editor, rows: &[usize]) -> bool {
@@ -1531,74 +1466,49 @@ impl Terminal {
             return Ok(());
         }
 
-        let minimal = editor.settings.resolved_ui_style().is_minimal();
-        let glyphs = editor.ui_glyphs();
-        // Rich wraps the list in a bordered box (top border with title +
-        // bottom border); minimal keeps the flat one-row header.
-        let chrome_rows = if minimal { 1 } else { 2 };
         let available_rows = status_row as usize;
-        if available_rows < chrome_rows + 1 {
+        if available_rows < 2 {
             return Ok(());
         }
 
-        let item_rows = items.len().min(8).min(available_rows - chrome_rows);
+        let item_rows = items.len().min(8).min(available_rows.saturating_sub(1));
         if item_rows == 0 {
             self.clear_leader_popup_area(editor)?;
             return Ok(());
         }
 
-        let total_rows = (item_rows + chrome_rows) as u16;
-        let popup_top_row = status_row.saturating_sub(total_rows);
-        self.leader_popup_rect = Some((popup_top_row, total_rows));
+        let popup_top_row = status_row.saturating_sub((item_rows + 1) as u16);
+        self.leader_popup_rect = Some((popup_top_row, (item_rows + 1) as u16));
 
         let prefix_label = if prefix.is_empty() {
             "<leader>".to_string()
         } else {
             format!("<leader>{prefix}")
         };
+        let header_text = format!("[LEADER {prefix_label}] Esc:cancel");
 
-        // Side borders in rich mode shrink the usable row width by two.
-        let content_width = if minimal { term_width } else { term_width - 2 };
-        let key_col_width = content_width.saturating_sub(4).min(16).max(8);
-        let desc_col_width = content_width.saturating_sub(key_col_width + 3);
+        let key_col_width = term_width.saturating_sub(4).min(16).max(8);
+        let desc_col_width = term_width.saturating_sub(key_col_width + 3);
 
         let theme = editor.theme();
         let popup_fg = theme.ui.foreground;
         let popup_bg = theme.ui.popup_bg;
-        let border_color = theme.ui.popup_border;
+        let header_fg = theme.ui.statusline_mode_normal;
+        let header_bg = theme.ui.statusline_bg;
 
         execute!(
             self.stdout,
             cursor::MoveTo(0, popup_top_row),
-            terminal::Clear(ClearType::CurrentLine)
+            terminal::Clear(ClearType::CurrentLine),
+            SetForegroundColor(header_fg),
+            SetBackgroundColor(header_bg)
         )?;
-        if minimal {
-            let header_text = format!("[LEADER {prefix_label}] Esc:cancel");
-            execute!(
-                self.stdout,
-                SetForegroundColor(theme.ui.statusline_mode_normal),
-                SetBackgroundColor(theme.ui.statusline_bg)
-            )?;
-            let mut header_line = Self::truncate_inline(&header_text, term_width);
-            let header_len = header_line.chars().count();
-            if header_len < term_width {
-                header_line.push_str(&" ".repeat(term_width - header_len));
-            }
-            terminal_print!(self, "{}", header_line);
-        } else {
-            let title = format!(" {}{} ", glyphs.leader_title_icon, prefix_label);
-            draw_popup_top_border(
-                &mut self.stdout,
-                glyphs,
-                term_width,
-                &title,
-                " Esc:cancel ",
-                border_color,
-                theme.ui.finder_prompt,
-                theme.ui.line_number,
-                popup_bg,
-            )?;
+        let mut header_line = Self::truncate_inline(&header_text, term_width);
+        let header_len = header_line.chars().count();
+        if header_len < term_width {
+            header_line.push_str(&" ".repeat(term_width - header_len));
         }
+        terminal_print!(self, "{}", header_line);
         execute!(self.stdout, ResetColor)?;
 
         for (row_offset, item) in items.iter().take(item_rows).enumerate() {
@@ -1606,18 +1516,7 @@ impl Terminal {
             execute!(
                 self.stdout,
                 cursor::MoveTo(0, row),
-                terminal::Clear(ClearType::CurrentLine)
-            )?;
-            if !minimal {
-                queue!(
-                    self.stdout,
-                    SetForegroundColor(border_color),
-                    SetBackgroundColor(popup_bg)
-                )?;
-                write!(self.stdout, "\u{2502}")?;
-            }
-            execute!(
-                self.stdout,
+                terminal::Clear(ClearType::CurrentLine),
                 SetForegroundColor(popup_fg),
                 SetBackgroundColor(popup_bg)
             )?;
@@ -1646,27 +1545,12 @@ impl Terminal {
             );
 
             let printed = line.chars().count();
-            if printed < content_width {
-                line.push_str(&" ".repeat(content_width - printed));
-            } else if printed > content_width {
-                line = line.chars().take(content_width).collect();
+            if printed < term_width {
+                line.push_str(&" ".repeat(term_width - printed));
+            } else if printed > term_width {
+                line = line.chars().take(term_width).collect();
             }
             terminal_print!(self, "{}", line);
-            if !minimal {
-                queue!(self.stdout, SetForegroundColor(border_color))?;
-                write!(self.stdout, "\u{2502}")?;
-            }
-            execute!(self.stdout, ResetColor)?;
-        }
-
-        if !minimal {
-            let row = popup_top_row + item_rows as u16 + 1;
-            execute!(
-                self.stdout,
-                cursor::MoveTo(0, row),
-                terminal::Clear(ClearType::CurrentLine)
-            )?;
-            draw_popup_bottom_border(&mut self.stdout, glyphs, term_width, border_color, popup_bg)?;
             execute!(self.stdout, ResetColor)?;
         }
 
@@ -1688,75 +1572,6 @@ impl Terminal {
             )?;
         }
         execute!(self.stdout, ResetColor)?;
-        Ok(())
-    }
-
-    /// Render the start screen in place of the (empty) active pane.
-    ///
-    /// The frame is assembled off-screen and written once — same reason as
-    /// the floating terminal: intermediate flushes let terminal emulators
-    /// present half-drawn frames, which reads as flicker on every keypress
-    /// (dashboard keypresses always force full renders).
-    fn render_dashboard(&mut self, editor: &Editor) -> anyhow::Result<()> {
-        let pane = &editor.panes()[editor.active_pane_idx()];
-        let rect = pane.rect;
-        if rect.width < 20 || rect.height < 4 {
-            return Ok(());
-        }
-        let theme = editor.theme();
-        let lines = crate::dashboard::dashboard_lines(editor);
-
-        let rows = rect.height as usize;
-        let cols = rect.width as usize;
-        let mut frame: Vec<u8> = Vec::with_capacity(rows * cols + 1024);
-        // Blank the pane so line numbers and tildes don't show through.
-        queue!(&mut frame, SetBackgroundColor(theme.ui.background))?;
-        for row in 0..rows {
-            queue!(&mut frame, cursor::MoveTo(rect.x, rect.y + row as u16))?;
-            write!(&mut frame, "{:cols$}", "")?;
-        }
-
-        let visible = lines.len().min(rows);
-        let top = rect.y as usize + (rows - visible) / 2;
-        for (i, line) in lines.iter().take(visible).enumerate() {
-            if line.spans.is_empty() {
-                continue;
-            }
-            // Each line centers itself; entry rows are pre-padded to equal
-            // widths so their columns stay aligned.
-            let width = line.width().min(cols);
-            let left = rect.x as usize + (cols - width) / 2;
-            queue!(&mut frame, cursor::MoveTo(left as u16, (top + i) as u16))?;
-            let mut remaining = cols;
-            for s in &line.spans {
-                use crate::dashboard::SpanStyle as S;
-                let (color, bold) = match s.style {
-                    S::Title => (theme.ui.finder_prompt, true),
-                    S::Accent => (theme.ui.finder_prompt, false),
-                    S::Key => (theme.ui.finder_match, true),
-                    S::TextBold => (theme.ui.foreground, true),
-                    S::Dim => (theme.ui.line_number, false),
-                };
-                queue!(
-                    &mut frame,
-                    SetForegroundColor(color),
-                    SetAttribute(if bold {
-                        Attribute::Bold
-                    } else {
-                        Attribute::NormalIntensity
-                    })
-                )?;
-                let text: String = s.text.chars().take(remaining).collect();
-                remaining -= text.chars().count();
-                write!(&mut frame, "{}", text)?;
-                if remaining == 0 {
-                    break;
-                }
-            }
-            queue!(&mut frame, SetAttribute(Attribute::NormalIntensity))?;
-        }
-        queue!(&mut frame, SetAttribute(Attribute::Reset), ResetColor)?;
-        self.stdout.write_all(&frame)?;
         Ok(())
     }
 
@@ -3492,88 +3307,55 @@ impl Terminal {
             return Ok(());
         }
 
-        let minimal = editor.settings.resolved_ui_style().is_minimal();
-        let glyphs = editor.ui_glyphs();
-        // Rich wraps the list in a bordered box (top border with title +
-        // bottom border); minimal keeps the flat one-row header.
-        let chrome_rows = if minimal { 1 } else { 2 };
+        // Reserve one row for a mode label/header.
         let available_rows = status_row as usize;
-        if available_rows < chrome_rows + 1 {
+        if available_rows < 2 {
             return Ok(());
         }
-        let item_rows = total_items.min(8).min(available_rows - chrome_rows);
+        let item_rows = total_items.min(8).min(available_rows.saturating_sub(1));
         if item_rows == 0 {
             return Ok(());
         }
+
+        let header_text = match command_line.popup_mode {
+            CommandPopupMode::Completion => "[COMMANDS] Tab:accept  Shift+Tab:prev  Alt+r:history",
+            CommandPopupMode::History => "[HISTORY] Enter/Tab:use  Ctrl+n/p:move  Alt+r:close",
+            CommandPopupMode::None => "",
+        };
 
         let mut first_visible = selected.saturating_sub(item_rows.saturating_sub(1));
         if first_visible + item_rows > total_items {
             first_visible = total_items.saturating_sub(item_rows);
         }
-        let popup_top_row = status_row.saturating_sub((item_rows + chrome_rows) as u16);
+        let popup_top_row = status_row.saturating_sub((item_rows + 1) as u16);
 
-        // Side borders in rich mode shrink the usable row width by two.
-        let content_width = if minimal { term_width } else { term_width - 2 };
-        let left_col_width = ((content_width * 2) / 5)
+        let left_col_width = ((term_width * 2) / 5)
             .max(12)
             .min(30)
-            .min(content_width.saturating_sub(4));
-        let right_col_width = content_width.saturating_sub(left_col_width + 3);
+            .min(term_width.saturating_sub(4));
+        let right_col_width = term_width.saturating_sub(left_col_width + 3);
 
         let theme = editor.theme();
         let popup_fg = theme.ui.foreground;
         let popup_bg = theme.ui.popup_bg;
-        let border_color = theme.ui.popup_border;
+        let header_fg = theme.ui.statusline_mode_command;
+        let header_bg = theme.ui.statusline_bg;
         let selected_fg = theme.ui.foreground;
         let selected_bg = theme.ui.popup_selection;
 
         execute!(
             self.stdout,
             cursor::MoveTo(0, popup_top_row),
-            terminal::Clear(ClearType::CurrentLine)
+            terminal::Clear(ClearType::CurrentLine),
+            SetForegroundColor(header_fg),
+            SetBackgroundColor(header_bg)
         )?;
-        if minimal {
-            let header_text = match command_line.popup_mode {
-                CommandPopupMode::Completion => {
-                    "[COMMANDS] Tab:accept  Shift+Tab:prev  Alt+r:history"
-                }
-                CommandPopupMode::History => "[HISTORY] Enter/Tab:use  Ctrl+n/p:move  Alt+r:close",
-                CommandPopupMode::None => "",
-            };
-            execute!(
-                self.stdout,
-                SetForegroundColor(theme.ui.statusline_mode_command),
-                SetBackgroundColor(theme.ui.statusline_bg)
-            )?;
-            let mut header_line = Self::truncate_inline(header_text, term_width);
-            let header_len = header_line.chars().count();
-            if header_len < term_width {
-                header_line.push_str(&" ".repeat(term_width - header_len));
-            }
-            terminal_print!(self, "{}", header_line);
-        } else {
-            let (title_text, hint) = match command_line.popup_mode {
-                CommandPopupMode::Completion => {
-                    ("Commands", " Tab:accept  Shift+Tab:prev  Alt+r:history ")
-                }
-                CommandPopupMode::History => {
-                    ("History", " Enter/Tab:use  Ctrl+n/p:move  Alt+r:close ")
-                }
-                CommandPopupMode::None => ("", ""),
-            };
-            let title = format!(" {}{} ", glyphs.command_title_icon, title_text);
-            draw_popup_top_border(
-                &mut self.stdout,
-                glyphs,
-                term_width,
-                &title,
-                hint,
-                border_color,
-                theme.ui.finder_prompt,
-                theme.ui.line_number,
-                popup_bg,
-            )?;
+        let mut header_line = Self::truncate_inline(header_text, term_width);
+        let header_len = header_line.chars().count();
+        if header_len < term_width {
+            header_line.push_str(&" ".repeat(term_width - header_len));
         }
+        terminal_print!(self, "{}", header_line);
         execute!(self.stdout, ResetColor)?;
 
         for row_offset in 0..item_rows {
@@ -3586,14 +3368,6 @@ impl Terminal {
                 cursor::MoveTo(0, row),
                 terminal::Clear(ClearType::CurrentLine)
             )?;
-            if !minimal {
-                queue!(
-                    self.stdout,
-                    SetForegroundColor(border_color),
-                    SetBackgroundColor(popup_bg)
-                )?;
-                write!(self.stdout, "\u{2502}")?;
-            }
 
             if is_selected {
                 execute!(
@@ -3629,54 +3403,24 @@ impl Terminal {
                 CommandPopupMode::None => (String::new(), String::new()),
             };
 
-            // Rich replaces the ">" marker with the finder's accent bar.
-            if minimal {
-                let marker = if is_selected { ">" } else { " " };
-                terminal_print!(self, "{}", marker);
-            } else if is_selected {
-                queue!(self.stdout, SetForegroundColor(theme.ui.finder_prompt))?;
-                write!(self.stdout, "{}", glyphs.finder_selection_bar)?;
-                queue!(self.stdout, SetForegroundColor(selected_fg))?;
-            } else {
-                terminal_print!(self, " ");
-            }
-
+            let marker = if is_selected { ">" } else { " " };
             let left_text = Self::truncate_inline(&left_raw, left_col_width);
             let right_text = Self::truncate_inline(&right_raw, right_col_width);
             let mut line = format!(
-                " {:left_width$} {}",
+                "{} {:left_width$} {}",
+                marker,
                 left_text,
                 right_text,
                 left_width = left_col_width
             );
 
-            let body_width = content_width.saturating_sub(1);
             let printed = line.chars().count();
-            if printed < body_width {
-                line.push_str(&" ".repeat(body_width - printed));
-            } else if printed > body_width {
-                line = line.chars().take(body_width).collect();
+            if printed < term_width {
+                line.push_str(&" ".repeat(term_width - printed));
+            } else if printed > term_width {
+                line = line.chars().take(term_width).collect();
             }
             terminal_print!(self, "{}", line);
-            if !minimal {
-                queue!(
-                    self.stdout,
-                    SetForegroundColor(border_color),
-                    SetBackgroundColor(popup_bg)
-                )?;
-                write!(self.stdout, "\u{2502}")?;
-            }
-            execute!(self.stdout, ResetColor)?;
-        }
-
-        if !minimal {
-            let row = popup_top_row + item_rows as u16 + 1;
-            execute!(
-                self.stdout,
-                cursor::MoveTo(0, row),
-                terminal::Clear(ClearType::CurrentLine)
-            )?;
-            draw_popup_bottom_border(&mut self.stdout, glyphs, term_width, border_color, popup_bg)?;
             execute!(self.stdout, ResetColor)?;
         }
 
@@ -5595,7 +5339,6 @@ impl Terminal {
         let term_y = (editor.term_height.saturating_sub(term_height)) / 2;
 
         let theme = editor.theme();
-        let glyphs = editor.ui_glyphs();
         let border_color = theme.ui.popup_border;
         let bg_color = theme.ui.popup_bg;
         let text_color = theme.ui.foreground;
@@ -5626,15 +5369,12 @@ impl Terminal {
         let close_start = (term_width as usize).saturating_sub(close_hint.len() + 2);
         let max_title_width = close_start.saturating_sub(title_start).saturating_sub(1);
         let mut title = editor.floating_terminal.title();
-        if !glyphs.terminal_title_icon.is_empty() {
-            title = format!(" {}{}", glyphs.terminal_title_icon, title.trim_start());
-        }
         if title.chars().count() > max_title_width {
             title = title.chars().take(max_title_width).collect();
         }
         let title_width = title.chars().count();
 
-        write!(&mut frame, "{}", glyphs.corner_tl)?;
+        write!(&mut frame, "╭")?;
         for i in 1..(term_width - 1) {
             let i = i as usize;
             if i == title_start {
@@ -5653,7 +5393,7 @@ impl Terminal {
                 write!(&mut frame, "─")?;
             }
         }
-        write!(&mut frame, "{}", glyphs.corner_tr)?;
+        write!(&mut frame, "╮")?;
 
         // Get terminal content
         let content_height = (term_height - 2) as usize;
@@ -5727,11 +5467,11 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        write!(&mut frame, "{}", glyphs.corner_bl)?;
+        write!(&mut frame, "╰")?;
         for _ in 1..(term_width - 1) {
             write!(&mut frame, "─")?;
         }
-        write!(&mut frame, "{}", glyphs.corner_br)?;
+        write!(&mut frame, "╯")?;
 
         queue!(&mut frame, ResetColor)?;
 
@@ -7350,38 +7090,6 @@ fn handle_labeled_jump_key(editor: &mut Editor, key: KeyEvent) {
 
 fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
     let t_start = std::time::Instant::now();
-
-    // Start screen shortcuts: 1-9 open a RECENT entry, h then 1-9 jumps to
-    // that harpoon slot. Digits can't start a count here (the scratch is
-    // empty) and h can't move left, so both keys are free; a pending leader
-    // sequence keeps its own digit meaning (<leader>t1 etc.).
-    if editor.dashboard_active()
-        && editor.leader_sequence.is_none()
-        && key.modifiers == KeyModifiers::NONE
-    {
-        match key.code {
-            KeyCode::Char('h') => {
-                editor.dashboard_harpoon_pending = true;
-                return;
-            }
-            KeyCode::Char(c @ '1'..='9') => {
-                let number = c as usize - '0' as usize;
-                let harpoon = editor.dashboard_harpoon_pending;
-                editor.dashboard_harpoon_pending = false;
-                let opened = if harpoon {
-                    editor.open_dashboard_harpoon(number)
-                } else {
-                    editor.open_dashboard_entry(number)
-                };
-                if opened {
-                    return;
-                }
-            }
-            _ => editor.dashboard_harpoon_pending = false,
-        }
-    } else {
-        editor.dashboard_harpoon_pending = false;
-    }
 
     // Handle leader key sequences
     if let Some(ref mut sequence) = editor.leader_sequence {
@@ -11974,254 +11682,6 @@ mod tests {
     }
 
     #[test]
-    fn leader_popup_rich_draws_bordered_box_with_title() {
-        let mut editor = Editor::default();
-        editor.set_size(100, 30);
-        handle_key(&mut editor, key(' '));
-        assert!(!editor.leader_popup_items().is_empty());
-
-        let rendered = render_editor_to_string(&editor);
-
-        assert!(
-            rendered.contains('╭') && rendered.contains('╰'),
-            "rich leader popup should be a rounded-corner box; output={rendered:?}"
-        );
-        assert!(
-            rendered.contains("<leader>"),
-            "border title should carry the pending leader sequence"
-        );
-        assert!(
-            rendered.contains("Esc:cancel"),
-            "cancel hint should sit in the top border"
-        );
-        assert!(
-            !rendered.contains("[LEADER"),
-            "rich mode replaces the flat header bar"
-        );
-    }
-
-    #[test]
-    fn leader_popup_minimal_keeps_flat_header() {
-        let mut editor = Editor::default();
-        editor.settings.ui.style = Some(crate::config::UiStyle::Minimal);
-        editor.set_size(100, 30);
-        handle_key(&mut editor, key(' '));
-        assert!(!editor.leader_popup_items().is_empty());
-
-        let rendered = render_editor_to_string(&editor);
-
-        assert!(
-            rendered.contains("[LEADER"),
-            "minimal keeps the legacy header bar; output={rendered:?}"
-        );
-        assert!(!rendered.contains('╭') && !rendered.contains('╰'));
-    }
-
-    #[test]
-    fn command_popup_rich_draws_bordered_box_with_selection_bar() {
-        let mut editor = Editor::default();
-        editor.set_size(100, 30);
-        editor.enter_command_mode_with_input("w");
-        handle_key(&mut editor, ctrl_key('d'));
-        assert_eq!(editor.command_line.popup_mode, CommandPopupMode::Completion);
-
-        let rendered = render_editor_to_string(&editor);
-
-        assert!(
-            rendered.contains('╭') && rendered.contains('╰'),
-            "rich command popup should be a rounded-corner box; output={rendered:?}"
-        );
-        assert!(
-            rendered.contains("Commands"),
-            "border title should name the popup"
-        );
-        assert!(
-            !rendered.contains("[COMMANDS]"),
-            "rich mode replaces the flat header bar"
-        );
-        assert_eq!(
-            rendered.matches('▌').count(),
-            1,
-            "selected suggestion carries the accent bar; output={rendered:?}"
-        );
-    }
-
-    #[test]
-    fn command_popup_minimal_keeps_flat_header() {
-        let mut editor = Editor::default();
-        editor.settings.ui.style = Some(crate::config::UiStyle::Minimal);
-        editor.set_size(100, 30);
-        editor.enter_command_mode_with_input("w");
-        handle_key(&mut editor, ctrl_key('d'));
-        assert_eq!(editor.command_line.popup_mode, CommandPopupMode::Completion);
-
-        let rendered = render_editor_to_string(&editor);
-
-        assert!(
-            rendered.contains("[COMMANDS]"),
-            "minimal keeps the legacy header bar; output={rendered:?}"
-        );
-        assert!(!rendered.contains('╭') && !rendered.contains('▌'));
-    }
-
-    #[test]
-    fn floating_terminal_rich_uses_glyph_table_corners_and_title_icon() {
-        crossterm::style::force_color_output(true);
-        let mut editor = Editor::default();
-        editor.set_size(100, 40);
-        editor
-            .floating_terminal
-            .create_session(Some("rich-chrome".to_string()))
-            .expect("test terminal session");
-
-        let output = SharedOutput::default();
-        let mut terminal = Terminal::new_for_test(Box::new(output.clone()));
-        terminal
-            .render_terminal_only(&editor)
-            .expect("terminal-only render");
-        let rendered = output.into_string();
-
-        assert!(
-            rendered.contains('╭') && rendered.contains('╯'),
-            "rich floating terminal keeps rounded corners"
-        );
-        assert!(
-            rendered.contains('\u{f120}'),
-            "rich floating terminal title carries the terminal icon"
-        );
-    }
-
-    #[test]
-    fn floating_terminal_minimal_uses_square_corners() {
-        crossterm::style::force_color_output(true);
-        let mut editor = Editor::default();
-        editor.settings.ui.style = Some(crate::config::UiStyle::Minimal);
-        editor.set_size(100, 40);
-        editor
-            .floating_terminal
-            .create_session(Some("minimal-chrome".to_string()))
-            .expect("test terminal session");
-
-        let output = SharedOutput::default();
-        let mut terminal = Terminal::new_for_test(Box::new(output.clone()));
-        terminal
-            .render_terminal_only(&editor)
-            .expect("terminal-only render");
-        let rendered = output.into_string();
-
-        assert!(
-            rendered.contains('┌') && rendered.contains('┘'),
-            "minimal floating terminal matches the finder's square corners"
-        );
-        assert!(!rendered.contains('╭') && !rendered.contains('\u{f120}'));
-    }
-
-    fn dashboard_test_editor(name: &str) -> (Editor, std::path::PathBuf) {
-        let base = std::env::temp_dir().join(format!("nevi-dashboard-render-{name}"));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).unwrap();
-        let mut editor = Editor::default();
-        editor.set_size(100, 30);
-        editor.recent_files =
-            crate::recent_files::RecentFiles::load_from(base.join("recents.json"));
-        editor.project_root = Some(base.clone());
-        (editor, base)
-    }
-
-    #[test]
-    fn dashboard_renders_on_untouched_scratch_and_vanishes_after_open() {
-        let (mut editor, base) = dashboard_test_editor("visible");
-        let file = base.join("recent.rs");
-        std::fs::write(&file, "fn main() {}\n").unwrap();
-        editor.recent_files.record(&file);
-
-        let rendered = render_editor_to_string(&editor);
-        assert!(
-            rendered.contains("N E V I"),
-            "start screen shows the brand title; output={rendered:?}"
-        );
-        assert!(rendered.contains("your vim muscle memory"));
-        assert!(rendered.contains("RECENT"));
-        assert!(rendered.contains("recent.rs"));
-        assert!(rendered.contains("find files"), "key hints are listed");
-        // The empty pane must never be painted beneath the start screen —
-        // paint-then-cover is visible as flicker on every keypress.
-        assert_eq!(
-            rendered.matches('~').count(),
-            0,
-            "no tilde rows under the dashboard; output={rendered:?}"
-        );
-
-        editor.open_file(file).unwrap();
-        let rendered = render_editor_to_string(&editor);
-        assert!(
-            !rendered.contains("RECENT"),
-            "start screen disappears once a real buffer is open"
-        );
-    }
-
-    #[test]
-    fn dashboard_h_digit_opens_harpoon_slot() {
-        let (mut editor, base) = dashboard_test_editor("harpoon-key");
-        let pin_a = base.join("pin_a.rs");
-        let pin_b = base.join("pin_b.rs");
-        std::fs::write(&pin_a, "a\n").unwrap();
-        std::fs::write(&pin_b, "b\n").unwrap();
-        editor.harpoon.add_file(&pin_a);
-        editor.harpoon.add_file(&pin_b);
-
-        handle_key(&mut editor, key('h'));
-        assert!(editor.dashboard_active(), "h alone just arms the shortcut");
-        handle_key(&mut editor, key('2'));
-
-        assert_eq!(
-            editor
-                .buffer()
-                .path
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str()),
-            Some("pin_b.rs"),
-            "h2 opens harpoon slot 2"
-        );
-        assert!(!editor.dashboard_harpoon_pending);
-    }
-
-    #[test]
-    fn dashboard_digit_opens_numbered_entry_via_key() {
-        let (mut editor, base) = dashboard_test_editor("digit");
-        let first = base.join("first.rs");
-        let second = base.join("second.rs");
-        std::fs::write(&first, "a\n").unwrap();
-        std::fs::write(&second, "b\n").unwrap();
-        editor.recent_files.record(&first);
-        editor.recent_files.record(&first);
-        editor.recent_files.record(&second);
-
-        handle_key(&mut editor, key('2'));
-
-        assert_eq!(
-            editor.buffer().path.as_deref(),
-            Some(std::fs::canonicalize(&second).unwrap().as_path()),
-            "pressing 2 opens the second numbered entry"
-        );
-        assert!(!editor.dashboard_active());
-    }
-
-    #[test]
-    fn dashboard_digit_without_entries_falls_through() {
-        let (mut editor, _base) = dashboard_test_editor("empty");
-
-        handle_key(&mut editor, key('3'));
-
-        assert!(
-            editor.dashboard_active(),
-            "digit with no entry behaves like a normal count prefix"
-        );
-        assert!(editor.buffer().path.is_none());
-    }
-
-    #[test]
     fn full_render_harness_captures_buffer_text() {
         let mut editor = Editor::default();
         editor.set_size(80, 12);
@@ -15665,9 +15125,6 @@ mod tests {
     #[test]
     fn partial_render_kind_allows_only_statusline_damage() {
         let mut editor = Editor::default();
-        // A pathless untouched scratch would show the start screen, which
-        // blocks partial rendering; name the buffer to opt out.
-        editor.buffer_mut().path = Some(PathBuf::from("named.rs"));
         editor.render_damage.clear_after_full_render();
         editor.render_damage.mark_statusline();
         assert_eq!(

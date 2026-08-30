@@ -1546,42 +1546,6 @@ impl InputState {
                 self.reset();
                 action
             }
-            // ]m - go to next method/function start (tree-sitter)
-            (']', KeyModifiers::NONE, KeyCode::Char('m')) => {
-                let action = self.motion_or_operator(
-                    Motion::Method(crate::method_motion::MethodBoundary::NextStart),
-                    count,
-                );
-                self.reset();
-                action
-            }
-            // [m - go to previous method/function start
-            ('[', KeyModifiers::NONE, KeyCode::Char('m')) => {
-                let action = self.motion_or_operator(
-                    Motion::Method(crate::method_motion::MethodBoundary::PrevStart),
-                    count,
-                );
-                self.reset();
-                action
-            }
-            // ]M - go to next method/function end (modifier is `_`: shifted char)
-            (']', _, KeyCode::Char('M')) => {
-                let action = self.motion_or_operator(
-                    Motion::Method(crate::method_motion::MethodBoundary::NextEnd),
-                    count,
-                );
-                self.reset();
-                action
-            }
-            // [M - go to previous method/function end
-            ('[', _, KeyCode::Char('M')) => {
-                let action = self.motion_or_operator(
-                    Motion::Method(crate::method_motion::MethodBoundary::PrevEnd),
-                    count,
-                );
-                self.reset();
-                action
-            }
             // ]h - go to next harpoon file
             (']', KeyModifiers::NONE, KeyCode::Char('h')) => {
                 self.reset();
@@ -2286,35 +2250,6 @@ mod tests {
         // Shifted chars may arrive with or without the SHIFT modifier
         // depending on the terminal, so both must dispatch.
         assert_motion(&[key('['), key('{')], Motion::UnmatchedOpenBrace, 1);
-        {
-            use crate::method_motion::MethodBoundary;
-            assert_motion(
-                &[key(']'), key('m')],
-                Motion::Method(MethodBoundary::NextStart),
-                1,
-            );
-            assert_motion(
-                &[key('['), key('m')],
-                Motion::Method(MethodBoundary::PrevStart),
-                1,
-            );
-            assert_motion(
-                &[key(']'), shift('M')],
-                Motion::Method(MethodBoundary::NextEnd),
-                1,
-            );
-            assert_motion(
-                &[key('['), shift('M')],
-                Motion::Method(MethodBoundary::PrevEnd),
-                1,
-            );
-            assert_motion(
-                &[key('2'), key(']'), key('m')],
-                Motion::Method(MethodBoundary::NextStart),
-                2,
-            );
-        }
-
         assert_motion(&[key('['), shift('{')], Motion::UnmatchedOpenBrace, 1);
         assert_motion(&[key(']'), key('}')], Motion::UnmatchedCloseBrace, 1);
         assert_motion(&[key('['), key('(')], Motion::UnmatchedOpenParen, 1);

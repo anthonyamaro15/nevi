@@ -173,7 +173,6 @@ When specifying keys, use these formats:
 - [Finder/Picker (Telescope-like)](#finderpicker-telescope-like)
 - [File Explorer](#file-explorer)
 - [Harpoon-like Quick Files](#harpoon-like-quick-files)
-- [Start Screen](#start-screen)
 - [Commands](#commands)
 
 ---
@@ -232,18 +231,8 @@ When specifying keys, use these formats:
 | `]}` | Move to next unmatched `}` (out of the enclosing block) |
 | `[(` | Move to previous unmatched `(` |
 | `])` | Move to next unmatched `)` |
-| `[m` | Move to previous method/function start |
-| `]m` | Move to next method/function start |
-| `[M` | Move to previous method/function end |
-| `]M` | Move to next method/function end |
 | `(` | Move to previous sentence |
 | `)` | Move to next sentence |
-
-The method motions `[m` `]m` `[M` `]M` jump between tree-sitter function
-boundaries (functions and methods of the current language) instead of using
-Vim's brace-scanning heuristic, so they land on real functions in Rust-style
-code rather than on `if` braces. In files without tree-sitter support they do
-nothing.
 
 ### File Movement
 
@@ -353,6 +342,7 @@ Operators are commands that wait for a motion. For example, `d` (delete) + `w` (
 | `gP` / `{n}gP` | Paste before and leave cursor after pasted text |
 | `r{char}` / `{n}r{char}` | Replace exactly one/count characters; `Enter` replaces them with one newline |
 | `R` / `{n}R` | Enter replace mode; a count repeats the entered replacement text |
+| `.` | Repeat last change |
 
 > **Examples:**
 > - `dw` - Delete from cursor to start of next word
@@ -900,19 +890,6 @@ Quick file switching for frequently used files (inspired by [harpoon.nvim](https
 See [Leader Key Mappings](#leader-key-mappings) for adding files and jumping to slots.
 
 ---
-
-## Start Screen
-
-Launching `nevi` with nothing to edit shows the start screen: recent files
-with their projects, harpoon pins, and key hints.
-
-| Key | Action |
-|-----|--------|
-| `1` - `9` | Open the numbered recent file |
-| `h` then `1` - `9` | Jump to that harpoon slot (same slots as `<leader>1`-`<leader>4`) |
-
-Every other key behaves as normal — start typing, open the finder, or open a
-file and the screen goes away on its own.
 
 ## Commands
 

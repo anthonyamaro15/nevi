@@ -906,15 +906,11 @@ fn longest_common_command_prefix(suggestions: &[CommandSuggestion]) -> String {
     prefix
 }
 
-/// Read path for command history (XDG state dir, with a fallback to the
-/// legacy pre-0.4.0 location). Saves go through `command_history_save_path`
-/// so the data migrates to the XDG home on its next write.
 fn command_history_path() -> PathBuf {
-    crate::shada::state_file("command_history.txt")
-}
-
-fn command_history_save_path() -> PathBuf {
-    crate::shada::state_dir().join("command_history.txt")
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("nevi")
+        .join("command_history.txt")
 }
 
 /// Parse a command string into a Command
@@ -1888,7 +1884,7 @@ impl CommandLine {
     }
 
     fn save_history(&self) {
-        let path = command_history_save_path();
+        let path = command_history_path();
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }

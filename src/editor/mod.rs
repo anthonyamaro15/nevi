@@ -22,7 +22,7 @@ use crate::finder::FuzzyFinder;
 use crate::frecency::FrecencyDb;
 use crate::input::{
     CaseOperator, InputState, Motion, TextObject, TextObjectModifier, TextObjectType, apply_motion,
-    motion::{change_word_end, last_addressable_line},
+    motion::last_addressable_line,
 };
 use crate::lsp::types::{CodeActionItem, CompletionItem, Diagnostic, Location, TextEdit};
 use crate::syntax::SyntaxManager;
@@ -1053,14 +1053,6 @@ pub struct Editor {
     pub needs_completion_refresh: bool,
     /// Frecency database for completion ranking
     pub frecency: FrecencyDb,
-    /// Recently opened files backing the start screen. In-memory during the
-    /// session; the binary saves it once on exit.
-    pub recent_files: crate::recent_files::RecentFiles,
-    /// Startup-to-first-frame time, set by the binary; shown on the start
-    /// screen's "ready in Nms" line (None in tests / embedded use).
-    pub startup_ready_ms: Option<u128>,
-    /// True after `h` was pressed on the start screen, awaiting a slot digit.
-    pub dashboard_harpoon_pending: bool,
     /// Signature help popup content
     pub signature_help: Option<crate::lsp::types::SignatureHelpResult>,
     /// Show diagnostic floating popup at cursor
@@ -1597,9 +1589,6 @@ impl Editor {
             hover_content: None,
             needs_completion_refresh: false,
             frecency: FrecencyDb::load(),
-            recent_files: crate::recent_files::RecentFiles::load(),
-            startup_ready_ms: None,
-            dashboard_harpoon_pending: false,
             signature_help: None,
             show_diagnostic_float: false,
             search_matches: Vec::new(),
@@ -1954,73 +1943,6 @@ impl Editor {
         self.macros.set_macro(register, keys);
         self.buffer_mut().dirty = false;
         Ok(message)
-    }
-
-    /// Gather persistable session state (macros, registers, global marks,
-    /// search history) for the shada-lite file. Unencodable macros and
-    /// clipboard-backed registers are session-only by design.
-    pub fn export_shada(&self) -> crate::shada::ShadaState {
-        let mut state = crate::shada::ShadaState {
-            version: crate::shada::FORMAT_VERSION,
-            ..Default::default()
-        };
-
-        for (register, keys) in self.macros.recorded() {
-            if let Ok(notation) = crate::input::key_notation::encode_key_sequence(keys) {
-                state.macros.insert(register, notation);
-            }
-        }
-
-        for register in 'a'..='z' {
-            if let Some(content) = self.registers.get(Some(register)) {
-                state.registers.insert(register, content.to_shada_entry());
-            }
-        }
-        state.unnamed_register = self
-            .registers
-            .get(None)
-            .map(RegisterContent::to_shada_entry);
-
-        for (name, mark) in self.marks.get_global_marks() {
-            if let Some(path) = &mark.path {
-                state.global_marks.insert(
-                    name,
-                    crate::shada::MarkEntry {
-                        path: path.clone(),
-                        line: mark.line,
-                        col: mark.col,
-                    },
-                );
-            }
-        }
-
-        state.search_history = self.search.history.clone();
-        state
-    }
-
-    /// Restore a previous session's shada state. Entries that no longer parse
-    /// (hand-edited macros) are skipped; everything else loads independently.
-    pub fn apply_shada(&mut self, state: crate::shada::ShadaState) {
-        for (register, notation) in state.macros {
-            if let Ok(keys) = crate::input::key_notation::parse_key_sequence(&notation) {
-                self.macros.set_macro(register, keys);
-            }
-        }
-
-        for (register, entry) in state.registers {
-            self.registers
-                .set(Some(register), RegisterContent::from_shada_entry(entry));
-        }
-        if let Some(entry) = state.unnamed_register {
-            self.registers
-                .set(None, RegisterContent::from_shada_entry(entry));
-        }
-
-        for (name, mark) in state.global_marks {
-            self.marks.set_global(name, mark.path, mark.line, mark.col);
-        }
-
-        self.search.history = state.search_history;
     }
 
     /// Build a project-wide replace preview and open it as a read-only buffer.
@@ -3786,7 +3708,6 @@ impl Editor {
             self.parse_current_buffer();
             // Update git diff for this buffer
             self.update_git_diff();
-            self.recent_files.record(&path);
             return Ok(());
         }
 
@@ -3838,8 +3759,6 @@ impl Editor {
 
         // Update git diff for the newly opened file
         self.update_git_diff();
-
-        self.recent_files.record(&path);
 
         Ok(())
     }
@@ -4734,23 +4653,7 @@ impl Editor {
 
     /// Change from cursor to motion target (delete + insert mode)
     pub fn change_motion(&mut self, motion: Motion, count: usize, register: Option<char>) {
-        // Vim's cw/cW special case (:h cw): on a non-blank, the change stops
-        // at the end of the word rather than including the trailing
-        // whitespace the w motion would cover.
-        let range = match motion {
-            Motion::WordForward | Motion::BigWordForward => change_word_end(
-                &self.buffers[self.current_buffer_idx],
-                self.cursor.line,
-                self.cursor.col,
-                count,
-                motion == Motion::BigWordForward,
-            )
-            .map(|(end_line, end_col)| (self.cursor.line, self.cursor.col, end_line, end_col)),
-            _ => None,
-        }
-        .or_else(|| self.motion_range(motion, count));
-
-        if let Some((start_line, start_col, end_line, end_col)) = range {
+        if let Some((start_line, start_col, end_line, end_col)) = self.motion_range(motion, count) {
             let linewise = Self::motion_is_linewise(motion);
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
@@ -9871,9 +9774,7 @@ impl Editor {
             end_col,
             CaseOperator::ToggleCase,
         );
-        // Vim advances the cursor one past the last toggled char, clamped
-        // to the line's last character (:h ~).
-        self.cursor.col = (end_col + 1).min(line_len.saturating_sub(1));
+        self.cursor.col = end_col;
         self.clamp_cursor();
     }
 
@@ -10381,17 +10282,6 @@ impl Editor {
             }
             Motion::DisplayLineMiddle => {
                 self.move_to_display_line_position(DisplayLineTarget::Middle);
-            }
-            Motion::Method(boundary) => {
-                let started = Instant::now();
-                if let Some((line, col)) = self.method_motion_target(boundary, count) {
-                    self.cursor.line = line;
-                    self.cursor.col = col;
-                    self.clamp_cursor();
-                    self.scroll_to_cursor();
-                }
-                self.flight_recorder
-                    .record("method_motion", started.elapsed());
             }
             Motion::PageDown if !self.settings.editor.wrap => {
                 self.scroll_full_page(true, count);
@@ -11431,44 +11321,15 @@ impl Editor {
         )
     }
 
-    /// Resolve `]m`-family targets against the background parse tree.
-    ///
-    /// Never parses on the keypress: no tree (unsupported language,
-    /// large-file degradation mode) fails the motion in place, and a stale
-    /// tree lags the buffer by at most one highlight debounce. The target is
-    /// clamped to the live buffer because the tree's source is a snapshot.
-    fn method_motion_target(
-        &self,
-        boundary: crate::method_motion::MethodBoundary,
-        count: usize,
-    ) -> Option<(usize, usize)> {
-        let cursor_byte = self
-            .syntax
-            .position_to_byte(self.cursor.line, self.cursor.col)?;
-        let (line, col) = self
-            .syntax
-            .method_motion_target(cursor_byte, boundary, count)?;
-        let buffer = &self.buffers[self.current_buffer_idx];
-        let line = line.min(last_addressable_line(buffer));
-        let col = col.min(buffer.line_len(line).saturating_sub(1));
-        Some((line, col))
-    }
-
     fn motion_range(&self, motion: Motion, count: usize) -> Option<(usize, usize, usize, usize)> {
-        let (target_line, target_col) = if let Motion::Method(boundary) = motion {
-            // Tree-sitter motions can't be computed by the pure
-            // apply_motion; this keeps d]m / y[m / c]M working.
-            self.method_motion_target(boundary, count)?
-        } else {
-            apply_motion(
-                &self.buffers[self.current_buffer_idx],
-                motion,
-                self.cursor.line,
-                self.cursor.col,
-                count,
-                self.text_rows(),
-            )?
-        };
+        let (target_line, target_col) = apply_motion(
+            &self.buffers[self.current_buffer_idx],
+            motion,
+            self.cursor.line,
+            self.cursor.col,
+            count,
+            self.text_rows(),
+        )?;
 
         if Self::motion_is_linewise(motion) {
             if target_line == self.cursor.line {
@@ -11645,7 +11506,6 @@ mod tests {
     mod open_line;
     mod replace;
     mod screen_position;
-    mod shada;
 
     use super::{Editor, JumpList, Mode, SearchDirection, SplitLayout};
     use crate::input::Motion;
@@ -12861,157 +12721,6 @@ mod tests {
         // to that segment's start + half a screenwidth.
         editor.apply_motion(Motion::DisplayLineMiddle, 1);
         assert_eq!((editor.cursor.line, editor.cursor.col), (0, 74 + 37));
-    }
-
-    // Method motions resolve against the background parse tree; these pin
-    // the Editor wiring (cursor path, operator path, no-tree fallback,
-    // stale-tree clamp). Boundary selection itself is tested in
-    // src/method_motion.rs.
-    const METHOD_RS: &str = "fn alpha() {\n    one();\n}\nfn beta() {\n    two();\n}\n";
-
-    fn editor_with_parsed_rust(content: &str) -> Editor {
-        let mut editor = Editor::default();
-        editor.replace_buffer_content(content);
-        editor
-            .syntax
-            .set_language_from_path(std::path::Path::new("test.rs"));
-        editor.syntax.parse(&editor.buffers[0]);
-        editor
-    }
-
-    #[test]
-    fn method_motion_jumps_between_function_starts() {
-        use crate::method_motion::MethodBoundary;
-        let mut editor = editor_with_parsed_rust(METHOD_RS);
-        editor.cursor.set(1, 4);
-
-        editor.apply_motion(Motion::Method(MethodBoundary::NextStart), 1);
-        assert_eq!((editor.cursor.line, editor.cursor.col), (3, 0));
-
-        editor.apply_motion(Motion::Method(MethodBoundary::PrevStart), 1);
-        assert_eq!((editor.cursor.line, editor.cursor.col), (0, 0));
-    }
-
-    #[test]
-    fn method_motion_ends_land_on_closing_brace() {
-        use crate::method_motion::MethodBoundary;
-        let mut editor = editor_with_parsed_rust(METHOD_RS);
-
-        editor.apply_motion(Motion::Method(MethodBoundary::NextEnd), 1);
-        assert_eq!((editor.cursor.line, editor.cursor.col), (2, 0));
-
-        editor.cursor.set(4, 0);
-        editor.apply_motion(Motion::Method(MethodBoundary::PrevEnd), 1);
-        assert_eq!((editor.cursor.line, editor.cursor.col), (2, 0));
-    }
-
-    #[test]
-    fn method_motion_supports_counts() {
-        use crate::method_motion::MethodBoundary;
-        let mut editor = editor_with_parsed_rust(METHOD_RS);
-        editor.cursor.set(0, 3);
-
-        editor.apply_motion(Motion::Method(MethodBoundary::NextEnd), 2);
-        assert_eq!((editor.cursor.line, editor.cursor.col), (5, 0));
-
-        // Not enough targets: the whole motion fails, as in Vim.
-        editor.apply_motion(Motion::Method(MethodBoundary::NextStart), 5);
-        assert_eq!((editor.cursor.line, editor.cursor.col), (5, 0));
-    }
-
-    #[test]
-    fn delete_to_next_method_start_is_exclusive() {
-        use crate::method_motion::MethodBoundary;
-        let mut editor = editor_with_parsed_rust(METHOD_RS);
-
-        // d]m from the top deletes alpha but leaves beta's line intact
-        // (exclusive motion ending in column 0 stops at the previous line's
-        // last character, per :h exclusive).
-        editor.delete_motion(Motion::Method(MethodBoundary::NextStart), 1, None);
-        assert_eq!(
-            editor.buffers[0].content(),
-            "\nfn beta() {\n    two();\n}\n"
-        );
-    }
-
-    #[test]
-    fn method_motion_without_tree_is_a_no_op() {
-        use crate::method_motion::MethodBoundary;
-        // No language / no parse: unsupported filetypes and large-file
-        // degradation mode both look like this.
-        let mut editor = Editor::default();
-        editor.replace_buffer_content(METHOD_RS);
-        editor.cursor.set(1, 4);
-
-        editor.apply_motion(Motion::Method(MethodBoundary::NextStart), 1);
-        assert_eq!((editor.cursor.line, editor.cursor.col), (1, 4));
-        assert_eq!(
-            editor.motion_range(Motion::Method(MethodBoundary::NextStart), 1),
-            None
-        );
-    }
-
-    #[test]
-    fn method_motion_clamps_stale_tree_targets_to_live_buffer() {
-        use crate::method_motion::MethodBoundary;
-        // The tree still describes the six-line file, but the buffer shrank
-        // without a reparse (same staleness window highlighting has). The
-        // target must be clamped, never leave the buffer.
-        let mut editor = editor_with_parsed_rust(METHOD_RS);
-        editor.buffers[0].set_content("fn alpha() {\n");
-        editor.cursor.set(0, 0);
-
-        editor.apply_motion(Motion::Method(MethodBoundary::NextStart), 1);
-        assert_eq!(editor.cursor.line, 0);
-        assert!(editor.cursor.col < editor.buffers[0].line_len(0));
-    }
-
-    #[test]
-    fn method_motion_cache_refreshes_after_reparse() {
-        use crate::method_motion::MethodBoundary;
-        // First motion populates the per-parse boundary cache...
-        let mut editor = editor_with_parsed_rust(METHOD_RS);
-        editor.apply_motion(Motion::Method(MethodBoundary::NextStart), 1);
-        assert_eq!((editor.cursor.line, editor.cursor.col), (3, 0));
-
-        // ...then a reparse of a different layout must invalidate it —
-        // stale cached boundaries would jump to line 3 instead of line 1.
-        editor.replace_buffer_content("fn one() {}\nfn two() {}\n");
-        editor.syntax.parse(&editor.buffers[0]);
-        editor.cursor.set(0, 0);
-        editor.apply_motion(Motion::Method(MethodBoundary::NextStart), 1);
-        assert_eq!((editor.cursor.line, editor.cursor.col), (1, 0));
-    }
-
-    #[test]
-    fn method_motion_no_ops_when_cursor_is_beyond_snapshot() {
-        use crate::method_motion::MethodBoundary;
-        // Buffer grew after the last parse; the cursor line doesn't exist in
-        // the snapshot, so position_to_byte fails and the motion does
-        // nothing rather than resolving against the wrong text.
-        let mut editor = editor_with_parsed_rust("fn a() {}\n");
-        editor.buffers[0].set_content("fn a() {}\nx\nx\nfn b() {}\n");
-        editor.cursor.set(2, 0);
-
-        editor.apply_motion(Motion::Method(MethodBoundary::NextStart), 1);
-        assert_eq!((editor.cursor.line, editor.cursor.col), (2, 0));
-    }
-
-    #[test]
-    fn method_motion_extends_visual_selection() {
-        use crate::method_motion::MethodBoundary;
-        let mut editor = editor_with_parsed_rust(METHOD_RS);
-        editor.cursor.set(0, 3);
-        editor.enter_visual_mode();
-
-        editor.apply_motion(Motion::Method(MethodBoundary::NextStart), 1);
-        // Cursor moved, anchor stayed: v]m selects up to the next function.
-        assert_eq!((editor.cursor.line, editor.cursor.col), (3, 0));
-        assert_eq!(editor.mode, Mode::Visual);
-        assert_eq!(
-            (editor.visual.anchor_line, editor.visual.anchor_col),
-            (0, 3)
-        );
     }
 
     // Issue #227: j/k must keep the preferred column (Vim curswant) when

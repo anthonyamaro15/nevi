@@ -39,12 +39,6 @@ pub struct SyntaxManager {
     cache_version: Cell<u64>,
     /// Version of the buffer last parsed
     parse_version: u64,
-    /// Sorted function boundaries for `]m`-family motions, computed lazily
-    /// from the current tree (the collecting walk costs ~5ms on a 13k-line
-    /// file, so keypresses after the first are a binary search). Cleared on
-    /// every parse rather than version-keyed: parse_version mirrors
-    /// buffer.version(), which can collide across buffer switches.
-    method_boundaries: RefCell<Option<crate::method_motion::MethodBoundaries>>,
 }
 
 impl SyntaxManager {
@@ -61,7 +55,6 @@ impl SyntaxManager {
             highlight_cache: RefCell::new(Vec::new()),
             cache_version: Cell::new(0),
             parse_version: 0,
-            method_boundaries: RefCell::new(None),
         }
     }
 
@@ -519,7 +512,6 @@ impl SyntaxManager {
         if self.language.is_none() {
             return;
         }
-        self.method_boundaries.replace(None);
 
         if self.language.as_deref() == Some("yaml") {
             self.source_cache = buffer_to_string(buffer);
@@ -574,7 +566,6 @@ impl SyntaxManager {
         if self.language.is_none() {
             return;
         }
-        self.method_boundaries.replace(None);
 
         if self.language.as_deref() == Some("yaml") {
             self.source_cache = content.to_string();
@@ -711,26 +702,6 @@ impl SyntaxManager {
     /// Set a new theme
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
-    }
-
-    /// Resolve a `]m`-family target in the current tree's snapshot.
-    ///
-    /// The boundary list is computed on first use after each parse and then
-    /// answered by binary search, so repeated presses cost microseconds.
-    pub fn method_motion_target(
-        &self,
-        cursor_byte: usize,
-        boundary: crate::method_motion::MethodBoundary,
-        count: usize,
-    ) -> Option<(usize, usize)> {
-        let (tree, source) = self.get_tree_and_source()?;
-        let language = self.language.as_deref()?;
-        let mut cache = self.method_boundaries.borrow_mut();
-        cache
-            .get_or_insert_with(|| {
-                crate::method_motion::MethodBoundaries::collect(tree, source, language)
-            })
-            .find(boundary, cursor_byte, count)
     }
 
     /// Get the syntax tree and source for indent calculation.

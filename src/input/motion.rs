@@ -82,11 +82,6 @@ pub enum Motion {
     // pane width is available, like the other display-line motions)
     DisplayLineMiddle,
 
-    // ]m [m ]M [M - tree-sitter function boundaries (handled in
-    // Editor::apply_motion / motion_range where the parse tree lives; see
-    // src/method_motion.rs for the deliberate Vim deviation)
-    Method(crate::method_motion::MethodBoundary),
-
     // go - go to the [count]'th byte of the buffer (1-based, default 1)
     GoToByte,
 }
@@ -405,12 +400,6 @@ pub fn apply_motion(
             // Screen-aware handling lives in Editor::apply_motion; operator
             // ranges would need the pane width, so the motion fails there
             // rather than computing a wrong range.
-            None
-        }
-
-        Motion::Method(_) => {
-            // Needs the parse tree; resolved in Editor::apply_motion and
-            // Editor::motion_range, which both hold self.syntax.
             None
         }
 
@@ -1053,52 +1042,6 @@ fn find_word_backward(
     Some((l, c))
 }
 
-/// Inclusive end position for the `cw`/`cW` special case (:h cw): when the
-/// cursor is on a non-blank, change stops at the end of the word instead of
-/// covering the trailing whitespace `w` spans. Not the same as `ce` — Vim's
-/// end_word "stop" flag means a cursor already on the last char of a word
-/// consumes the first count standing still, so `cw` there changes only that
-/// char. Returns None on whitespace or an empty line, where `cw` keeps the
-/// normal exclusive `w` range.
-pub fn change_word_end(
-    buffer: &Buffer,
-    line: usize,
-    col: usize,
-    count: usize,
-    big_word: bool,
-) -> Option<(usize, usize)> {
-    let ch = buffer.char_at(line, col)?;
-    if ch.is_whitespace() {
-        return None;
-    }
-
-    let cursor_class = classify_char(ch);
-    let at_word_end = match buffer.char_at(line, col + 1) {
-        None => true,
-        Some(next) => {
-            let next_class = classify_char(next);
-            if big_word {
-                next_class == CharClass::Whitespace
-            } else {
-                next_class != cursor_class
-            }
-        }
-    };
-
-    let mut l = line;
-    let mut c = col;
-    let reps = count.max(1) - usize::from(at_word_end);
-    for _ in 0..reps {
-        if let Some((nl, nc)) = find_word_end(buffer, l, c, big_word) {
-            l = nl;
-            c = nc;
-        } else {
-            break;
-        }
-    }
-    Some((l, c))
-}
-
 /// Find the end of the current/next word (e motion)
 fn find_word_end(
     buffer: &Buffer,
@@ -1427,35 +1370,5 @@ mod tests {
 
             assert_eq!(position, Some((2, 0)), "motion={motion:?}");
         }
-    }
-
-    #[test]
-    fn change_word_end_stops_at_current_word_end() {
-        // cols: a0 b1 c2 _3 d4 e5 f6 _7 _8 #9
-        let buffer = buffer_with("abc def  # text\n");
-
-        // mid-word: end of the current word, not the trailing spaces
-        assert_eq!(change_word_end(&buffer, 0, 4, 1, false), Some((0, 6)));
-        // already on the last char of a word: stand still
-        assert_eq!(change_word_end(&buffer, 0, 6, 1, false), Some((0, 6)));
-        // counted from a word end: the stand-still consumes the first count
-        assert_eq!(change_word_end(&buffer, 0, 6, 2, false), Some((0, 9)));
-    }
-
-    #[test]
-    fn change_word_end_ignores_whitespace_and_empty_lines() {
-        let buffer = buffer_with("abc def\n\nx\n");
-
-        assert_eq!(change_word_end(&buffer, 0, 3, 1, false), None);
-        assert_eq!(change_word_end(&buffer, 1, 0, 1, false), None);
-    }
-
-    #[test]
-    fn change_word_end_big_word_spans_punctuation() {
-        let buffer = buffer_with("a.b c.d  e\n");
-
-        assert_eq!(change_word_end(&buffer, 0, 0, 1, true), Some((0, 2)));
-        // small-word variant stops at the class boundary instead
-        assert_eq!(change_word_end(&buffer, 0, 0, 1, false), Some((0, 0)));
     }
 }

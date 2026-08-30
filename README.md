@@ -33,7 +33,6 @@ A fast, native terminal editor where your existing vim/neovim muscle memory just
 > Windows support is planned.
 
 - **Vim/neovim keybindings** - Most common keybinds implemented, more being added regularly
-- **Start screen** - Launching with no file shows recent files and harpoon pins; press `1`-`9` to jump back in
 - **Built-in LSP** - rust-analyzer, typescript-language-server, pyright, and more
 - **Tree-sitter syntax highlighting** - Fast, accurate highlighting for Rust, Go, Ruby, PHP, TypeScript, JavaScript, Python, CSS, JSON, TOML, HTML, Markdown, Bash/shell
 - **Theme selection** - Multiple built-in colorschemes with easy switching
@@ -243,7 +242,6 @@ nevi file1.rs file2.rs
 - `:ToolInstall` / `:LspInstall` - Open missing LSP/tool install guidance in a read-only `[tool-installer]` buffer
 - `:FlightRecorder` / `:WhySlow` - Open recent in-memory timing report in a read-only `[flight-recorder]` buffer
 - `:Macros` / `:MacroEdit {a-z}` - View recorded macros as readable notation, or edit one as text and `:w` it back into its register
-- Session persistence - macros, registers, global marks, and search history survive restarts (like vim's shada), stored in `~/.local/state/nevi/state.json` (respects `$XDG_STATE_HOME`, same convention as nvim's `stdpath('state')`)
 - `:ConfigOpen` / `:config` - Open your user config file
 - `:ConfigDefaults` - View the latest built-in default config in a read-only `[config-defaults]` buffer
 - `:MarkdownPreview` - Open rendered Markdown reader for `.md` files (`j/k`, `Ctrl-d/u`, `g/G`, `q`)
