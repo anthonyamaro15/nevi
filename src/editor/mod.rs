@@ -6,7 +6,7 @@ mod register;
 mod replace;
 mod undo;
 
-pub use buffer::Buffer;
+pub use buffer::{Buffer, BufferEdit};
 pub use cursor::{Cursor, DesiredCol};
 pub use macros::MacroState;
 pub use marks::{Mark, Marks};
@@ -9859,7 +9859,13 @@ impl Editor {
             };
         }
 
-        self.parse_current_buffer();
+        // Reparse only when the buffer actually changed since the last parse.
+        // During a range re-indent every changed line bumps the version, so
+        // this still parses per changed line, but incrementally (microseconds
+        // instead of a full parse); clean lines cost nothing.
+        if self.buffers[self.current_buffer_idx].version() != self.last_syntax_version {
+            self.parse_current_buffer();
+        }
 
         let prev_line = line_num.saturating_sub(1);
         let prev_col = self.buffers[self.current_buffer_idx].line_len(prev_line);
@@ -11935,7 +11941,7 @@ impl Editor {
     fn parse_current_buffer(&mut self) {
         let buffer_idx = self.current_buffer_idx;
         let started = Instant::now();
-        self.syntax.parse(&self.buffers[buffer_idx]);
+        self.syntax.parse(&mut self.buffers[buffer_idx]);
         self.flight_recorder
             .record("syntax_parse", started.elapsed());
         self.last_syntax_version = self.buffers[buffer_idx].version();
@@ -13320,7 +13326,7 @@ mod tests {
         editor
             .syntax
             .set_language_from_path(std::path::Path::new("test.rs"));
-        editor.syntax.parse(&editor.buffers[0]);
+        editor.syntax.parse(&mut editor.buffers[0]);
         editor
     }
 
@@ -13422,7 +13428,7 @@ mod tests {
         // ...then a reparse of a different layout must invalidate it —
         // stale cached boundaries would jump to line 3 instead of line 1.
         editor.replace_buffer_content("fn one() {}\nfn two() {}\n");
-        editor.syntax.parse(&editor.buffers[0]);
+        editor.syntax.parse(&mut editor.buffers[0]);
         editor.cursor.set(0, 0);
         editor.apply_motion(Motion::Method(MethodBoundary::NextStart), 1);
         assert_eq!((editor.cursor.line, editor.cursor.col), (1, 0));

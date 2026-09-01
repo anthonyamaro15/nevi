@@ -449,7 +449,7 @@ class C {
 
         let mut syntax = SyntaxManager::new();
         syntax.set_language_from_path(Path::new("big.rs"));
-        syntax.parse(&buffer);
+        syntax.parse(&mut buffer);
         let (tree, cached) = syntax.get_tree_and_source().expect("tree");
 
         // Run 1 is the cold pass — the one a user's first `]m` press pays —
