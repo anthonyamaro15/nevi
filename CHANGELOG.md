@@ -10,6 +10,7 @@
 - The file picker no longer blocks the editor while scanning the project. The walk runs on parallel background workers and streams results in as they are found, so the picker opens instantly with a scanning counter, and the walk itself is about 5x faster. (#305)
 - Live grep walks and searches files with parallel workers instead of one file at a time. Results are unchanged; only the order files appear in can differ between runs. (#306)
 - The full repo git status scan runs in the background instead of blocking startup, saving, focus changes, and opening the explorer. Explorer markers apply when the scan finishes, a frame or two later. Opening a 15k file repo went from about 130ms to about 30ms. (#308)
+- Syntax highlighting now reparses incrementally: edits are applied to the previous tree instead of reparsing the whole file, with an automatic fallback to a full parse on buffer switches, reloads, and formatter output. A mid edit reparse of an 18k line file went from 43.8ms to 5.4ms, and gg=G on a 2.1k line file from 8 seconds to about 1.3. Set NEVI_INCREMENTAL_PARSE=0 to force the old full reparse path. (#309)
 
 ### Vim Compatibility
 

@@ -3,10 +3,38 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Unicode scalar values taken from the first line for shebang detection.
 const FIRST_LINE_PREFIX_CHARS: usize = 256;
+
+/// A text mutation in tree-sitter's InputEdit shape: byte offsets plus
+/// (row, byte-column) points. Recorded on every change so the syntax layer
+/// can reparse incrementally instead of from scratch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferEdit {
+    pub start_byte: usize,
+    pub old_end_byte: usize,
+    pub new_end_byte: usize,
+    pub start_point: (usize, usize),
+    pub old_end_point: (usize, usize),
+    pub new_end_point: (usize, usize),
+}
+
+/// Beyond this the queue is dropped and the next parse is a full one; an
+/// unparsed buffer (no language) must not accumulate edits forever.
+const MAX_PENDING_EDITS: usize = 10_000;
+
+/// Sentinel for a broken edit history (bulk replace, overflow): no version
+/// can match it, so the next parse falls back to a full reparse.
+const EDIT_HISTORY_BROKEN: u64 = u64::MAX;
+
+static NEXT_BUFFER_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_buffer_id() -> u64 {
+    NEXT_BUFFER_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// A text buffer backed by a rope data structure.
 /// Ropes provide O(log n) insertions and deletions, making them
@@ -23,6 +51,14 @@ pub struct Buffer {
     /// Last known modification time of the file on disk (for autoread)
     last_mtime: Option<SystemTime>,
     kind: BufferKind,
+    /// Unique identity, so the syntax layer only reuses a tree for the
+    /// buffer that produced it
+    id: u64,
+    /// Text edits since edits_base_version, drained by incremental reparse
+    pending_edits: Vec<BufferEdit>,
+    /// Buffer version where pending_edits starts; EDIT_HISTORY_BROKEN after
+    /// a bulk replace or queue overflow
+    edits_base_version: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +78,9 @@ impl Buffer {
     /// Create a new empty buffer
     pub fn new() -> Self {
         Self {
+            id: next_buffer_id(),
+            pending_edits: Vec::new(),
+            edits_base_version: 0,
             text: Rope::new(),
             path: None,
             dirty: false,
@@ -73,6 +112,9 @@ impl Buffer {
         };
 
         Ok(Self {
+            id: next_buffer_id(),
+            pending_edits: Vec::new(),
+            edits_base_version: 0,
             text,
             path: Some(path),
             dirty: false,
@@ -89,6 +131,9 @@ impl Buffer {
         syntax_hint_path: Option<PathBuf>,
     ) -> Self {
         Self {
+            id: next_buffer_id(),
+            pending_edits: Vec::new(),
+            edits_base_version: 0,
             text: Rope::from_str(content),
             path: None,
             dirty: false,
@@ -109,6 +154,9 @@ impl Buffer {
         syntax_hint_path: Option<PathBuf>,
     ) -> Self {
         Self {
+            id: next_buffer_id(),
+            pending_edits: Vec::new(),
+            edits_base_version: 0,
             text: Rope::from_str(content),
             path: None,
             dirty: false,
@@ -210,13 +258,16 @@ impl Buffer {
     pub fn reload(&mut self) -> anyhow::Result<()> {
         let path = self
             .path
-            .as_ref()
+            .clone()
             .ok_or_else(|| anyhow::anyhow!("No file path set"))?;
 
         if path.exists() {
-            self.text = Rope::from_reader(std::fs::File::open(path)?)?;
+            self.text = Rope::from_reader(std::fs::File::open(&path)?)?;
             Self::fix_missing_final_newline(&mut self.text);
-            self.last_mtime = std::fs::metadata(path).ok().and_then(|m| m.modified().ok());
+            self.break_edit_history();
+            self.last_mtime = std::fs::metadata(&path)
+                .ok()
+                .and_then(|m| m.modified().ok());
             self.dirty = false;
             self.version = self.version.wrapping_add(1);
         }
@@ -309,8 +360,59 @@ impl Buffer {
         }
         self.text = Rope::from_str(content);
         Self::fix_missing_final_newline(&mut self.text);
+        self.break_edit_history();
         self.dirty = true;
         self.version = self.version.wrapping_add(1);
+    }
+
+    /// Buffer identity for syntax-tree reuse guards.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Byte offset and (row, byte-column) point of a char index, in the
+    /// rope's CURRENT state. Callers capture old-state values before
+    /// mutating and new-state values after.
+    fn point_at_char(&self, char_idx: usize) -> (usize, (usize, usize)) {
+        let char_idx = char_idx.min(self.text.len_chars());
+        let byte = self.text.char_to_byte(char_idx);
+        let line = self.text.char_to_line(char_idx);
+        (byte, (line, byte - self.text.line_to_byte(line)))
+    }
+
+    fn push_edit(&mut self, edit: BufferEdit) {
+        if self.edits_base_version == EDIT_HISTORY_BROKEN {
+            return;
+        }
+        if self.pending_edits.len() >= MAX_PENDING_EDITS {
+            self.break_edit_history();
+            return;
+        }
+        self.pending_edits.push(edit);
+    }
+
+    fn break_edit_history(&mut self) {
+        self.pending_edits.clear();
+        self.edits_base_version = EDIT_HISTORY_BROKEN;
+    }
+
+    /// Drain the edits covering exactly (since_version ..= now). Returns
+    /// None when the history does not start at since_version (bulk replace,
+    /// overflow, or a different consumer drained it); the caller must then
+    /// do a full reparse and call reset_edit_history.
+    pub fn take_edits_since(&mut self, since_version: u64) -> Option<Vec<BufferEdit>> {
+        if self.edits_base_version == since_version {
+            self.edits_base_version = self.version;
+            Some(std::mem::take(&mut self.pending_edits))
+        } else {
+            None
+        }
+    }
+
+    /// Restart edit history from the current version, after a full parse.
+    pub fn reset_edit_history(&mut self) {
+        self.pending_edits.clear();
+        self.edits_base_version = self.version;
     }
 
     /// Get the char index for a given line and column
@@ -330,7 +432,17 @@ impl Buffer {
             return;
         }
         let idx = self.line_col_to_char(line, col);
+        let (start_byte, start_point) = self.point_at_char(idx);
         self.text.insert_char(idx, ch);
+        let (new_end_byte, new_end_point) = self.point_at_char(idx + 1);
+        self.push_edit(BufferEdit {
+            start_byte,
+            old_end_byte: start_byte,
+            new_end_byte,
+            start_point,
+            old_end_point: start_point,
+            new_end_point,
+        });
         self.dirty = true;
         self.version = self.version.wrapping_add(1);
     }
@@ -341,7 +453,17 @@ impl Buffer {
             return;
         }
         let idx = self.line_col_to_char(line, col);
+        let (start_byte, start_point) = self.point_at_char(idx);
         self.text.insert(idx, s);
+        let (new_end_byte, new_end_point) = self.point_at_char(idx + s.chars().count());
+        self.push_edit(BufferEdit {
+            start_byte,
+            old_end_byte: start_byte,
+            new_end_byte,
+            start_point,
+            old_end_point: start_point,
+            new_end_point,
+        });
         self.dirty = true;
         self.version = self.version.wrapping_add(1);
     }
@@ -353,7 +475,17 @@ impl Buffer {
         }
         let idx = self.line_col_to_char(line, col);
         if idx < self.text.len_chars() {
+            let (start_byte, start_point) = self.point_at_char(idx);
+            let (old_end_byte, old_end_point) = self.point_at_char(idx + 1);
             self.text.remove(idx..idx + 1);
+            self.push_edit(BufferEdit {
+                start_byte,
+                old_end_byte,
+                new_end_byte: start_byte,
+                start_point,
+                old_end_point,
+                new_end_point: start_point,
+            });
             self.dirty = true;
             self.version = self.version.wrapping_add(1);
         }
@@ -373,7 +505,17 @@ impl Buffer {
         let start = self.line_col_to_char(start_line, start_col);
         let end = self.line_col_to_char(end_line, end_col);
         if start < end && end <= self.text.len_chars() {
+            let (start_byte, start_point) = self.point_at_char(start);
+            let (old_end_byte, old_end_point) = self.point_at_char(end);
             self.text.remove(start..end);
+            self.push_edit(BufferEdit {
+                start_byte,
+                old_end_byte,
+                new_end_byte: start_byte,
+                start_point,
+                old_end_point,
+                new_end_point: start_point,
+            });
             self.dirty = true;
             self.version = self.version.wrapping_add(1);
         }
@@ -396,6 +538,9 @@ impl Buffer {
             self.text.len_chars()
         };
 
+        let (start_byte, start_point) = self.point_at_char(start_idx);
+        let (old_end_byte, old_end_point) = self.point_at_char(end_idx);
+
         // Remove the old line content
         if start_idx < end_idx {
             self.text.remove(start_idx..end_idx);
@@ -412,6 +557,16 @@ impl Buffer {
         };
 
         self.text.insert(start_idx, &content_to_insert);
+        let (new_end_byte, new_end_point) =
+            self.point_at_char(start_idx + content_to_insert.chars().count());
+        self.push_edit(BufferEdit {
+            start_byte,
+            old_end_byte,
+            new_end_byte,
+            start_point,
+            old_end_point,
+            new_end_point,
+        });
         self.dirty = true;
         self.version = self.version.wrapping_add(1);
     }
@@ -525,11 +680,16 @@ impl Buffer {
     /// Deletes old_text at position and inserts new_text
     pub fn apply_change(&mut self, line: usize, col: usize, old_text: &str, new_text: &str) {
         let idx = self.line_col_to_char(line, col);
+        let (start_byte, start_point) = self.point_at_char(idx);
+        let (mut old_end_byte, mut old_end_point) = (start_byte, start_point);
 
         // Delete old text if any
         if !old_text.is_empty() {
             let end_idx = idx + old_text.chars().count();
             if end_idx <= self.text.len_chars() {
+                let old_end = self.point_at_char(end_idx);
+                old_end_byte = old_end.0;
+                old_end_point = old_end.1;
                 self.text.remove(idx..end_idx);
             }
         }
@@ -539,6 +699,15 @@ impl Buffer {
             self.text.insert(idx, new_text);
         }
 
+        let (new_end_byte, new_end_point) = self.point_at_char(idx + new_text.chars().count());
+        self.push_edit(BufferEdit {
+            start_byte,
+            old_end_byte,
+            new_end_byte,
+            start_point,
+            old_end_point,
+            new_end_point,
+        });
         self.dirty = true;
         self.version = self.version.wrapping_add(1);
     }
@@ -762,5 +931,85 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn edit_history_drains_only_for_the_matching_version() {
+        let mut buffer = Buffer::new();
+        buffer.insert_str(0, 0, "hello\n");
+        let v1 = buffer.version();
+        buffer.insert_char(0, 5, '!');
+
+        // Wrong base version: no drain, full reparse required.
+        assert!(buffer.take_edits_since(v1 + 10).is_none());
+
+        // After a full parse resets history, draining from the reset point
+        // yields exactly the edits since then.
+        buffer.reset_edit_history();
+        let base = buffer.version();
+        buffer.insert_char(0, 0, 'x');
+        buffer.delete_char(0, 0);
+        let edits = buffer.take_edits_since(base).expect("matching base drains");
+        assert_eq!(edits.len(), 2);
+
+        // Drained: the next drain from the new version is empty but valid.
+        let edits = buffer
+            .take_edits_since(buffer.version())
+            .expect("empty drain");
+        assert!(edits.is_empty());
+    }
+
+    #[test]
+    fn bulk_replace_breaks_edit_history_until_reset() {
+        let mut buffer = Buffer::new();
+        buffer.insert_str(0, 0, "one\n");
+        buffer.reset_edit_history();
+        let base = buffer.version();
+
+        buffer.set_content("two\n");
+        assert!(
+            buffer.take_edits_since(base).is_none(),
+            "set_content must force a full reparse"
+        );
+        assert!(buffer.take_edits_since(buffer.version()).is_none());
+
+        buffer.reset_edit_history();
+        buffer.insert_char(0, 0, 'a');
+        // The old pre-replace base still cannot drain; only the reset
+        // point can.
+        assert!(buffer.take_edits_since(base).is_none());
+        let reset_point = buffer.version().wrapping_sub(1);
+        assert_eq!(
+            buffer
+                .take_edits_since(reset_point)
+                .map(|edits| edits.len()),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn recorded_edit_has_correct_bytes_for_multibyte_text() {
+        let mut buffer = Buffer::new();
+        buffer.insert_str(0, 0, "h\u{e9}llo\nworld\n");
+        buffer.reset_edit_history();
+        let base = buffer.version();
+
+        // Insert after the 2-byte 'é': char col 2 is byte col 3.
+        buffer.insert_char(0, 2, '\u{2713}');
+        let edits = buffer.take_edits_since(base).expect("drain");
+        assert_eq!(edits.len(), 1);
+        let edit = edits[0];
+        assert_eq!(edit.start_byte, 3);
+        assert_eq!(edit.start_point, (0, 3));
+        assert_eq!(edit.old_end_byte, 3);
+        assert_eq!(edit.new_end_byte, 6, "check mark is 3 bytes");
+        assert_eq!(edit.new_end_point, (0, 6));
+
+        // Delete across the newline: old end lands on line 1.
+        let base = buffer.version();
+        buffer.delete_range(0, 5, 1, 2);
+        let edits = buffer.take_edits_since(base).expect("drain");
+        assert_eq!(edits[0].old_end_point, (1, 2));
+        assert_eq!(edits[0].new_end_point, edits[0].start_point);
     }
 }
