@@ -2298,6 +2298,9 @@ fn main() -> anyhow::Result<()> {
                     editor.set_size(w, h);
                 }
                 let t_render = Instant::now();
+                // The renderer draws the active window from the pane mirror;
+                // keys sync it in handle_key, this covers every other path.
+                editor.sync_active_pane_view();
                 terminal.render(&editor)?;
                 record_metric!(
                     editor,

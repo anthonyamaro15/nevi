@@ -597,6 +597,65 @@ pub(super) const EDITING_CASES: &[OracleCase] = &[
         initial_text: "a\nb\nc\nd\n",
         keys: "3J",
     },
+    // A counted join is one change: a single undo restores every line.
+    OracleCase {
+        name: "counted join then undo",
+        initial_text: "one\ntwo\nthree\nfour\n",
+        keys: "3Ju",
+    },
+    OracleCase {
+        name: "counted join without space then undo",
+        initial_text: "one\ntwo\nthree\nfour\n",
+        keys: "3gJu",
+    },
+    // [<Space> and ]<Space> (Neovim defaults) add blank lines around the
+    // cursor line. Above pushes the cursor down with its text, keeping the
+    // column; below leaves it alone. Count, dot repeat, and undo apply.
+    OracleCase {
+        name: "blank line below",
+        initial_text: "one\ntwo\nthree\n",
+        keys: "j]<Space>",
+    },
+    OracleCase {
+        name: "blank line above moves with the text",
+        initial_text: "one\ntwo\nthree\n",
+        keys: "jll[<Space>",
+    },
+    OracleCase {
+        name: "counted blank lines below",
+        initial_text: "one\ntwo\nthree\n",
+        keys: "j2]<Space>",
+    },
+    OracleCase {
+        name: "counted blank lines above",
+        initial_text: "one\ntwo\nthree\n",
+        keys: "j2[<Space>",
+    },
+    OracleCase {
+        name: "blank line below on last line",
+        initial_text: "one\ntwo\n",
+        keys: "G]<Space>",
+    },
+    OracleCase {
+        name: "blank line below on last line without trailing newline",
+        initial_text: "one\ntwo",
+        keys: "G]<Space>",
+    },
+    OracleCase {
+        name: "blank line above on first line",
+        initial_text: "one\ntwo\n",
+        keys: "[<Space>",
+    },
+    OracleCase {
+        name: "dot repeats counted blank lines below",
+        initial_text: "one\ntwo\n",
+        keys: "2]<Space>.",
+    },
+    OracleCase {
+        name: "undo removes counted blank lines above",
+        initial_text: "one\ntwo\nthree\n",
+        keys: "jll2[<Space>u",
+    },
     OracleCase {
         name: "join without added space",
         initial_text: "foo \nbar\n",
@@ -684,18 +743,195 @@ pub(super) const EDITING_CASES: &[OracleCase] = &[
         initial_text: "\n",
         keys: "i<C-v><C-y>x<C-q><C-y><Esc>",
     },
-    // The literal must belong to the surrounding insert session for undo and
-    // dot repeat. A counted variant (3i<C-v>..) is blocked on the pre-existing
-    // bug that counted lowercase i never repeats; a <C-v><CR> variant is
-    // blocked on ropey treating a bare CR as a line break.
+    // The literal must belong to the surrounding insert session for undo,
+    // counts, and dot repeat. A <C-v><CR> variant is blocked on ropey
+    // treating a bare CR as a line break.
     OracleCase {
         name: "undo removes literal insert with its session",
         initial_text: "\n",
         keys: "i<C-v><C-y><Esc>u",
     },
     OracleCase {
+        name: "counted literal insert repeats the control char",
+        initial_text: "\n",
+        keys: "3i<C-v><C-y><Esc>",
+    },
+    OracleCase {
         name: "dot repeat replays literal insert",
         initial_text: "\n",
         keys: "i<C-v><C-y><Esc>.",
+    },
+    // Insert <C-y>/<C-e> copy the character in the cursor's screen column
+    // from the line above/below, one per press. Texts are asymmetric so a
+    // copy from the wrong line or column shows up in the snapshot.
+    OracleCase {
+        name: "insert ctrl-y copies char from line above",
+        initial_text: "abc\nxyz\n",
+        keys: "jli<C-y><Esc>",
+    },
+    OracleCase {
+        name: "insert ctrl-e copies char from line below",
+        initial_text: "abc\nxyz\n",
+        keys: "li<C-e><Esc>",
+    },
+    // Each copy advances the cursor, so presses walk along the other line
+    // and stop inserting once it runs out.
+    OracleCase {
+        name: "repeated ctrl-e walks along the line below",
+        initial_text: "ab\nwxyz\n",
+        keys: "A<C-e><C-e><C-e><Esc>",
+    },
+    // No line to copy from, or a line that ends before the column: Vim
+    // beeps and stays in insert mode.
+    OracleCase {
+        name: "ctrl-y on the first line inserts nothing",
+        initial_text: "abc\n",
+        keys: "li<C-y>Q<Esc>",
+    },
+    OracleCase {
+        name: "ctrl-e on the last line inserts nothing",
+        initial_text: "abc\nxyz\n",
+        keys: "jli<C-e>Q<Esc>",
+    },
+    OracleCase {
+        name: "ctrl-e past the end of a shorter line inserts nothing",
+        initial_text: "abcdef\nxy\n",
+        keys: "4li<C-e>Q<Esc>",
+    },
+    // Columns are screen columns: a wide character counts for two, and a
+    // character that spans the cursor column is copied whole.
+    OracleCase {
+        name: "ctrl-y matches wide characters by screen column",
+        initial_text: "日本\nabcd\n",
+        keys: "jlli<C-y><Esc>",
+    },
+    OracleCase {
+        name: "ctrl-e from a wide character copies the char in its column",
+        initial_text: "日本\nabcd\n",
+        keys: "li<C-e><Esc>",
+    },
+    OracleCase {
+        name: "ctrl-e inside a wide character copies the spanning char",
+        initial_text: "abcd\n日本\n",
+        keys: "3li<C-e><Esc>",
+    },
+    // Copied like a literal: no auto pair for a paren.
+    OracleCase {
+        name: "ctrl-e copies an open paren without auto pairing",
+        initial_text: "x\n(\n",
+        keys: "i<C-e><Esc>",
+    },
+    OracleCase {
+        name: "undo removes ctrl-y copies with the session",
+        initial_text: "abc\nxyz\n",
+        keys: "ji<C-y><C-y><Esc>u",
+    },
+    OracleCase {
+        name: "counted insert repeats the copied character",
+        initial_text: "ab\ncd\n",
+        keys: "3i<C-e><Esc>",
+    },
+    // Vim's redo buffer holds the copied character, not the key, so `.`
+    // re-inserts the same text instead of copying from the new neighbour.
+    OracleCase {
+        name: "dot repeat re-inserts the copied character not the key",
+        initial_text: "ab\ncd\nef\n",
+        keys: "i<C-e><Esc>j.",
+    },
+    // ]p and [p paste with the indent adjusted to the current line: the
+    // first non-empty pasted line takes the current line's indent and the
+    // rest keep their indent relative to it. Only "]p" pastes below; [p,
+    // [P and ]P all paste above. Indents stay under 8 columns so Neovim's
+    // noexpandtab never turns them into tabs.
+    OracleCase {
+        name: "bracket p pastes below with the current indent",
+        initial_text: "  a\nb\n    c\n",
+        keys: "jyyj]p",
+    },
+    OracleCase {
+        name: "bracket open p pastes above with the current indent",
+        initial_text: "  a\nb\n    c\n",
+        keys: "jyyj[p",
+    },
+    OracleCase {
+        name: "bracket open P pastes above with the current indent",
+        initial_text: "  a\nb\n    c\n",
+        keys: "jyyj[P",
+    },
+    OracleCase {
+        name: "bracket close P pastes above with the current indent",
+        initial_text: "  a\nb\n    c\n",
+        keys: "jyyj]P",
+    },
+    OracleCase {
+        name: "bracket p keeps relative indent and clamps at zero",
+        initial_text: "    x\n      y\n\n  z\nq\n",
+        keys: "4yyG]p",
+    },
+    OracleCase {
+        name: "bracket p reindents whitespace-only lines",
+        initial_text: "  a\n   \n  b\n    q\n",
+        keys: "3yyG]p",
+    },
+    OracleCase {
+        name: "bracket p onto an empty line removes the indent",
+        initial_text: "    x\n  y\n\n",
+        keys: "yyG]p",
+    },
+    OracleCase {
+        name: "bracket p with a charwise register pastes like p",
+        initial_text: "ab\n    cd\n",
+        keys: "ylj]p",
+    },
+    // Neovim's nostartofline default: a counted G keeps column 0, so the
+    // charwise put lands after the first space, not after the `c`.
+    OracleCase {
+        name: "bracket p charwise keeps the column counted G lands on",
+        initial_text: "  a\nb\n    c\n",
+        keys: "2Gyl3G]p",
+    },
+    // A multi-line charwise register keeps its first line merged into the
+    // current line untouched; the lines after it get the indent fix, with
+    // the first of them taking the current line's indent. Not covered: a
+    // charwise register whose LAST line is empty or whitespace-only. Vim
+    // re-indents that merged line including the tail's own whitespace;
+    // Nevi leaves the tail alone. Rare enough to leave undone.
+    OracleCase {
+        name: "bracket p with a multiline charwise register",
+        initial_text: "ab\ncd\n    q\n",
+        keys: "vjyG]p",
+    },
+    // Plain multi-line charwise puts leave the cursor on the first pasted
+    // character. `p` used to land one column right of it (single-line math
+    // applied to multi-line text); `P` was already right.
+    OracleCase {
+        name: "multiline charwise paste after leaves cursor at its start",
+        initial_text: "ab\ncd\n    q\n",
+        keys: "vjyGp",
+    },
+    OracleCase {
+        name: "multiline charwise paste before leaves cursor at its start",
+        initial_text: "ab\ncd\n    q\n",
+        keys: "vjyGP",
+    },
+    OracleCase {
+        name: "counted bracket p indents every copy",
+        initial_text: "  a\nb\n    c\n",
+        keys: "jyyj3]p",
+    },
+    OracleCase {
+        name: "bracket p from a named register",
+        initial_text: "  a\nb\n    c\n",
+        keys: "j\"ayyj\"a]p",
+    },
+    OracleCase {
+        name: "undo bracket p",
+        initial_text: "  a\nb\n    c\n",
+        keys: "jyyj]pu",
+    },
+    OracleCase {
+        name: "dot repeat bracket p",
+        initial_text: "a\n  b\n    c\n",
+        keys: "yyj]pj.",
     },
 ];

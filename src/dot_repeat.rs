@@ -116,6 +116,19 @@ impl DotRepeat {
         self.replaying = false;
     }
 
+    /// Replace the key just observed with the keys `.` should replay for it.
+    /// Vim's redo buffer stores what a key inserted rather than the key when
+    /// the result depends on context: insert `<C-e>`/`<C-y>` copy a character
+    /// from a neighbouring line, and `.` must re-insert that same character.
+    /// An empty `keys` drops the key from the change entirely.
+    pub fn replace_last_key(&mut self, keys: &[KeyEvent]) {
+        if self.replaying || self.candidate.is_empty() {
+            return;
+        }
+        self.candidate.pop();
+        self.candidate.extend_from_slice(keys);
+    }
+
     /// Drop the in-flight candidate. The `.` keystroke (and its count) must
     /// never become the recorded change.
     pub fn abandon_candidate(&mut self) {
@@ -216,6 +229,22 @@ mod tests {
         dot.observe(Mode::Insert, false, 3, 0, esc());
         dot.observe(Mode::Normal, false, 3, 0, key('j'));
         assert_eq!(chars(&dot.take_replay_keys(None).unwrap()), "ihi␛");
+    }
+
+    #[test]
+    fn replaced_key_is_what_gets_replayed() {
+        let mut dot = DotRepeat::default();
+        let ctrl_e = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        dot.observe(Mode::Normal, false, 1, 0, key('i'));
+        // Insert <C-e> copied a `c`; Vim redoes the `c`, not the key.
+        dot.observe(Mode::Insert, false, 1, 0, ctrl_e);
+        dot.replace_last_key(&[key('c')]);
+        // A second press copied nothing and must vanish from the change.
+        dot.observe(Mode::Insert, false, 2, 0, ctrl_e);
+        dot.replace_last_key(&[]);
+        dot.observe(Mode::Insert, false, 2, 0, esc());
+        dot.observe(Mode::Normal, false, 2, 0, key('j'));
+        assert_eq!(chars(&dot.take_replay_keys(None).unwrap()), "ic␛");
     }
 
     #[test]

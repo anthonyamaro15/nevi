@@ -1,6 +1,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum KeybindMode {
     Normal,
+    Insert,
+    Visual,
     Leader,
 }
 
@@ -73,6 +75,43 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
     // Method motions deliberately deviate from Vim's brace heuristic (they
     // use tree-sitter function boundaries), so they carry Nevi regression
     // tests instead of oracle cases.
+    // Quit and buffer keys cannot be oracle cases: quitting ends the nvim
+    // snapshot and the harness runs a single scratch buffer.
+    nevi_regression(
+        "ZZ",
+        "Save if modified and quit",
+        "normal_zz_writes_modified_file_and_quits",
+    ),
+    nevi_regression(
+        "ZQ",
+        "Quit without saving",
+        "normal_zq_quits_without_saving",
+    ),
+    nevi_regression(
+        "<C-^>",
+        "Switch to the alternate buffer",
+        "normal_ctrl_caret_toggles_between_the_last_two_buffers",
+    ),
+    nevi_regression(
+        "[b",
+        "Go to the previous buffer",
+        "bracket_b_cycles_buffers_with_a_count",
+    ),
+    nevi_regression(
+        "]b",
+        "Go to the next buffer",
+        "bracket_b_cycles_buffers_with_a_count",
+    ),
+    vim_oracle(
+        "[<Space>",
+        "Add empty lines above the cursor line",
+        "blank line above moves with the text",
+    ),
+    vim_oracle(
+        "]<Space>",
+        "Add empty lines below the cursor line",
+        "blank line below",
+    ),
     nevi_regression(
         "]m",
         "Move to next method/function start (tree-sitter)",
@@ -263,30 +302,50 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
         "Last inserted text register",
         "last inserted text register",
     ),
-    vim_oracle(
+    insert_oracle(
         "<C-[>",
         "Exit insert mode",
         "ctrl-bracket exits insert like escape",
     ),
-    vim_oracle(
+    insert_oracle(
         "Backspace",
         "Delete character before cursor in insert",
         "insert backspace deletes typed chars",
     ),
-    vim_oracle(
+    insert_oracle(
         "<C-w>",
         "Delete word before cursor in insert",
         "insert ctrl-w deletes word before cursor",
     ),
-    vim_oracle(
+    insert_oracle(
         "<C-a>",
         "Insert previously inserted text",
         "insert ctrl-a repeats last inserted text",
     ),
-    vim_oracle(
+    insert_oracle(
         "Ctrl+r {reg}",
         "Insert register contents",
         "insert ctrl-r pastes named register",
+    ),
+    insert_oracle(
+        "<C-e>",
+        "Insert the character below the cursor",
+        "insert ctrl-e copies char from line below",
+    ),
+    insert_oracle(
+        "<C-y>",
+        "Insert the character above the cursor",
+        "insert ctrl-y copies char from line above",
+    ),
+    vim_oracle(
+        "<C-a>",
+        "Add count to the number at or after the cursor",
+        "increment number after cursor",
+    ),
+    vim_oracle(
+        "<C-x>",
+        "Subtract count from the number at or after the cursor",
+        "decrement number after cursor",
     ),
     vim_oracle("v", "Character-wise visual mode", "visual charwise delete"),
     vim_oracle("V", "Line-wise visual mode", "visual linewise delete"),
@@ -297,6 +356,43 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
         "Reselect last visual selection",
         "reselect last visual selection",
     ),
+    // Operators pressed inside visual mode.
+    visual_oracle("u", "Lowercase selection", "visual lowercase charwise"),
+    visual_oracle("U", "Uppercase selection", "visual uppercase linewise"),
+    visual_oracle("~", "Toggle case of selection", "visual toggle case block"),
+    visual_oracle("gu", "Lowercase selection", "visual g-lowercase charwise"),
+    visual_oracle("gU", "Uppercase selection", "visual g-uppercase block"),
+    visual_oracle(
+        "g~",
+        "Toggle case of selection",
+        "visual g-toggle case charwise",
+    ),
+    visual_oracle(
+        "r{char}",
+        "Replace every selected character",
+        "visual replace block skips short lines",
+    ),
+    visual_oracle(
+        "J",
+        "Join selected lines with spaces",
+        "visual join three lines",
+    ),
+    visual_oracle(
+        "gJ",
+        "Join selected lines without spaces",
+        "visual join without spaces keeps whitespace",
+    ),
+    // `=` follows Nevi's own indenter rather than Vim's C-indenting, so it
+    // is pinned natively instead of against the oracle.
+    KeybindCoverage {
+        mode: KeybindMode::Visual,
+        key: "=",
+        description: "Re-indent selected lines",
+        kind: CoverageKind::NeviRegression,
+        state: CoverageState::Protected {
+            test_id: "visual_equals_reindents_selection_like_double_equals",
+        },
+    },
     // Text-object batch: one entry per documented object family.
     vim_oracle("iw", "Inner/around word objects", "delete inner word"),
     vim_oracle("iW", "Inner/around WORD objects", "delete inner big word"),
@@ -368,6 +464,26 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
         "gp",
         "Paste after, cursor after pasted text",
         "linewise paste after and move",
+    ),
+    vim_oracle(
+        "]p",
+        "Paste after, matching the current line's indent",
+        "bracket p pastes below with the current indent",
+    ),
+    vim_oracle(
+        "[p",
+        "Paste before, matching the current line's indent",
+        "bracket open p pastes above with the current indent",
+    ),
+    vim_oracle(
+        "[P",
+        "Paste before with adjusted indent, capital alias of [p",
+        "bracket open P pastes above with the current indent",
+    ),
+    vim_oracle(
+        "]P",
+        "Paste before with adjusted indent, close-bracket alias of [p",
+        "bracket close P pastes above with the current indent",
     ),
     vim_oracle(
         "gP",
@@ -490,6 +606,98 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
     vim_oracle("zz", "Center cursor line", "center cursor line"),
     vim_oracle("zt", "Move cursor line to top", "cursor line to top"),
     vim_oracle("zb", "Move cursor line to bottom", "cursor line to bottom"),
+    vim_oracle(
+        "z<CR>",
+        "Cursor line to top, cursor to first non-blank",
+        "z enter puts line at top and goes to first non-blank",
+    ),
+    vim_oracle(
+        "z.",
+        "Center cursor line, cursor to first non-blank",
+        "z dot centers line and goes to first non-blank",
+    ),
+    vim_oracle(
+        "z-",
+        "Cursor line to bottom, cursor to first non-blank",
+        "z minus puts line at bottom and goes to first non-blank",
+    ),
+    // The horizontal offset is invisible to the oracle; zl is pinned by its
+    // cursor side effect, the rest by editor-level tests.
+    vim_oracle(
+        "zl",
+        "Scroll the view right, count columns",
+        "zl drags the cursor to the new left edge",
+    ),
+    nevi_regression(
+        "zh",
+        "Scroll the view left, count columns",
+        "scroll_columns_left_pulls_a_cursor_past_the_right_edge_back_in",
+    ),
+    nevi_regression(
+        "zL",
+        "Scroll the view right half a screen",
+        "half_screen_column_scroll_uses_half_the_text_width",
+    ),
+    nevi_regression(
+        "zH",
+        "Scroll the view left half a screen",
+        "half_screen_column_scroll_uses_half_the_text_width",
+    ),
+    nevi_regression(
+        "zs",
+        "Scroll so the cursor is at the left edge",
+        "zs_and_ze_put_the_cursor_at_the_screen_edges",
+    ),
+    nevi_regression(
+        "ze",
+        "Scroll so the cursor is at the right edge",
+        "zs_and_ze_put_the_cursor_at_the_screen_edges",
+    ),
+    // Search-family batch. The prompt-editing keys (Ctrl+b/e/w/u, Ctrl+r,
+    // Up/Down) share key spellings with insert/scroll entries above, so they
+    // stay pinned by oracle cases without their own inventory rows.
+    vim_oracle("/", "Search forward", "search forward lands on match start"),
+    vim_oracle(
+        "?",
+        "Search backward",
+        "search backward lands on previous match",
+    ),
+    vim_oracle("n", "Go to next match", "next match"),
+    vim_oracle(
+        "N",
+        "Go to previous match",
+        "previous match reverses direction",
+    ),
+    vim_oracle(
+        "*",
+        "Search word under cursor forward",
+        "star searches word forward",
+    ),
+    vim_oracle(
+        "#",
+        "Search word under cursor backward",
+        "hash searches word backward",
+    ),
+    vim_oracle(
+        "g*",
+        "Search word under cursor forward, also inside longer words",
+        "g-star finds match inside longer word",
+    ),
+    vim_oracle(
+        "g#",
+        "Search word under cursor backward, also inside longer words",
+        "g-hash finds match inside longer word backward",
+    ),
+    vim_oracle(
+        "gn",
+        "Search forward and select match",
+        "gn selects next match from outside",
+    ),
+    vim_oracle(
+        "gN",
+        "Search backward and select match",
+        "gN selects match backward",
+    ),
     KeybindCoverage {
         mode: KeybindMode::Normal,
         key: "1-9 (start screen)",
@@ -528,6 +736,42 @@ const fn vim_oracle(
 
 /// Nevi-owned behavior protected by a focused regression test rather than an
 /// oracle case (used where we deliberately deviate from Vim).
+/// Same as `vim_oracle`, for keys that act in insert mode. Kept separate so a
+/// key like `<C-a>` can be inventoried once per mode it means something in.
+const fn insert_oracle(
+    key: &'static str,
+    description: &'static str,
+    oracle_case: &'static str,
+) -> KeybindCoverage {
+    KeybindCoverage {
+        mode: KeybindMode::Insert,
+        key,
+        description,
+        kind: CoverageKind::VimOracle,
+        state: CoverageState::Protected {
+            test_id: oracle_case,
+        },
+    }
+}
+
+/// Same as `vim_oracle`, for keys pressed inside visual mode, where `J`,
+/// `r`, and the case operators mean something different from normal mode.
+const fn visual_oracle(
+    key: &'static str,
+    description: &'static str,
+    oracle_case: &'static str,
+) -> KeybindCoverage {
+    KeybindCoverage {
+        mode: KeybindMode::Visual,
+        key,
+        description,
+        kind: CoverageKind::VimOracle,
+        state: CoverageState::Protected {
+            test_id: oracle_case,
+        },
+    }
+}
+
 const fn nevi_regression(
     key: &'static str,
     description: &'static str,

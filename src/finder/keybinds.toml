@@ -57,6 +57,34 @@ desc = "Write if modified and quit"
 status = "implemented"
 vim_default = true
 
+[[normal.file]]
+key = "ZQ"
+action = "force_quit"
+desc = "Quit without saving"
+status = "implemented"
+vim_default = true
+
+[[normal.file]]
+key = "<C-^>"
+action = "alternate_buffer"
+desc = "Switch to the alternate buffer"
+status = "implemented"
+vim_default = true
+
+[[normal.file]]
+key = "[b"
+action = "buffer_prev"
+desc = "Go to the previous buffer, count moves several"
+status = "implemented"
+vim_default = true
+
+[[normal.file]]
+key = "]b"
+action = "buffer_next"
+desc = "Go to the next buffer, count moves several"
+status = "implemented"
+vim_default = true
+
 # ----------------------------------------------------------------------------
 # Movement - Basic cursor movement
 # ----------------------------------------------------------------------------
@@ -384,6 +412,69 @@ desc = "Move cursor line to bottom of screen"
 status = "implemented"
 vim_default = true
 
+[[normal.scroll]]
+key = "z<CR>"
+action = "cursor_to_top_first_non_blank"
+desc = "Cursor line to top, cursor to first non-blank"
+status = "implemented"
+vim_default = true
+
+[[normal.scroll]]
+key = "z."
+action = "cursor_to_center_first_non_blank"
+desc = "Center cursor line, cursor to first non-blank"
+status = "implemented"
+vim_default = true
+
+[[normal.scroll]]
+key = "z-"
+action = "cursor_to_bottom_first_non_blank"
+desc = "Cursor line to bottom, cursor to first non-blank"
+status = "implemented"
+vim_default = true
+
+[[normal.scroll]]
+key = "zh"
+action = "scroll_columns_left"
+desc = "Scroll the view left by a count of columns (wrap off)"
+status = "implemented"
+vim_default = true
+
+[[normal.scroll]]
+key = "zl"
+action = "scroll_columns_right"
+desc = "Scroll the view right by a count of columns (wrap off)"
+status = "implemented"
+vim_default = true
+
+[[normal.scroll]]
+key = "zH"
+action = "scroll_half_screen_left"
+desc = "Scroll the view left by half a screen (wrap off)"
+status = "implemented"
+vim_default = true
+
+[[normal.scroll]]
+key = "zL"
+action = "scroll_half_screen_right"
+desc = "Scroll the view right by half a screen (wrap off)"
+status = "implemented"
+vim_default = true
+
+[[normal.scroll]]
+key = "zs"
+action = "scroll_cursor_to_screen_start"
+desc = "Scroll so the cursor sits at the left edge (wrap off)"
+status = "implemented"
+vim_default = true
+
+[[normal.scroll]]
+key = "ze"
+action = "scroll_cursor_to_screen_end"
+desc = "Scroll so the cursor sits at the right edge (wrap off)"
+status = "implemented"
+vim_default = true
+
 # ----------------------------------------------------------------------------
 # Movement - Jump list
 # ----------------------------------------------------------------------------
@@ -561,6 +652,34 @@ status = "implemented"
 vim_default = true
 
 [[normal.editing]]
+key = "<C-a>"
+action = "add_to_number"
+desc = "Add count to the number at or after the cursor"
+status = "implemented"
+vim_default = true
+
+[[normal.editing]]
+key = "<C-x>"
+action = "subtract_from_number"
+desc = "Subtract count from the number at or after the cursor"
+status = "implemented"
+vim_default = true
+
+[[normal.editing]]
+key = "[<Space>"
+action = "blank_lines_above"
+desc = "Add count empty lines above the cursor line"
+status = "implemented"
+vim_default = true
+
+[[normal.editing]]
+key = "]<Space>"
+action = "blank_lines_below"
+desc = "Add count empty lines below the cursor line"
+status = "implemented"
+vim_default = true
+
+[[normal.editing]]
 key = "."
 action = "repeat_last_change"
 desc = "Repeat last change"
@@ -585,6 +704,34 @@ vim_default = true
 key = "gp"
 action = "paste_after_move"
 desc = "Paste after and move cursor after text"
+status = "implemented"
+vim_default = true
+
+[[normal.editing]]
+key = "]p"
+action = "paste_after_adjust_indent"
+desc = "Paste after, matching the current line's indent"
+status = "implemented"
+vim_default = true
+
+[[normal.editing]]
+key = "[p"
+action = "paste_before_adjust_indent"
+desc = "Paste before, matching the current line's indent"
+status = "implemented"
+vim_default = true
+
+[[normal.editing]]
+key = "[P"
+action = "paste_before_adjust_indent"
+desc = "Paste before, matching the current line's indent"
+status = "implemented"
+vim_default = true
+
+[[normal.editing]]
+key = "]P"
+action = "paste_before_adjust_indent"
+desc = "Paste before, matching the current line's indent"
 status = "implemented"
 vim_default = true
 
@@ -815,6 +962,20 @@ vim_default = true
 key = "*"
 action = "search_word_forward"
 desc = "Search word under cursor forward"
+status = "implemented"
+vim_default = true
+
+[[normal.search]]
+key = "g*"
+action = "search_word_forward_anywhere"
+desc = "Search word under cursor forward, also inside longer words"
+status = "implemented"
+vim_default = true
+
+[[normal.search]]
+key = "g#"
+action = "search_word_backward_anywhere"
+desc = "Search word under cursor backward, also inside longer words"
 status = "implemented"
 vim_default = true
 
@@ -1368,6 +1529,20 @@ desc = "Execute one normal mode command"
 status = "implemented"
 vim_default = true
 
+[[insert.editing]]
+key = "<C-e>"
+action = "insert_char_below"
+desc = "Insert the character from the line below the cursor"
+status = "implemented"
+vim_default = true
+
+[[insert.editing]]
+key = "<C-y>"
+action = "insert_char_above"
+desc = "Insert the character from the line above the cursor"
+status = "implemented"
+vim_default = true
+
 # ----------------------------------------------------------------------------
 # Copilot (in insert mode) - ALL IMPLEMENTED
 # ----------------------------------------------------------------------------
@@ -1409,6 +1584,55 @@ locked = true
 key = "d"
 action = "delete_selection"
 desc = "Delete selection"
+status = "implemented"
+vim_default = true
+
+[[visual.editing]]
+key = "gu"
+action = "lowercase_selection"
+desc = "Lowercase selection"
+status = "implemented"
+vim_default = true
+
+[[visual.editing]]
+key = "gU"
+action = "uppercase_selection"
+desc = "Uppercase selection"
+status = "implemented"
+vim_default = true
+
+[[visual.editing]]
+key = "g~"
+action = "toggle_case_selection"
+desc = "Toggle case of selection"
+status = "implemented"
+vim_default = true
+
+[[visual.editing]]
+key = "r"
+action = "replace_selection_chars"
+desc = "Replace every selected character with the next key"
+status = "implemented"
+vim_default = true
+
+[[visual.editing]]
+key = "J"
+action = "join_selection"
+desc = "Join the selected lines with spaces"
+status = "implemented"
+vim_default = true
+
+[[visual.editing]]
+key = "gJ"
+action = "join_selection_no_space"
+desc = "Join the selected lines without spaces"
+status = "implemented"
+vim_default = true
+
+[[visual.editing]]
+key = "="
+action = "auto_indent_selection"
+desc = "Re-indent the selected lines"
 status = "implemented"
 vim_default = true
 

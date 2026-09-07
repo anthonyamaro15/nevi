@@ -1967,6 +1967,20 @@ mod tests {
     }
 
     #[test]
+    fn new_and_touch_parse_to_new_file_with_the_path() {
+        assert!(matches!(
+            parse_command("new src/lib.rs"),
+            Command::NewFile(ref p) if p == std::path::Path::new("src/lib.rs")
+        ));
+        assert!(matches!(
+            parse_command("touch notes.md"),
+            Command::NewFile(ref p) if p == std::path::Path::new("notes.md")
+        ));
+        assert!(matches!(parse_command("new"), Command::Unknown(_)));
+        assert!(matches!(parse_command("touch"), Command::Unknown(_)));
+    }
+
+    #[test]
     fn parses_keymaps_command() {
         assert!(matches!(parse_command("Keymaps"), Command::Keymaps));
         assert!(matches!(parse_command("keymaps"), Command::Keymaps));

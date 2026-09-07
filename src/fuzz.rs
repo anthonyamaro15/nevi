@@ -160,6 +160,8 @@ const ALPHABET: &[FuzzKey] = &[
     // Scrolling, panes, jumps
     plain('z', "z"),
     ctrl('r', "<C-r>"),
+    ctrl('a', "<C-a>"),
+    ctrl('x', "<C-x>"),
     ctrl('d', "<C-d>"),
     ctrl('u', "<C-u>"),
     ctrl('f', "<C-f>"),

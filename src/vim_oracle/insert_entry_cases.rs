@@ -1,8 +1,40 @@
 use super::OracleCase;
 
 /// Insert-entry cases protect Vim's cursor placement, count, and undo semantics
-/// for the normal-mode `I` and `A` commands.
+/// for the normal-mode `i`, `a`, `I`, and `A` commands.
 pub(super) const INSERT_ENTRY_CASES: &[OracleCase] = &[
+    // Counted i and a repeat the typed text like I and A do. The texts put
+    // the cursor mid-line so a repeat at the wrong position shows up.
+    OracleCase {
+        name: "counted insert at cursor",
+        initial_text: "alpha\n",
+        keys: "l3ix<Esc>",
+    },
+    OracleCase {
+        name: "counted append after cursor",
+        initial_text: "alpha\n",
+        keys: "l3ax<Esc>",
+    },
+    OracleCase {
+        name: "counted append on empty line",
+        initial_text: "\n",
+        keys: "3ax<Esc>",
+    },
+    OracleCase {
+        name: "counted insert with newline",
+        initial_text: "alpha\n",
+        keys: "l2iab<CR><Esc>",
+    },
+    OracleCase {
+        name: "undo counted insert at cursor",
+        initial_text: "alpha\n",
+        keys: "l3ix<Esc>u",
+    },
+    OracleCase {
+        name: "dot repeat replays counted insert",
+        initial_text: "alpha\n",
+        keys: "3ix<Esc>$.",
+    },
     OracleCase {
         name: "insert at first nonblank",
         initial_text: "    alpha\n",

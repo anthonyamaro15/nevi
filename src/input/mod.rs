@@ -56,6 +56,8 @@ pub struct InputState {
     pub surround_add_line: bool,
     /// Pending visual surround (S waiting for char)
     pub pending_visual_surround: bool,
+    /// Pending visual replace (r waiting for the replacement char)
+    pub pending_visual_replace: bool,
     /// Pending comment toggle (gc waiting for motion or second c)
     pub pending_comment: bool,
     /// Pending case operator (gu, gU, g~ waiting for motion)
@@ -155,16 +157,32 @@ pub enum KeyAction {
     JoinLines(usize),
     /// Join lines without space (gJ)
     JoinLinesNoSpace(usize),
-    /// Scroll cursor to center of screen (zz)
-    ScrollCenter,
-    /// Scroll cursor to top of screen (zt)
-    ScrollTop,
-    /// Scroll cursor to bottom of screen (zb)
-    ScrollBottom,
+    /// Scroll cursor line to the center (zz, z.). The count first goes to
+    /// that line; the flag also moves to the first non-blank (z.).
+    ScrollCenter(Option<usize>, bool),
+    /// Scroll cursor line to the top (zt, z<CR>), same fields as ScrollCenter
+    ScrollTop(Option<usize>, bool),
+    /// Scroll cursor line to the bottom (zb, z-), same fields as ScrollCenter
+    ScrollBottom(Option<usize>, bool),
+    /// Scroll the view sideways by count columns, negative = left (zh, zl)
+    ScrollColumns(isize),
+    /// Scroll the view sideways by count half screens, negative = left (zH, zL)
+    ScrollHalfScreenColumns(isize),
+    /// Scroll so the cursor column is the left edge of the screen (zs)
+    ScrollCursorToScreenStart,
+    /// Scroll so the cursor column is the right edge of the screen (ze)
+    ScrollCursorToScreenEnd,
     /// Scroll viewport down count lines without moving the cursor (<C-e>)
     ScrollLineDown(usize),
     /// Scroll viewport up count lines without moving the cursor (<C-y>)
     ScrollLineUp(usize),
+    /// Add the signed amount to the number at or after the cursor
+    /// (<C-a> is +count, <C-x> is -count)
+    AddToNumber(i64),
+    /// Quit without saving, like `:q!` (ZQ)
+    ForceQuit,
+    /// Edit the alternate buffer, like `:e #` (<C-^>)
+    AlternateBuffer,
     /// Repeat last change (.). Carries the typed count, if any: Vim treats
     /// an explicit count (even `1.`) as replacing the change's own count.
     RepeatLastChange(Option<usize>),
@@ -186,12 +204,28 @@ pub enum KeyAction {
     EnterSearchForward,
     /// Enter search mode (backward)
     EnterSearchBackward,
-    /// Search next (n)
-    SearchNext,
-    /// Search previous (N)
-    SearchPrev,
+    /// Search next (n), repeated count times
+    SearchNext(usize),
+    /// Search previous (N), repeated count times
+    SearchPrev(usize),
     /// Search word under cursor forward (*)
     SearchWordForward,
+    /// g*: like * but without word boundaries
+    SearchWordForwardAnywhere,
+    /// g#: like # but without word boundaries
+    SearchWordBackwardAnywhere,
+    /// [<Space>: add count blank lines above the cursor line
+    BlankLinesAbove(usize),
+    /// ]<Space>: add count blank lines below the cursor line
+    BlankLinesBelow(usize),
+    /// [b: go back count buffers
+    BufferPrev(usize),
+    /// ]b: go forward count buffers
+    BufferNext(usize),
+    /// ]p: paste after, matching the indent of the current line
+    PasteAfterAdjustIndent(usize),
+    /// [p, [P, ]P: paste before, matching the indent of the current line
+    PasteBeforeAdjustIndent(usize),
     /// Search word under cursor backward (#)
     SearchWordBackward,
     /// Search forward and select the match (gn)
@@ -377,6 +411,7 @@ impl InputState {
             || self.surround_add_motion.is_some()
             || self.surround_add_line
             || self.pending_visual_surround
+            || self.pending_visual_replace
             || self.pending_comment
             || self.pending_case_operator.is_some()
             || self.pending_set_mark
@@ -405,6 +440,7 @@ impl InputState {
         self.surround_add_motion = None;
         self.surround_add_line = false;
         self.pending_visual_surround = false;
+        self.pending_visual_replace = false;
         self.pending_comment = false;
         self.pending_case_operator = None;
         self.pending_set_mark = false;
@@ -936,6 +972,15 @@ impl InputState {
                 self.motion_or_operator(Motion::BigWordEnd, count)
             }
 
+            // <C-^> - alternate buffer. Legacy terminals send byte 0x1e, which
+            // crossterm reports as Ctrl+6; the kitty protocol reports Ctrl+^
+            // with Shift also held. Must sit before the `^` motion arm below,
+            // which accepts any modifier.
+            (modifiers, KeyCode::Char('^' | '6')) if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.reset();
+                KeyAction::AlternateBuffer
+            }
+
             // Line motions
             (KeyModifiers::NONE, KeyCode::Char('0')) => {
                 self.motion_or_operator(Motion::LineStart, count)
@@ -1052,6 +1097,16 @@ impl InputState {
             (KeyModifiers::CONTROL, KeyCode::Char('y')) => {
                 self.reset();
                 KeyAction::ScrollLineUp(count)
+            }
+
+            // <C-a>/<C-x> - add to / subtract from the number under the cursor
+            (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
+                self.reset();
+                KeyAction::AddToNumber(count as i64)
+            }
+            (KeyModifiers::CONTROL, KeyCode::Char('x')) => {
+                self.reset();
+                KeyAction::AddToNumber(-(count as i64))
             }
 
             // Insert mode entry (or text object modifier if operator pending)
@@ -1211,12 +1266,14 @@ impl InputState {
                 KeyAction::EnterSearchBackward
             }
             (KeyModifiers::NONE, KeyCode::Char('n')) => {
+                let count = self.effective_count();
                 self.reset();
-                KeyAction::SearchNext
+                KeyAction::SearchNext(count)
             }
             (KeyModifiers::SHIFT, KeyCode::Char('N')) => {
+                let count = self.effective_count();
                 self.reset();
-                KeyAction::SearchPrev
+                KeyAction::SearchPrev(count)
             }
             // Star search (* and #)
             (_, KeyCode::Char('*')) => {
@@ -1366,6 +1423,15 @@ impl InputState {
                 action
             }
             // g^ - move to first non-blank of current display line
+            // g* / g# - word search without the word boundaries
+            ('g', _, KeyCode::Char('*')) => {
+                self.reset();
+                KeyAction::SearchWordForwardAnywhere
+            }
+            ('g', _, KeyCode::Char('#')) => {
+                self.reset();
+                KeyAction::SearchWordBackwardAnywhere
+            }
             ('g', KeyModifiers::NONE, KeyCode::Char('^')) => {
                 let action = self.motion_or_operator(Motion::DisplayLineFirstNonBlank, count);
                 self.reset();
@@ -1484,25 +1550,73 @@ impl InputState {
                 self.reset();
                 KeyAction::ChangeListNewer
             }
-            // zz - scroll cursor to center of screen
+            // zz / zt / zb keep the column; z. / z<CR> / z- also go to the
+            // first non-blank. A count typed before z first jumps to that
+            // line (nvim nv_zet), so "5zt" puts line 5 at the top.
             ('z', KeyModifiers::NONE, KeyCode::Char('z')) => {
+                let line = self.count;
                 self.reset();
-                KeyAction::ScrollCenter
+                KeyAction::ScrollCenter(line, false)
             }
-            // zt - scroll cursor to top of screen
+            ('z', KeyModifiers::NONE, KeyCode::Char('.')) => {
+                let line = self.count;
+                self.reset();
+                KeyAction::ScrollCenter(line, true)
+            }
             ('z', KeyModifiers::NONE, KeyCode::Char('t')) => {
+                let line = self.count;
                 self.reset();
-                KeyAction::ScrollTop
+                KeyAction::ScrollTop(line, false)
             }
-            // zb - scroll cursor to bottom of screen
-            ('z', KeyModifiers::NONE, KeyCode::Char('b')) => {
+            ('z', KeyModifiers::NONE, KeyCode::Enter) => {
+                let line = self.count;
                 self.reset();
-                KeyAction::ScrollBottom
+                KeyAction::ScrollTop(line, true)
+            }
+            ('z', KeyModifiers::NONE, KeyCode::Char('b')) => {
+                let line = self.count;
+                self.reset();
+                KeyAction::ScrollBottom(line, false)
+            }
+            ('z', KeyModifiers::NONE, KeyCode::Char('-')) => {
+                let line = self.count;
+                self.reset();
+                KeyAction::ScrollBottom(line, true)
+            }
+            // Horizontal view scrolling; the editor ignores it with 'wrap' on.
+            ('z', KeyModifiers::NONE, KeyCode::Char('h')) => {
+                self.reset();
+                KeyAction::ScrollColumns(-(count as isize))
+            }
+            ('z', KeyModifiers::NONE, KeyCode::Char('l')) => {
+                self.reset();
+                KeyAction::ScrollColumns(count as isize)
+            }
+            ('z', KeyModifiers::SHIFT, KeyCode::Char('H')) => {
+                self.reset();
+                KeyAction::ScrollHalfScreenColumns(-(count as isize))
+            }
+            ('z', KeyModifiers::SHIFT, KeyCode::Char('L')) => {
+                self.reset();
+                KeyAction::ScrollHalfScreenColumns(count as isize)
+            }
+            ('z', KeyModifiers::NONE, KeyCode::Char('s')) => {
+                self.reset();
+                KeyAction::ScrollCursorToScreenStart
+            }
+            ('z', KeyModifiers::NONE, KeyCode::Char('e')) => {
+                self.reset();
+                KeyAction::ScrollCursorToScreenEnd
             }
             // ZZ - write if modified and quit
             ('Z', KeyModifiers::SHIFT, KeyCode::Char('Z')) => {
                 self.reset();
                 KeyAction::WriteQuitIfModified
+            }
+            // ZQ - quit without saving
+            ('Z', KeyModifiers::SHIFT, KeyCode::Char('Q')) => {
+                self.reset();
+                KeyAction::ForceQuit
             }
             // ]d - go to next diagnostic
             (']', KeyModifiers::NONE, KeyCode::Char('d')) => {
@@ -1510,6 +1624,35 @@ impl InputState {
                 KeyAction::NextDiagnostic
             }
             // [d - go to previous diagnostic
+            // Neovim defaults: [<Space> / ]<Space> blank lines, [b / ]b buffers
+            ('[', _, KeyCode::Char(' ')) => {
+                self.reset();
+                KeyAction::BlankLinesAbove(count)
+            }
+            (']', _, KeyCode::Char(' ')) => {
+                self.reset();
+                KeyAction::BlankLinesBelow(count)
+            }
+            ('[', KeyModifiers::NONE, KeyCode::Char('b')) => {
+                self.reset();
+                KeyAction::BufferPrev(count)
+            }
+            (']', KeyModifiers::NONE, KeyCode::Char('b')) => {
+                self.reset();
+                KeyAction::BufferNext(count)
+            }
+            // Paste with the indent adjusted to the current line. Only "]p"
+            // pastes below; [p, [P and ]P all paste above (nvim nv_put_opt).
+            (']', KeyModifiers::NONE, KeyCode::Char('p')) => {
+                self.reset();
+                KeyAction::PasteAfterAdjustIndent(count)
+            }
+            ('[', KeyModifiers::NONE, KeyCode::Char('p'))
+            | ('[', KeyModifiers::SHIFT, KeyCode::Char('P'))
+            | (']', KeyModifiers::SHIFT, KeyCode::Char('P')) => {
+                self.reset();
+                KeyAction::PasteBeforeAdjustIndent(count)
+            }
             ('[', KeyModifiers::NONE, KeyCode::Char('d')) => {
                 self.reset();
                 KeyAction::PrevDiagnostic
@@ -2368,6 +2511,53 @@ mod tests {
     }
 
     #[test]
+    fn bracket_space_and_bracket_b_map_with_counts() {
+        match run(&[key('['), key(' ')]) {
+            KeyAction::BlankLinesAbove(1) => {}
+            other => panic!("expected BlankLinesAbove(1), got {other:?}"),
+        }
+        match run(&[key('2'), key(']'), key(' ')]) {
+            KeyAction::BlankLinesBelow(2) => {}
+            other => panic!("expected BlankLinesBelow(2), got {other:?}"),
+        }
+        match run(&[key('['), key('b')]) {
+            KeyAction::BufferPrev(1) => {}
+            other => panic!("expected BufferPrev(1), got {other:?}"),
+        }
+        match run(&[key('3'), key(']'), key('b')]) {
+            KeyAction::BufferNext(3) => {}
+            other => panic!("expected BufferNext(3), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn normal_zq_maps_to_force_quit() {
+        match run(&[shift('Z'), shift('Q')]) {
+            KeyAction::ForceQuit => {}
+            other => panic!("expected ForceQuit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ctrl_caret_maps_to_alternate_buffer_in_every_spelling() {
+        // Legacy terminals send byte 0x1e, which crossterm reports as Ctrl+6;
+        // the kitty protocol reports the shifted key with Ctrl and Shift held.
+        for key in [
+            ctrl('^'),
+            ctrl('6'),
+            KeyEvent::new(
+                KeyCode::Char('^'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
+        ] {
+            match run(&[key]) {
+                KeyAction::AlternateBuffer => {}
+                other => panic!("expected AlternateBuffer for {key:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn ctrl_e_and_ctrl_y_map_to_line_scroll_actions_with_counts() {
         match run(&[ctrl('e')]) {
             KeyAction::ScrollLineDown(1) => {}
@@ -2408,17 +2598,58 @@ mod tests {
         assert_page_motion(&[key('1'), ctrl('d')], Motion::HalfPageDown, Some(1));
 
         match run(&[key('z'), key('z')]) {
-            KeyAction::ScrollCenter => {}
+            KeyAction::ScrollCenter(None, false) => {}
             other => panic!("expected ScrollCenter, got {:?}", other),
         }
         match run(&[key('z'), key('t')]) {
-            KeyAction::ScrollTop => {}
+            KeyAction::ScrollTop(None, false) => {}
             other => panic!("expected ScrollTop, got {:?}", other),
         }
         match run(&[key('z'), key('b')]) {
-            KeyAction::ScrollBottom => {}
+            KeyAction::ScrollBottom(None, false) => {}
             other => panic!("expected ScrollBottom, got {:?}", other),
         }
+        // The first-non-blank spellings, counts, and the horizontal family.
+        assert!(matches!(
+            run(&[key('z'), enter()]),
+            KeyAction::ScrollTop(None, true)
+        ));
+        assert!(matches!(
+            run(&[key('5'), key('z'), key('.')]),
+            KeyAction::ScrollCenter(Some(5), true)
+        ));
+        assert!(matches!(
+            run(&[key('z'), key('-')]),
+            KeyAction::ScrollBottom(None, true)
+        ));
+        assert!(matches!(
+            run(&[key('3'), key('z'), key('t')]),
+            KeyAction::ScrollTop(Some(3), false)
+        ));
+        assert!(matches!(
+            run(&[key('z'), key('l')]),
+            KeyAction::ScrollColumns(1)
+        ));
+        assert!(matches!(
+            run(&[key('4'), key('z'), key('h')]),
+            KeyAction::ScrollColumns(-4)
+        ));
+        assert!(matches!(
+            run(&[key('z'), shift('L')]),
+            KeyAction::ScrollHalfScreenColumns(1)
+        ));
+        assert!(matches!(
+            run(&[key('2'), key('z'), shift('H')]),
+            KeyAction::ScrollHalfScreenColumns(-2)
+        ));
+        assert!(matches!(
+            run(&[key('z'), key('s')]),
+            KeyAction::ScrollCursorToScreenStart
+        ));
+        assert!(matches!(
+            run(&[key('z'), key('e')]),
+            KeyAction::ScrollCursorToScreenEnd
+        ));
 
         match run(&[ctrl('o')]) {
             KeyAction::JumpBack => {}
@@ -2643,12 +2874,20 @@ mod tests {
             other => panic!("expected EnterSearchBackward, got {:?}", other),
         }
         match run(&[key('n')]) {
-            KeyAction::SearchNext => {}
-            other => panic!("expected SearchNext, got {:?}", other),
+            KeyAction::SearchNext(1) => {}
+            other => panic!("expected SearchNext(1), got {:?}", other),
+        }
+        match run(&[key('3'), key('n')]) {
+            KeyAction::SearchNext(3) => {}
+            other => panic!("expected SearchNext(3), got {:?}", other),
         }
         match run(&[shift('N')]) {
-            KeyAction::SearchPrev => {}
-            other => panic!("expected SearchPrev, got {:?}", other),
+            KeyAction::SearchPrev(1) => {}
+            other => panic!("expected SearchPrev(1), got {:?}", other),
+        }
+        match run(&[key('2'), shift('N')]) {
+            KeyAction::SearchPrev(2) => {}
+            other => panic!("expected SearchPrev(2), got {:?}", other),
         }
         match run(&[key('*')]) {
             KeyAction::SearchWordForward => {}
@@ -2657,6 +2896,14 @@ mod tests {
         match run(&[key('#')]) {
             KeyAction::SearchWordBackward => {}
             other => panic!("expected SearchWordBackward, got {:?}", other),
+        }
+        match run(&[key('g'), key('*')]) {
+            KeyAction::SearchWordForwardAnywhere => {}
+            other => panic!("expected SearchWordForwardAnywhere, got {:?}", other),
+        }
+        match run(&[key('g'), key('#')]) {
+            KeyAction::SearchWordBackwardAnywhere => {}
+            other => panic!("expected SearchWordBackwardAnywhere, got {:?}", other),
         }
         match run(&[key('g'), key('n')]) {
             KeyAction::SearchSelectNext(1) => {}

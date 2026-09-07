@@ -27,6 +27,8 @@ pub mod markdown_preview;
 pub mod method_motion;
 pub mod mouse;
 #[cfg(test)]
+mod opt_in_gates;
+#[cfg(test)]
 mod parity_report;
 pub mod perf;
 pub mod project_replace;

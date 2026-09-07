@@ -243,7 +243,7 @@ nevi file1.rs file2.rs
 - `:ToolInstall` / `:LspInstall` - Open missing LSP/tool install guidance in a read-only `[tool-installer]` buffer
 - `:FlightRecorder` / `:WhySlow` - Open recent in-memory timing report in a read-only `[flight-recorder]` buffer
 - `:Macros` / `:MacroEdit {a-z}` - View recorded macros as readable notation, or edit one as text and `:w` it back into its register
-- Session persistence - macros, registers, global marks, and search history survive restarts (like vim's shada), stored in `~/.local/state/nevi/state.json` (respects `$XDG_STATE_HOME`, same convention as nvim's `stdpath('state')`)
+- Session persistence - macros, registers (including the `"1`-`"9` delete history), global marks, search history, and the jumplist survive restarts (like vim's shada), stored in `~/.local/state/nevi/state.json` (respects `$XDG_STATE_HOME`, same convention as nvim's `stdpath('state')`)
 - `:ConfigOpen` / `:config` - Open your user config file
 - `:ConfigDefaults` - View the latest built-in default config in a read-only `[config-defaults]` buffer
 - `:MarkdownPreview` - Open rendered Markdown reader for `.md` files (`j/k`, `Ctrl-d/u`, `g/G`, `q`)

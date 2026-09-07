@@ -60,8 +60,8 @@ jobs:
       - name: Run render frame-budget guard
         run: cargo test render_frame_budget -- --ignored --nocapture
 
-      - name: Run finder perf budget guards
-        run: cargo test -- --ignored --nocapture grep_index_budget finder_filter_budget
+      - name: Run perf budget guards
+        run: cargo test -- --ignored --nocapture grep_index_budget finder_filter_budget method_motion_collect_budget
 
       - name: Install pinned Neovim for parity smoke test
         uses: rhysd/action-setup-vim@v1

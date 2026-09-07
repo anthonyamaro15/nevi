@@ -19,6 +19,8 @@ pub const FORMAT_VERSION: u32 = 1;
 const MAX_HISTORY_ENTRIES: usize = 100;
 /// Registers above this size are session-only (vim's shada caps these too).
 const MAX_REGISTER_TEXT_CHARS: usize = 100_000;
+/// Matches `MAX_JUMPS` in the editor's jump list.
+const MAX_JUMPLIST_ENTRIES: usize = 100;
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShadaState {
@@ -31,10 +33,19 @@ pub struct ShadaState {
     pub registers: BTreeMap<char, RegisterEntry>,
     #[serde(default)]
     pub unnamed_register: Option<RegisterEntry>,
+    /// Delete-history registers "1-"9. "0 is not stored: the editor currently
+    /// aliases it to the unnamed register, which is persisted separately.
+    #[serde(default)]
+    pub numbered_registers: BTreeMap<char, RegisterEntry>,
     #[serde(default)]
     pub global_marks: BTreeMap<char, MarkEntry>,
     #[serde(default)]
     pub search_history: Vec<String>,
+    /// Ctrl-O/Ctrl-I navigation history, oldest first. A jump is a
+    /// (path, line, col) triple exactly like a global mark, so the entry
+    /// type is shared; jumps in scratch buffers are session-only.
+    #[serde(default)]
+    pub jumplist: Vec<MarkEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -138,6 +149,9 @@ fn enforce_caps(state: &mut ShadaState) {
             state.unnamed_register = None;
         }
     }
+    state
+        .numbered_registers
+        .retain(|name, entry| ('1'..='9').contains(name) && fits_register_cap(entry));
     state.macros.retain(|name, _| name.is_ascii_lowercase());
     state
         .global_marks
@@ -145,6 +159,10 @@ fn enforce_caps(state: &mut ShadaState) {
     if state.search_history.len() > MAX_HISTORY_ENTRIES {
         let extra = state.search_history.len() - MAX_HISTORY_ENTRIES;
         state.search_history.drain(0..extra);
+    }
+    if state.jumplist.len() > MAX_JUMPLIST_ENTRIES {
+        let extra = state.jumplist.len() - MAX_JUMPLIST_ENTRIES;
+        state.jumplist.drain(0..extra);
     }
 }
 
@@ -214,6 +232,25 @@ mod tests {
             },
         );
         state.search_history = vec!["foo".to_string(), "bar".to_string()];
+        state.numbered_registers.insert(
+            '1',
+            RegisterEntry {
+                text: "deleted line\n".to_string(),
+                linewise: true,
+            },
+        );
+        state.jumplist = vec![
+            MarkEntry {
+                path: PathBuf::from("/tmp/first.rs"),
+                line: 5,
+                col: 0,
+            },
+            MarkEntry {
+                path: PathBuf::from("/tmp/second.rs"),
+                line: 20,
+                col: 7,
+            },
+        ];
         state
     }
 
@@ -231,6 +268,47 @@ mod tests {
         assert_eq!(loaded.unnamed_register, state.unnamed_register);
         assert_eq!(loaded.global_marks, state.global_marks);
         assert_eq!(loaded.search_history, state.search_history);
+        assert_eq!(loaded.numbered_registers, state.numbered_registers);
+        assert_eq!(loaded.jumplist, state.jumplist);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn caps_drop_invalid_numbered_keys_and_trim_jumplist() {
+        let path = temp_state_path("v2caps");
+        let mut state = ShadaState::default();
+        // "0 aliases the unnamed register and letters are not numbered
+        // registers; only "1-"9 may persist.
+        for key in ['0', '5', 'x'] {
+            state.numbered_registers.insert(
+                key,
+                RegisterEntry {
+                    text: "n".to_string(),
+                    linewise: false,
+                },
+            );
+        }
+        state.jumplist = (0..150)
+            .map(|i| MarkEntry {
+                path: PathBuf::from(format!("/tmp/f{i}.rs")),
+                line: i,
+                col: 0,
+            })
+            .collect();
+
+        save_to(&path, &state).expect("save");
+        let loaded = load_from(&path);
+
+        assert_eq!(
+            loaded.numbered_registers.keys().collect::<Vec<_>>(),
+            vec![&'5']
+        );
+        assert_eq!(loaded.jumplist.len(), 100);
+        assert_eq!(
+            loaded.jumplist.last().map(|j| j.line),
+            Some(149),
+            "caps keep the newest jumps"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -301,6 +379,11 @@ mod tests {
     /// doesn't know) must still load the fields we do understand, so a
     /// downgrade never wipes user state. Pins that ShadaState keeps serde's
     /// ignore-unknown-fields default and per-field defaults.
+    ///
+    /// Caution when growing the schema: a KNOWN field whose shape changes is
+    /// not tolerated — the whole file fails to parse and loads as empty (the
+    /// v2 jumplist field broke this test's fake future data exactly that
+    /// way). New capabilities must be new fields, never reshaped old ones.
     #[test]
     fn future_version_file_loads_known_fields() {
         let path = temp_state_path("future");
@@ -309,7 +392,7 @@ mod tests {
             r#"{
                 "version": 99,
                 "macros": { "a": "dw" },
-                "jumplist": [{ "path": "/x", "line": 3 }],
+                "window_layouts": [{ "panes": 2 }],
                 "registers": { "b": { "text": "kept", "linewise": false, "shape": "block" } }
             }"#,
         )

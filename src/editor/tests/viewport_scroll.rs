@@ -95,3 +95,95 @@ fn scroll_pane_viewport_on_inactive_pane_leaves_mirror_untouched() {
     assert_eq!(editor.panes()[inactive].viewport_offset, 3);
     assert_eq!((editor.viewport_offset, editor.cursor), mirror_before);
 }
+
+// The z horizontal scroll family. h_offset never reaches the oracle
+// snapshot and the text width differs from Neovim's (gutter), so the
+// column math is pinned here; the oracle pins the cursor side effects.
+fn nowrap_editor_with_long_line() -> Editor {
+    let mut editor = Editor::default();
+    editor.set_size(40, 10);
+    editor.settings.editor.wrap = false;
+    editor.replace_buffer_content(&format!("{}\nshort\n\n", "x".repeat(200)));
+    editor.update_pane_rects();
+    editor
+}
+
+#[test]
+fn scroll_columns_moves_the_view_and_drags_the_cursor_into_it() {
+    let mut editor = nowrap_editor_with_long_line();
+    editor.scroll_columns(5);
+    assert_eq!((editor.h_offset, editor.cursor.col), (5, 5));
+    // Scrolling back leaves a cursor that is still visible alone.
+    editor.scroll_columns(-2);
+    assert_eq!((editor.h_offset, editor.cursor.col), (3, 5));
+    editor.scroll_columns(-10);
+    assert_eq!((editor.h_offset, editor.cursor.col), (0, 5));
+    assert_eq!(editor.panes[editor.active_pane_idx()].h_offset, 0);
+}
+
+#[test]
+fn scroll_columns_left_pulls_a_cursor_past_the_right_edge_back_in() {
+    let mut editor = nowrap_editor_with_long_line();
+    let width = editor.text_area_width();
+    editor.cursor.col = 199;
+    editor.scroll_to_cursor();
+    assert_eq!(editor.h_offset, 200 - width);
+
+    editor.scroll_columns(-(editor.h_offset as isize));
+
+    assert_eq!(editor.h_offset, 0);
+    assert_eq!(editor.cursor.col, width - 1);
+}
+
+#[test]
+fn scroll_columns_stops_at_the_cursor_lines_last_character() {
+    let mut editor = nowrap_editor_with_long_line();
+    editor.cursor.line = 1; // "short"
+    editor.scroll_columns(9);
+    assert_eq!((editor.h_offset, editor.cursor.col), (4, 4));
+
+    editor.cursor.line = 2; // empty line
+    editor.cursor.col = 0;
+    editor.scroll_columns(3);
+    assert_eq!((editor.h_offset, editor.cursor.col), (0, 0));
+}
+
+#[test]
+fn horizontal_scroll_keys_are_no_ops_with_wrap_on() {
+    let mut editor = nowrap_editor_with_long_line();
+    editor.settings.editor.wrap = true;
+    editor.scroll_columns(5);
+    editor.scroll_half_screen_columns(1);
+    editor.scroll_cursor_to_screen_start();
+    editor.scroll_cursor_to_screen_end();
+    assert_eq!((editor.h_offset, editor.cursor.col), (0, 0));
+}
+
+#[test]
+fn half_screen_column_scroll_uses_half_the_text_width() {
+    let mut editor = nowrap_editor_with_long_line();
+    let half = editor.text_area_width() / 2;
+    editor.scroll_half_screen_columns(2);
+    assert_eq!((editor.h_offset, editor.cursor.col), (2 * half, 2 * half));
+    editor.scroll_half_screen_columns(-1);
+    assert_eq!(editor.h_offset, half);
+}
+
+#[test]
+fn zs_and_ze_put_the_cursor_at_the_screen_edges() {
+    let mut editor = nowrap_editor_with_long_line();
+    let width = editor.text_area_width();
+    editor.cursor.col = 100;
+    editor.scroll_to_cursor();
+
+    editor.scroll_cursor_to_screen_start();
+    assert_eq!((editor.h_offset, editor.cursor.col), (100, 100));
+
+    editor.scroll_cursor_to_screen_end();
+    assert_eq!((editor.h_offset, editor.cursor.col), (101 - width, 100));
+
+    // Near the start of the line ze cannot scroll before column 0.
+    editor.cursor.col = 3;
+    editor.scroll_cursor_to_screen_end();
+    assert_eq!(editor.h_offset, 0);
+}

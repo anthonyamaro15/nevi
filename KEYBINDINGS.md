@@ -289,6 +289,10 @@ nothing.
 | `zz` | Center cursor on screen |
 | `zt` | Move cursor line to top of screen |
 | `zb` | Move cursor line to bottom of screen |
+| `z<CR>` / `z.` / `z-` | Like `zt` / `zz` / `zb`, then move to the first non-blank. All six take a count that goes to that line first: `5zt` puts line 5 at the top |
+| `zh` / `zl` | Scroll the view left / right by a count of columns (wrap off) |
+| `zH` / `zL` | Scroll the view left / right by half a screen (wrap off) |
+| `zs` / `ze` | Scroll so the cursor sits at the left / right edge of the screen (wrap off) |
 
 ### Mouse
 
@@ -371,10 +375,13 @@ Operators are commands that wait for a motion. For example, `d` (delete) + `w` (
 | `p` / `{n}p` | Paste after cursor |
 | `P` / `{n}P` | Paste before cursor |
 | `gp` / `{n}gp` | Paste after and leave cursor after pasted text |
+| `]p` | Paste after, adjusting the indent to the current line |
+| `[p` / `[P` / `]P` | Paste before, adjusting the indent to the current line |
 | `gP` / `{n}gP` | Paste before and leave cursor after pasted text |
 | `r{char}` / `{n}r{char}` | Replace exactly one/count characters; `Enter` replaces them with one newline |
 | `R` / `{n}R` | Enter replace mode; a count repeats the entered replacement text |
 | `.` / `{n}.` | Repeat the last change; a count replaces the change's original count |
+| `[<Space>` / `]<Space>` | Add an empty line above / below the cursor line, a count adds several |
 
 > **Examples:**
 > - `dw` - Delete from cursor to start of next word
@@ -382,6 +389,15 @@ Operators are commands that wait for a motion. For example, `d` (delete) + `w` (
 > - `diw` - Delete inner word (the word cursor is on)
 > - `ci"` - Change inside quotes
 > - `ya(` - Yank around parentheses
+
+### Numbers
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+a` / `{n}Ctrl+a` | Add 1 (or count) to the number at or after the cursor |
+| `Ctrl+x` / `{n}Ctrl+x` | Subtract 1 (or count) from the number at or after the cursor |
+
+> **Note:** Like Neovim's default `nrformats=bin,hex`: decimal numbers with an optional `-`, `0x` hex, and `0b` binary. Leading zeros keep their width (`007` becomes `008`), hex digits keep their case, and the cursor lands on the last digit. Works with `.` and undoes in one step.
 
 ### Undo/Redo
 
@@ -432,10 +448,11 @@ Operators are commands that wait for a motion. For example, `d` (delete) + `w` (
 | `N` | Go to previous match |
 | `*` | Search word under cursor forward |
 | `#` | Search word under cursor backward |
+| `g*` / `g#` | Same as `*` / `#` but also match inside longer words |
 | `gn` | Search forward and select match |
 | `gN` | Search backward and select match |
 
-> **Tip:** Search supports regex. Use `\c` at the start for case-insensitive search (e.g., `/\cfoo`).
+> **Note:** Search matches literal text and is case sensitive, like Vim with default settings. Regex patterns are not supported yet, with one exception: the word boundary atoms `\<` and `\>` work, so `/\<abc\>` matches `abc` only as a whole word. `*` and `#` search for `\<word\>` like Vim, which is why they skip the word when it sits inside a longer one.
 
 ### Search Prompt Editing
 
@@ -529,6 +546,8 @@ View and edit recorded macros as readable key notation instead of re-recording.
 | `Ctrl+r {reg}` | Insert contents of register |
 | `Ctrl+o` | Run one normal-mode command, then return to insert |
 | `Ctrl+v {key}` or `Ctrl+q {key}` | Insert the next key literally (e.g. `Ctrl+v` `Ctrl+y` inserts the `0x19` control character, `Ctrl+v` `Tab` a real tab) |
+| `Ctrl+e` | Insert the character from the line below the cursor, by screen column (with the completion popup open, closes the popup instead) |
+| `Ctrl+y` | Insert the character from the line above the cursor, by screen column (with the completion popup open, accepts the selected item instead) |
 
 **Copilot (if enabled):**
 
@@ -575,6 +594,10 @@ Moving the cursor cancels that restoration and counted replay history.
 | `p` | Paste over selection |
 | `~` | Toggle case of selection |
 | `u` / `U` | Lowercase / uppercase selection |
+| `gu` / `gU` / `g~` | Lowercase / uppercase / toggle case of selection |
+| `r{char}` | Replace every selected character with {char} |
+| `J` / `gJ` | Join the selected lines with / without spaces, at least two |
+| `=` | Re-indent the selected lines |
 | `o` | Swap to other end of selection |
 | `O` | Swap to other corner in visual block mode |
 | `I` | Insert before the visual block on each selected line |
@@ -973,7 +996,7 @@ While typing an Ex command after `:`.
 | `:w!` / `:write!` | Force save file, overwriting external disk changes |
 | `:wa` / `:wall` | Save all files |
 | `:q` / `:quit` | Quit |
-| `:q!` / `:quit!` | Force quit (discard changes) |
+| `:q!` / `:quit!` / `ZQ` | Force quit (discard changes) |
 | `:qa` / `:qall` | Quit all |
 | `:qa!` / `:qall!` | Force quit all |
 | `:wq` | Save and quit |
@@ -982,7 +1005,7 @@ While typing an Ex command after `:`.
 | `:xa` | Save all modified files and quit all |
 | `:e {file}` / `:edit {file}` | Edit/open a file |
 | `:e!` / `:edit!` | Reload current file and discard changes |
-| `:new {path}` / `:touch {path}` | Create a file |
+| `:new {path}` / `:touch {path}` | Create a file, or open it if it already exists |
 | `:delete` / `:rm` | Delete current file with confirmation |
 | `:delete!` / `:rm!` | Force delete current file |
 | `:rename {path}` / `:mv {path}` | Rename current file |
@@ -1011,8 +1034,12 @@ While typing an Ex command after `:`.
 |---------|--------|
 | `:bn` | Next buffer |
 | `:bp` | Previous buffer |
+| `Ctrl+^` | Switch to the alternate buffer, the one this window showed last (reopens it if closed) |
+| `[b` / `]b` | Previous / next buffer, a count moves several |
 | `:bd` / `:bdelete` | Close current buffer (fails if unsaved) |
 | `:bd!` / `:bdelete!` | Force close current buffer |
+
+> **Note:** The alternate file is tracked once for the whole editor, not per window like Vim, so switching buffers in one split also changes what `Ctrl+^` and the `"#` register point at in the other.
 
 ### Splits
 

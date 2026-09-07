@@ -187,6 +187,15 @@ impl Registers {
     }
 
     /// Set the content of a register
+    /// Restore a delete-history register from persisted state. Only shada
+    /// apply uses this: `set` deliberately excludes "1-"9 because the shift
+    /// logic in the delete path owns those slots during normal editing.
+    pub fn restore_numbered(&mut self, digit: char, content: RegisterContent) {
+        if let Some(idx) = digit.to_digit(10).filter(|d| (1..=9).contains(d)) {
+            self.numbered[idx as usize - 1] = Some(content);
+        }
+    }
+
     pub fn set(&mut self, name: Option<char>, content: RegisterContent) {
         match name {
             None | Some('"') => {

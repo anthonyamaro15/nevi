@@ -324,6 +324,72 @@ fn is_jsx_opening_tag_line(source: &str, cursor_byte: usize) -> bool {
         && trimmed.ends_with('>')
 }
 
+/// Width in columns of a line's leading whitespace. A tab counts
+/// `tab_width` columns, which is exact at the start of a line.
+pub fn indent_width(line: &str, tab_width: usize) -> usize {
+    line.chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .map(|c| if c == '\t' { tab_width.max(1) } else { 1 })
+        .sum()
+}
+
+/// Vim's `]p` indent fix (do_put with PUT_FIXINDENT): shift the lines of a
+/// linewise put so the first non-empty line gets `target_indent` columns and
+/// the others keep their indent relative to it. Empty lines stay empty,
+/// whitespace-only lines are re-indented like any other, an indent never
+/// goes below zero, and the new indent is written as spaces, the same unit
+/// `>>` uses. A trailing newline is preserved.
+pub fn reindent_block(text: &str, target_indent: usize, tab_width: usize) -> String {
+    let mut shift: Option<isize> = None;
+    let mut out = String::with_capacity(text.len());
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if line.is_empty() {
+            continue;
+        }
+        let width = indent_width(line, tab_width) as isize;
+        let shift = *shift.get_or_insert(target_indent as isize - width);
+        let new_width = (width + shift).max(0) as usize;
+        out.push_str(&" ".repeat(new_width));
+        out.push_str(line.trim_start_matches([' ', '\t']));
+    }
+    out
+}
+
+#[cfg(test)]
+mod reindent_tests {
+    use super::reindent_block;
+
+    #[test]
+    fn first_line_takes_target_and_rest_keep_relative_indent() {
+        // y sits 2 deeper than x and stays so; z would go negative and
+        // stops at zero; the empty line is left alone.
+        assert_eq!(
+            reindent_block("    x\n      y\n\n  z\n", 0, 4),
+            "x\n  y\n\nz\n"
+        );
+        assert_eq!(reindent_block("x\n  y\n", 4, 4), "    x\n      y\n");
+    }
+
+    #[test]
+    fn whitespace_only_line_is_reindented_like_vim() {
+        assert_eq!(
+            reindent_block("  a\n   \n  b\n", 4, 4),
+            "    a\n     \n    b\n"
+        );
+    }
+
+    #[test]
+    fn source_tabs_count_as_tab_width_and_come_back_as_spaces() {
+        assert_eq!(
+            reindent_block("\tfoo\n\t\tbar\n", 2, 4),
+            "  foo\n      bar\n"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

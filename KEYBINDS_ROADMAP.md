@@ -4,7 +4,7 @@ Nevi aims for full vim/neovim keybind compatibility. Defaults follow Neovim, and
 keybinds are configurable — sensible defaults out of the box, overridable to your
 own taste.
 
-**Status: 339 keybinds implemented, 88 planned Vim/Neovim parity defaults.**
+**Status: 366 keybinds implemented, 61 planned Vim/Neovim parity defaults.**
 
 This file tracks what's **planned** (not yet implemented). For the full list of
 keybinds that already work, see [KEYBINDINGS.md](KEYBINDINGS.md). This list comes
@@ -29,17 +29,13 @@ remain Vim-compatible unless Nevi intentionally documents a difference.
 ordering leans on the common proxies (vimtutor and cheat-sheet staples, what
 Neovim itself promotes to a default, plugin popularity like vim-unimpaired) and
 on what Nevi users actually ask for in issues — user reports move a key up
-immediately. The keys most hands reach for first: `Ctrl+a` / `Ctrl+x`,
-`Ctrl+^`, `ZQ`, the visual-mode operators (`gu` / `gU` /
-`g~`, `r`, `J`, `=`), `gq` / `gw`, and among the larger areas, folds and
-quickfix before tabs and tags.
+immediately. The keys most hands reach for first: `gq` / `gw`, and among
+the larger areas, folds and quickfix before tabs and tags.
 
 ### Editing
 
 | Keybind | Planned behavior |
 |---------|------------------|
-| `Ctrl+a` / `{n}Ctrl+a` | Add [count] to the number at or after the cursor |
-| `Ctrl+x` / `{n}Ctrl+x` | Subtract [count] from the number at or after the cursor |
 | `U` | Undo all latest changes on the last changed line |
 | `g-` | Go to older text state (undo over time) |
 | `g+` | Go to newer text state |
@@ -47,28 +43,8 @@ quickfix before tabs and tags.
 | `gqq` | Format the current line |
 | `gw{motion}` | Format like `gq` but keep the cursor position |
 | `gww` | Format the current line, keeping the cursor position |
-| `]p` | Paste after, adjusting indent to the current line |
-| `[p` | Paste before, adjusting indent to the current line |
 | `&` | Repeat the last `:s` substitution on the current line |
 | `g&` | Repeat the last `:s` on all lines with the same flags |
-
-### Scrolling
-
-| Keybind | Planned behavior |
-|---------|------------------|
-| `z<CR>` | Like `zt`, and move the cursor to the first non-blank |
-| `z.` | Like `zz`, and move the cursor to the first non-blank |
-| `z-` | Like `zb`, and move the cursor to the first non-blank |
-| `zh` / `zl` | Scroll the view one column left / right (no wrap) |
-| `zH` / `zL` | Scroll the view half a screen left / right |
-| `zs` / `ze` | Scroll so the cursor is at the start / end of the screen |
-
-### Search
-
-| Keybind | Planned behavior |
-|---------|------------------|
-| `g*` | Search the word under the cursor without word boundaries |
-| `g#` | Same as `g*`, backward |
 
 ### Jumps And Marks
 
@@ -78,31 +54,6 @@ quickfix before tabs and tags.
 | `` `[ `` / `` `] `` | Jump to the exact start / end of the last change or yank |
 | `'<` / `'>` | Jump to the first / last line of the last visual selection |
 | `` `< `` / `` `> `` | Jump to the exact start / end of the last visual selection |
-
-### Buffers And Quitting
-
-| Keybind | Planned behavior |
-|---------|------------------|
-| `Ctrl+^` | Edit the alternate (previously edited) buffer |
-| `ZQ` | Quit without saving (like `:q!`) |
-| `[b` / `]b` | Go to the previous / next buffer (Neovim default) |
-| `[<Space>` / `]<Space>` | Add an empty line above / below the cursor (Neovim default) |
-
-### Visual Mode
-
-| Keybind | Planned behavior |
-|---------|------------------|
-| `gu` / `gU` / `g~` | Lowercase / uppercase / toggle case of the selection (the `~`, `u`, `U` forms already work) |
-| `r{char}` | Replace every selected character with {char} |
-| `J` / `gJ` | Join the selected lines, with / without spaces |
-| `=` | Re-indent the selection |
-
-### Insert Mode
-
-| Keybind | Planned behavior |
-|---------|------------------|
-| `Ctrl+e` | Insert the character from the line below the cursor |
-| `Ctrl+y` | Insert the character from the line above the cursor |
 
 ### Command-Line Mode Defaults
 
