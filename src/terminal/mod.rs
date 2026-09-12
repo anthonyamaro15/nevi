@@ -1252,6 +1252,11 @@ impl Terminal {
                 self.render_explorer(editor)?;
             }
 
+            // Render bufferline
+            if editor.settings.editor.bufferline {
+                self.render_bufferline(editor)?;
+            }
+
             // While the start screen owns the single pane, draw it INSTEAD of
             // the buffer: painting tildes/line numbers first and covering
             // them afterwards flashes on every full render, and dashboard
@@ -1355,7 +1360,62 @@ impl Terminal {
         Ok(())
     }
 
+    fn render_bufferline(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        execute!(self.stdout, cursor::Hide, cursor::MoveTo(0, 0))?;
+
+        let active_buff_idx = editor.panes()[editor.active_pane_idx()].buffer_idx;
+
+        let entries = crate::bufferline::build(editor.buffers(), active_buff_idx);
+
+        let theme = editor.theme();
+        let glyphs = editor.ui_glyphs();
+
+        // The terminal never erases on its own: paint the whole row first so
+        // leftovers from a previous, longer bufferline die here instead of
+        // outliving the buffers they described. The bar shares the statusline
+        // background so top and bottom chrome read as one system.
+        execute!(self.stdout, SetBackgroundColor(theme.ui.statusline_bg))?;
+        terminal_print!(self, "{:width$}", "", width = editor.term_width as usize);
+        execute!(self.stdout, cursor::MoveTo(0, 0))?;
+
+        for entry in &entries {
+            let (bg, fg) = if entry.active {
+                (theme.ui.statusline_section_bg, theme.ui.statusline_fg)
+            } else {
+                (theme.ui.statusline_bg, theme.ui.line_number)
+            };
+            execute!(self.stdout, SetBackgroundColor(bg), SetForegroundColor(fg))?;
+            if entry.active {
+                execute!(self.stdout, SetAttribute(Attribute::Bold))?;
+            }
+            // Identical padding in both states: switching the active entry
+            // must never shift the entries that follow.
+            let marker = if entry.dirty { glyphs.modified } else { "" };
+            terminal_print!(self, " {}{} ", entry.label, marker);
+            if entry.active {
+                execute!(self.stdout, SetAttribute(Attribute::NormalIntensity))?;
+            }
+        }
+
+        execute!(self.stdout, ResetColor)?;
+
+        Ok(())
+    }
+
     fn partial_render_kind(editor: &Editor) -> Option<PartialRenderKind> {
+        // The bufferline (row 0) is not part of the damage model, so a partial
+        // render would leave it stale after open/close/switch. Until
+        // RenderDamage learns a `bufferline` category (marked at every
+        // mutation of the buffer set, the active pane's buffer_idx, or any
+        // buffer's dirty flag), force full renders while it is visible.
+        //
+        // Only revisit if the flight recorder shows these full renders cost
+        // real time: the dirty "+" marker flips on the first edit, so typing
+        // forces full renders regardless, and the win is limited to
+        // cursor-motion and mode-switch frames.
+        if editor.settings.editor.bufferline {
+            return None;
+        }
         let damage = &editor.render_damage;
         if damage.is_clean() || damage.requires_full_render() {
             return None;

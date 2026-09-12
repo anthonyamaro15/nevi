@@ -136,6 +136,8 @@ pub struct EditorSettings {
     pub tab_width: usize,
     /// Show line numbers (default: true)
     pub line_numbers: bool,
+    /// Show the bufferline (default: false)
+    pub bufferline: bool,
     /// Show relative line numbers (default: false)
     pub relative_numbers: bool,
     /// Gutter sign column: "auto", "yes", or "no" (default: yes)
@@ -173,6 +175,7 @@ impl Default for EditorSettings {
         Self {
             tab_width: 4,
             line_numbers: true,
+            bufferline: false,
             relative_numbers: false,
             sign_column: SignColumn::Yes,
             cursor_line: false,

@@ -4368,7 +4368,8 @@ impl Editor {
 
     /// Get the number of rows available for text (excluding status line)
     pub fn text_rows(&self) -> usize {
-        self.term_height.saturating_sub(2) as usize // 1 for status, 1 for command line
+        self.term_height
+            .saturating_sub(2 + self.settings.editor.bufferline as u16) as usize // 1 for status, 1 for command line, 1 for bufferline (if active)
     }
 
     fn active_pane_text_rows(&self) -> usize {
@@ -4384,6 +4385,7 @@ impl Editor {
     pub fn update_pane_rects(&mut self) {
         let text_height = self.text_rows() as u16;
         let num_panes = self.panes.len() as u16;
+        let bufferline_offset = self.settings.editor.bufferline as u16;
 
         if num_panes == 0 {
             return;
@@ -4413,7 +4415,7 @@ impl Editor {
                     if pane.rect.height != text_height {
                         pane.half_page_scroll_rows = None;
                     }
-                    pane.rect = Rect::new(x, 0, w, text_height);
+                    pane.rect = Rect::new(x, bufferline_offset, w, text_height);
                     x += w;
                 }
             }
@@ -4421,7 +4423,7 @@ impl Editor {
                 // Stacked panes
                 let heights = Self::split_lengths_by_weights(text_height, &weights);
 
-                let mut y = 0u16;
+                let mut y = bufferline_offset;
                 for (pane, h) in self.panes.iter_mut().zip(heights) {
                     if pane.rect.height != h {
                         pane.half_page_scroll_rows = None;
