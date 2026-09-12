@@ -1001,6 +1001,63 @@ pub fn get_comment_end(language: Option<&str>) -> Option<&'static str> {
     }
 }
 
+/// Test guard for incremental parsing: the reused tree must be
+/// indistinguishable from a from-scratch parse of the buffer's text.
+/// to_sexp() omits positions, so every node's byte range and (row, column)
+/// points are compared too; those are what method motions and the indent
+/// engine actually read.
+#[cfg(test)]
+pub(crate) fn assert_tree_matches_fresh_parse(syntax: &SyntaxManager, buffer: &Buffer) {
+    let (tree, source) = syntax.get_tree_and_source().expect("tree after parse");
+    assert_eq!(
+        source,
+        buffer.content(),
+        "syntax source is not the buffer's text"
+    );
+    let mut fresh_parser = Parser::new();
+    fresh_parser
+        .set_language(&tree.language())
+        .expect("grammar");
+    let fresh = fresh_parser.parse(source, None).expect("fresh parse");
+    assert_eq!(
+        tree.root_node().to_sexp(),
+        fresh.root_node().to_sexp(),
+        "incremental tree diverged from full parse\nsource:\n{source}"
+    );
+    let (mut ours, mut theirs) = (tree.walk(), fresh.walk());
+    loop {
+        let (a, b) = (ours.node(), theirs.node());
+        assert_eq!(
+            (
+                a.kind(),
+                a.byte_range(),
+                a.start_position(),
+                a.end_position(),
+                a.is_missing()
+            ),
+            (
+                b.kind(),
+                b.byte_range(),
+                b.start_position(),
+                b.end_position(),
+                b.is_missing()
+            ),
+            "node position diverged from full parse\nsource:\n{source}"
+        );
+        if ours.goto_first_child() {
+            assert!(theirs.goto_first_child());
+            continue;
+        }
+        while !ours.goto_next_sibling() {
+            if !ours.goto_parent() {
+                return;
+            }
+            assert!(theirs.goto_parent());
+        }
+        assert!(theirs.goto_next_sibling());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1221,23 +1278,6 @@ mod tests {
 
     use crate::editor::Buffer;
 
-    /// The incremental tree must be indistinguishable from a from-scratch
-    /// parse of the same text. This is the guard whose absence caused the
-    /// original old-tree corruption.
-    fn assert_tree_matches_fresh_parse(syntax: &SyntaxManager) {
-        let (tree, source) = syntax.get_tree_and_source().expect("tree after parse");
-        let mut fresh_parser = Parser::new();
-        fresh_parser
-            .set_language(&tree_sitter_rust::LANGUAGE.into())
-            .expect("rust grammar");
-        let fresh = fresh_parser.parse(source, None).expect("fresh parse");
-        assert_eq!(
-            tree.root_node().to_sexp(),
-            fresh.root_node().to_sexp(),
-            "incremental tree diverged from full parse\nsource:\n{source}"
-        );
-    }
-
     fn rust_syntax_and_buffer(content: &str) -> (SyntaxManager, Buffer) {
         let mut syntax = SyntaxManager::new();
         syntax.set_language_from_path(Path::new("fuzz.rs"));
@@ -1254,26 +1294,26 @@ mod tests {
         // Insert a newline mid-line, splitting a statement.
         buffer.insert_char(1, 7, '\n');
         syntax.parse(&mut buffer);
-        assert_tree_matches_fresh_parse(&syntax);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
 
         // Multibyte insert before existing code.
         buffer.insert_str(0, 3, "h\u{e9}llo_\u{2713}");
         syntax.parse(&mut buffer);
-        assert_tree_matches_fresh_parse(&syntax);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
 
         // Delete a range spanning lines.
         buffer.delete_range(0, 2, 2, 1);
         syntax.parse(&mut buffer);
-        assert_tree_matches_fresh_parse(&syntax);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
 
         // replace_line and the undo-shaped apply_change.
         buffer.replace_line(0, "fn other() { let y = 2; }");
         syntax.parse(&mut buffer);
-        assert_tree_matches_fresh_parse(&syntax);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
 
         buffer.apply_change(0, 3, "other", "renamed");
         syntax.parse(&mut buffer);
-        assert_tree_matches_fresh_parse(&syntax);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
     }
 
     #[test]
@@ -1281,7 +1321,7 @@ mod tests {
         let (mut syntax, mut buffer) = rust_syntax_and_buffer(
             "fn main() {\n    let x = 1;\n    println!(\"h\u{e9}llo {}\", x);\n}\n",
         );
-        assert_tree_matches_fresh_parse(&syntax);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
 
         // Deterministic xorshift so failures reproduce.
         let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
@@ -1299,6 +1339,10 @@ mod tests {
             "}",
             "{",
             "// note \u{f8}\n",
+            // Line breaks Ropey counts but tree-sitter does not.
+            "\r",
+            "\u{c}",
+            "\u{2028}",
         ];
 
         for _ in 0..150 {
@@ -1326,7 +1370,7 @@ mod tests {
                 }
             }
             syntax.parse(&mut buffer);
-            assert_tree_matches_fresh_parse(&syntax);
+            assert_tree_matches_fresh_parse(&syntax, &buffer);
         }
     }
 
@@ -1338,12 +1382,74 @@ mod tests {
         // and still correct.
         buffer.set_content("fn b() { let z = 3; }\n");
         syntax.parse(&mut buffer);
-        assert_tree_matches_fresh_parse(&syntax);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
 
         // A different buffer must never reuse this buffer's tree.
         let mut other = Buffer::new();
         other.insert_str(0, 0, "fn c() {}\n");
         syntax.parse(&mut other);
-        assert_tree_matches_fresh_parse(&syntax);
+        assert_tree_matches_fresh_parse(&syntax, &other);
+    }
+
+    /// Ropey counts a lone CR (and VT, FF, NEL, LS, PS) as a line break;
+    /// tree-sitter counts rows by LF only. Edits recorded in Ropey rows after
+    /// such a separator carry points tree-sitter disagrees with.
+    #[test]
+    fn edits_after_a_non_lf_line_break_keep_the_tree_equivalent() {
+        for sep in ['\r', '\u{b}', '\u{c}', '\u{85}', '\u{2028}', '\u{2029}'] {
+            let text = format!("fn a() {{}}{sep}fn b() {{\n    let x = 1;\n}}\nfn c() {{}}\n");
+            let (mut syntax, mut buffer) = rust_syntax_and_buffer(&text);
+            // Ropey line 1 starts right after the separator; tree-sitter
+            // still calls that row 0.
+            buffer.insert_str(2, 4, "let y = 2;\n    ");
+            buffer.insert_char(1, 3, 'x');
+            syntax.parse(&mut buffer);
+            assert_tree_matches_fresh_parse(&syntax, &buffer);
+
+            buffer.delete_range(1, 0, 3, 0);
+            syntax.parse(&mut buffer);
+            assert_tree_matches_fresh_parse(&syntax, &buffer);
+        }
+    }
+
+    #[test]
+    fn reload_from_disk_falls_back_to_full_parse() {
+        let dir = std::env::temp_dir().join(format!("nevi_syntax_reload_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("reload.rs");
+        std::fs::write(&path, "fn a() {}\n").expect("write");
+        let mut syntax = SyntaxManager::new();
+        syntax.set_language_from_path(&path);
+        let mut buffer = Buffer::from_file(path.clone()).expect("open");
+        syntax.parse(&mut buffer);
+        buffer.insert_str(0, 0, "// local edit\n");
+
+        // Autoread replaces the text wholesale; the recorded edits no longer
+        // describe the span since the last parse.
+        std::fs::write(&path, "fn b() { let z = 3; }\nfn c() {}\n").expect("rewrite");
+        buffer.reload().expect("reload");
+        syntax.parse(&mut buffer);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
+
+        // Editing after the reload is incremental again and stays right.
+        buffer.insert_char(1, 3, 'x');
+        syntax.parse(&mut buffer);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn language_switch_falls_back_to_full_parse() {
+        let (mut syntax, mut buffer) = rust_syntax_and_buffer("fn a() {}\n");
+        buffer.insert_str(0, 0, "x = 1\n");
+        syntax.set_language_from_path(Path::new("same.py"));
+        syntax.parse(&mut buffer);
+        assert_eq!(syntax.language_name(), Some("python"));
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
+
+        buffer.insert_char(0, 5, '0');
+        syntax.parse(&mut buffer);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
     }
 }

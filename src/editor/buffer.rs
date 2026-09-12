@@ -1204,4 +1204,27 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn edit_queue_overflow_breaks_history_until_reset() {
+        let mut buffer = Buffer::new();
+        buffer.reset_edit_history();
+        let base = buffer.version();
+        for _ in 0..=super::MAX_PENDING_EDITS {
+            buffer.insert_char(0, 0, 'a');
+        }
+        assert!(
+            buffer.take_edits_since(base).is_none(),
+            "an overflowed queue must force a full reparse"
+        );
+
+        // A full parse restarts history and incremental tracking resumes.
+        buffer.reset_edit_history();
+        let base = buffer.version();
+        buffer.insert_char(0, 0, 'b');
+        assert_eq!(
+            buffer.take_edits_since(base).map(|edits| edits.len()),
+            Some(1)
+        );
+    }
 }

@@ -4234,6 +4234,12 @@ impl Editor {
             self.panes[self.active_pane].viewport_offset = self.viewport_offset;
             self.panes[self.active_pane].h_offset = self.h_offset;
         }
+
+        // The syntax tree still describes the closed buffer. Reparse for
+        // whichever buffer is current now, exactly like a buffer switch:
+        // the version-only staleness checks in maybe_update_syntax and the
+        // auto-indent path cannot tell two buffers apart.
+        self.sync_syntax_to_current_buffer();
     }
 
     /// Set the path of the current buffer (for rename operations)
@@ -14270,6 +14276,54 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn closing_a_buffer_reparses_syntax_for_the_newly_current_buffer() {
+        let tmp = unique_temp_dir("nevi_close_buffer_syntax");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let first = tmp.join("first.rs");
+        let second = tmp.join("second.rs");
+        std::fs::write(&first, "fn first() {}\n").expect("write first");
+        std::fs::write(&second, "fn second() {\n    let x = 1;\n}\n").expect("write second");
+
+        let mut editor = Editor::default();
+        editor.open_file(first).expect("open first");
+        editor.open_file(second).expect("open second");
+        // Both buffers sit at the same version, so a version-only staleness
+        // check cannot tell the closed buffer's tree from the current one.
+        editor.close_current_buffer();
+
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn incremental_parse_survives_grouped_undo_and_redo() {
+        let mut editor = editor_with_parsed_rust("fn main() {\n    let x = 1;\n}\n");
+        // One insert-mode session is one undo group: several buffer edits
+        // that undo and redo replay together before a single reparse.
+        editor.cursor.set(1, 0);
+        editor.enter_insert_mode_end();
+        for ch in "\n    let y = \"h\u{e9}\";\n    if x > 0 {".chars() {
+            if ch == '\n' {
+                editor.insert_newline_with_indent();
+            } else {
+                editor.insert_char(ch);
+            }
+        }
+        editor.enter_normal_mode();
+        editor.maybe_update_syntax();
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        editor.undo();
+        editor.maybe_update_syntax();
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        editor.redo();
+        editor.maybe_update_syntax();
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
     }
 
     #[test]

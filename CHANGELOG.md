@@ -71,6 +71,10 @@
 
 - Fixed `[ruby]` in `languages.toml` being ignored. Ruby files (`.rb`, `.rake`, `.gemspec`, `.ru`, `.podspec`) resolved to their raw extension instead of the `ruby` key, so formatter and tab width settings never applied. The generated `languages.toml` template now includes a commented Ruby example. (#273)
 
+### Fixed
+
+- After `:bd`, highlighting and `=` could keep using the closed buffer's syntax tree when the two buffers happened to share a version number. Closing a buffer now reparses the one that becomes current. (#309)
+
 ## 0.3.0 - 2026-08-25
 
 Nevi 0.3.0 rebuilds the statusline, finder, and explorer, closes a long list of
