@@ -10,6 +10,7 @@
 - The file picker no longer blocks the editor while scanning the project. The walk runs on parallel background workers and streams results in as they are found, so the picker opens instantly with a scanning counter, and the walk itself is about 5x faster. (#305)
 - Live grep walks and searches files with parallel workers instead of one file at a time. Results are unchanged; only the order files appear in can differ between runs. (#306)
 - The full repo git status scan runs in the background instead of blocking startup, saving, focus changes, and opening the explorer. Explorer markers apply when the scan finishes, a frame or two later. Opening a 15k file repo went from about 130ms to about 30ms. (#308)
+- Syntax highlighting now reparses incrementally: edits are applied to the previous tree instead of reparsing the whole file, with an automatic fallback to a full parse on buffer switches, reloads, and formatter output. A mid edit reparse of an 18k line file went from 43.8ms to 5.4ms, and gg=G on a 2.1k line file from 8 seconds to about 1.3. Set NEVI_INCREMENTAL_PARSE=0 to force the old full reparse path. (#309)
 
 ### Vim Compatibility
 
@@ -73,6 +74,10 @@
 
 - Added `sign_column` to `[editor]` with the same values as nvim's `signcolumn`. `auto` shows the two-cell git/diagnostic gutter only while the buffer has something to mark, so a plain file renders flush left like `nvim --clean`. `yes` (the default, unchanged behavior) always reserves it, and `no` hides it. `:set signcolumn=auto` switches it at runtime. Completion, hover, signature help, and code action popups now share the cursor's gutter math instead of their own, so they line up with the cursor whether the sign column or line numbers are on or off, and signature help and code actions now account for the pane's position in a split. (#330)
 - Fixed `[ruby]` in `languages.toml` being ignored. Ruby files (`.rb`, `.rake`, `.gemspec`, `.ru`, `.podspec`) resolved to their raw extension instead of the `ruby` key, so formatter and tab width settings never applied. The generated `languages.toml` template now includes a commented Ruby example. (#273)
+
+### Fixed
+
+- After `:bd`, highlighting and `=` could keep using the closed buffer's syntax tree when the two buffers happened to share a version number. Closing a buffer now reparses the one that becomes current. (#309)
 
 ## 0.3.0 - 2026-08-25
 
