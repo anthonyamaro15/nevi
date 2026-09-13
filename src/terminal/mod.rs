@@ -1403,21 +1403,11 @@ impl Terminal {
     }
 
     fn partial_render_kind(editor: &Editor) -> Option<PartialRenderKind> {
-        // The bufferline (row 0) is not part of the damage model, so a partial
-        // render would leave it stale after open/close/switch. Until
-        // RenderDamage learns a `bufferline` category (marked at every
-        // mutation of the buffer set, the active pane's buffer_idx, or any
-        // buffer's dirty flag), force full renders while it is visible.
-        //
-        // Only revisit if the flight recorder shows these full renders cost
-        // real time: the dirty "+" marker flips on the first edit, so typing
-        // forces full renders regardless, and the win is limited to
-        // cursor-motion and mode-switch frames.
-        if editor.settings.editor.bufferline {
-            return None;
-        }
         let damage = &editor.render_damage;
-        if damage.is_clean() || damage.requires_full_render() {
+        if damage.is_clean()
+            || damage.requires_full_render()
+            || (editor.settings.editor.bufferline && damage.bufferline())
+        {
             return None;
         }
 
@@ -13236,6 +13226,33 @@ mod tests {
             Terminal::partial_render_kind(&editor),
             Some(PartialRenderKind::EditorRows(vec![1])),
             "simple editor-row damage should be eligible for editor-row partial rendering"
+        );
+    }
+
+    #[test]
+    fn partial_render_kind_rejects_bufferline_damage() {
+        let mut editor = Editor::default();
+        editor.buffer_mut().path = Some(PathBuf::from("named.rs"));
+        editor.settings.editor.bufferline = true;
+
+        editor.render_damage.clear_after_full_render();
+        editor.render_damage.mark_bufferline();
+
+        assert_eq!(Terminal::partial_render_kind(&editor), None);
+    }
+
+    #[test]
+    fn partial_render_kind_allows_statusline_damage_with_clean_bufferline() {
+        let mut editor = Editor::default();
+        editor.buffer_mut().path = Some(PathBuf::from("named.rs"));
+        editor.settings.editor.bufferline = true;
+
+        editor.render_damage.clear_after_full_render();
+        editor.render_damage.mark_statusline();
+
+        assert_eq!(
+            Terminal::partial_render_kind(&editor),
+            Some(PartialRenderKind::StatusLine)
         );
     }
 

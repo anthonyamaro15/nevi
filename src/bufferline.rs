@@ -36,9 +36,9 @@ mod tests {
 
         let bufferline_entries = build(&buffers, 2);
 
-        assert_eq!(bufferline_entries[0].active, false);
+        assert!(!bufferline_entries[0].active);
         assert_eq!(bufferline_entries[0].label, "[No Name]");
-        assert_eq!(bufferline_entries[0].dirty, false);
+        assert!(!bufferline_entries[0].dirty);
     }
 
     #[test]
@@ -47,8 +47,8 @@ mod tests {
 
         let bufferline_entries = build(&buffers, 1);
 
-        assert_eq!(bufferline_entries[0].active, false);
-        assert_eq!(bufferline_entries[1].active, true);
+        assert!(!bufferline_entries[0].active);
+        assert!(bufferline_entries[1].active);
     }
 
     #[test]
@@ -57,7 +57,7 @@ mod tests {
 
         let bufferline_entries = build(&buffers, 0);
 
-        assert_eq!(bufferline_entries[0].active, true);
+        assert!(bufferline_entries[0].active);
         assert_eq!(bufferline_entries[0].label, "[No Name]");
     }
 }

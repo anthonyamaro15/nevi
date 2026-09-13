@@ -2056,7 +2056,9 @@ impl Editor {
             format!("Macro @{register} updated ({} keys)", keys.len())
         };
         self.macros.set_macro(register, keys);
+        let was_dirty = self.buffer().dirty;
         self.buffer_mut().dirty = false;
+        self.mark_bufferline_if_dirty_changed(self.current_buffer_idx, was_dirty);
         Ok(message)
     }
 
@@ -2848,7 +2850,7 @@ impl Editor {
         }
 
         // Mark buffer as modified and invalidate syntax
-        self.buffers[self.current_buffer_idx].mark_modified();
+        self.mark_buffer_modified(self.current_buffer_idx);
         self.last_edit_at = Some(Instant::now());
 
         // End the undo group so LSP edits are a single undo operation
@@ -3354,6 +3356,18 @@ impl Editor {
         crate::syntax::exceeds_highlight_limits(buffer.len_lines(), buffer.len_chars())
     }
 
+    fn mark_buffer_modified(&mut self, buffer_idx: usize) {
+        let was_dirty = self.buffers[buffer_idx].dirty;
+        self.buffers[buffer_idx].mark_modified();
+        self.mark_bufferline_if_dirty_changed(buffer_idx, was_dirty);
+    }
+
+    fn mark_bufferline_if_dirty_changed(&mut self, buffer_idx: usize, was_dirty: bool) {
+        if self.buffers[buffer_idx].dirty != was_dirty {
+            self.render_damage.mark_bufferline();
+        }
+    }
+
     fn reject_read_only_edit(&mut self) -> bool {
         if self.buffers[self.current_buffer_idx].is_read_only() {
             self.set_status("Buffer is read-only");
@@ -3408,7 +3422,9 @@ impl Editor {
         let cursor_col = self.cursor.col;
 
         // Replace content
+        let was_dirty = self.buffer().dirty;
         self.buffer_mut().set_content(content);
+        self.mark_bufferline_if_dirty_changed(self.current_buffer_idx, was_dirty);
         self.reset_current_undo_stack();
 
         // Try to restore cursor position (clamp to valid range)
@@ -3435,7 +3451,9 @@ impl Editor {
 
         // Record what actually lands in the buffer: set_content may append
         // a missing final newline, and the redo string must match it.
+        let was_dirty = self.buffer().dirty;
         self.buffer_mut().set_content(content);
+        self.mark_bufferline_if_dirty_changed(self.current_buffer_idx, was_dirty);
         let new_content = self.buffer().content();
         self.undo_stack
             .record_change(Change::new(0, 0, old_content, new_content));
@@ -3506,7 +3524,7 @@ impl Editor {
         self.undo_stack
             .record_change(Change::insert(line, col, text.clone()));
         self.buffers[self.current_buffer_idx].insert_str(line, col, &text);
-        self.buffers[self.current_buffer_idx].mark_modified();
+        self.mark_buffer_modified(self.current_buffer_idx);
         if above {
             self.cursor.line += count;
         }
@@ -4212,6 +4230,7 @@ impl Editor {
             // Update git diff for this buffer
             self.update_git_diff();
             self.recent_files.record(&path);
+            self.render_damage.mark_bufferline();
             return Ok(());
         }
 
@@ -4265,6 +4284,8 @@ impl Editor {
         self.update_git_diff();
 
         self.recent_files.record(&path);
+
+        self.render_damage.mark_bufferline();
 
         Ok(())
     }
@@ -4327,11 +4348,14 @@ impl Editor {
             self.panes[self.active_pane].viewport_offset = self.viewport_offset;
             self.panes[self.active_pane].h_offset = self.h_offset;
         }
+
+        self.render_damage.mark_bufferline();
     }
 
     /// Set the path of the current buffer (for rename operations)
     pub fn set_buffer_path(&mut self, path: std::path::PathBuf) {
         self.buffer_mut().set_file_path(path.clone());
+        self.render_damage.mark_bufferline();
         // Update syntax highlighting for new filename
         let first_line = self.buffer().first_line_prefix();
         self.syntax
@@ -6779,7 +6803,9 @@ impl Editor {
 
     fn save_current_buffer(&mut self, force: bool) -> anyhow::Result<()> {
         self.ensure_buffer_can_save(self.current_buffer_idx, force)?;
+        let was_dirty = self.buffers[self.current_buffer_idx].dirty;
         self.buffers[self.current_buffer_idx].save()?;
+        self.mark_bufferline_if_dirty_changed(self.current_buffer_idx, was_dirty);
         self.status_message = Some(format!(
             "\"{}\" written",
             self.buffers[self.current_buffer_idx].display_name()
@@ -7082,6 +7108,7 @@ impl Editor {
             anyhow::bail!("Buffer is read-only");
         }
         self.buffers[self.current_buffer_idx].set_file_path(path);
+        self.render_damage.mark_bufferline();
         self.save()
     }
 
@@ -7091,6 +7118,7 @@ impl Editor {
             anyhow::bail!("Buffer is read-only");
         }
         self.buffers[self.current_buffer_idx].set_file_path(path);
+        self.render_damage.mark_bufferline();
         self.save_force()
     }
 
@@ -7185,7 +7213,9 @@ impl Editor {
         for i in 0..self.buffers.len() {
             if self.buffers[i].dirty && self.buffers[i].path.is_some() {
                 self.ensure_buffer_can_save(i, false)?;
+                let was_dirty = self.buffers[i].dirty;
                 self.buffers[i].save()?;
+                self.mark_bufferline_if_dirty_changed(i, was_dirty);
                 saved_count += 1;
             }
         }
@@ -7240,7 +7270,9 @@ impl Editor {
                 }
                 // Save the buffer
                 self.ensure_buffer_can_save(i, false)?;
+                let was_dirty = self.buffers[i].dirty;
                 self.buffers[i].save()?;
+                self.mark_bufferline_if_dirty_changed(i, was_dirty);
                 saved_count += 1;
             }
         }
@@ -8013,7 +8045,7 @@ impl Editor {
             new_line.clone(),
         ));
         self.buffers[self.current_buffer_idx].replace_line(self.cursor.line, &new_line);
-        self.buffers[self.current_buffer_idx].mark_modified();
+        self.mark_buffer_modified(self.current_buffer_idx);
         self.cursor.col = change.cursor_col();
         // A number can grow by many chars (0x0 minus one is 18 wide), so
         // with wrap off the view has to follow the cursor like any motion.
@@ -8160,7 +8192,7 @@ impl Editor {
 
         // Mark buffer as modified if changes were made
         if total_replacements > 0 {
-            self.buffers[self.current_buffer_idx].mark_modified();
+            self.mark_buffer_modified(self.current_buffer_idx);
         }
 
         total_replacements
@@ -10152,7 +10184,7 @@ impl Editor {
 
         self.undo_stack
             .end_undo_group(self.cursor.line, self.cursor.col);
-        self.buffers[self.current_buffer_idx].mark_modified();
+        self.mark_buffer_modified(self.current_buffer_idx);
     }
 
     /// Check if a line is commented
@@ -10299,7 +10331,7 @@ impl Editor {
 
         self.undo_stack
             .end_undo_group(self.cursor.line, self.cursor.col);
-        self.buffers[self.current_buffer_idx].mark_modified();
+        self.mark_buffer_modified(self.current_buffer_idx);
 
         // Move cursor to first non-blank of first line
         self.cursor.line = start_line;
@@ -10353,7 +10385,7 @@ impl Editor {
 
         self.undo_stack
             .end_undo_group(self.cursor.line, self.cursor.col);
-        self.buffers[self.current_buffer_idx].mark_modified();
+        self.mark_buffer_modified(self.current_buffer_idx);
 
         // Move cursor to first non-blank of first line
         self.cursor.line = start_line;
@@ -10440,7 +10472,7 @@ impl Editor {
             .end_undo_group(self.cursor.line, self.cursor.col);
 
         if changed {
-            self.buffers[self.current_buffer_idx].mark_modified();
+            self.mark_buffer_modified(self.current_buffer_idx);
             self.parse_current_buffer();
         }
 
@@ -10738,7 +10770,7 @@ impl Editor {
 
         self.undo_stack
             .end_undo_group(self.cursor.line, self.cursor.col);
-        self.buffers[self.current_buffer_idx].mark_modified();
+        self.mark_buffer_modified(self.current_buffer_idx);
         self.clamp_cursor();
     }
 
@@ -10839,7 +10871,7 @@ impl Editor {
 
         self.undo_stack
             .end_undo_group(self.cursor.line, self.cursor.col);
-        self.buffers[self.current_buffer_idx].mark_modified();
+        self.mark_buffer_modified(self.current_buffer_idx);
 
         // Move cursor to first non-blank of start line
         self.cursor.line = start_line;
@@ -10951,7 +10983,7 @@ impl Editor {
         self.undo_stack
             .end_undo_group(self.cursor.line, self.cursor.col);
         if changed {
-            self.buffers[buffer_idx].mark_modified();
+            self.mark_buffer_modified(buffer_idx);
         }
         self.clamp_cursor();
     }
@@ -12607,6 +12639,7 @@ impl Editor {
             self.panes[self.active_pane].viewport_offset = 0;
             self.panes[self.active_pane].h_offset = 0;
         }
+        self.render_damage.mark_bufferline();
         self.cursor = Cursor::default();
         self.viewport_offset = 0;
         self.h_offset = 0;
@@ -14730,6 +14763,92 @@ mod tests {
 
         let active_pane = &editor.panes()[editor.active_pane_idx()];
         assert_eq!(active_pane.buffer_idx, editor.current_buffer_index());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn switching_buffer_marks_bufferline_damage() {
+        let tmp = unique_temp_dir("nevi_buffer_nav");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let first = tmp.join("first.rs");
+        let second = tmp.join("second.rs");
+        std::fs::write(&first, "fn first() {}\n").expect("write first");
+        std::fs::write(&second, "fn second() {}\n").expect("write second");
+
+        let mut editor = Editor::default();
+        editor.open_file(first).expect("Open first");
+        editor.open_file(second).expect("Open second");
+
+        editor.render_damage.clear_after_full_render();
+
+        editor.switch_to_buffer(0);
+
+        assert!(editor.render_damage.bufferline());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn opening_buffer_marks_bufferline_damage() {
+        let tmp = unique_temp_dir("nevi_buffer_nav");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let first = tmp.join("first.rs");
+        let second = tmp.join("second.rs");
+        let third = tmp.join("third.rs");
+        std::fs::write(&first, "fn first() {}\n").expect("write first");
+        std::fs::write(&second, "fn second() {}\n").expect("write second");
+
+        let mut editor = Editor::default();
+        editor.open_file(first).expect("Open first");
+        editor.open_file(second).expect("Open second");
+
+        editor.render_damage.clear_after_full_render();
+
+        editor.open_file(third).expect("Open third");
+
+        assert!(editor.render_damage.bufferline());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn closing_buffer_marks_bufferline_damage() {
+        let tmp = unique_temp_dir("nevi_buffer_nav");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let first = tmp.join("first.rs");
+        let second = tmp.join("second.rs");
+        std::fs::write(&first, "fn first() {}\n").expect("write first");
+        std::fs::write(&second, "fn second() {}\n").expect("write second");
+
+        let mut editor = Editor::default();
+        editor.open_file(first).expect("Open first");
+        editor.open_file(second).expect("Open second");
+
+        editor.render_damage.clear_after_full_render();
+        editor.close_current_buffer();
+
+        assert!(editor.render_damage.bufferline());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn saving_dirty_buffer_marks_bufferline_damage() {
+        let tmp = unique_temp_dir("nevi_save_buffer");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("buffer.rs");
+        std::fs::write(&path, "fn buffer() {}\n").expect("write buffer");
+
+        let mut editor = Editor::default();
+        editor.open_file(path).expect("open buffer");
+        editor.replace_buffer_content("fn changed() {}\n");
+        editor.render_damage.clear_after_full_render();
+
+        editor.save().expect("save buffer");
+
+        assert!(editor.render_damage.bufferline());
+        assert!(!editor.buffer().dirty);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
