@@ -126,6 +126,7 @@ nevi file1.rs file2.rs        # open several files
 nevi view README.md           # read-only viewer
 nevi diff before.rs after.rs  # side-by-side diff (stacked on narrow terminals)
 nevi pick .                   # pick a path; Enter prints it, Esc cancels
+nevi --help                   # usage for all of the above
 ```
 
 | Key | Does |
