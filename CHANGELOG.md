@@ -57,6 +57,7 @@
 
 ### Interface
 
+- Added `nevi --help` and `nevi -h`. They print the usage for the plain, `view`, `diff`, and `pick` forms and exit. Before this, `--help` was taken as a filename and opened an empty buffer called `--help`.
 - Completion, hover, signature help, code action, and diagnostic popups now open next to the cursor's real screen row when soft wrap is on. They used to count buffer lines instead of screen rows, so in a narrow split with wrapped lines above the cursor the completion menu could open on top of the line being typed. The cursor and every popup now share one screen position calculation. (#333)
 - `:rename` and `:mv` now refuse a destination that already exists instead of silently replacing it. A case-only rename such as `Notes.txt` to `notes.txt` still works on case-insensitive filesystems.
 - The `:Keymaps` cheatsheet caught up with the editor. It had quietly stopped being updated in June and was missing everything added since: the method motions, section and unmatched-bracket motions, `gm`, `go`, `s`, several window and terminal session keys, and more. A new test now fails whenever a key documented in KEYBINDINGS.md is missing from the cheatsheet, so it cannot drift again.
