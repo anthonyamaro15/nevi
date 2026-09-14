@@ -3364,6 +3364,12 @@ impl Editor {
 
     fn mark_bufferline_if_dirty_changed(&mut self, buffer_idx: usize, was_dirty: bool) {
         if self.buffers[buffer_idx].dirty != was_dirty {
+            self.mark_bufferline_damage();
+        }
+    }
+
+    fn mark_bufferline_damage(&mut self) {
+        if self.settings.editor.bufferline {
             self.render_damage.mark_bufferline();
         }
     }
@@ -4230,7 +4236,7 @@ impl Editor {
             // Update git diff for this buffer
             self.update_git_diff();
             self.recent_files.record(&path);
-            self.render_damage.mark_bufferline();
+            self.mark_bufferline_damage();
             return Ok(());
         }
 
@@ -4285,7 +4291,7 @@ impl Editor {
 
         self.recent_files.record(&path);
 
-        self.render_damage.mark_bufferline();
+        self.mark_bufferline_damage();
 
         Ok(())
     }
@@ -4349,13 +4355,13 @@ impl Editor {
             self.panes[self.active_pane].h_offset = self.h_offset;
         }
 
-        self.render_damage.mark_bufferline();
+        self.mark_bufferline_damage();
     }
 
     /// Set the path of the current buffer (for rename operations)
     pub fn set_buffer_path(&mut self, path: std::path::PathBuf) {
         self.buffer_mut().set_file_path(path.clone());
-        self.render_damage.mark_bufferline();
+        self.mark_bufferline_damage();
         // Update syntax highlighting for new filename
         let first_line = self.buffer().first_line_prefix();
         self.syntax
@@ -7108,7 +7114,7 @@ impl Editor {
             anyhow::bail!("Buffer is read-only");
         }
         self.buffers[self.current_buffer_idx].set_file_path(path);
-        self.render_damage.mark_bufferline();
+        self.mark_bufferline_damage();
         self.save()
     }
 
@@ -7118,7 +7124,7 @@ impl Editor {
             anyhow::bail!("Buffer is read-only");
         }
         self.buffers[self.current_buffer_idx].set_file_path(path);
-        self.render_damage.mark_bufferline();
+        self.mark_bufferline_damage();
         self.save_force()
     }
 
@@ -12639,7 +12645,7 @@ impl Editor {
             self.panes[self.active_pane].viewport_offset = 0;
             self.panes[self.active_pane].h_offset = 0;
         }
-        self.render_damage.mark_bufferline();
+        self.mark_bufferline_damage();
         self.cursor = Cursor::default();
         self.viewport_offset = 0;
         self.h_offset = 0;
@@ -14777,6 +14783,7 @@ mod tests {
         std::fs::write(&second, "fn second() {}\n").expect("write second");
 
         let mut editor = Editor::default();
+        editor.settings.editor.bufferline = true;
         editor.open_file(first).expect("Open first");
         editor.open_file(second).expect("Open second");
 
@@ -14800,6 +14807,7 @@ mod tests {
         std::fs::write(&second, "fn second() {}\n").expect("write second");
 
         let mut editor = Editor::default();
+        editor.settings.editor.bufferline = true;
         editor.open_file(first).expect("Open first");
         editor.open_file(second).expect("Open second");
 
@@ -14822,6 +14830,7 @@ mod tests {
         std::fs::write(&second, "fn second() {}\n").expect("write second");
 
         let mut editor = Editor::default();
+        editor.settings.editor.bufferline = true;
         editor.open_file(first).expect("Open first");
         editor.open_file(second).expect("Open second");
 
@@ -14841,6 +14850,7 @@ mod tests {
         std::fs::write(&path, "fn buffer() {}\n").expect("write buffer");
 
         let mut editor = Editor::default();
+        editor.settings.editor.bufferline = true;
         editor.open_file(path).expect("open buffer");
         editor.replace_buffer_content("fn changed() {}\n");
         editor.render_damage.clear_after_full_render();
@@ -14865,6 +14875,7 @@ mod tests {
         std::fs::write(&third, "fn third() {}\n").expect("write third");
 
         let mut editor = Editor::default();
+        editor.settings.editor.bufferline = true;
         editor.open_file(first).expect("open first");
         editor.open_file(second).expect("open second");
         editor.open_file(third).expect("open third");

@@ -1814,6 +1814,16 @@ mod tests {
     }
 
     #[test]
+    fn bufferline_defaults_off_and_parses_true() {
+        assert!(!EditorSettings::default().bufferline);
+        let settings: Settings =
+            toml::from_str("[editor]\nbufferline = true\n").expect("parse bufferline");
+        assert!(settings.editor.bufferline);
+        let settings: Settings = toml::from_str("").expect("parse empty");
+        assert!(!settings.editor.bufferline);
+    }
+
+    #[test]
     fn sign_column_defaults_to_yes_and_parses_all_modes() {
         assert_eq!(EditorSettings::default().sign_column, SignColumn::Yes);
         let s: Settings = toml::from_str("").expect("parse empty");
