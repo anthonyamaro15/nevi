@@ -14327,6 +14327,123 @@ mod tests {
     }
 
     #[test]
+    fn incremental_parse_preserves_reindent_and_undo_after_bulk_edits() {
+        let original = "fn main() {\nlet x = 1;\nif x > 0 {\nprintln!(\"hello\");\n}\n}\n";
+        let mut editor = editor_with_parsed_rust(original);
+        editor.settings.editor.tab_width = 4;
+        editor.apply_text_edits(&[
+            TextEdit {
+                start_line: 1,
+                start_col: 8,
+                end_line: 1,
+                end_col: 9,
+                new_text: "2".into(),
+            },
+            TextEdit {
+                start_line: 3,
+                start_col: 10,
+                end_line: 3,
+                end_col: 15,
+                new_text: "hé🙂".into(),
+            },
+        ]);
+        let edited = "fn main() {\nlet x = 2;\nif x > 0 {\nprintln!(\"hé🙂\");\n}\n}\n";
+        assert_eq!(editor.buffer().content(), edited);
+        // Reindent before the usual debounce has parsed the bulk edits.
+        editor.auto_indent_lines(0, 5);
+        let indented =
+            "fn main() {\n    let x = 2;\n    if x > 0 {\n        println!(\"hé🙂\");\n    }\n}\n";
+        assert_eq!(editor.buffer().content(), indented);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        editor.undo();
+        editor.maybe_update_syntax();
+        assert_eq!(editor.buffer().content(), edited);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+        editor.undo();
+        editor.maybe_update_syntax();
+        assert_eq!(editor.buffer().content(), original);
+        for _ in 0..2 {
+            editor.redo();
+            editor.maybe_update_syntax();
+            crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+        }
+        assert_eq!(editor.buffer().content(), indented);
+    }
+
+    #[test]
+    fn shell_heredoc_bulk_edits_survive_undo_redo_and_pane_switches() {
+        let tmp = unique_temp_dir("nevi_shell_heredoc_edits");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("heredoc.sh");
+        let rust_path = tmp.join("other.rs");
+        let original = "first() {\n cat <<EOF\nhello\nEOF\n}\nsecond() { echo 2; }\n";
+        let edited = "first() {\n cat <<EOF\nhell\"o\nEOF\n}\nsecond() { echo 2; }\n\"";
+        std::fs::write(&path, original).expect("write shell fixture");
+        std::fs::write(&rust_path, "fn other() {}\n").expect("write Rust fixture");
+
+        let mut editor = Editor::default();
+        editor.open_file(path.clone()).expect("open shell fixture");
+        editor.apply_text_edits(&[
+            TextEdit {
+                start_line: 2,
+                start_col: 4,
+                end_line: 2,
+                end_col: 4,
+                new_text: "\"".into(),
+            },
+            TextEdit {
+                start_line: 6,
+                start_col: 0,
+                end_line: 6,
+                end_col: 0,
+                new_text: "\"".into(),
+            },
+        ]);
+        editor.maybe_update_syntax();
+        assert_eq!(editor.buffer().content(), edited);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        editor.undo();
+        editor.maybe_update_syntax();
+        assert_eq!(editor.buffer().content(), original);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+        editor.redo();
+        editor.maybe_update_syntax();
+        assert_eq!(editor.buffer().content(), edited);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        editor.vsplit(None).expect("split the same buffer");
+        editor.focus_pane(0);
+        assert_eq!(editor.buffer().content(), edited);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+        editor.vsplit(Some(rust_path)).expect("split Rust buffer");
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+        editor.close_current_buffer();
+        assert_eq!(editor.buffer().content(), edited);
+        assert_eq!(editor.syntax.language_name(), Some("shell"));
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        // Complete the unfinished string before saving and reopening it.
+        editor.buffer_mut().insert_str(6, 1, "\"\n");
+        editor.note_buffer_change();
+        editor.maybe_update_syntax();
+        let saved = "first() {\n cat <<EOF\nhell\"o\nEOF\n}\nsecond() { echo 2; }\n\"\"\n";
+        assert_eq!(editor.buffer().content(), saved);
+        editor.save().expect("save shell fixture");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read saved file"),
+            saved
+        );
+        let mut reopened = Editor::default();
+        reopened.open_file(path).expect("reopen shell fixture");
+        assert_eq!(reopened.buffer().content(), saved);
+        crate::syntax::assert_tree_matches_fresh_parse(&reopened.syntax, reopened.buffer());
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    #[test]
     fn update_all_git_diffs_recomputes_against_new_head() {
         let tmp = unique_temp_dir("nevi_git_refresh_head");
         std::fs::create_dir_all(&tmp).expect("create temp dir");
