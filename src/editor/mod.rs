@@ -8,7 +8,7 @@ mod replace;
 mod search_pattern;
 mod undo;
 
-pub use buffer::Buffer;
+pub use buffer::{Buffer, BufferEdit};
 pub use cursor::{Cursor, DesiredCol};
 pub use macros::MacroState;
 pub use marks::{Mark, Marks};
@@ -4327,6 +4327,12 @@ impl Editor {
             self.panes[self.active_pane].viewport_offset = self.viewport_offset;
             self.panes[self.active_pane].h_offset = self.h_offset;
         }
+
+        // The syntax tree still describes the closed buffer. Reparse for
+        // whichever buffer is current now, exactly like a buffer switch:
+        // the version-only staleness checks in maybe_update_syntax and the
+        // auto-indent path cannot tell two buffers apart.
+        self.sync_syntax_to_current_buffer();
     }
 
     /// Set the path of the current buffer (for rename operations)
@@ -10463,7 +10469,13 @@ impl Editor {
             };
         }
 
-        self.parse_current_buffer();
+        // Reparse only when the buffer actually changed since the last parse.
+        // During a range re-indent every changed line bumps the version, so
+        // this still parses per changed line, but incrementally (microseconds
+        // instead of a full parse); clean lines cost nothing.
+        if self.buffers[self.current_buffer_idx].version() != self.last_syntax_version {
+            self.parse_current_buffer();
+        }
 
         let prev_line = line_num.saturating_sub(1);
         let prev_col = self.buffers[self.current_buffer_idx].line_len(prev_line);
@@ -12770,7 +12782,7 @@ impl Editor {
     fn parse_current_buffer(&mut self) {
         let buffer_idx = self.current_buffer_idx;
         let started = Instant::now();
-        self.syntax.parse(&self.buffers[buffer_idx]);
+        self.syntax.parse(&mut self.buffers[buffer_idx]);
         self.flight_recorder
             .record("syntax_parse", started.elapsed());
         self.last_syntax_version = self.buffers[buffer_idx].version();
@@ -14435,7 +14447,7 @@ mod tests {
         editor
             .syntax
             .set_language_from_path(std::path::Path::new("test.rs"));
-        editor.syntax.parse(&editor.buffers[0]);
+        editor.syntax.parse(&mut editor.buffers[0]);
         editor
     }
 
@@ -14537,7 +14549,7 @@ mod tests {
         // ...then a reparse of a different layout must invalidate it —
         // stale cached boundaries would jump to line 3 instead of line 1.
         editor.replace_buffer_content("fn one() {}\nfn two() {}\n");
-        editor.syntax.parse(&editor.buffers[0]);
+        editor.syntax.parse(&mut editor.buffers[0]);
         editor.cursor.set(0, 0);
         editor.apply_motion(Motion::Method(MethodBoundary::NextStart), 1);
         assert_eq!((editor.cursor.line, editor.cursor.col), (1, 0));
@@ -14760,6 +14772,171 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn closing_a_buffer_reparses_syntax_for_the_newly_current_buffer() {
+        let tmp = unique_temp_dir("nevi_close_buffer_syntax");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let first = tmp.join("first.rs");
+        let second = tmp.join("second.rs");
+        std::fs::write(&first, "fn first() {}\n").expect("write first");
+        std::fs::write(&second, "fn second() {\n    let x = 1;\n}\n").expect("write second");
+
+        let mut editor = Editor::default();
+        editor.open_file(first).expect("open first");
+        editor.open_file(second).expect("open second");
+        // Both buffers sit at the same version, so a version-only staleness
+        // check cannot tell the closed buffer's tree from the current one.
+        editor.close_current_buffer();
+
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn incremental_parse_survives_grouped_undo_and_redo() {
+        let mut editor = editor_with_parsed_rust("fn main() {\n    let x = 1;\n}\n");
+        // One insert-mode session is one undo group: several buffer edits
+        // that undo and redo replay together before a single reparse.
+        editor.cursor.set(1, 0);
+        editor.enter_insert_mode_end();
+        for ch in "\n    let y = \"h\u{e9}\";\n    if x > 0 {".chars() {
+            if ch == '\n' {
+                editor.insert_newline_with_indent();
+            } else {
+                editor.insert_char(ch);
+            }
+        }
+        editor.enter_normal_mode();
+        editor.maybe_update_syntax();
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        editor.undo();
+        editor.maybe_update_syntax();
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        editor.redo();
+        editor.maybe_update_syntax();
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+    }
+
+    #[test]
+    fn incremental_parse_preserves_reindent_and_undo_after_bulk_edits() {
+        let original = "fn main() {\nlet x = 1;\nif x > 0 {\nprintln!(\"hello\");\n}\n}\n";
+        let mut editor = editor_with_parsed_rust(original);
+        editor.settings.editor.tab_width = 4;
+        editor.apply_text_edits(&[
+            TextEdit {
+                start_line: 1,
+                start_col: 8,
+                end_line: 1,
+                end_col: 9,
+                new_text: "2".into(),
+            },
+            TextEdit {
+                start_line: 3,
+                start_col: 10,
+                end_line: 3,
+                end_col: 15,
+                new_text: "hé🙂".into(),
+            },
+        ]);
+        let edited = "fn main() {\nlet x = 2;\nif x > 0 {\nprintln!(\"hé🙂\");\n}\n}\n";
+        assert_eq!(editor.buffer().content(), edited);
+        // Reindent before the usual debounce has parsed the bulk edits.
+        editor.auto_indent_lines(0, 5);
+        let indented =
+            "fn main() {\n    let x = 2;\n    if x > 0 {\n        println!(\"hé🙂\");\n    }\n}\n";
+        assert_eq!(editor.buffer().content(), indented);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        editor.undo();
+        editor.maybe_update_syntax();
+        assert_eq!(editor.buffer().content(), edited);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+        editor.undo();
+        editor.maybe_update_syntax();
+        assert_eq!(editor.buffer().content(), original);
+        for _ in 0..2 {
+            editor.redo();
+            editor.maybe_update_syntax();
+            crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+        }
+        assert_eq!(editor.buffer().content(), indented);
+    }
+
+    #[test]
+    fn shell_heredoc_bulk_edits_survive_undo_redo_and_pane_switches() {
+        let tmp = unique_temp_dir("nevi_shell_heredoc_edits");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("heredoc.sh");
+        let rust_path = tmp.join("other.rs");
+        let original = "first() {\n cat <<EOF\nhello\nEOF\n}\nsecond() { echo 2; }\n";
+        let edited = "first() {\n cat <<EOF\nhell\"o\nEOF\n}\nsecond() { echo 2; }\n\"";
+        std::fs::write(&path, original).expect("write shell fixture");
+        std::fs::write(&rust_path, "fn other() {}\n").expect("write Rust fixture");
+
+        let mut editor = Editor::default();
+        editor.open_file(path.clone()).expect("open shell fixture");
+        editor.apply_text_edits(&[
+            TextEdit {
+                start_line: 2,
+                start_col: 4,
+                end_line: 2,
+                end_col: 4,
+                new_text: "\"".into(),
+            },
+            TextEdit {
+                start_line: 6,
+                start_col: 0,
+                end_line: 6,
+                end_col: 0,
+                new_text: "\"".into(),
+            },
+        ]);
+        editor.maybe_update_syntax();
+        assert_eq!(editor.buffer().content(), edited);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        editor.undo();
+        editor.maybe_update_syntax();
+        assert_eq!(editor.buffer().content(), original);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+        editor.redo();
+        editor.maybe_update_syntax();
+        assert_eq!(editor.buffer().content(), edited);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        editor.vsplit(None).expect("split the same buffer");
+        editor.focus_pane(0);
+        assert_eq!(editor.buffer().content(), edited);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+        editor.vsplit(Some(rust_path)).expect("split Rust buffer");
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+        editor.close_current_buffer();
+        assert_eq!(editor.buffer().content(), edited);
+        assert_eq!(editor.syntax.language_name(), Some("shell"));
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        // Complete the unfinished string before saving and reopening it.
+        editor.buffer_mut().insert_str(6, 1, "\"\n");
+        editor.note_buffer_change();
+        editor.maybe_update_syntax();
+        let saved = "first() {\n cat <<EOF\nhell\"o\nEOF\n}\nsecond() { echo 2; }\n\"\"\n";
+        assert_eq!(editor.buffer().content(), saved);
+        editor.save().expect("save shell fixture");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read saved file"),
+            saved
+        );
+        let mut reopened = Editor::default();
+        reopened.open_file(path).expect("reopen shell fixture");
+        assert_eq!(reopened.buffer().content(), saved);
+        crate::syntax::assert_tree_matches_fresh_parse(&reopened.syntax, reopened.buffer());
+
+        let _ = std::fs::remove_dir_all(tmp);
     }
 
     #[test]
