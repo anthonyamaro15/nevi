@@ -1,55 +1,65 @@
 # Nevi
 
+[![CI](https://github.com/anthonyamaro15/nevi/actions/workflows/rust.yml/badge.svg)](https://github.com/anthonyamaro15/nevi/actions/workflows/rust.yml)
+[![Release](https://img.shields.io/github/v/release/anthonyamaro15/nevi)](https://github.com/anthonyamaro15/nevi/releases/latest)
+![MSRV 1.85](https://img.shields.io/badge/MSRV-1.85-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 A fast, Neovim-inspired terminal editor written in Rust.
 
 *Your vim muscle memory, without the configuration overhead.*
 
 ![Nevi demo — file explorer with git status and diagnostic badges, LSP hover and goto-definition, vim motions, live grep, and live theme switching](nevi-demo.gif)
 
-> **Tip:** To see every keybinding available in Nevi, run `:Keymaps` (or press `<Space>fk`) — a searchable list with a description for each one.
-> See [CHANGELOG.md](CHANGELOG.md) for release notes and upgrade highlights.
+**372 keybinds implemented**, 206 of them verified against real Neovim on every
+CI run. See the generated [parity scoreboard](PARITY.md).
 
-## Why Nevi?
+- [Why Nevi](#why-nevi)
+- [Features](#features)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Themes](#themes)
+- [Languages](#languages)
+- [Keybindings](#keybindings)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
 
-**The Problem:**
-I love Neovim and Zed. Zed is an amazing editor - fast, modern, and beautiful. But it doesn't have all the vim keybinds I use daily, which stopped me from fully migrating to it. Neovim is powerful but can become slow with plugins. Helix uses Kakoune-style keybindings which require relearning muscle memory.
+## Why Nevi
 
-**Nevi's Goal:**
-A fast, native terminal editor where your existing vim/neovim muscle memory just works. No relearning keybindings, no plugin configuration overhead, no compromise on modern features like LSP and tree-sitter.
+I love Neovim and Zed. Zed is fast and modern but its vim mode is incomplete.
+Neovim is powerful but gets slow once the plugin list grows. Helix asks you to
+relearn Kakoune-style keys. Nevi is a native terminal editor where your existing
+vim muscle memory just works, with LSP, tree-sitter, fuzzy finding, and git
+built into the binary.
 
-| Editor | Vim Keybinds | Built-in Features | Notes |
+| Editor | Vim keybinds | Built-in features | Notes |
 |--------|--------------|-------------------|-------|
 | Neovim | Full | Via plugins | Powerful but plugin-dependent |
 | Zed | Partial | Yes | Fast but vim mode incomplete |
 | Helix | Kakoune-style | Yes | Different keybind philosophy |
-| **Nevi** | In Progress | Yes | Aiming for full vim compatibility |
-
-> **Note:** Nevi is under active development. Most common vim keybindings are implemented, with more being added regularly. See [Keybindings](#keybindings) for current status. For test-backed compatibility numbers, see the generated [Parity Scoreboard](PARITY.md).
+| **Nevi** | 372 and counting | Yes | Test-backed vim compatibility |
 
 ## Features
 
-> **Note:** Nevi currently supports macOS and Linux from source. Homebrew is
-> available for macOS. Linux release tarballs and distro packages are planned.
-> Windows support is planned.
+- **Vim and Neovim keybindings**, including surround, comment, text objects,
+  dot repeat, macros, and registers that survive restarts
+- **Built-in LSP** for 12 languages, auto-detected on your PATH, with install
+  hints when a server is missing
+- **Tree-sitter highlighting** for 13 languages, with a large-file degradation
+  mode
+- **Telescope-style finder** for files, live grep, buffers, diagnostics, git
+  changes, themes, and keymaps
+- **File explorer** with git status tints and diagnostic badges
+- **Floating terminal** sessions, lazygit, GitHub Copilot ghost text, Markdown
+  preview, and previewed project-wide replace
+- **Start screen** with recent files and harpoon pins
+- **17 bundled themes** and a simple TOML config
 
-- **Vim/neovim keybindings** - Most common keybinds implemented, more being added regularly
-- **Start screen** - Launching with no file shows recent files and harpoon pins; press `1`-`9` to jump back in
-- **Built-in LSP** - rust-analyzer, typescript-language-server, pyright, and more
-- **Tree-sitter syntax highlighting** - Fast, accurate highlighting for Rust, Go, Ruby, PHP, TypeScript, JavaScript, Python, CSS, JSON, TOML, HTML, Markdown, Bash/shell
-- **Theme selection** - Multiple built-in colorschemes with easy switching
-- **Fuzzy file finder** - Telescope-style file and content search
-- **Previewed project replace** - Project-wide literal replace with a read-only preview and explicit apply step
-- **Keybinding cheatsheet** - Searchable `:Keymaps` picker (`<Space>fk`) listing every binding with a description
-- **GitHub Copilot integration** - AI-powered completions
-- **File explorer** - Built-in tree view
-- **Git signs** - Gutter indicators for added/modified/deleted lines
-- **Harpoon-style quick file switching** - Pin and jump to frequently used files
-- **Markdown preview** - Open a fast, terminal-native rendered reader with `:MarkdownPreview`
-- **External formatter support** - Biome, Prettier, and other formatters
-- **Split windows** - Vertical and horizontal splits
-- **Configurable via TOML** - Simple, readable configuration
+> macOS and Linux today. Windows is planned
+> ([#123](https://github.com/anthonyamaro15/nevi/issues/123)).
 
-## Installation
+## Install
 
 ### Homebrew (macOS)
 
@@ -57,37 +67,14 @@ A fast, native terminal editor where your existing vim/neovim muscle memory just
 brew install anthonyamaro15/nevi/nevi
 ```
 
-Or tap first:
+### Cargo (macOS and Linux)
 
 ```bash
-brew tap anthonyamaro15/nevi
-brew install nevi
+cargo install --git https://github.com/anthonyamaro15/nevi
 ```
 
-Update an existing Homebrew install after a new Nevi release:
-
-```bash
-brew update
-brew upgrade nevi
-```
-
-If you installed with the fully qualified formula name, this also works:
-
-```bash
-brew upgrade anthonyamaro15/nevi/nevi
-```
-
-Verify the installed version:
-
-```bash
-nevi --version
-```
-
-### Linux
-
-Linux users can build from source or install directly from GitHub with Cargo.
-
-Install system build dependencies first:
+<details>
+<summary>Linux build dependencies</summary>
 
 ```bash
 # Debian / Ubuntu
@@ -103,444 +90,184 @@ sudo dnf install -y gcc gcc-c++ make cmake pkgconf-pkg-config openssl-devel \
 sudo pacman -S --needed base-devel cmake pkgconf openssl zlib libx11 libxcb
 ```
 
-Then install Nevi:
-
-```bash
-cargo install --git https://github.com/anthonyamaro15/nevi
-```
-
-Update a Cargo-installed binary:
-
-```bash
-cargo install --git https://github.com/anthonyamaro15/nevi --force
-```
-
-Or build a local release binary:
-
-```bash
-git clone https://github.com/anthonyamaro15/nevi.git
-cd nevi
-cargo build --release
-./target/release/nevi
-```
-
-Update a local source checkout:
-
-```bash
-git pull --ff-only
-cargo build --release
-```
-
 Linux binary tarballs and distro packages (`.deb`, `.rpm`, AUR) are not
 published yet.
 
-### Requirements
+</details>
 
-Nevi currently supports macOS and Linux from source.
-
-Required for Homebrew install on macOS:
-
-- Homebrew. Build dependencies such as Rust are installed by the formula when
-  needed.
-
-Required to build from source:
-
-- Rust toolchain with `cargo`
-  - Minimum Rust version is 1.85
-- Git, if cloning the repository with `git clone`
-- macOS: Xcode Command Line Tools if your Rust setup prompts for native build tools
-- Linux: native build packages such as `build-essential`, `pkg-config`, and
-  OpenSSL development headers
-
-Required at runtime after any install method:
-
-- A terminal emulator
-
-Verify an installed binary with:
+### From source
 
 ```bash
+git clone https://github.com/anthonyamaro15/nevi.git && cd nevi
+cargo build --release
+cp target/release/nevi ~/.local/bin/
+```
+
+### Update
+
+```bash
+brew update && brew upgrade nevi                                     # Homebrew
+cargo install --git https://github.com/anthonyamaro15/nevi --force   # Cargo
 nevi --version
 ```
 
-Not required:
+Rust 1.85 or newer is required to build. Nothing else is required at runtime:
+the file finder, live grep, fuzzy matching, and syntax highlighting are built
+into the binary, so `ripgrep`, `fzf`, `fd`, and the `tree-sitter` CLI are not
+needed. Optional tools such as language servers and `lazygit` are listed under
+[Languages](#languages).
 
-- `ripgrep`, `grep`, `fd`, `fzf`, or the `tree-sitter` CLI. Nevi's file finder,
-  live grep, fuzzy matching, and syntax highlighting are built into the binary.
-
-Optional tools unlock optional features:
-
-| Feature | Optional tool | Install hint |
-|---------|---------------|--------------|
-| `:LazyGit` / `<Space>gg` | `lazygit` | `brew install lazygit` |
-| Rust LSP | `rust-analyzer` | `rustup component add rust-analyzer` |
-| TypeScript / JavaScript LSP | `typescript-language-server` and `typescript` | `npm install -g typescript typescript-language-server` |
-| CSS / JSON / HTML LSP | `vscode-langservers-extracted` | `npm install -g vscode-langservers-extracted` |
-| TOML LSP | `taplo` | `cargo install taplo-cli --locked` |
-| Python LSP | `pyright` | `npm install -g pyright` |
-| PHP LSP | PHP 8.2+ and `phpactor` | `brew install php`, then `mkdir -p ~/.local/bin && curl -Lo phpactor.phar https://github.com/phpactor/phpactor/releases/latest/download/phpactor.phar && chmod +x phpactor.phar && mv phpactor.phar ~/.local/bin/phpactor` |
-| Go LSP | `gopls` | `go install golang.org/x/tools/gopls@latest` |
-| Ruby LSP | `ruby-lsp` | `gem install ruby-lsp` |
-| Shell / Bash LSP | `bash-language-server` | `npm install -g bash-language-server` |
-| Markdown LSP | `marksman` | Optional and disabled by default |
-| External formatters | Whatever formatter you configure | Examples: `biome`, `prettier`, `black`, `gofmt` |
-| Git signs / `:GitChanges` | A Git repository | No external `git` CLI required |
-| GitHub Copilot completions | GitHub account and network access | No local Copilot binary required |
-
-If an optional tool is missing, the rest of Nevi still works. Run
-`:checkhealth` or `:Health` inside Nevi to inspect config paths, keymap
-overrides, optional tool availability, LSP settings, formatter commands,
-profiling status, and common setup issues.
-Run `:ToolInstall` or `:LspInstall` to open a read-only install plan for missing
-configured LSP servers and formatters.
-
-### From Source
+## Quick start
 
 ```bash
-git clone https://github.com/anthonyamaro15/nevi.git
-cd nevi
-cargo build --release
-./target/release/nevi
+nevi .                        # open a directory
+nevi src/main.rs              # open a file
+nevi file1.rs file2.rs        # open several files
+nevi view README.md           # read-only viewer
+nevi diff before.rs after.rs  # side-by-side diff (stacked on narrow terminals)
+nevi pick .                   # pick a path; Enter prints it, Esc cancels
+nevi --help                   # usage for all of the above
 ```
 
-### Add to PATH (optional)
+| Key | Does |
+|-----|------|
+| `<Space>ff` | Find files |
+| `<Space>fg` | Live grep |
+| `<Space>e` | File explorer |
+| `<Space>fk` | Search every keybinding with its description |
+| `:w` / `:q` / `:wq` | Save, quit, save and quit, exactly like Vim |
+| `:checkhealth` | Config paths, LSP status, missing tools |
 
-```bash
-cp target/release/nevi ~/.local/bin/
-# or
-sudo cp target/release/nevi /usr/local/bin/
-```
-
-## Quick Start
-
-```bash
-# Open current directory
-nevi .
-
-# Open a file
-nevi src/main.rs
-
-# Open a file as a read-only terminal viewer
-nevi view src/main.rs
-
-# Pick a file path from the terminal; Enter prints the path, Esc cancels
-nevi pick .
-
-# Compare any two text files in a read-only diff view.
-# Wide terminals use side-by-side output; narrow terminals use stacked changes.
-nevi diff before.rs after.rs
-
-# Open multiple files
-nevi file1.rs file2.rs
-```
-
-**Basic commands:**
-- `:w` - Save, refusing to overwrite external disk changes
-- `:w!` - Force save and overwrite external disk changes
-- `:q` - Quit
-- `:wq` - Save and quit
-- `ZZ` / `:x` - Save if modified and quit
-- `:checkhealth` / `:Health` - Open editor health report in a read-only `[health]` buffer
-- `:ToolInstall` / `:LspInstall` - Open missing LSP/tool install guidance in a read-only `[tool-installer]` buffer
-- `:FlightRecorder` / `:WhySlow` - Open recent in-memory timing report in a read-only `[flight-recorder]` buffer
-- `:Macros` / `:MacroEdit {a-z}` - View recorded macros as readable notation, or edit one as text and `:w` it back into its register
-- Session persistence - macros, registers (including the `"1`-`"9` delete history), global marks, search history, and the jumplist survive restarts (like vim's shada), stored in `~/.local/state/nevi/state.json` (respects `$XDG_STATE_HOME`, same convention as nvim's `stdpath('state')`)
-- `:ConfigOpen` / `:config` - Open your user config file
-- `:ConfigDefaults` - View the latest built-in default config in a read-only `[config-defaults]` buffer
-- `:MarkdownPreview` - Open rendered Markdown reader for `.md` files (`j/k`, `Ctrl-d/u`, `g/G`, `q`)
-- `:ProjectReplace/{pattern}/{replacement}/g` - Preview project-wide literal replace
-- `:ProjectReplaceApply` - Apply the last project replace preview
-- `:Jump` - Labeled jump to visible text
-- `<Space>ff` - Find files
-- `<Space>fg` - Live grep
-- `<Space>fl` - Find lines in current buffer
-- `<Space>j` - Labeled jump to visible text
-- `<Space>gc` - Git changes picker
-- `<Space>e` - File explorer
-- `<Space>tt` - Terminal picker
-- `<Space>tn` / `<Space>tj` / `<Space>tk` - New / next / previous terminal session
-- `<Space>tr` - Rename active terminal session
-- `<Space>fk` - Search keymaps (keybinding cheatsheet)
+Press `<Space>` on its own to see every leader shortcut.
 
 ## Configuration
 
-Config location: `~/.config/nevi/config.toml`
-
-A template config file is created automatically on first run. Here's an example:
+| Path | What lives there |
+|------|------------------|
+| `~/.config/nevi/config.toml` | Editor, UI, keymaps, LSP, Copilot. Created with a commented template on first run. |
+| `~/.config/nevi/languages.toml` | Per-language formatters and tab width |
+| `~/.config/nevi/themes/` | Custom themes; a commented `_template.toml` is generated for you |
+| `~/.local/state/nevi/state.json` | Macros, registers, global marks, search history, jumplist. Like Vim's shada. |
+| `~/.local/state/nevi/recent_files.json` | Recent files for the start screen |
+| `.nevi/harpoon.json` | Harpoon pins, at the repository root |
 
 ```toml
 [editor]
 tab_width = 2
-format_on_save = true
 relative_numbers = true
-scroll_off = 8
-# Wheel scrolls the buffer, clicks move the cursor (like nvim's mouse=nvi).
-# Set to false to leave the mouse to the terminal; at runtime `:set nomouse`
-# and `:set mouse=` toggle it too.
-mouse = true
+format_on_save = true
 
 [theme]
 colorscheme = "onedark"
 
-[ui]
-style = "rich"
+# Remap a key: H to the first non-blank character
+[[keymap.normal]]
+from = "H"
+to = "^"
 
-[terminal]
-popup_width_ratio = 0.9
-popup_height_ratio = 0.9
-
-[lsp]
-enabled = true
-
-[copilot]
-enabled = true
+# Add a leader shortcut: <Space>s saves every buffer
+[[keymap.leader_mappings]]
+key = "s"
+action = ":wa"
+desc = "Save all"
 ```
 
-Run `:ConfigOpen` (or `:config`) to open your user config file from inside
-Nevi. Run `:ConfigDefaults` to view the latest built-in default config template
-in a read-only `[config-defaults]` buffer without changing your existing config.
-Existing config files stay user-owned; Nevi does not rewrite them when new
-defaults are added.
+`:config` opens your config from inside Nevi and `:ConfigDefaults` shows the
+current template. Nevi never rewrites a config file you own. Every option,
+keymap action, and formatter setting is documented in
+[**CONFIGURATION.md**](CONFIGURATION.md).
 
-See the generated config file at `~/.config/nevi/config.toml` for all available
-options with documentation.
+## Themes
 
-### UI style
+`:theme <name>` sets a theme and `<Space>ft` opens a live picker. Bundled:
+`onedark`, `onedark-darker`, `dracula`, `gruvbox`, `nord`, `tokyonight`,
+`catppuccin-mocha`, `rose-pine`, `solarized-dark`, `kanagawa`, `monokai`,
+`everforest`, `github-dark`, `github-light`, `ayu-dark`, `palenight`,
+`nightfox`.
 
-The default UI is "rich": Nerd Font icons, a segmented powerline statusline,
-and glyph-based signs. It expects a [Nerd Font](https://www.nerdfonts.com) in
-your terminal — if you see boxes instead of icons, either install one or set:
+Drop a `.toml` file into `~/.config/nevi/themes/` and the filename becomes the
+theme name. See [Custom themes](CONFIGURATION.md#custom-themes) in
+CONFIGURATION.md.
 
-```toml
-[ui]
-style = "minimal"
-```
+## Languages
 
-for a plain-ASCII UI with the same layout. If you already had
-`use_nerd_font_icons = false` under `[editor]`, Nevi keeps respecting it and
-defaults to the ASCII UI automatically. `:checkhealth` reports the active UI
-mode and includes a glyph probe.
+| Language | Highlighting | LSP server | Install |
+|----------|--------------|------------|---------|
+| Rust | Yes | rust-analyzer | `rustup component add rust-analyzer` |
+| TypeScript / JavaScript | Yes | typescript-language-server | `npm install -g typescript typescript-language-server` |
+| Python | Yes | pyright | `npm install -g pyright` |
+| Go | Yes | gopls | `go install golang.org/x/tools/gopls@latest` |
+| Ruby | Yes | ruby-lsp | `gem install ruby-lsp` |
+| PHP | Yes | phpactor | PHP 8.2+, then see `:ToolInstall` |
+| CSS / SCSS | Yes | vscode-css-language-server | `npm install -g vscode-langservers-extracted` |
+| JSON | Yes | vscode-json-language-server | same package as CSS |
+| HTML | Yes | vscode-html-language-server | same package as CSS |
+| TOML | Yes | taplo | `cargo install taplo-cli --locked` |
+| Shell / Bash | Yes | bash-language-server | `npm install -g bash-language-server` |
+| Markdown | Yes | marksman (off by default) | |
 
-## Custom Themes
+Servers are detected on PATH. `:ToolInstall` prints the exact install commands
+for anything missing, and `:checkhealth` shows what was found. `:LazyGit`
+(`<Space>gg`) needs `lazygit` installed; git signs and `:GitChanges` need only
+a Git repository.
 
-Nevi comes with 15+ built-in themes. You can also create your own custom themes.
+External formatters such as biome, prettier, black, and gofmt are configured
+in `languages.toml`. `:Format` and format-on-save use the formatter when one
+is configured for the buffer's language and fall back to the LSP otherwise.
 
-### Built-in Themes
-
-Select a theme with `:theme <name>` or `<Space>ft` to open the theme picker.
-
-Available themes: `onedark`, `dracula`, `gruvbox`, `nord`, `tokyonight`, `catppuccin-mocha`, `rose-pine`, `solarized-dark`, `kanagawa`, `monokai`, `everforest`, `github-dark`, `github-light`, `ayu-dark`, `palenight`, `nightfox`
-
-### Creating Custom Themes
-
-1. **Location:** Place `.toml` files in `~/.config/nevi/themes/`
-2. **Template:** A commented template is auto-generated at `~/.config/nevi/themes/_template.toml`
-3. **Naming:** The filename becomes the theme name (e.g., `mytheme.toml` → `:theme mytheme`)
-
-Copy the template to get started:
-
-```bash
-cp ~/.config/nevi/themes/_template.toml ~/.config/nevi/themes/mytheme.toml
-```
-
-### Theme Structure
-
-```toml
-# Define reusable colors
-[palette]
-red = "#e06c75"
-blue = "#61afef"
-bg = "#282c34"
-
-# Syntax highlighting (can reference palette or use hex)
-[syntax]
-keyword = { fg = "purple" }
-string = { fg = "green" }
-comment = { fg = "gray", italic = true }
-
-# UI elements
-[ui]
-background = "bg"
-foreground = "#abb2bf"
-cursor_line = "#2c313c"
-
-[ui.statusline]
-mode_normal = "blue"
-mode_insert = "green"
-
-# And more: [ui.completion], [ui.finder], [diagnostic], [git]
-```
-
-See `~/.config/nevi/themes/_template.toml` for the complete reference with all available options.
+> **Missing a language?** Open a
+> [GitHub issue](https://github.com/anthonyamaro15/nevi/issues).
 
 ## Keybindings
 
-Nevi aims for full vim/neovim keybind compatibility. Most common keybindings are already implemented.
+If it works in Vim, it should work here: motions, operators, text objects,
+counts, registers, marks, macros, visual block, dot repeat, and `Ctrl+w`
+window commands. On top of that:
 
-> **Full reference:** See [KEYBINDINGS.md](KEYBINDINGS.md) for the complete keybind documentation with examples and tips.
+- **LSP**: `gd` `gD` `gI` `gr` `K` `]d` `[d` `<Space>ca` `<Space>rn`
+- **Surround and comment**: `ds` `cs` `ys` `gcc` `gc{motion}`
+- **Leader**: `<Space>` then `ff` `fg` `fb` `e` `tt` `gg` `m` `h` and more
 
-### Movement
-`h/j/k/l`, `w/b/e/W/B/E`, `0/^/$`, `+/-`, `gg/G`, `{/}`, `(`/`)`, `f/F/t/T`, `;/,`, `%`, `H/M/L`, `gj/gk/g0/g$/g^`
+Full references:
 
-### Editing
-`d/c/y` + motions, `dd/cc/yy`, `p/P/gp/gP`, `x/X`, `r`, `J/gJ`, `==/={motion}`, `.`, `u/Ctrl+r`
+- [KEYBINDINGS.md](KEYBINDINGS.md): every key and ex command
+- [KEYBINDS_ROADMAP.md](KEYBINDS_ROADMAP.md): planned Vim defaults and
+  deliberate deviations
+- [PARITY.md](PARITY.md): which keys are verified against real Neovim
 
-### Text Objects
-`iw/aw`, `iW/aW`, `i"/a"`, `i'/a'`, `i(/a(`, `i{/a{`, `i[/a[`, `i</a<`, `ip/ap`, `is/as`, `it/at`
+## Troubleshooting
 
-### Search
-`/`, `?`, `n/N`, `*/#`, `gn/gN`
-
-### LSP
-`gd` (definition), `gD` (declaration), `gI` (implementation), `gf` (file under cursor), `gx` (URL under cursor), `gr` (references), `K` (hover), `gl` (diagnostic), `]d/[d` (next/prev diagnostic)
-
-### Surround
-`ds{char}` (delete), `cs{old}{new}` (change), `ys{motion}{char}` (add)
-
-### Comment
-`gcc` (line), `gc{motion}` (motion)
-
-### Leader (`<Space>`)
-Press `<Space>` by itself to show available leader continuations. Set `[keymap] show_leader_popup = false` to disable that popup.
-
-| Key | Action |
-|-----|--------|
-| `ff` | Find files |
-| `fg` | Live grep |
-| `fl` | Find lines in current buffer |
-| `sw` | Search word under cursor |
-| `j` | Labeled jump to visible text |
-| `fb` | Find buffers |
-| `ft` | Theme picker |
-| `fk` | Search keymaps |
-| `tt` | Terminal picker |
-| `e` | File explorer |
-| `ca` | Code actions |
-| `rn` | Rename symbol |
-| `d` | Search diagnostics |
-| `D` | Line diagnostic |
-| `w` | Save file |
-| `q` | Quit |
-| `gg` | Open lazygit |
-| `gc` | Git changes picker |
-| `m` | Add to harpoon |
-| `h` | Harpoon menu |
-| `1-4` | Jump to harpoon slot |
-
-### Window Management
-`Ctrl+w v` (vsplit), `Ctrl+w s` (hsplit), `Ctrl+w q` (close), `Ctrl+w h/j/k/l` or `Ctrl+h/j/k/l` (navigate), `Ctrl+w w/W` (next/previous), `Ctrl+w =` (equalize), `Ctrl+w r/R` (rotate), `Ctrl+w x` (exchange)
-
-### And More
-Visual mode (`v/V/Ctrl+v`), macros (`q{a-z}/@{a-z}`), marks (`m{a-z}/'`), read-only/expression registers (`"%`, `":`, `"#`, `".`, `"=`), insert helpers (`Ctrl+t/Ctrl+d/Ctrl+a/Ctrl+r/Ctrl+o`), replace mode (`R`)
-
-> **Missing a keybind?** Check [KEYBINDINGS.md](KEYBINDINGS.md) for the full list of what's implemented. If you don't see the one you want, take a look at the [keybind roadmap](KEYBINDS_ROADMAP.md) to see if it's already planned — and if it's not, [open an issue](https://github.com/anthonyamaro15/nevi/issues) to request it (PRs welcome too).
-
-## Language Support
-
-### LSP Servers
-
-| Language | Server | Status |
-|----------|--------|--------|
-| Rust | rust-analyzer | Supported |
-| TypeScript/JavaScript | typescript-language-server | Supported |
-| Python | pyright | Supported |
-| PHP | phpactor | Supported |
-| Ruby | ruby-lsp | Supported |
-| CSS/SCSS | vscode-css-language-server | Supported |
-| JSON | vscode-json-language-server | Supported |
-| TOML | taplo | Supported |
-| HTML | vscode-html-language-server | Supported |
-| Go | gopls | Supported |
-| Shell / Bash | bash-language-server | Supported |
-| Markdown | marksman | Optional, disabled by default |
-
-LSP servers are auto-detected when installed. See [`~/.config/nevi/config.toml`](#configuration) for LSP configuration options.
-
-If a server is missing, Nevi shows an install hint in the LSP status/error
-message. You can also run `:checkhealth` to review the active LSP configuration,
-or `:ToolInstall` / `:LspInstall` to open a missing-tool install plan.
-
-> **Missing a language?** Open a [GitHub issue](https://github.com/anthonyamaro15/nevi/issues) and we'll work on adding support!
-
-### External Formatters
-
-Configure formatters in `~/.config/nevi/languages.toml`:
-
-```toml
-[typescript]
-formatter = { command = "biome", args = ["format", "--stdin-file-path", "{file}"] }
-```
-
-Formatters are external commands. `:Format` and format-on-save both use a
-configured formatter when one exists for the buffer's language; otherwise they
-fall back to LSP formatting when available.
+- **Boxes instead of icons?** Install a [Nerd Font](https://www.nerdfonts.com),
+  or set `[ui] style = "minimal"` for a plain ASCII UI with the same layout.
+- **Can't select text with the mouse?** Nevi captures the mouse like Neovim's
+  `mouse=nvi`. Hold Option (iTerm2) or Shift (most terminals) to select with
+  the terminal, run `:set mouse=` for the session, or set `mouse = false`
+  under `[editor]`. Why this is the default:
+  [ADR 0001](docs/adr/0001-mouse-capture-on-by-default.md).
+- **LSP not starting?** `:checkhealth` shows what was found on PATH and
+  `:ToolInstall` shows the install commands. Note that rust-analyzer's cold
+  index takes minutes on a large crate and is not Nevi latency.
+- **Feels slow?** `:WhySlow` opens recent in-memory timings. For a full
+  profile, `NEVI_PROFILE=1 nevi path/to/file` writes `/tmp/nevi_profile.log`
+  on exit.
+- **Very large file?** The statusline shows `[large]` when highlighting is
+  degraded, and `:checkhealth` reports the threshold.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit issues and pull requests.
-
-- [Report a bug](https://github.com/anthonyamaro15/nevi/issues)
-- [Request a feature](https://github.com/anthonyamaro15/nevi/issues)
-
-### Vim/Neovim Parity Checks
-
-The generated [Parity Scoreboard](PARITY.md) lists every keybind the oracle and
-regression suites verify; it is kept in sync by a test and regenerated with
-`NEVI_UPDATE_PARITY=1 cargo test parity_report`.
-
-Nevi includes a test-only Vim oracle harness for checking selected key sequences
-against headless Neovim. The suite covers grouped deterministic motion, editing,
-and undo/redo cases, and failures include the key sequence plus Nevi/Neovim
-snapshots. The normal test suite does not require Neovim:
-
-```bash
-cargo test vim_oracle --quiet
-```
-
-To run the real Neovim comparison, install `nvim` and opt in explicitly:
-
-```bash
-NEVI_VIM_ORACLE=1 cargo test vim_oracle_smoke -- --ignored --nocapture
-```
-
-### Performance Profiling
-
-Nevi keeps a small in-memory flight recorder for recent hot-path timings. Run
-`:FlightRecorder` or `:WhySlow` to open a read-only `[flight-recorder]` buffer
-with recent render, input, syntax, LSP, finder, and terminal timing events.
-
-Verbose file profiling is opt-in and disabled by default. To capture raw timing
-events while using Nevi locally:
-
-```bash
-NEVI_PROFILE=1 cargo run --release -- path/to/file
-```
-
-Nevi writes raw timing events and a summary to `/tmp/nevi_profile.log`. The
-summary includes count, retained sample count, total, average, p50, p95, and max
-microseconds for metrics such as key handling, syntax updates, full renders, and
-terminal-only renders.
-
-Run `:checkhealth` (or `:Health`) inside Nevi to open a read-only `[health]`
-buffer with config paths, config discoverability commands, keymap overrides and
-warnings, LSP settings, optional external tool checks, formatter command checks,
-profiling status, large-file thresholds, the active buffer's large-file mode,
-and any profile summary from `/tmp/nevi_profile.log`. When syntax highlighting
-is degraded for a very large buffer, the statusline shows `[large]` and
-`:checkhealth` reports the active threshold. Because it is a regular buffer,
-normal motions, search, and yank commands work there. Profile summaries are
-written when a profiled Nevi session exits.
+Issues and PRs are welcome. Found a key that behaves differently from Neovim?
+Open a
+[Vim parity report](https://github.com/anthonyamaro15/nevi/issues/new?template=vim-parity.yml)
+and it becomes a test case. Setup, test gates, and how to add a keybind are in
+[**CONTRIBUTING.md**](CONTRIBUTING.md).
 
 ## License
 
-MIT License
+MIT License. Inspired by [Neovim](https://neovim.io/),
+[Helix](https://helix-editor.com/), and [Zed](https://zed.dev/).
 
-## Acknowledgments
-
-Inspired by [Neovim](https://neovim.io/), [Helix](https://helix-editor.com/), and [Zed](https://zed.dev/).
-
-Built with:
-- [ropey](https://github.com/cessen/ropey) - Rope data structure for text
-- [tree-sitter](https://tree-sitter.github.io/tree-sitter/) - Syntax highlighting
-- [crossterm](https://github.com/crossterm-rs/crossterm) - Terminal handling
-- [nucleo](https://github.com/helix-editor/nucleo) - Fuzzy matching
-- [git2](https://github.com/rust-lang/git2-rs) - Git integration
+Built with [ropey](https://github.com/cessen/ropey),
+[tree-sitter](https://tree-sitter.github.io/tree-sitter/),
+[crossterm](https://github.com/crossterm-rs/crossterm),
+[nucleo](https://github.com/helix-editor/nucleo), and
+[git2](https://github.com/rust-lang/git2-rs).

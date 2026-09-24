@@ -271,6 +271,26 @@ pub struct LastVisualSelection {
     pub cursor_col: usize,
 }
 
+impl LastVisualSelection {
+    /// The `'<` and `'>` positions: the selection's ends in buffer order.
+    /// A linewise selection spans whole lines (Vim keeps its end column
+    /// past any text), a block spans its corner columns on every line.
+    pub fn bounds(&self) -> ((usize, usize), (usize, usize)) {
+        let anchor = (self.anchor_line, self.anchor_col);
+        let cursor = (self.cursor_line, self.cursor_col);
+        let (start, end) = (anchor.min(cursor), anchor.max(cursor));
+        match self.mode {
+            Mode::VisualLine => ((start.0, 0), (end.0, usize::MAX)),
+            Mode::VisualBlock => {
+                let left = self.anchor_col.min(self.cursor_col);
+                let right = self.anchor_col.max(self.cursor_col);
+                ((start.0, left), (end.0, right))
+            }
+            _ => (start, end),
+        }
+    }
+}
+
 /// Pending Visual Block insert/append replay state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VisualBlockEdit {
@@ -370,6 +390,16 @@ pub struct SearchOrigin {
     pub col: usize,
     pub viewport_offset: usize,
     pub h_offset: usize,
+}
+
+/// What the last `:s` did, so `&` and `g&` can repeat it. Both keep the
+/// flags: Neovim maps `&` to `:&&` by default (Vim's bare `&` drops them),
+/// and `g&` is `:%s//~/&`.
+#[derive(Debug, Clone)]
+pub struct LastSubstitute {
+    pub pattern: String,
+    pub replacement: String,
+    pub global: bool,
 }
 
 impl SearchState {
@@ -1010,6 +1040,10 @@ struct GitStatusScan {
     scan_duration: Duration,
 }
 
+/// Sign column width in cells when shown: one for the git marker, one for
+/// the diagnostic glyph. See `Editor::sign_column_width`.
+const SIGN_COLUMN_WIDTH: usize = 2;
+
 pub struct Editor {
     /// All open buffers
     buffers: Vec<Buffer>,
@@ -1052,6 +1086,8 @@ pub struct Editor {
     undo_stacks: Vec<UndoStack>,
     /// Search state
     pub search: SearchState,
+    /// The last `:s`, for `&` and `g&`.
+    pub last_substitute: Option<LastSubstitute>,
     /// Visual selection state
     pub visual: VisualSelection,
     /// Syntax highlighting manager
@@ -1179,6 +1215,8 @@ pub struct Editor {
     pub dot_repeat: crate::dot_repeat::DotRepeat,
     /// Last insert position for `gi` command (line, col)
     pub last_insert_position: Option<(usize, usize)>,
+    /// Where the active insert session began, the `'[` mark once it ends.
+    insert_session_start: (usize, usize),
     /// Text inserted during the most recently completed insert session.
     pub last_inserted_text: Option<String>,
     /// Text inserted during the active insert session.
@@ -1632,6 +1670,7 @@ impl Editor {
             undo_stack: UndoStack::new(),
             undo_stacks: vec![UndoStack::new()],
             search: SearchState::default(),
+            last_substitute: None,
             visual: VisualSelection::default(),
             syntax,
             preview_syntax,
@@ -1693,6 +1732,7 @@ impl Editor {
             macros: MacroState::new(),
             dot_repeat: crate::dot_repeat::DotRepeat::default(),
             last_insert_position: None,
+            insert_session_start: (0, 0),
             last_inserted_text: None,
             current_inserted_text: String::new(),
             insert_session_repeat_count: 1,
@@ -2590,9 +2630,10 @@ impl Editor {
 
     /// Update diagnostics for a file URI
     pub fn set_diagnostics(&mut self, uri: String, diags: Vec<Diagnostic>) {
-        let diags = if let Some(buffer) = self.buffers.iter().find(|buffer| {
+        let buffer_idx = self.buffers.iter().position(|buffer| {
             buffer.path.as_ref().map(crate::lsp::path_to_uri).as_deref() == Some(uri.as_str())
-        }) {
+        });
+        let diags = if let Some(buffer) = buffer_idx.and_then(|idx| self.buffers.get(idx)) {
             diags
                 .into_iter()
                 .map(|diag| Self::diagnostic_lsp_to_buffer_cols(buffer, diag))
@@ -2601,16 +2642,42 @@ impl Editor {
             diags
         };
 
-        for row in self.diagnostic_render_rows_for_uri(
-            &uri,
-            self.diagnostics.get(&uri).map(Vec::as_slice),
-            &diags,
-        ) {
-            self.render_damage.mark_editor_row(row);
-        }
+        self.with_sign_column_repaint(buffer_idx, |editor| {
+            for row in editor.diagnostic_render_rows_for_uri(
+                &uri,
+                editor.diagnostics.get(&uri).map(Vec::as_slice),
+                &diags,
+            ) {
+                editor.render_damage.mark_editor_row(row);
+            }
 
-        self.diagnostics.insert(uri, diags);
-        self.rebuild_diag_rollup();
+            editor.diagnostics.insert(uri, diags);
+            editor.rebuild_diag_rollup();
+        });
+    }
+
+    /// Run `update`, then force a full repaint if it changed the sign column
+    /// width of `buffer_idx`. Only `sign_column = "auto"` can change it, and
+    /// when it does every row moves, not just the rows the update marked.
+    fn with_sign_column_repaint(
+        &mut self,
+        buffer_idx: Option<usize>,
+        update: impl FnOnce(&mut Self),
+    ) {
+        let before = buffer_idx.map(|idx| self.sign_column_width(idx));
+        update(self);
+        if buffer_idx.is_some_and(|idx| Some(self.sign_column_width(idx)) != before) {
+            self.sign_column_width_changed();
+        }
+    }
+
+    /// The gutter just grew or shrank for a whole buffer. Every row moves, so
+    /// the frame needs a full repaint, and the scroll offsets were computed
+    /// against the old text width, so a cursor on the last visible column
+    /// (or last wrapped row) would otherwise be drawn outside the pane.
+    pub fn sign_column_width_changed(&mut self) {
+        self.render_damage.mark_full();
+        self.scroll_to_cursor();
     }
 
     /// Rebuild the per-path diagnostic rollup used by the explorer's folder
@@ -3077,7 +3144,19 @@ impl Editor {
 
     /// Set git diff for a file path
     pub fn set_git_diff(&mut self, path: String, diff: crate::git::GitDiff) {
-        self.git_diffs.insert(path, diff);
+        let buffer_idx = self.buffer_idx_for_git_path(&path);
+        self.with_sign_column_repaint(buffer_idx, |editor| {
+            editor.git_diffs.insert(path, diff);
+        });
+    }
+
+    fn buffer_idx_for_git_path(&self, path: &str) -> Option<usize> {
+        self.buffers.iter().position(|buffer| {
+            buffer
+                .path
+                .as_ref()
+                .is_some_and(|p| p.to_string_lossy().as_ref() == path)
+        })
     }
 
     /// Get git status for a specific line in the current buffer
@@ -3113,7 +3192,11 @@ impl Editor {
             self.set_git_diff(path, diff);
         } else if let Some(path) = self.buffer().path.as_ref() {
             // File not tracked by git or new file - clear any existing diff
-            self.git_diffs.remove(&path.to_string_lossy().to_string());
+            let key = path.to_string_lossy().to_string();
+            let buffer_idx = Some(self.current_buffer_idx);
+            self.with_sign_column_repaint(buffer_idx, |editor| {
+                editor.git_diffs.remove(&key);
+            });
         }
     }
 
@@ -3130,7 +3213,17 @@ impl Editor {
                 git_diffs.insert(path, diff);
             }
         }
+        // Under sign_column = auto a buffer gaining or losing its last hunk
+        // moves its whole gutter; callers of this refresh don't always repaint.
+        let widths_before: Vec<usize> = (0..self.buffers.len())
+            .map(|idx| self.sign_column_width(idx))
+            .collect();
         self.git_diffs = git_diffs;
+        let changed =
+            (0..self.buffers.len()).any(|idx| self.sign_column_width(idx) != widths_before[idx]);
+        if changed {
+            self.sign_column_width_changed();
+        }
     }
 
     fn git_diff_for_buffer(
@@ -4399,7 +4492,6 @@ impl Editor {
             return;
         }
         self.mode = Mode::Insert;
-        self.begin_insert_session();
         self.cursor.line = line.min(
             self.buffers[self.current_buffer_idx]
                 .addressable_line_count()
@@ -4407,6 +4499,8 @@ impl Editor {
         );
         self.cursor.col = col.min(self.buffers[self.current_buffer_idx].line_len(self.cursor.line));
         self.last_insert_position = Some((self.cursor.line, self.cursor.col));
+        // After the cursor is placed, so the session (and '[) starts there.
+        self.begin_insert_session();
         self.clamp_cursor();
         self.scroll_to_cursor();
     }
@@ -4673,24 +4767,61 @@ impl Editor {
         self.pane_text_area_width(self.active_pane)
     }
 
-    /// Text area width for an arbitrary pane (its rect minus sign column,
-    /// line numbers, and separator).
+    /// Text area width for an arbitrary pane (its rect minus the gutter).
     fn pane_text_area_width(&self, pane_idx: usize) -> usize {
-        let (pane_width, buffer) = if pane_idx < self.panes.len() {
+        let (pane_width, buffer_idx) = if pane_idx < self.panes.len() {
             (
                 self.panes[pane_idx].rect.width as usize,
-                &self.buffers[self.panes[pane_idx].buffer_idx],
+                self.panes[pane_idx].buffer_idx,
             )
         } else {
-            (self.term_width as usize, self.buffer())
+            (self.term_width as usize, self.current_buffer_idx)
         };
-        const SIGN_COLUMN_WIDTH: usize = 2;
-        let line_num_width = buffer.addressable_line_count().to_string().len().max(3);
-        if self.settings.editor.line_numbers {
-            pane_width.saturating_sub(SIGN_COLUMN_WIDTH + line_num_width + 1)
-        } else {
-            pane_width.saturating_sub(SIGN_COLUMN_WIDTH)
+        pane_width.saturating_sub(self.gutter_width(buffer_idx))
+    }
+
+    /// Cells the sign column takes for `buffer_idx`: 2 (git marker, then
+    /// diagnostic glyph) or 0, per `[editor] sign_column`. Mirrors nvim's
+    /// `signcolumn`: `yes` always reserves it so text never shifts, `no`
+    /// never draws it, `auto` shows it only while the buffer has a sign.
+    /// Decided per buffer, not per pane, so a split never changes it.
+    pub fn sign_column_width(&self, buffer_idx: usize) -> usize {
+        use crate::config::SignColumn;
+        match self.settings.editor.sign_column {
+            SignColumn::Yes => SIGN_COLUMN_WIDTH,
+            SignColumn::No => 0,
+            SignColumn::Auto if self.buffer_has_signs(buffer_idx) => SIGN_COLUMN_WIDTH,
+            SignColumn::Auto => 0,
         }
+    }
+
+    fn buffer_has_signs(&self, buffer_idx: usize) -> bool {
+        let Some(path) = self.buffers.get(buffer_idx).and_then(|b| b.path.as_ref()) else {
+            return false;
+        };
+        let has_git_hunk = self
+            .git_diffs
+            .get(&path.to_string_lossy().to_string())
+            .is_some_and(|diff| !diff.hunks.is_empty());
+        has_git_hunk
+            || self
+                .diagnostics
+                .get(&crate::lsp::path_to_uri(path))
+                .is_some_and(|diags| !diags.is_empty())
+    }
+
+    /// Pane-relative column where buffer text starts: the sign column plus,
+    /// when line numbers are on, the number width and its separator space.
+    /// Every gutter/text boundary (render fill, cursor placement, popup
+    /// anchors, mouse hit-testing) must go through this so they agree.
+    pub fn gutter_width(&self, buffer_idx: usize) -> usize {
+        let mut width = self.sign_column_width(buffer_idx);
+        if self.settings.editor.line_numbers {
+            if let Some(buffer) = self.buffers.get(buffer_idx) {
+                width += buffer.addressable_line_count().to_string().len().max(3) + 1;
+            }
+        }
+        width
     }
 
     fn effective_wrap_width(&self) -> usize {
@@ -5005,11 +5136,22 @@ impl Editor {
         if let Some((start_line, start_col, end_line, mut end_col)) =
             self.motion_range(motion, count)
         {
+            // A linewise motion is dd over the covered lines; the cursor
+            // keeps its column like Neovim's nostartofline.
+            if Self::motion_is_linewise(motion) {
+                let original_col = self.cursor.col;
+                self.cursor.line = start_line;
+                self.delete_line(end_line - start_line + 1, register);
+                self.cursor.col = original_col;
+                self.clamp_cursor();
+                self.scroll_to_cursor();
+                return;
+            }
             // Neovim promotes a counted d$ from column zero to a linewise
             // deletion, including the target line's trailing newline.
             let counted_line_end_is_linewise =
                 motion == Motion::LineEnd && count > 1 && start_col == 0;
-            let linewise = Self::motion_is_linewise(motion) || counted_line_end_is_linewise;
+            let linewise = counted_line_end_is_linewise;
             if counted_line_end_is_linewise {
                 end_col = self.buffers[self.current_buffer_idx]
                     .line_len_including_newline(end_line)
@@ -5069,13 +5211,19 @@ impl Editor {
     /// Yank from cursor to motion target
     pub fn yank_motion(&mut self, motion: Motion, count: usize, register: Option<char>) {
         if let Some((start_line, start_col, end_line, end_col)) = self.motion_range(motion, count) {
+            // A linewise motion is yy over the covered lines; like Vim the
+            // cursor moves to the first of them (yk goes up) and keeps its
+            // column.
+            if Self::motion_is_linewise(motion) {
+                self.cursor.line = start_line;
+                self.yank_line(end_line - start_line + 1, register);
+                self.clamp_cursor();
+                self.scroll_to_cursor();
+                return;
+            }
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
-            let content = if Self::motion_is_linewise(motion) {
-                RegisterContent::Lines(text)
-            } else {
-                RegisterContent::Chars(text)
-            };
-            self.registers.yank(register, content);
+            self.registers.yank(register, RegisterContent::Chars(text));
+            self.set_yank_marks(start_line, start_col, end_line, end_col, false);
             self.set_status("Yanked");
         }
     }
@@ -5089,6 +5237,7 @@ impl Editor {
         );
         let text = self.get_lines_text(self.cursor.line, end_line);
         self.registers.yank(register, RegisterContent::Lines(text));
+        self.set_yank_marks(self.cursor.line, 0, end_line, 0, true);
 
         let msg = if count == 1 {
             "1 line yanked".to_string()
@@ -5117,7 +5266,13 @@ impl Editor {
         .or_else(|| self.motion_range(motion, count));
 
         if let Some((start_line, start_col, end_line, end_col)) = range {
-            let linewise = Self::motion_is_linewise(motion);
+            // A linewise motion is cc over the covered lines: they collapse
+            // to one line that keeps the first line's indent.
+            if Self::motion_is_linewise(motion) {
+                self.cursor.line = start_line;
+                self.change_line(end_line - start_line + 1, register);
+                return;
+            }
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
             // Begin undo group (will include the delete and subsequent inserts)
@@ -5127,14 +5282,9 @@ impl Editor {
 
             let deleted = self.delete_range(start_line, start_col, end_line, end_col);
 
-            if linewise {
-                self.registers
-                    .delete(register, RegisterContent::Lines(deleted), false);
-            } else {
-                let is_small = !deleted.contains('\n');
-                self.registers
-                    .delete(register, RegisterContent::Chars(deleted), is_small);
-            }
+            let is_small = !deleted.contains('\n');
+            self.registers
+                .delete(register, RegisterContent::Chars(deleted), is_small);
 
             // Enter insert mode (don't start new undo group, reuse the one from change)
             self.enter_insert_mode_at_change(start_line, start_col);
@@ -5699,6 +5849,7 @@ impl Editor {
     }
 
     fn begin_insert_session(&mut self) {
+        self.insert_session_start = (self.cursor.line, self.cursor.col);
         self.current_inserted_text.clear();
         self.insert_session_repeat_count = 1;
         self.insert_session_open_line_indent = None;
@@ -5926,6 +6077,12 @@ impl Editor {
             self.last_insert_position = Some((self.cursor.line, self.cursor.col));
             self.replay_pending_visual_block_edit();
             self.finish_insert_session();
+            // '[ and ']: from where the insert began to where typing
+            // stopped, which may sit one past the last inserted character.
+            self.undo_stack.set_op_marks(
+                self.insert_session_start,
+                (self.cursor.line, self.cursor.col),
+            );
         } else if self.mode == Mode::Replace {
             self.last_insert_position = Some((self.cursor.line, self.cursor.col));
             self.finish_replace_session();
@@ -6878,6 +7035,39 @@ impl Editor {
         }
     }
 
+    /// `'[` `']` `'<` `'>` and their backtick forms. The change marks
+    /// bracket the last changed or yanked text and default to the whole
+    /// buffer, as Vim sets them when a file is read; the visual marks are
+    /// the last selection in buffer order. Returns false when unset.
+    pub fn jump_to_special_mark(&mut self, mark: char, exact: bool) -> bool {
+        let last_line = self.buffer().addressable_line_count().saturating_sub(1);
+        let (start, end) = match mark {
+            '[' | ']' => self
+                .undo_stack
+                .op_marks()
+                .unwrap_or(((0, 0), (last_line, 0))),
+            '<' | '>' => match &self.last_visual_selection {
+                Some(selection) => selection.bounds(),
+                None => return false,
+            },
+            _ => return false,
+        };
+        let (line, col) = if matches!(mark, '[' | '<') {
+            start
+        } else {
+            end
+        };
+        self.cursor.line = line.min(last_line);
+        self.cursor.col = if exact {
+            col
+        } else {
+            self.find_first_non_blank(self.cursor.line)
+        };
+        self.clamp_cursor();
+        self.scroll_to_cursor();
+        true
+    }
+
     /// Begin an undo group and record change position
     /// This should be called before making changes to the buffer
     pub fn begin_change(&mut self) {
@@ -7111,6 +7301,10 @@ impl Editor {
                 );
             }
 
+            // '[ and '] bracket the restored lines at column zero, like Vim.
+            let (first, last) = entry.touched_lines(true);
+            self.undo_stack.set_op_marks((first, 0), (last, 0));
+
             // Restore cursor position
             self.cursor.line = entry.cursor_before.0;
             self.cursor.col = entry.cursor_before.1;
@@ -7139,6 +7333,9 @@ impl Editor {
                     &change.new_text, // Insert new text
                 );
             }
+
+            let (first, last) = entry.touched_lines(false);
+            self.undo_stack.set_op_marks((first, 0), (last, 0));
 
             // Restore cursor position
             self.cursor.line = entry.cursor_after.0;
@@ -7838,22 +8035,69 @@ impl Editor {
         entire_file: bool,
         global: bool,
     ) -> usize {
-        if pattern.is_empty() {
-            return 0;
-        }
-
-        // Begin undo group for all replacements
-        self.begin_change();
-
-        let mut total_replacements = 0;
-        let pattern_len = pattern.len();
-
-        // Determine line range
         let (start_line, end_line) = if entire_file {
             (0, self.buffers[self.current_buffer_idx].len_lines())
         } else {
             (self.cursor.line, self.cursor.line + 1)
         };
+        self.substitute_lines(pattern, replacement, start_line, end_line, global)
+    }
+
+    /// `&`: repeat the last `:s` on the cursor line, or on `count` lines
+    /// from it, with its flags (Neovim's default `&` is `:&&`). A count
+    /// that runs past the last line is refused like Vim's `:.,.+N` range
+    /// (E16), not clamped. Returns the substitution count, or the message
+    /// to show when nothing could run.
+    pub fn repeat_substitute(&mut self, count: usize) -> Result<usize, &'static str> {
+        let last = self
+            .last_substitute
+            .clone()
+            .ok_or("No previous substitute")?;
+        let start = self.cursor.line;
+        let end = start + count.max(1);
+        if end > self.buffer().addressable_line_count() {
+            return Err("Invalid range");
+        }
+        Ok(self.substitute_lines(&last.pattern, &last.replacement, start, end, last.global))
+    }
+
+    /// `g&`: repeat the last `:s` on every line, keeping its flags
+    /// (Vim's `:%s//~/&`).
+    pub fn repeat_substitute_all(&mut self) -> Result<usize, &'static str> {
+        let last = self
+            .last_substitute
+            .clone()
+            .ok_or("No previous substitute")?;
+        let end = self.buffer().len_lines();
+        Ok(self.substitute_lines(&last.pattern, &last.replacement, 0, end, last.global))
+    }
+
+    /// Replace `pattern` on lines `start_line..end_line` and remember the
+    /// substitute for `&`. Like Vim, the cursor ends on the first non-blank
+    /// of the last line that changed, and stays put when nothing matched.
+    fn substitute_lines(
+        &mut self,
+        pattern: &str,
+        replacement: &str,
+        start_line: usize,
+        end_line: usize,
+        global: bool,
+    ) -> usize {
+        if pattern.is_empty() {
+            return 0;
+        }
+        self.last_substitute = Some(LastSubstitute {
+            pattern: pattern.to_string(),
+            replacement: replacement.to_string(),
+            global,
+        });
+
+        // Begin undo group for all replacements
+        self.begin_change();
+
+        let mut total_replacements = 0;
+        let mut last_changed_line = None;
+        let pattern_len = pattern.len();
 
         for line_idx in start_line..end_line {
             if let Some(line) = self.buffers[self.current_buffer_idx].line(line_idx) {
@@ -7903,8 +8147,15 @@ impl Editor {
 
                     // Replace the line in buffer
                     self.buffers[self.current_buffer_idx].replace_line(line_idx, &new_line);
+                    last_changed_line = Some(line_idx);
                 }
             }
+        }
+
+        if let Some(line) = last_changed_line {
+            self.cursor.line = line;
+            self.cursor.col = self.find_first_non_blank(line);
+            self.scroll_to_cursor();
         }
 
         // End undo group
@@ -8337,6 +8588,7 @@ impl Editor {
                 // Line-wise yank
                 let text = self.get_lines_text(start_line, end_line);
                 self.registers.yank(None, RegisterContent::Lines(text));
+                self.set_yank_marks(start_line, 0, end_line, 0, true);
                 let count = end_line - start_line + 1;
                 self.set_status(format!("{} line(s) yanked", count));
             }
@@ -8344,6 +8596,7 @@ impl Editor {
                 // Character-wise yank
                 let text = self.get_range_text(start_line, start_col, end_line, end_col);
                 self.registers.yank(None, RegisterContent::Chars(text));
+                self.set_yank_marks(start_line, start_col, end_line, end_col, false);
                 self.set_status("Yanked");
             }
             Mode::VisualBlock => {
@@ -8378,22 +8631,25 @@ impl Editor {
                     .yank(None, RegisterContent::Chars(block_text));
                 let count = bottom - top + 1;
                 self.set_status(format!("block of {} line(s) yanked", count));
+                self.set_yank_marks(top, left, bottom, right, false);
 
-                // For block yank, cursor goes to top-left
+                // Leave Visual mode before moving so '< and '> keep the
+                // selection; for block yank the cursor goes to top-left.
+                self.exit_visual_mode();
                 self.cursor.line = top;
                 self.cursor.col = left;
                 self.clamp_cursor();
-                self.mode = Mode::Normal;
                 self.scroll_to_cursor();
                 return;
             }
             _ => {}
         }
 
-        // Move cursor to start of selection
+        // Leave Visual mode before moving so '< and '> keep the selection,
+        // then put the cursor at its start.
+        self.exit_visual_mode();
         self.cursor.line = start_line;
         self.cursor.col = start_col;
-        self.mode = Mode::Normal;
         self.scroll_to_cursor();
     }
 
@@ -9469,8 +9725,26 @@ impl Editor {
         {
             let text = self.get_range_text(start_line, start_col, end_line, end_col);
             self.registers.yank(register, RegisterContent::Chars(text));
+            self.set_yank_marks(start_line, start_col, end_line, end_col, false);
             self.set_status("Yanked");
         }
+    }
+
+    /// `'[` and `']` around yanked text; a linewise yank spans whole lines.
+    fn set_yank_marks(
+        &mut self,
+        start_line: usize,
+        start_col: usize,
+        end_line: usize,
+        end_col: usize,
+        linewise: bool,
+    ) {
+        let (start, end) = if linewise {
+            ((start_line, 0), (end_line, usize::MAX))
+        } else {
+            ((start_line, start_col), (end_line, end_col))
+        };
+        self.undo_stack.set_op_marks(start, end);
     }
 
     /// Select text object in visual mode
@@ -9588,9 +9862,19 @@ impl Editor {
             self.cursor.col = 0;
         }
 
+        self.set_join_marks(current_line_len);
         self.undo_stack
             .end_undo_group(self.cursor.line, self.cursor.col);
         self.clamp_cursor();
+    }
+
+    /// Vim's marks after J and gJ: `'[` at the end of the first line's
+    /// original text, `']` at the end of the joined line.
+    fn set_join_marks(&mut self, first_line_len: usize) {
+        let line = self.cursor.line;
+        let joined_len = self.buffers[self.current_buffer_idx].line_len(line);
+        self.undo_stack
+            .set_op_marks((line, first_line_len), (line, joined_len));
     }
 
     /// Join count lines total, matching Vim's J count behavior.
@@ -9598,6 +9882,7 @@ impl Editor {
         let joins = count.max(2).saturating_sub(1);
         // One change for the whole count, so a single undo restores every
         // line like Vim; each join opens its own group otherwise.
+        let first_line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
         self.undo_stack
             .begin_compound_group(self.cursor.line, self.cursor.col);
         for _ in 0..joins {
@@ -9607,6 +9892,7 @@ impl Editor {
                 break;
             }
         }
+        self.set_join_marks(first_line_len);
         self.undo_stack
             .end_compound_group(self.cursor.line, self.cursor.col);
     }
@@ -9640,6 +9926,7 @@ impl Editor {
         // Position cursor at the join point
         self.cursor.col = current_line_len;
 
+        self.set_join_marks(current_line_len);
         self.undo_stack
             .end_undo_group(self.cursor.line, self.cursor.col);
         self.clamp_cursor();
@@ -9648,6 +9935,7 @@ impl Editor {
     /// Join count lines total without inserting spaces, matching gJ with count.
     pub fn join_lines_no_space_count(&mut self, count: usize) {
         let joins = count.max(2).saturating_sub(1);
+        let first_line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
         self.undo_stack
             .begin_compound_group(self.cursor.line, self.cursor.col);
         for _ in 0..joins {
@@ -9657,6 +9945,7 @@ impl Editor {
                 break;
             }
         }
+        self.set_join_marks(first_line_len);
         self.undo_stack
             .end_compound_group(self.cursor.line, self.cursor.col);
     }
@@ -10466,10 +10755,17 @@ impl Editor {
     /// Case transformation with motion (gu{motion}, gU{motion}, g~{motion})
     pub fn case_motion(&mut self, op: CaseOperator, motion: Motion, count: usize) {
         if let Some((start_line, start_col, end_line, end_col)) = self.motion_range(motion, count) {
+            let original_col = self.cursor.col;
             self.transform_case(start_line, start_col, end_line, end_col, op);
-            // Move cursor to start of range
+            // Move cursor to start of range; a linewise motion keeps the
+            // column (gUj leaves the cursor where it was).
             self.cursor.line = start_line;
-            self.cursor.col = start_col;
+            self.cursor.col = if Self::motion_is_linewise(motion) {
+                original_col
+            } else {
+                start_col
+            };
+            self.clamp_cursor();
         }
     }
 
@@ -11101,6 +11397,40 @@ impl Editor {
         self.scroll_to_cursor();
     }
 
+    /// Target line of H, M and L in the active window. M is the middle of
+    /// the lines actually shown, so a buffer shorter than the window
+    /// centres on its own lines like Vim. H and L stay inside 'scrolloff'
+    /// when moving, but an operator reaches the true top and bottom lines
+    /// (:h H: "unless an operator is pending").
+    fn screen_motion_target_line(
+        &self,
+        motion: Motion,
+        count: usize,
+        honour_scroll_off: bool,
+    ) -> usize {
+        let text_rows = self.active_pane_text_rows();
+        let top = self.viewport_offset;
+        let last = last_addressable_line(self.buffer());
+        let (safe_top, safe_bottom) = if honour_scroll_off {
+            self.screen_motion_safe_line_range()
+        } else {
+            (0, last)
+        };
+        match motion {
+            Motion::ScreenTop => top
+                .saturating_add(count.saturating_sub(1))
+                .clamp(safe_top, safe_bottom),
+            Motion::ScreenBottom => top
+                .saturating_add(text_rows.saturating_sub(1))
+                .saturating_sub(count.saturating_sub(1))
+                .clamp(safe_top, safe_bottom),
+            _ => {
+                let shown = text_rows.min(last.saturating_sub(top) + 1).max(1);
+                (top + (shown + 1) / 2 - 1).min(last)
+            }
+        }
+    }
+
     /// Repeat last change (. command)
 
     /// Apply motion with screen-relative awareness
@@ -11126,41 +11456,8 @@ impl Editor {
 
         // Handle screen-relative motions specially
         match motion {
-            Motion::ScreenTop => {
-                // H - move to top of visible screen (+ count lines from top)
-                let (safe_top, safe_bottom) = self.screen_motion_safe_line_range();
-                let target_line = self
-                    .viewport_offset
-                    .saturating_add(count.saturating_sub(1))
-                    .clamp(safe_top, safe_bottom);
-                self.cursor.line = target_line;
-                // Move to first non-blank
-                self.cursor.col = self.find_first_non_blank(self.cursor.line);
-                self.clamp_cursor();
-                self.scroll_to_cursor();
-            }
-            Motion::ScreenMiddle => {
-                // M - move to middle of visible screen
-                let text_rows = self.active_pane_text_rows();
-                let middle = text_rows.saturating_sub(1) / 2;
-                let target_line =
-                    (self.viewport_offset + middle).min(last_addressable_line(self.buffer()));
-                self.cursor.line = target_line;
-                // Move to first non-blank
-                self.cursor.col = self.find_first_non_blank(self.cursor.line);
-                self.clamp_cursor();
-                self.scroll_to_cursor();
-            }
-            Motion::ScreenBottom => {
-                // L - move to bottom of visible screen (- count lines from bottom)
-                let text_rows = self.active_pane_text_rows();
-                let (safe_top, safe_bottom) = self.screen_motion_safe_line_range();
-                let target_line = self
-                    .viewport_offset
-                    .saturating_add(text_rows.saturating_sub(1))
-                    .saturating_sub(count.saturating_sub(1))
-                    .clamp(safe_top, safe_bottom);
-                self.cursor.line = target_line;
+            Motion::ScreenTop | Motion::ScreenMiddle | Motion::ScreenBottom => {
+                self.cursor.line = self.screen_motion_target_line(motion, count, true);
                 // Move to first non-blank
                 self.cursor.col = self.find_first_non_blank(self.cursor.line);
                 self.clamp_cursor();
@@ -12340,10 +12637,21 @@ impl Editor {
         )
     }
 
+    /// Motions that cover whole lines under an operator (:h linewise):
+    /// `dj` deletes two lines, `yG` yanks to the end linewise.
     fn motion_is_linewise(motion: Motion) -> bool {
         matches!(
             motion,
-            Motion::NextLineFirstNonBlank | Motion::PrevLineFirstNonBlank
+            Motion::Up
+                | Motion::Down
+                | Motion::NextLineFirstNonBlank
+                | Motion::PrevLineFirstNonBlank
+                | Motion::FileStart
+                | Motion::FileEnd
+                | Motion::GotoLine(_)
+                | Motion::ScreenTop
+                | Motion::ScreenMiddle
+                | Motion::ScreenBottom
         )
     }
 
@@ -12375,6 +12683,16 @@ impl Editor {
             // Tree-sitter motions can't be computed by the pure
             // apply_motion; this keeps d]m / y[m / c]M working.
             self.method_motion_target(boundary, count)?
+        } else if matches!(
+            motion,
+            Motion::ScreenTop | Motion::ScreenMiddle | Motion::ScreenBottom
+        ) {
+            // The pure apply_motion has no viewport; resolve H, M and L
+            // here so dH, yM and cL cover the lines on screen.
+            (
+                self.screen_motion_target_line(motion, count, false),
+                self.cursor.col,
+            )
         } else {
             apply_motion(
                 &self.buffers[self.current_buffer_idx],
@@ -12387,7 +12705,18 @@ impl Editor {
         };
 
         if Self::motion_is_linewise(motion) {
-            if target_line == self.cursor.line {
+            // j, k, + and - fail when they cannot move, which cancels the
+            // operator (dj on the last line does nothing). G, gg, H, M and
+            // L still act on the line they land on (dG on the last line
+            // deletes it).
+            let fails_in_place = matches!(
+                motion,
+                Motion::Up
+                    | Motion::Down
+                    | Motion::NextLineFirstNonBlank
+                    | Motion::PrevLineFirstNonBlank
+            );
+            if fails_in_place && target_line == self.cursor.line {
                 return None;
             }
 
@@ -12580,11 +12909,13 @@ mod tests {
     mod editing_operators;
     mod file_lifecycle;
     mod insert_entry;
+    mod linewise_operators;
     mod macro_lens;
     mod open_line;
     mod replace;
     mod screen_position;
     mod shada;
+    mod special_marks;
     mod viewport_scroll;
 
     use super::{Editor, JumpList, Mode, SearchDirection, SplitLayout};
@@ -13091,6 +13422,171 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn sign_column_width_follows_setting_and_buffer_signs() {
+        use crate::config::SignColumn;
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("123\n");
+        let path = PathBuf::from("/nevi-tests/sign-column.rs");
+        editor.buffer_mut().path = Some(path.clone());
+
+        // yes: reserved even with nothing to show (today's behavior, the default)
+        assert_eq!(editor.sign_column_width(0), 2);
+        assert_eq!(editor.gutter_width(0), 2 + 3 + 1);
+
+        editor.settings.editor.sign_column = SignColumn::Auto;
+        assert_eq!(editor.sign_column_width(0), 0, "auto with no signs");
+        editor.settings.editor.line_numbers = false;
+        assert_eq!(editor.gutter_width(0), 0, "issue #330: text flush left");
+        assert_eq!(editor.pane_text_area_width(0), 80);
+
+        editor.set_git_diff(
+            path.to_string_lossy().to_string(),
+            crate::git::GitDiff {
+                hunks: vec![crate::git::GitHunk {
+                    line: 0,
+                    status: crate::git::GitLineStatus::Modified,
+                }],
+            },
+        );
+        assert_eq!(editor.sign_column_width(0), 2, "auto with a git hunk");
+        assert_eq!(editor.pane_text_area_width(0), 78);
+
+        editor.set_git_diff(path.to_string_lossy().to_string(), Default::default());
+        assert_eq!(editor.sign_column_width(0), 0, "auto after hunks clear");
+        editor.set_diagnostics(
+            crate::lsp::path_to_uri(&path),
+            vec![crate::lsp::Diagnostic {
+                line: 0,
+                end_line: 0,
+                col_start: 0,
+                col_end: 1,
+                severity: crate::lsp::DiagnosticSeverity::Warning,
+                message: "w".to_string(),
+                source: None,
+                code: None,
+            }],
+        );
+        assert_eq!(editor.sign_column_width(0), 2, "auto with a diagnostic");
+
+        editor.settings.editor.sign_column = SignColumn::No;
+        assert_eq!(
+            editor.sign_column_width(0),
+            0,
+            "no hides it even with signs"
+        );
+    }
+
+    /// Diagnostics normally dirty only their own rows. Under `auto` the first
+    /// or last sign changes the gutter width, which moves every row, so that
+    /// update has to repaint the whole frame (otherwise a partial render
+    /// would shift the touched rows and leave the rest behind).
+    #[test]
+    fn auto_sign_column_width_change_forces_full_repaint() {
+        use crate::config::SignColumn;
+        use crate::git::{GitDiff, GitHunk, GitLineStatus};
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("123\n456\n");
+        let path = PathBuf::from("/nevi-tests/sign-column-repaint.rs");
+        editor.buffer_mut().path = Some(path.clone());
+        let uri = crate::lsp::path_to_uri(&path);
+        let diag = |line: usize| crate::lsp::Diagnostic {
+            line,
+            end_line: line,
+            col_start: 0,
+            col_end: 1,
+            severity: crate::lsp::DiagnosticSeverity::Warning,
+            message: "w".to_string(),
+            source: None,
+            code: None,
+        };
+
+        // Default `yes`: width is fixed, so only the diagnostic's row is dirty.
+        editor.render_damage.clear_after_full_render();
+        editor.set_diagnostics(uri.clone(), vec![diag(0)]);
+        assert!(!editor.render_damage.requires_full_render());
+        assert_eq!(editor.render_damage.dirty_editor_rows(), vec![0]);
+        editor.set_diagnostics(uri.clone(), vec![]);
+
+        editor.settings.editor.sign_column = SignColumn::Auto;
+
+        editor.render_damage.clear_after_full_render();
+        editor.set_diagnostics(uri.clone(), vec![diag(0)]);
+        assert!(editor.render_damage.requires_full_render(), "0 -> 2 cells");
+
+        editor.render_damage.clear_after_full_render();
+        editor.set_diagnostics(uri.clone(), vec![diag(0), diag(1)]);
+        assert!(
+            !editor.render_damage.requires_full_render(),
+            "width unchanged"
+        );
+        assert_eq!(editor.render_damage.dirty_editor_rows(), vec![0, 1]);
+
+        editor.render_damage.clear_after_full_render();
+        editor.set_diagnostics(uri, vec![]);
+        assert!(editor.render_damage.requires_full_render(), "2 -> 0 cells");
+
+        let key = path.to_string_lossy().to_string();
+        editor.render_damage.clear_after_full_render();
+        editor.set_git_diff(
+            key.clone(),
+            GitDiff {
+                hunks: vec![GitHunk {
+                    line: 1,
+                    status: GitLineStatus::Added,
+                }],
+            },
+        );
+        assert!(editor.render_damage.requires_full_render(), "git 0 -> 2");
+        editor.render_damage.clear_after_full_render();
+        editor.set_git_diff(key, GitDiff::default());
+        assert!(editor.render_damage.requires_full_render(), "git 2 -> 0");
+    }
+
+    /// Same as the `:set` case, but the width flips because a diagnostic
+    /// arrived, with no keypress to trigger a rescroll.
+    #[test]
+    fn auto_sign_column_change_keeps_cursor_in_view() {
+        use crate::config::SignColumn;
+        let mut editor = Editor::default();
+        editor.set_size(30, 6);
+        editor.update_pane_rects();
+        editor.settings.editor.line_numbers = false;
+        editor.settings.editor.scroll_off = 0;
+        editor.settings.editor.sign_column = SignColumn::Auto;
+        editor.replace_buffer_content(&format!("{}\n", "x".repeat(60)));
+        let path = PathBuf::from("/nevi-tests/sign-column-scroll.rs");
+        editor.buffer_mut().path = Some(path.clone());
+        editor.cursor.col = 40;
+        editor.scroll_to_cursor();
+        assert_eq!(editor.h_offset, 11);
+
+        editor.set_diagnostics(
+            crate::lsp::path_to_uri(&path),
+            vec![crate::lsp::Diagnostic {
+                line: 0,
+                end_line: 0,
+                col_start: 0,
+                col_end: 1,
+                severity: crate::lsp::DiagnosticSeverity::Error,
+                message: "e".to_string(),
+                source: None,
+                code: None,
+            }],
+        );
+
+        assert_eq!(
+            editor.h_offset, 13,
+            "gutter appeared: text area is 28 wide now"
+        );
+        assert_eq!(
+            editor.panes[editor.active_pane].h_offset, 13,
+            "pane mirror synced"
+        );
     }
 
     #[test]

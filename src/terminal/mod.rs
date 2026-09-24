@@ -1473,12 +1473,7 @@ impl Terminal {
         let highlight_cursor_line = editor.settings.editor.cursor_line;
         let pane_width = pane.rect.width as usize;
 
-        const SIGN_COLUMN_WIDTH: usize = 2;
-        let text_area_width = if show_line_numbers {
-            pane_width.saturating_sub(SIGN_COLUMN_WIDTH + line_num_width + 1)
-        } else {
-            pane_width.saturating_sub(SIGN_COLUMN_WIDTH)
-        };
+        let text_area_width = pane_width.saturating_sub(editor.gutter_width(pane.buffer_idx));
 
         for screen_row in rows {
             let pane_row = screen_row.saturating_sub(pane.rect.y as usize);
@@ -1787,15 +1782,8 @@ impl Terminal {
         let pane_height = rect.height as usize;
         let pane_width = rect.width as usize;
 
-        // Sign column width (for diagnostic icons)
-        const SIGN_COLUMN_WIDTH: usize = 2;
-
-        // Calculate effective text width (excluding sign column and line numbers)
-        let text_area_width = if show_line_numbers {
-            pane_width.saturating_sub(SIGN_COLUMN_WIDTH + line_num_width + 1)
-        } else {
-            pane_width.saturating_sub(SIGN_COLUMN_WIDTH)
-        };
+        // Text width after the gutter (sign column + line numbers)
+        let text_area_width = pane_width.saturating_sub(editor.gutter_width(pane.buffer_idx));
 
         // Calculate wrap width: use configured wrap_width or text_area_width, whichever is smaller
         let effective_wrap_width = if wrap_enabled {
@@ -1845,6 +1833,56 @@ impl Terminal {
         Ok(())
     }
 
+    /// Paint one row's two sign cells: the git marker, then the highest
+    /// severity diagnostic glyph (error > warning > info > hint). Callers
+    /// skip this entirely when `Editor::sign_column_width` is 0.
+    fn render_sign_cells(
+        &mut self,
+        editor: &Editor,
+        theme: &crate::theme::Theme,
+        git_status: Option<crate::git::GitLineStatus>,
+        (has_error, has_warning, has_info, has_hint): (bool, bool, bool, bool),
+        editor_fg: Color,
+        row_bg: Color,
+    ) -> anyhow::Result<()> {
+        use crate::git::GitLineStatus;
+        let git_cell = match git_status {
+            Some(GitLineStatus::Added) => Some((theme.git.added, "▎")),
+            Some(GitLineStatus::Modified) => Some((theme.git.modified, "▎")),
+            Some(GitLineStatus::Deleted) => Some((theme.git.deleted, "▁")),
+            None => None,
+        };
+        let glyphs = editor.ui_glyphs();
+        let diag_cell = if has_error {
+            Some((theme.diagnostic.error, glyphs.gutter_error))
+        } else if has_warning {
+            Some((theme.diagnostic.warning, glyphs.gutter_warn))
+        } else if has_info {
+            Some((theme.diagnostic.info, glyphs.gutter_info))
+        } else if has_hint {
+            Some((theme.diagnostic.hint, glyphs.gutter_hint))
+        } else {
+            None
+        };
+        for cell in [git_cell, diag_cell] {
+            match cell {
+                Some((color, glyph)) => {
+                    execute!(self.stdout, SetForegroundColor(color))?;
+                    terminal_print!(self, "{}", glyph);
+                    execute!(
+                        self.stdout,
+                        SetForegroundColor(editor_fg),
+                        SetBackgroundColor(row_bg)
+                    )?;
+                }
+                None => {
+                    terminal_print!(self, " ");
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Render pane with soft wrap enabled
     #[allow(clippy::too_many_arguments)]
     fn render_pane_wrapped(
@@ -1866,6 +1904,8 @@ impl Terminal {
     ) -> anyhow::Result<()> {
         // Get theme colors once at the start
         let theme = editor.theme();
+        let gutter_width = editor.gutter_width(pane.buffer_idx);
+        let sign_column_width = editor.sign_column_width(pane.buffer_idx);
         let cursor_line_bg = theme.ui.cursor_line;
         let editor_bg = theme.ui.background;
         let editor_fg = theme.ui.foreground;
@@ -1954,87 +1994,26 @@ impl Terminal {
                     SetForegroundColor(editor_fg)
                 )?;
 
-                // Sign column (git signs + diagnostic icons) - only on first segment
-                // Layout: [Git Sign][Diagnostic] = 2 chars total
-                if segment.is_first {
-                    // Git sign (first char)
-                    let git_status = if is_active {
-                        buffer_path.and_then(|p| editor.git_status_for_line_in_file(p, file_line))
-                    } else {
-                        None
-                    };
-
-                    match git_status {
-                        Some(crate::git::GitLineStatus::Added) => {
-                            execute!(self.stdout, SetForegroundColor(theme.git.added))?;
-                            terminal_print!(self, "▎");
-                            execute!(
-                                self.stdout,
-                                SetForegroundColor(editor_fg),
-                                SetBackgroundColor(row_bg)
-                            )?;
-                        }
-                        Some(crate::git::GitLineStatus::Modified) => {
-                            execute!(self.stdout, SetForegroundColor(theme.git.modified))?;
-                            terminal_print!(self, "▎");
-                            execute!(
-                                self.stdout,
-                                SetForegroundColor(editor_fg),
-                                SetBackgroundColor(row_bg)
-                            )?;
-                        }
-                        Some(crate::git::GitLineStatus::Deleted) => {
-                            execute!(self.stdout, SetForegroundColor(theme.git.deleted))?;
-                            terminal_print!(self, "▁");
-                            execute!(
-                                self.stdout,
-                                SetForegroundColor(editor_fg),
-                                SetBackgroundColor(row_bg)
-                            )?;
-                        }
-                        None => {
-                            terminal_print!(self, " ");
-                        }
-                    }
-
-                    // Diagnostic sign (second char) - priority: error > warning > info > hint
-                    if has_error {
-                        execute!(self.stdout, SetForegroundColor(theme.diagnostic.error))?;
-                        terminal_print!(self, "{}", editor.ui_glyphs().gutter_error);
-                        execute!(
-                            self.stdout,
-                            SetForegroundColor(editor_fg),
-                            SetBackgroundColor(row_bg)
-                        )?;
-                    } else if has_warning {
-                        execute!(self.stdout, SetForegroundColor(theme.diagnostic.warning))?;
-                        terminal_print!(self, "{}", editor.ui_glyphs().gutter_warn);
-                        execute!(
-                            self.stdout,
-                            SetForegroundColor(editor_fg),
-                            SetBackgroundColor(row_bg)
-                        )?;
-                    } else if has_info {
-                        execute!(self.stdout, SetForegroundColor(theme.diagnostic.info))?;
-                        terminal_print!(self, "{}", editor.ui_glyphs().gutter_info);
-                        execute!(
-                            self.stdout,
-                            SetForegroundColor(editor_fg),
-                            SetBackgroundColor(row_bg)
-                        )?;
-                    } else if has_hint {
-                        execute!(self.stdout, SetForegroundColor(theme.diagnostic.hint))?;
-                        terminal_print!(self, "{}", editor.ui_glyphs().gutter_hint);
-                        execute!(
-                            self.stdout,
-                            SetForegroundColor(editor_fg),
-                            SetBackgroundColor(row_bg)
+                // Sign column (git marker + diagnostic glyph), first segment only
+                if sign_column_width > 0 {
+                    if segment.is_first {
+                        let git_status = if is_active {
+                            buffer_path
+                                .and_then(|p| editor.git_status_for_line_in_file(p, file_line))
+                        } else {
+                            None
+                        };
+                        self.render_sign_cells(
+                            editor,
+                            theme,
+                            git_status,
+                            (has_error, has_warning, has_info, has_hint),
+                            editor_fg,
+                            row_bg,
                         )?;
                     } else {
-                        terminal_print!(self, " ");
+                        terminal_print!(self, "  "); // continuation rows keep the gutter blank
                     }
-                } else {
-                    terminal_print!(self, "  "); // Empty sign column for continuation lines
                 }
 
                 // Line number (only on first segment)
@@ -2103,13 +2082,7 @@ impl Terminal {
                     RenderLineTextScope::WrappedSegment,
                 )?;
 
-                // Fill remaining space (sign column = 2)
-                let mut chars_printed =
-                    2 + if show_line_numbers {
-                        line_num_width + 1
-                    } else {
-                        0
-                    } + rendered_cols;
+                let mut chars_printed = gutter_width + rendered_cols;
 
                 // Render inline diagnostic on first segment only
                 if segment.is_first && is_active {
@@ -2173,7 +2146,7 @@ impl Terminal {
                 SetForegroundColor(editor_fg)
             )?;
 
-            terminal_print!(self, "  "); // Empty sign column
+            terminal_print!(self, "{:w$}", "", w = sign_column_width); // empty sign column
 
             execute!(self.stdout, SetForegroundColor(Color::Blue))?;
             let eob = editor.ui_glyphs().eob;
@@ -2184,12 +2157,8 @@ impl Terminal {
             }
             execute!(self.stdout, SetForegroundColor(editor_fg))?;
 
-            // Fill remaining space (sign column = 2)
-            let chars_printed = 2 + if show_line_numbers {
-                line_num_width + 2
-            } else {
-                1
-            };
+            // Gutter plus the one-cell end-of-buffer glyph
+            let chars_printed = gutter_width + 1;
             for _ in chars_printed..pane_width {
                 terminal_print!(self, " ");
             }
@@ -2221,6 +2190,8 @@ impl Terminal {
     ) -> anyhow::Result<()> {
         // Get theme colors once
         let theme = editor.theme();
+        let gutter_width = editor.gutter_width(pane.buffer_idx);
+        let sign_column_width = editor.sign_column_width(pane.buffer_idx);
         let cursor_line_bg = theme.ui.cursor_line;
         let editor_bg = theme.ui.background;
         let editor_fg = theme.ui.foreground;
@@ -2280,84 +2251,21 @@ impl Terminal {
                     (e, w, i, h)
                 };
 
-                // Sign column (git signs + diagnostic icons)
-                // Layout: [Git Sign][Diagnostic] = 2 chars total
-
-                // Git sign (first char)
-                let git_status = if is_active {
-                    buffer_path.and_then(|p| editor.git_status_for_line_in_file(p, file_line))
-                } else {
-                    None
-                };
-
-                match git_status {
-                    Some(crate::git::GitLineStatus::Added) => {
-                        execute!(self.stdout, SetForegroundColor(theme.git.added))?;
-                        terminal_print!(self, "▎");
-                        execute!(
-                            self.stdout,
-                            SetForegroundColor(editor_fg),
-                            SetBackgroundColor(row_bg)
-                        )?;
-                    }
-                    Some(crate::git::GitLineStatus::Modified) => {
-                        execute!(self.stdout, SetForegroundColor(theme.git.modified))?;
-                        terminal_print!(self, "▎");
-                        execute!(
-                            self.stdout,
-                            SetForegroundColor(editor_fg),
-                            SetBackgroundColor(row_bg)
-                        )?;
-                    }
-                    Some(crate::git::GitLineStatus::Deleted) => {
-                        execute!(self.stdout, SetForegroundColor(theme.git.deleted))?;
-                        terminal_print!(self, "▁");
-                        execute!(
-                            self.stdout,
-                            SetForegroundColor(editor_fg),
-                            SetBackgroundColor(row_bg)
-                        )?;
-                    }
-                    None => {
-                        terminal_print!(self, " ");
-                    }
-                }
-
-                // Diagnostic sign (second char) - priority: error > warning > info > hint
-                if has_error {
-                    execute!(self.stdout, SetForegroundColor(theme.diagnostic.error))?;
-                    terminal_print!(self, "{}", editor.ui_glyphs().gutter_error);
-                    execute!(
-                        self.stdout,
-                        SetForegroundColor(editor_fg),
-                        SetBackgroundColor(row_bg)
+                // Sign column (git marker + diagnostic glyph)
+                if sign_column_width > 0 {
+                    let git_status = if is_active {
+                        buffer_path.and_then(|p| editor.git_status_for_line_in_file(p, file_line))
+                    } else {
+                        None
+                    };
+                    self.render_sign_cells(
+                        editor,
+                        theme,
+                        git_status,
+                        (has_error, has_warning, has_info, has_hint),
+                        editor_fg,
+                        row_bg,
                     )?;
-                } else if has_warning {
-                    execute!(self.stdout, SetForegroundColor(theme.diagnostic.warning))?;
-                    terminal_print!(self, "{}", editor.ui_glyphs().gutter_warn);
-                    execute!(
-                        self.stdout,
-                        SetForegroundColor(editor_fg),
-                        SetBackgroundColor(row_bg)
-                    )?;
-                } else if has_info {
-                    execute!(self.stdout, SetForegroundColor(theme.diagnostic.info))?;
-                    terminal_print!(self, "{}", editor.ui_glyphs().gutter_info);
-                    execute!(
-                        self.stdout,
-                        SetForegroundColor(editor_fg),
-                        SetBackgroundColor(row_bg)
-                    )?;
-                } else if has_hint {
-                    execute!(self.stdout, SetForegroundColor(theme.diagnostic.hint))?;
-                    terminal_print!(self, "{}", editor.ui_glyphs().gutter_hint);
-                    execute!(
-                        self.stdout,
-                        SetForegroundColor(editor_fg),
-                        SetBackgroundColor(row_bg)
-                    )?;
-                } else {
-                    terminal_print!(self, " ");
                 }
 
                 // Line number (if enabled)
@@ -2434,13 +2342,7 @@ impl Terminal {
                         RenderLineTextScope::LogicalLine,
                     )?;
 
-                    // Track characters printed for fill calculation (sign column = 2)
-                    let mut chars_printed =
-                        2 + if show_line_numbers {
-                            line_num_width + 1
-                        } else {
-                            0
-                        } + rendered_cols;
+                    let mut chars_printed = gutter_width + rendered_cols;
 
                     // Render ghost text on cursor line when completion is active
                     if is_cursor_line
@@ -2592,7 +2494,7 @@ impl Terminal {
                 }
             } else {
                 // Empty line - sign column + line indicator
-                terminal_print!(self, "  "); // Empty sign column
+                terminal_print!(self, "{:w$}", "", w = sign_column_width); // empty sign column
 
                 execute!(self.stdout, SetForegroundColor(Color::Blue))?;
                 let eob = editor.ui_glyphs().eob;
@@ -2607,12 +2509,8 @@ impl Terminal {
                     SetBackgroundColor(row_bg)
                 )?;
 
-                // Fill remaining space (sign column = 2)
-                let chars_printed = 2 + if show_line_numbers {
-                    line_num_width + 2
-                } else {
-                    1
-                };
+                // Gutter plus the one-cell end-of-buffer glyph
+                let chars_printed = gutter_width + 1;
                 for _ in chars_printed..pane_width {
                     terminal_print!(self, " ");
                 }
@@ -3065,16 +2963,133 @@ impl Terminal {
         Ok(())
     }
 
+    /// Screen cell (x, y) of buffer position (`line`, `col`) in the active
+    /// pane, computed the way the terminal cursor is placed: pane origin,
+    /// gutter, horizontal offset, and with wrap on, every wrapped row above
+    /// plus the offset inside the wrapped row (continuation indent included).
+    /// Anything anchored to the cursor, the cursor itself and every popup,
+    /// must come through here; `line - viewport_offset` is wrong under wrap.
+    fn screen_cell_for(editor: &Editor, line: usize, col: usize) -> (u16, u16) {
+        let active_pane = &editor.panes()[editor.active_pane_idx()];
+        let gutter_width = editor.gutter_width(active_pane.buffer_idx);
+        let wrap_enabled = editor.settings.editor.wrap;
+        let wrap_width = editor.settings.editor.wrap_width;
+        let tab_width = editor.get_effective_tab_width();
+
+        let (cursor_row, cursor_col) = if wrap_enabled {
+            // Calculate visual position with wrapping
+            let buffer = editor.buffer();
+            let text_area_width = (active_pane.rect.width as usize).saturating_sub(gutter_width);
+            let effective_wrap_width = wrap_width.min(text_area_width);
+
+            // Count visual rows from viewport_offset to cursor line
+            let mut visual_row = 0;
+            for line_idx in active_pane.viewport_offset..line {
+                if line_idx < buffer.len_lines() {
+                    let line_content = buffer
+                        .line(line_idx)
+                        .map(|l| l.to_string())
+                        .unwrap_or_default();
+                    let segments = calculate_wrap_segments(
+                        &line_content,
+                        effective_wrap_width,
+                        true,
+                        tab_width,
+                    );
+                    if line_idx == active_pane.viewport_offset {
+                        visual_row += segments.len().saturating_sub(active_pane.h_offset);
+                    } else {
+                        visual_row += segments.len();
+                    }
+                }
+            }
+
+            // Now find which segment of the cursor line contains the cursor column
+            let cursor_line_content = buffer.line(line).map(|l| l.to_string()).unwrap_or_default();
+            let segments = calculate_wrap_segments(
+                &cursor_line_content,
+                effective_wrap_width,
+                true,
+                tab_width,
+            );
+
+            let mut cursor_visual_row = visual_row;
+            let mut cursor_visual_col = col;
+
+            for (seg_idx, segment) in segments.iter().enumerate() {
+                let segment_end = if seg_idx + 1 < segments.len() {
+                    segments[seg_idx + 1].start_col
+                } else {
+                    cursor_line_content.chars().count()
+                };
+
+                if col >= segment.start_col && col < segment_end {
+                    // Cursor is in this segment
+                    cursor_visual_col = display_width_between_char_cols(
+                        &cursor_line_content,
+                        segment.start_col,
+                        col,
+                        tab_width,
+                    );
+                    // Add indentation offset for wrapped lines
+                    if !segment.is_first {
+                        let indent_len = cursor_line_content
+                            .chars()
+                            .take_while(|c| c.is_whitespace())
+                            .map(|c| editor_char_display_width(c, tab_width))
+                            .sum::<usize>();
+                        cursor_visual_col += indent_len;
+                    }
+                    break;
+                }
+                cursor_visual_row += 1;
+            }
+
+            if line == active_pane.viewport_offset {
+                cursor_visual_row = cursor_visual_row.saturating_sub(active_pane.h_offset);
+            }
+
+            // Handle cursor at end of line
+            if col >= cursor_line_content.trim_end_matches('\n').chars().count() {
+                cursor_visual_row = visual_row + segments.len().saturating_sub(1);
+                let last_segment = segments.last().unwrap();
+                cursor_visual_col =
+                    text_display_width(last_segment.text.trim_end_matches('\n'), tab_width);
+                if line == active_pane.viewport_offset {
+                    cursor_visual_row = cursor_visual_row.saturating_sub(active_pane.h_offset);
+                }
+            }
+
+            let col = gutter_width + cursor_visual_col;
+
+            (cursor_visual_row, col)
+        } else {
+            // No wrap: one buffer line per row, column adjusted for horizontal scroll
+            let cursor_row = line.saturating_sub(active_pane.viewport_offset);
+            let display_col = editor
+                .buffer()
+                .line(line)
+                .map(|line| {
+                    display_width_between_rope_char_cols(line, active_pane.h_offset, col, tab_width)
+                })
+                .unwrap_or(0);
+            let cursor_col = gutter_width + display_col;
+            (cursor_row, cursor_col)
+        };
+
+        // Account for pane position
+        (
+            (active_pane.rect.x as usize + cursor_col) as u16,
+            (active_pane.rect.y as usize + cursor_row) as u16,
+        )
+    }
+
+    fn cursor_screen_cell(editor: &Editor) -> (u16, u16) {
+        Self::screen_cell_for(editor, editor.cursor.line, editor.cursor.col)
+    }
+
     /// Position the cursor based on editor mode
     fn position_cursor(&mut self, editor: &Editor) -> anyhow::Result<()> {
-        let show_line_numbers = editor.settings.editor.line_numbers;
-        let line_num_width = editor
-            .buffer()
-            .addressable_line_count()
-            .to_string()
-            .len()
-            .max(3);
-
         match editor.mode {
             Mode::Command => {
                 // Cursor in command line
@@ -3158,150 +3173,10 @@ impl Terminal {
                 }
             }
             _ => {
-                // Cursor in active pane's buffer
-                let active_pane = &editor.panes()[editor.active_pane_idx()];
-                let wrap_enabled = editor.settings.editor.wrap;
-                let wrap_width = editor.settings.editor.wrap_width;
-                let tab_width = editor.get_effective_tab_width();
-
-                let (cursor_row, cursor_col) = if wrap_enabled {
-                    // Calculate visual position with wrapping
-                    let buffer = editor.buffer();
-                    // Account for sign column (2) + line numbers
-                    let text_area_width = if show_line_numbers {
-                        active_pane.rect.width as usize - 2 - line_num_width - 1
-                    } else {
-                        active_pane.rect.width as usize - 2
-                    };
-                    let effective_wrap_width = wrap_width.min(text_area_width);
-
-                    // Count visual rows from viewport_offset to cursor line
-                    let mut visual_row = 0;
-                    for line_idx in active_pane.viewport_offset..editor.cursor.line {
-                        if line_idx < buffer.len_lines() {
-                            let line_content = buffer
-                                .line(line_idx)
-                                .map(|l| l.to_string())
-                                .unwrap_or_default();
-                            let segments = calculate_wrap_segments(
-                                &line_content,
-                                effective_wrap_width,
-                                true,
-                                tab_width,
-                            );
-                            if line_idx == active_pane.viewport_offset {
-                                visual_row += segments.len().saturating_sub(active_pane.h_offset);
-                            } else {
-                                visual_row += segments.len();
-                            }
-                        }
-                    }
-
-                    // Now find which segment of the cursor line contains the cursor column
-                    let cursor_line_content = buffer
-                        .line(editor.cursor.line)
-                        .map(|l| l.to_string())
-                        .unwrap_or_default();
-                    let segments = calculate_wrap_segments(
-                        &cursor_line_content,
-                        effective_wrap_width,
-                        true,
-                        tab_width,
-                    );
-
-                    let mut cursor_visual_row = visual_row;
-                    let mut cursor_visual_col = editor.cursor.col;
-
-                    for (seg_idx, segment) in segments.iter().enumerate() {
-                        let segment_end = if seg_idx + 1 < segments.len() {
-                            segments[seg_idx + 1].start_col
-                        } else {
-                            cursor_line_content.chars().count()
-                        };
-
-                        if editor.cursor.col >= segment.start_col && editor.cursor.col < segment_end
-                        {
-                            // Cursor is in this segment
-                            cursor_visual_col = display_width_between_char_cols(
-                                &cursor_line_content,
-                                segment.start_col,
-                                editor.cursor.col,
-                                tab_width,
-                            );
-                            // Add indentation offset for wrapped lines
-                            if !segment.is_first {
-                                let indent_len = cursor_line_content
-                                    .chars()
-                                    .take_while(|c| c.is_whitespace())
-                                    .map(|c| editor_char_display_width(c, tab_width))
-                                    .sum::<usize>();
-                                cursor_visual_col += indent_len;
-                            }
-                            break;
-                        }
-                        cursor_visual_row += 1;
-                    }
-
-                    if editor.cursor.line == active_pane.viewport_offset {
-                        cursor_visual_row = cursor_visual_row.saturating_sub(active_pane.h_offset);
-                    }
-
-                    // Handle cursor at end of line
-                    if editor.cursor.col
-                        >= cursor_line_content.trim_end_matches('\n').chars().count()
-                    {
-                        cursor_visual_row = visual_row + segments.len().saturating_sub(1);
-                        let last_segment = segments.last().unwrap();
-                        cursor_visual_col =
-                            text_display_width(last_segment.text.trim_end_matches('\n'), tab_width);
-                        if editor.cursor.line == active_pane.viewport_offset {
-                            cursor_visual_row =
-                                cursor_visual_row.saturating_sub(active_pane.h_offset);
-                        }
-                    }
-
-                    // Sign column (2) + line numbers + cursor position
-                    let col = 2 + if show_line_numbers {
-                        line_num_width + 1 + cursor_visual_col
-                    } else {
-                        cursor_visual_col
-                    };
-
-                    (cursor_visual_row, col)
-                } else {
-                    // Original non-wrapped calculation
-                    let cursor_row = editor
-                        .cursor
-                        .line
-                        .saturating_sub(active_pane.viewport_offset);
-                    // Sign column (2) + line numbers + cursor position (adjusted for horizontal scroll)
-                    let display_col = editor
-                        .buffer()
-                        .line(editor.cursor.line)
-                        .map(|line| {
-                            display_width_between_rope_char_cols(
-                                line,
-                                active_pane.h_offset,
-                                editor.cursor.col,
-                                tab_width,
-                            )
-                        })
-                        .unwrap_or(0);
-                    let cursor_col = 2 + if show_line_numbers {
-                        line_num_width + 1 + display_col
-                    } else {
-                        display_col
-                    };
-                    (cursor_row, cursor_col)
-                };
-
-                // Account for pane position
-                let screen_x = active_pane.rect.x as usize + cursor_col;
-                let screen_y = active_pane.rect.y as usize + cursor_row;
-
+                let (screen_x, screen_y) = Self::cursor_screen_cell(editor);
                 execute!(
                     self.stdout,
-                    cursor::MoveTo(screen_x as u16, screen_y as u16),
+                    cursor::MoveTo(screen_x, screen_y),
                     cursor::Show
                 )?;
 
@@ -3747,25 +3622,9 @@ impl Terminal {
         // Calculate popup position (below cursor, or above if near bottom)
         // Position at trigger_col (start of word), not current cursor position
         // Account for active pane's position on screen
-        let active_pane = &editor.panes()[editor.active_pane_idx()];
-        let pane_x = active_pane.rect.x;
-        let pane_y = active_pane.rect.y;
-
-        let line_num_width = editor
-            .buffer()
-            .addressable_line_count()
-            .to_string()
-            .len()
-            .max(3);
-        let cursor_in_pane_col = (line_num_width + 1 + completion.trigger_col) as u16;
-        let cursor_in_pane_row = (editor
-            .cursor
-            .line
-            .saturating_sub(active_pane.viewport_offset)) as u16;
-
-        // Convert to screen coordinates
-        let popup_screen_col = pane_x + cursor_in_pane_col;
-        let cursor_screen_row = pane_y + cursor_in_pane_row;
+        let (popup_screen_col, _) =
+            Self::screen_cell_for(editor, editor.cursor.line, completion.trigger_col);
+        let (_, cursor_screen_row) = Self::cursor_screen_cell(editor);
 
         // Calculate widths for label and detail columns (only from filtered items)
         let max_label_len = completion
@@ -4210,22 +4069,7 @@ impl Terminal {
 
         // Calculate popup position (above cursor if possible)
         // Account for active pane's position on screen
-        let active_pane = &editor.panes()[editor.active_pane_idx()];
-        let pane_x = active_pane.rect.x;
-        let pane_y = active_pane.rect.y;
-
-        let line_num_width = editor
-            .buffer()
-            .addressable_line_count()
-            .to_string()
-            .len()
-            .max(3);
-        let cursor_in_pane_col = (line_num_width + 1 + editor.cursor.col) as u16;
-        let cursor_in_pane_row = (editor.cursor.line - editor.viewport_offset) as u16;
-
-        // Convert to screen coordinates
-        let cursor_screen_col = pane_x + cursor_in_pane_col;
-        let cursor_screen_row = pane_y + cursor_in_pane_row;
+        let (cursor_screen_col, cursor_screen_row) = Self::cursor_screen_cell(editor);
 
         let popup_y = if cursor_screen_row >= popup_height + 1 {
             cursor_screen_row - popup_height
@@ -4455,15 +4299,8 @@ impl Terminal {
         let active_idx = help.active_signature.min(help.signatures.len() - 1);
         let signature = &help.signatures[active_idx];
 
-        // Calculate popup position (above cursor)
-        let line_num_width = editor
-            .buffer()
-            .addressable_line_count()
-            .to_string()
-            .len()
-            .max(3);
-        let cursor_screen_col = (line_num_width + 1 + editor.cursor.col) as u16;
-        let cursor_screen_row = (editor.cursor.line - editor.viewport_offset) as u16;
+        // Anchor to the cursor's screen cell (pane offset + gutter + column)
+        let (cursor_screen_col, cursor_screen_row) = Self::cursor_screen_cell(editor);
 
         // Calculate dimensions based on signature
         let popup_width = (signature.label.chars().count() + 4).min(80).max(30) as u16;
@@ -4590,20 +4427,21 @@ impl Terminal {
         Ok(())
     }
 
-    fn diagnostic_float_text_area_x(editor: &Editor) -> u16 {
+    /// Screen column where the active pane's text starts (pane x + gutter).
+    /// Popups anchored to the cursor must build on this, not on their own
+    /// gutter math, so they stay aligned when the sign column or line
+    /// numbers are toggled.
+    fn text_area_x(editor: &Editor) -> u16 {
         let active_pane = &editor.panes()[editor.active_pane_idx()];
-        let line_num_width = editor
-            .buffer()
-            .addressable_line_count()
-            .to_string()
-            .len()
-            .max(3) as u16;
-        active_pane.rect.x.saturating_add(2 + line_num_width + 1)
+        active_pane
+            .rect
+            .x
+            .saturating_add(editor.gutter_width(active_pane.buffer_idx) as u16)
     }
 
     fn diagnostic_float_width(editor: &Editor, max_line_width: usize) -> u16 {
         let active_pane = &editor.panes()[editor.active_pane_idx()];
-        let text_area_x = Self::diagnostic_float_text_area_x(editor);
+        let text_area_x = Self::text_area_x(editor);
         let pane_right = active_pane.rect.x.saturating_add(active_pane.rect.width);
         let max_width = pane_right
             .saturating_sub(text_area_x)
@@ -4620,11 +4458,7 @@ impl Terminal {
         popup_height: u16,
     ) -> (u16, u16) {
         let active_pane = &editor.panes()[editor.active_pane_idx()];
-        let cursor_row = (editor
-            .cursor
-            .line
-            .saturating_sub(active_pane.viewport_offset)) as u16;
-        let cursor_screen_row = active_pane.rect.y.saturating_add(cursor_row);
+        let (cursor_screen_col, cursor_screen_row) = Self::cursor_screen_cell(editor);
 
         let popup_y = if cursor_screen_row
             .saturating_add(1)
@@ -4642,9 +4476,7 @@ impl Terminal {
             )
         };
 
-        let text_area_x = Self::diagnostic_float_text_area_x(editor);
-        let cursor_col = editor.cursor.col.saturating_sub(active_pane.h_offset) as u16;
-        let cursor_screen_col = text_area_x.saturating_add(cursor_col);
+        let text_area_x = Self::text_area_x(editor);
         let pane_right = active_pane.rect.x.saturating_add(active_pane.rect.width);
         let max_popup_x = pane_right.saturating_sub(popup_width).max(text_area_x);
         let popup_x = cursor_screen_col.min(max_popup_x).max(text_area_x);
@@ -5185,14 +5017,7 @@ impl Terminal {
         let popup_height = (picker.items.len() as u16 + 2).min(max_height);
 
         // Position near cursor
-        let line_num_width = editor
-            .buffer()
-            .addressable_line_count()
-            .to_string()
-            .len()
-            .max(3);
-        let cursor_screen_col = (2 + line_num_width + 1 + editor.cursor.col) as u16;
-        let cursor_screen_row = (editor.cursor.line - editor.viewport_offset) as u16;
+        let (cursor_screen_col, cursor_screen_row) = Self::cursor_screen_cell(editor);
 
         let popup_x = cursor_screen_col.min(editor.term_width.saturating_sub(popup_width + 2));
         let popup_y = if cursor_screen_row + popup_height + 1 < editor.term_height {
@@ -7195,6 +7020,16 @@ impl ContentRowDamageCandidate {
     }
 }
 
+/// Status for `&` / `g&`, matching what `:s` itself reports.
+fn report_repeat_substitute(editor: &mut Editor, result: Result<usize, &'static str>) {
+    let message = match result {
+        Err(reason) => reason.to_string(),
+        Ok(0) => "Pattern not found".to_string(),
+        Ok(count) => format!("{count} substitution(s)"),
+    };
+    editor.set_status(message);
+}
+
 /// Handle a key event and update editor state. The active pane's mirror is
 /// synced afterwards whatever path the key took, because the renderer
 /// draws the active window from the pane struct (see
@@ -7774,6 +7609,20 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.join_lines_count(count);
         }
 
+        // Both run an Ex command underneath (`:&&`, `:%s//~/&`), which `.`
+        // never repeats in Vim, so keep them out of the dot-repeat change.
+        KeyAction::RepeatSubstitute(count) => {
+            let result = editor.repeat_substitute(count);
+            report_repeat_substitute(editor, result);
+            editor.dot_repeat.abandon_candidate();
+        }
+
+        KeyAction::RepeatSubstituteAll => {
+            let result = editor.repeat_substitute_all();
+            report_repeat_substitute(editor, result);
+            editor.dot_repeat.abandon_candidate();
+        }
+
         KeyAction::JoinLinesNoSpace(count) => {
             editor.join_lines_no_space_count(count);
         }
@@ -8132,6 +7981,12 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         KeyAction::JumpToLastInsertExact => {
             if !editor.jump_to_last_insert_exact() {
                 editor.set_status("No previous insert position");
+            }
+        }
+
+        KeyAction::JumpToSpecialMark(mark, exact) => {
+            if !editor.jump_to_special_mark(mark, exact) {
+                editor.set_status("Mark not set");
             }
         }
 
@@ -10812,6 +10667,20 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
                 editor.settings.editor.mouse = false;
                 CommandResult::Ok
             }
+            // nvim's `:set signcolumn=auto|yes|no` (`scl` is its short name);
+            // the persistent form is `[editor] sign_column` in config.toml.
+            "signcolumn" | "scl" => {
+                match value.as_deref().and_then(crate::config::SignColumn::parse) {
+                    Some(mode) => {
+                        editor.settings.editor.sign_column = mode;
+                        editor.sign_column_width_changed();
+                        CommandResult::Ok
+                    }
+                    None => {
+                        CommandResult::Error("signcolumn: expected auto, yes, or no".to_string())
+                    }
+                }
+            }
             _ => CommandResult::Error(format!("Unknown option: {}", option)),
         },
 
@@ -11852,6 +11721,345 @@ mod tests {
             rendered.contains('~'),
             "minimal mode keeps end-of-buffer tildes; output={rendered:?}"
         );
+    }
+
+    /// Text painted on one screen row, decoded from the ANSI stream: only
+    /// `CSI row;col H` moves are honored, every other escape is dropped.
+    fn screen_row_text(rendered: &str, row: usize) -> String {
+        let chars: Vec<char> = rendered.chars().collect();
+        let mut cells: Vec<char> = Vec::new();
+        let (mut cur_row, mut cur_col) = (0usize, 0usize);
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '\x1b' {
+                match chars.get(i + 1) {
+                    Some('[') => {
+                        let start = i + 2;
+                        let mut j = start;
+                        while j < chars.len() && !('@'..='~').contains(&chars[j]) {
+                            j += 1;
+                        }
+                        if chars.get(j) == Some(&'H') {
+                            let params: String = chars[start..j].iter().collect();
+                            let mut parts = params.split(';').map(|n| n.parse().unwrap_or(1usize));
+                            cur_row = parts.next().unwrap_or(1).saturating_sub(1);
+                            cur_col = parts.next().unwrap_or(1).saturating_sub(1);
+                        }
+                        i = j + 1;
+                    }
+                    Some(']') => {
+                        while i < chars.len() && chars[i] != '\x07' {
+                            i += 1;
+                        }
+                        i += 1;
+                    }
+                    _ => i += 1,
+                }
+                continue;
+            }
+            if cur_row == row {
+                if cells.len() <= cur_col {
+                    cells.resize(cur_col + 1, ' ');
+                }
+                cells[cur_col] = chars[i];
+            }
+            cur_col += 1;
+            i += 1;
+        }
+        cells.into_iter().collect::<String>().trim_end().to_string()
+    }
+
+    /// Issue #330: with line numbers off and nothing to mark, `auto` puts
+    /// the text flush left like nvim; `yes` keeps the two-cell gutter.
+    #[test]
+    fn sign_column_auto_hides_gutter_until_a_sign_appears() {
+        use crate::config::SignColumn;
+        let tmp = std::env::temp_dir().join(format!("nevi_sign_column_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("f");
+        std::fs::write(&path, "123\n").expect("write file");
+
+        let mut editor = Editor::default();
+        editor.set_size(30, 6);
+        editor.settings.editor.line_numbers = false;
+        editor.open_file(path.clone()).expect("open file");
+
+        assert_eq!(
+            screen_row_text(&render_editor_to_string(&editor), 0),
+            "  123"
+        );
+
+        editor.settings.editor.sign_column = SignColumn::Auto;
+        assert_eq!(screen_row_text(&render_editor_to_string(&editor), 0), "123");
+
+        editor.set_diagnostics(
+            crate::lsp::path_to_uri(&path),
+            vec![crate::lsp::Diagnostic {
+                line: 0,
+                end_line: 0,
+                col_start: 0,
+                col_end: 1,
+                severity: crate::lsp::DiagnosticSeverity::Error,
+                message: "boom".to_string(),
+                source: None,
+                code: None,
+            }],
+        );
+        // The row continues with the inline diagnostic text, so check the prefix.
+        let error_glyph = editor.ui_glyphs().gutter_error;
+        let row = screen_row_text(&render_editor_to_string(&editor), 0);
+        assert!(
+            row.starts_with(&format!(" {error_glyph}123 ")),
+            "auto grows the gutter once the buffer has a sign; row={row:?}"
+        );
+
+        editor.settings.editor.sign_column = SignColumn::No;
+        let row = screen_row_text(&render_editor_to_string(&editor), 0);
+        assert!(
+            row.starts_with("123 "),
+            "no never draws the column, even with a diagnostic; row={row:?}"
+        );
+
+        editor.settings.editor.line_numbers = true;
+        editor.settings.editor.sign_column = SignColumn::Yes;
+        let row = screen_row_text(&render_editor_to_string(&editor), 0);
+        assert!(
+            row.starts_with(&format!(" {error_glyph}  1 123 ")),
+            "yes with line numbers: sign cells, number, separator, text; row={row:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Row and column of the last `CSI row;col H` in the stream, which is
+    /// where `position_cursor` leaves the terminal cursor.
+    fn final_cursor_cell(rendered: &str) -> (usize, usize) {
+        let mut last = (0, 0);
+        for (start, _) in rendered.match_indices("\x1b[") {
+            let body = &rendered[start + 2..];
+            let Some(end) = body.find(|c: char| ('@'..='~').contains(&c)) else {
+                continue;
+            };
+            if &body[end..end + 1] == "H" {
+                let mut parts = body[..end]
+                    .split(';')
+                    .map(|n| n.parse::<usize>().unwrap_or(1));
+                last = (
+                    parts.next().unwrap_or(1).saturating_sub(1),
+                    parts.next().unwrap_or(1).saturating_sub(1),
+                );
+            }
+        }
+        last
+    }
+
+    #[test]
+    fn cursor_cell_follows_the_sign_column_width() {
+        use crate::config::SignColumn;
+        let mut editor = Editor::default();
+        editor.set_size(30, 6);
+        editor.settings.editor.line_numbers = false;
+        editor.replace_buffer_content("123\n");
+        editor.cursor.col = 1;
+
+        assert_eq!(final_cursor_cell(&render_editor_to_string(&editor)), (0, 3));
+        editor.settings.editor.sign_column = SignColumn::Auto;
+        assert_eq!(final_cursor_cell(&render_editor_to_string(&editor)), (0, 1));
+        editor.settings.editor.line_numbers = true;
+        assert_eq!(
+            final_cursor_cell(&render_editor_to_string(&editor)),
+            (0, 3 + 1 + 1)
+        );
+    }
+
+    /// Enabling the gutter shrinks the text area by two cells. The scroll
+    /// offsets were computed against the old width, so without a rescroll a
+    /// cursor on the last visible column is drawn outside the pane.
+    #[test]
+    fn set_signcolumn_rescrolls_so_the_cursor_stays_inside_the_pane() {
+        use crate::config::SignColumn;
+        let mut editor = Editor::default();
+        editor.set_size(30, 6);
+        editor.update_pane_rects();
+        editor.settings.editor.line_numbers = false;
+        editor.settings.editor.scroll_off = 0;
+        editor.settings.editor.sign_column = SignColumn::No;
+        editor.replace_buffer_content(&format!("{}\n", "x".repeat(60)));
+        editor.cursor.col = 40;
+        editor.scroll_to_cursor();
+        assert_eq!(
+            editor.h_offset, 11,
+            "40 - 30 + 1: cursor on the last of 30 columns"
+        );
+        assert_eq!(
+            final_cursor_cell(&render_editor_to_string(&editor)),
+            (0, 29)
+        );
+
+        execute_command(
+            &mut editor,
+            Command::Set("signcolumn".to_string(), Some("yes".to_string())),
+        );
+
+        assert_eq!(
+            editor.h_offset, 13,
+            "rescrolled for the 28-column text area"
+        );
+        assert_eq!(
+            final_cursor_cell(&render_editor_to_string(&editor)),
+            (0, 29)
+        );
+    }
+
+    #[test]
+    fn set_signcolumn_rescrolls_wrapped_view_after_reflow() {
+        use crate::config::SignColumn;
+        let mut editor = Editor::default();
+        editor.set_size(20, 6); // 4 text rows
+        editor.update_pane_rects();
+        editor.settings.editor.line_numbers = false;
+        editor.settings.editor.scroll_off = 0;
+        editor.settings.editor.wrap = true;
+        editor.settings.editor.wrap_width = 9999;
+        editor.settings.editor.sign_column = SignColumn::No;
+        // Line 0 takes 3 rows at width 20 and 4 rows at width 18.
+        editor.replace_buffer_content(&format!("{}\nsecond\n", "a".repeat(56)));
+        editor.cursor.line = 1;
+        editor.scroll_to_cursor();
+        assert_eq!(editor.viewport_offset, 0);
+        assert_eq!(final_cursor_cell(&render_editor_to_string(&editor)), (3, 0));
+
+        execute_command(
+            &mut editor,
+            Command::Set("signcolumn".to_string(), Some("yes".to_string())),
+        );
+
+        let (row, col) = final_cursor_cell(&render_editor_to_string(&editor));
+        assert!(row < 4, "cursor row {row} must stay inside the 4 text rows");
+        assert_eq!(col, 2, "text starts after the 2-cell gutter");
+        assert_eq!(
+            editor.viewport_offset, 1,
+            "view scrolled so line 1 is visible"
+        );
+    }
+
+    #[test]
+    fn gutter_git_markers_render_in_the_first_sign_cell() {
+        use crate::git::{GitDiff, GitHunk, GitLineStatus};
+        let tmp = std::env::temp_dir().join(format!("nevi_git_gutter_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("g.rs");
+        std::fs::write(&path, "one\ntwo\nthree\n").expect("write file");
+
+        let mut editor = Editor::default();
+        editor.set_size(30, 6);
+        editor.settings.editor.line_numbers = false;
+        editor.open_file(path).expect("open file");
+        let key = editor
+            .buffer()
+            .path
+            .as_ref()
+            .expect("path")
+            .to_string_lossy()
+            .to_string();
+        editor.set_git_diff(
+            key,
+            GitDiff {
+                hunks: vec![
+                    GitHunk {
+                        line: 0,
+                        status: GitLineStatus::Added,
+                    },
+                    GitHunk {
+                        line: 1,
+                        status: GitLineStatus::Modified,
+                    },
+                    GitHunk {
+                        line: 2,
+                        status: GitLineStatus::Deleted,
+                    },
+                ],
+            },
+        );
+
+        let rendered = render_editor_to_string(&editor);
+        assert_eq!(screen_row_text(&rendered, 0), "▎ one");
+        assert_eq!(screen_row_text(&rendered, 1), "▎ two");
+        assert_eq!(screen_row_text(&rendered, 2), "▁ three");
+
+        editor.settings.editor.sign_column = crate::config::SignColumn::No;
+        assert_eq!(screen_row_text(&render_editor_to_string(&editor), 0), "one");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn sign_column_auto_applies_to_wrapped_rendering_too() {
+        use crate::config::SignColumn;
+        let mut editor = Editor::default();
+        editor.set_size(30, 6);
+        editor.settings.editor.line_numbers = false;
+        editor.settings.editor.wrap = true;
+        editor.settings.editor.wrap_width = 5;
+        editor.settings.editor.sign_column = SignColumn::Auto;
+        editor.replace_buffer_content("abcdefgh\n");
+
+        let rendered = render_editor_to_string(&editor);
+        assert_eq!(screen_row_text(&rendered, 0), "abcde");
+        assert_eq!(screen_row_text(&rendered, 1), "fgh");
+    }
+
+    #[test]
+    fn text_area_x_tracks_sign_column_and_line_numbers() {
+        use crate::config::SignColumn;
+        let mut editor = Editor::default();
+        editor.set_size(80, 24);
+        editor.replace_buffer_content("fn main() {}\n");
+        let pane_x = editor.panes()[editor.active_pane_idx()].rect.x;
+
+        assert_eq!(Terminal::text_area_x(&editor), pane_x + 2 + 3 + 1);
+        editor.settings.editor.line_numbers = false;
+        assert_eq!(Terminal::text_area_x(&editor), pane_x + 2);
+        editor.settings.editor.sign_column = SignColumn::No;
+        assert_eq!(Terminal::text_area_x(&editor), pane_x);
+        editor.settings.editor.line_numbers = true;
+        assert_eq!(Terminal::text_area_x(&editor), pane_x + 3 + 1);
+    }
+
+    #[test]
+    fn set_signcolumn_changes_the_setting_and_rejects_bad_values() {
+        use crate::config::SignColumn;
+        let mut editor = Editor::default();
+        for (option, value, expected) in [
+            ("signcolumn", "auto", SignColumn::Auto),
+            ("scl", "no", SignColumn::No),
+            ("signcolumn", "yes", SignColumn::Yes),
+        ] {
+            execute_command(
+                &mut editor,
+                Command::Set(option.to_string(), Some(value.to_string())),
+            );
+            assert_eq!(
+                editor.settings.editor.sign_column, expected,
+                ":set {option}={value}"
+            );
+        }
+        for bad in [Some("maybe".to_string()), None] {
+            execute_command(&mut editor, Command::Set("signcolumn".to_string(), bad));
+            assert_eq!(
+                editor.settings.editor.sign_column,
+                SignColumn::Yes,
+                "unchanged"
+            );
+            assert!(
+                editor
+                    .status_message
+                    .as_deref()
+                    .is_some_and(|m| m.contains("signcolumn: expected auto, yes, or no")),
+                "status={:?}",
+                editor.status_message
+            );
+        }
     }
 
     #[test]
@@ -14762,6 +14970,64 @@ mod tests {
         assert_eq!(pane.cursor, editor.cursor);
     }
 
+    fn type_command(editor: &mut Editor, command: &str) {
+        for ch in command.chars() {
+            handle_key(editor, key(ch));
+        }
+        handle_key(editor, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn ampersand_reports_status_like_substitute() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("a a\nx\n");
+
+        handle_key(&mut editor, key('&'));
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("No previous substitute")
+        );
+
+        type_command(&mut editor, ":s/a/b/");
+        assert_eq!(editor.buffer().content(), "b a\nx\n");
+
+        handle_key(&mut editor, key('&'));
+        assert_eq!(editor.buffer().content(), "b b\nx\n");
+        assert_eq!(editor.status_message.as_deref(), Some("1 substitution(s)"));
+
+        handle_key(&mut editor, key('j'));
+        handle_key(&mut editor, key('&'));
+        assert_eq!(editor.buffer().content(), "b b\nx\n");
+        assert_eq!(editor.status_message.as_deref(), Some("Pattern not found"));
+
+        // A count past the last line is Vim's E16, not a clamp.
+        handle_key(&mut editor, key('5'));
+        handle_key(&mut editor, key('&'));
+        assert_eq!(editor.buffer().content(), "b b\nx\n");
+        assert_eq!(editor.status_message.as_deref(), Some("Invalid range"));
+    }
+
+    #[test]
+    fn last_substitute_is_shared_across_buffers_like_vim() {
+        let root = unique_temp_dir("nevi_ampersand_buffers");
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        let first = root.join("first.txt");
+        let second = root.join("second.txt");
+        std::fs::write(&first, "a\n").expect("write first");
+        std::fs::write(&second, "a a\n").expect("write second");
+
+        let mut editor = Editor::default();
+        editor.open_file(first).expect("open first");
+        type_command(&mut editor, ":s/a/b/g");
+        assert_eq!(editor.buffer().content(), "b\n");
+
+        editor.open_file(second).expect("open second");
+        handle_key(&mut editor, key('&'));
+        assert_eq!(editor.buffer().content(), "b b\n");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn insert_unhandled_ctrl_chord_does_not_type_its_letter() {
         // Issue #281: i<C-v><C-y> wrote "vy" because unhandled ctrl chords
@@ -16836,6 +17102,110 @@ mod tests {
         handle_key(&mut editor, key('l'));
 
         assert!(editor.render_damage.requires_full_render());
+    }
+
+    /// Wrapped layout for the popup anchor tests (#333): line 0 takes two
+    /// rows at the 40-cell text width, so the cursor on line 1 sits on
+    /// screen row 2 even though it is only one buffer line down.
+    fn wrapped_popup_editor() -> Editor {
+        let mut editor = Editor::default();
+        editor.set_size(40, 12);
+        editor.settings.editor.line_numbers = false;
+        editor.settings.editor.sign_column = crate::config::SignColumn::No;
+        editor.settings.editor.scroll_off = 0;
+        editor.settings.editor.wrap = true;
+        editor.settings.editor.wrap_width = 9999;
+        editor.replace_buffer_content(&format!("{}\nsecond line\n", "a".repeat(70)));
+        editor.cursor.line = 1;
+        editor.cursor.col = 3;
+        editor
+    }
+
+    fn first_row_containing(rendered: &str, needle: char) -> Option<usize> {
+        (0..12).find(|&row| screen_row_text(rendered, row).contains(needle))
+    }
+
+    #[test]
+    fn screen_cell_for_counts_wrapped_rows_and_continuation_offsets() {
+        let mut editor = wrapped_popup_editor();
+        assert_eq!(Terminal::cursor_screen_cell(&editor), (3, 2));
+        // A position on line 0's second wrapped row: col 45 is 5 cells into row 1.
+        assert_eq!(Terminal::screen_cell_for(&editor, 0, 45), (5, 1));
+        // Same buffer, wrap off: plain line - viewport arithmetic again,
+        // for the cursor and for an arbitrary position.
+        editor.settings.editor.wrap = false;
+        assert_eq!(Terminal::cursor_screen_cell(&editor), (3, 1));
+        assert_eq!(Terminal::screen_cell_for(&editor, 0, 45), (45, 0));
+        // Splits offset by the pane origin (rects are laid out by the render
+        // loop, so refresh them here the way the mouse tests do).
+        editor.settings.editor.wrap = true;
+        editor.vsplit(None).expect("split");
+        editor.update_pane_rects();
+        // The new pane starts at (0, 0); put its cursor on line 1 col 3 too.
+        editor.cursor.line = 1;
+        editor.cursor.col = 3;
+        let pane = editor.panes()[editor.active_pane_idx()].rect;
+        assert!(pane.x > 0 && pane.width > 0);
+        let line0_rows = super::calculate_wrap_segments(
+            &"a".repeat(70),
+            pane.width as usize,
+            true,
+            editor.get_effective_tab_width(),
+        )
+        .len() as u16;
+        assert!(line0_rows >= 2);
+        assert_eq!(
+            Terminal::cursor_screen_cell(&editor),
+            (pane.x + 3, pane.y + line0_rows)
+        );
+    }
+
+    #[test]
+    fn diagnostic_float_position_accounts_for_wrapped_rows_above_cursor() {
+        let editor = wrapped_popup_editor();
+        assert_eq!(final_cursor_cell(&render_editor_to_string(&editor)), (2, 3));
+
+        let (popup_x, popup_y) = Terminal::diagnostic_float_position(&editor, 10, 3);
+
+        assert_eq!(
+            popup_y, 3,
+            "one row below the cursor's screen row, not its buffer row"
+        );
+        assert_eq!(popup_x, 3);
+    }
+
+    #[test]
+    fn completion_popup_sits_below_the_wrapped_cursor_row() {
+        let mut editor = wrapped_popup_editor();
+        editor.completion.active = true;
+        editor.completion.items = vec![completion_item("second_thing")];
+        editor.completion.filtered = vec![0];
+        editor.completion.selected = 0;
+        editor.completion.trigger_line = 1;
+        editor.completion.trigger_col = 0;
+
+        let rendered = render_editor_to_string(&editor);
+
+        // Below-cursor placement leaves one row gap: cursor row 2, border row 4.
+        assert_eq!(
+            first_row_containing(&rendered, '╭'),
+            Some(4),
+            "popup top border; rows={:?}",
+            (0..12)
+                .map(|r| screen_row_text(&rendered, r))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn hover_popup_anchors_to_the_wrapped_cursor_row() {
+        let mut editor = wrapped_popup_editor();
+        editor.hover_content = Some("doc".to_string());
+
+        let rendered = render_editor_to_string(&editor);
+
+        // Not enough room above a 3-row box at screen row 2, so it opens on row 3.
+        assert_eq!(first_row_containing(&rendered, '╭'), Some(3));
     }
 
     #[test]

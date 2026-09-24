@@ -536,6 +536,62 @@ status = "implemented"
 vim_default = true
 
 [[normal.jumps]]
+key = "'["
+action = "jump_to_change_start"
+desc = "Jump to first line of last changed or yanked text"
+status = "implemented"
+vim_default = true
+
+[[normal.jumps]]
+key = "`["
+action = "jump_to_change_start_exact"
+desc = "Jump to exact start of last changed or yanked text"
+status = "implemented"
+vim_default = true
+
+[[normal.jumps]]
+key = "']"
+action = "jump_to_change_end"
+desc = "Jump to last line of last changed or yanked text"
+status = "implemented"
+vim_default = true
+
+[[normal.jumps]]
+key = "`]"
+action = "jump_to_change_end_exact"
+desc = "Jump to exact end of last changed or yanked text"
+status = "implemented"
+vim_default = true
+
+[[normal.jumps]]
+key = "'<"
+action = "jump_to_visual_start"
+desc = "Jump to first line of last visual selection"
+status = "implemented"
+vim_default = true
+
+[[normal.jumps]]
+key = "`<"
+action = "jump_to_visual_start_exact"
+desc = "Jump to exact start of last visual selection"
+status = "implemented"
+vim_default = true
+
+[[normal.jumps]]
+key = "'>"
+action = "jump_to_visual_end"
+desc = "Jump to last line of last visual selection"
+status = "implemented"
+vim_default = true
+
+[[normal.jumps]]
+key = "`>"
+action = "jump_to_visual_end_exact"
+desc = "Jump to exact end of last visual selection"
+status = "implemented"
+vim_default = true
+
+[[normal.jumps]]
 key = "gi"
 action = "goto_last_insert_and_insert"
 desc = "Jump to last insert position and enter insert mode"
@@ -990,6 +1046,20 @@ vim_default = true
 key = "gn"
 action = "search_and_select"
 desc = "Search forward and select match"
+status = "implemented"
+vim_default = true
+
+[[normal.search]]
+key = "&"
+action = "repeat_substitute"
+desc = "Repeat the last :s on the current line with its flags"
+status = "implemented"
+vim_default = true
+
+[[normal.search]]
+key = "g&"
+action = "repeat_substitute_all"
+desc = "Repeat the last :s on every line with its flags"
 status = "implemented"
 vim_default = true
 

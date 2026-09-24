@@ -50,6 +50,33 @@ impl Change {
             new_text: self.old_text.clone(),
         }
     }
+
+    /// Where the `'[` and `']` marks land for this change: its start and
+    /// the last character of the new text. A pure delete brackets its
+    /// start, and linewise text ends on the last character before its
+    /// trailing newline (Vim stores "past the end" there; the jump clamps).
+    pub fn mark_span(&self) -> ((usize, usize), (usize, usize)) {
+        // A linewise put after a line is recorded as "\n" + text at the end
+        // of that line; the marks belong to the new line it opens.
+        let (start, text) = match self.new_text.strip_prefix('\n') {
+            Some(rest) => ((self.start_line + 1, 0), rest),
+            None => ((self.start_line, self.start_col), self.new_text.as_str()),
+        };
+        let text = text.strip_suffix('\n').unwrap_or(text);
+        if text.is_empty() {
+            return (start, start);
+        }
+        let newlines = text.matches('\n').count();
+        let last_len = text.rsplit('\n').next().map_or(0, |s| s.chars().count());
+        let end = if newlines == 0 {
+            (start.0, start.1 + last_len - 1)
+        } else if last_len == 0 {
+            (start.0 + newlines - 1, usize::MAX)
+        } else {
+            (start.0 + newlines, last_len - 1)
+        };
+        (start, end)
+    }
 }
 
 /// A group of changes that form a single undoable action
@@ -94,6 +121,28 @@ impl UndoEntry {
         self.preferred_cursor_after = Some((line, col));
         self.cursor_after = (line, col);
     }
+
+    /// First and last buffer line this entry touches when undone (`undo`)
+    /// or redone, for the `'[` and `']` marks Vim sets after u and Ctrl-r.
+    pub fn touched_lines(&self, undo: bool) -> (usize, usize) {
+        let mut first = usize::MAX;
+        let mut last = 0;
+        for change in &self.changes {
+            let text = if undo {
+                &change.old_text
+            } else {
+                &change.new_text
+            };
+            let newlines = text
+                .strip_suffix('\n')
+                .unwrap_or(text)
+                .matches('\n')
+                .count();
+            first = first.min(change.start_line);
+            last = last.max(change.start_line + newlines);
+        }
+        (first.min(last), last)
+    }
 }
 
 /// Manages the undo/redo history
@@ -113,6 +162,14 @@ pub struct UndoStack {
     last_edit_time: Option<Instant>,
     /// Interval for grouping edits (edits within this interval are merged)
     group_interval: Duration,
+    /// The `'[` and `']` marks: start and last character of the most recent
+    /// change or yank. Changes derive it from what they record; yanks,
+    /// joins, insert mode and undo set it outright like Vim's operators.
+    op_marks: Option<((usize, usize), (usize, usize))>,
+    /// Whether the next recorded change starts a new span. Time-based
+    /// grouping can merge consecutive commands into one undo entry, but
+    /// the marks still belong to the last command alone.
+    op_marks_fresh: bool,
 }
 
 impl Default for UndoStack {
@@ -125,6 +182,8 @@ impl Default for UndoStack {
             max_entries: 1000,
             last_edit_time: None,
             group_interval: DEFAULT_GROUP_INTERVAL,
+            op_marks: None,
+            op_marks_fresh: true,
         }
     }
 }
@@ -142,6 +201,7 @@ impl UndoStack {
             return false;
         }
 
+        self.op_marks_fresh = true;
         let now = Instant::now();
 
         // Check if we should continue the existing group (rapid edits)
@@ -219,6 +279,13 @@ impl UndoStack {
         // Update last edit time for grouping
         self.last_edit_time = Some(Instant::now());
 
+        let (start, end) = change.mark_span();
+        self.op_marks = match self.op_marks {
+            Some((s, e)) if !self.op_marks_fresh => Some((s.min(start), e.max(end))),
+            _ => Some((start, end)),
+        };
+        self.op_marks_fresh = false;
+
         if let Some(ref mut entry) = self.current_entry {
             entry.push(change);
         } else {
@@ -228,6 +295,19 @@ impl UndoStack {
             self.undo_stack.push_back(entry);
             self.redo_stack.clear();
         }
+    }
+
+    /// Start and last character of the most recent change or yank (`'[`, `']`).
+    pub fn op_marks(&self) -> Option<((usize, usize), (usize, usize))> {
+        self.op_marks
+    }
+
+    /// Set the `'[` and `']` marks outright, for operations whose marks are
+    /// not the text they record (yanks record nothing, J and insert mode
+    /// end past their last edit, undo brackets whole lines).
+    pub fn set_op_marks(&mut self, start: (usize, usize), end: (usize, usize)) {
+        self.op_marks = Some((start, end));
+        self.op_marks_fresh = true;
     }
 
     /// Keep group finalization from replacing an operation-specific redo cursor.
@@ -309,6 +389,51 @@ impl UndoStack {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn mark_span_brackets_the_new_text() {
+        // Charwise insert: last inserted character.
+        assert_eq!(
+            Change::insert(1, 0, "xy".into()).mark_span(),
+            ((1, 0), (1, 1))
+        );
+        // Pure delete: both marks at the start.
+        assert_eq!(
+            Change::delete(0, 4, "two".into()).mark_span(),
+            ((0, 4), (0, 4))
+        );
+        // Linewise put before: the trailing newline is not a character.
+        assert_eq!(
+            Change::insert(2, 0, "one two\n".into()).mark_span(),
+            ((2, 0), (2, 6))
+        );
+        // Linewise put after: recorded at the end of the previous line.
+        assert_eq!(
+            Change::insert(1, 10, "\none two".into()).mark_span(),
+            ((2, 0), (2, 6))
+        );
+        // Multi-line charwise text ends on its last line.
+        assert_eq!(
+            Change::insert(0, 3, "ab\ncd".into()).mark_span(),
+            ((0, 3), (1, 1))
+        );
+        // Text ending in a blank line ends past the previous line.
+        assert_eq!(
+            Change::insert(0, 0, "ab\n\n".into()).mark_span(),
+            ((0, 0), (0, usize::MAX))
+        );
+    }
+
+    #[test]
+    fn touched_lines_cover_restored_and_replayed_text() {
+        let mut entry = UndoEntry::new(0, 0);
+        entry.push(Change::delete(1, 0, "three four\n".into()));
+        assert_eq!(entry.touched_lines(true), (1, 1));
+        entry.push(Change::insert(3, 0, "a\nb\n".into()));
+        assert_eq!(entry.touched_lines(false), (1, 4));
+        assert_eq!(UndoEntry::new(0, 0).touched_lines(true), (0, 0));
+    }
     use super::{Change, UndoStack};
 
     #[test]

@@ -182,6 +182,46 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
         "line of last insert",
     ),
     vim_oracle(
+        "'[",
+        "Jump to the first line of the last change or yank",
+        "start line mark after a two line yank",
+    ),
+    vim_oracle(
+        "`[",
+        "Jump to the exact start of the last change or yank",
+        "start mark after a charwise put",
+    ),
+    vim_oracle(
+        "']",
+        "Jump to the last line of the last change or yank",
+        "end line mark after a two line yank",
+    ),
+    vim_oracle(
+        "`]",
+        "Jump to the exact end of the last change or yank",
+        "end mark after a charwise put",
+    ),
+    vim_oracle(
+        "'<",
+        "Jump to the first line of the last visual selection",
+        "visual start mark goes to the first line of the selection",
+    ),
+    vim_oracle(
+        "`<",
+        "Jump to the exact start of the last visual selection",
+        "exact visual start mark",
+    ),
+    vim_oracle(
+        "'>",
+        "Jump to the last line of the last visual selection",
+        "visual end mark goes to the last line of the selection",
+    ),
+    vim_oracle(
+        "`>",
+        "Jump to the exact end of the last visual selection",
+        "exact visual end mark",
+    ),
+    vim_oracle(
         "gi",
         "Go to last insert position and enter insert mode",
         "go to last insert position and insert",
@@ -269,6 +309,74 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
         "d$",
         "Delete through line end",
         "delete with line-end motion",
+    ),
+    // Linewise motions under an operator: j k G gg {n}G H M L cover whole
+    // lines, with j and k cancelling the operator at the buffer edge.
+    vim_oracle(
+        "dj",
+        "Delete the current and next lines",
+        "dj deletes two lines",
+    ),
+    vim_oracle(
+        "dk",
+        "Delete the current and previous lines",
+        "dk deletes two lines upward",
+    ),
+    vim_oracle(
+        "dG",
+        "Delete through the end of the buffer",
+        "dG deletes to the end of the buffer",
+    ),
+    vim_oracle(
+        "dgg",
+        "Delete through the start of the buffer",
+        "dgg deletes to the start of the buffer",
+    ),
+    vim_oracle(
+        "d{n}G",
+        "Delete through line n",
+        "counted G under d deletes through that line",
+    ),
+    vim_oracle(
+        "dH",
+        "Delete through the top line of the window",
+        "dH under an operator reaches the true top line",
+    ),
+    vim_oracle(
+        "dM",
+        "Delete through the middle line of the window",
+        "dM deletes to the middle of the window",
+    ),
+    vim_oracle(
+        "dL",
+        "Delete through the bottom line of the window",
+        "dL under an operator reaches the true bottom line",
+    ),
+    vim_oracle(
+        "yj",
+        "Yank the current and next lines",
+        "yj yanks two lines linewise",
+    ),
+    vim_oracle(
+        "yG",
+        "Yank through the end of the buffer",
+        "yG yanks to the end linewise",
+    ),
+    vim_oracle(
+        "cj",
+        "Change the current and next lines into one",
+        "cj changes two lines into one",
+    ),
+    vim_oracle(
+        "cG",
+        "Change through the end of the buffer",
+        "cG changes to the end of the buffer",
+    ),
+    // Indent width differs from Neovim's shiftwidth, so >j is pinned natively.
+    nevi_regression(
+        ">j",
+        "Indent the current and next lines",
+        "indent_motion_with_j_covers_two_lines",
     ),
     vim_oracle("caw", "Change around word", "change around word"),
     // Macros, registers, insert-mode, and visual-basics batch.
@@ -692,6 +800,16 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
         "gn",
         "Search forward and select match",
         "gn selects next match from outside",
+    ),
+    vim_oracle(
+        "&",
+        "Repeat the last :s on the current line",
+        "ampersand repeats the last substitute on the current line",
+    ),
+    vim_oracle(
+        "g&",
+        "Repeat the last :s on every line with its flags",
+        "g ampersand repeats on every line with the flags",
     ),
     vim_oracle(
         "gN",

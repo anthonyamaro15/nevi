@@ -14,6 +14,10 @@
 
 ### Vim Compatibility
 
+- Macros, named and unnamed registers, global marks, and search history now survive restarts, like Vim's shada. State is stored in `~/.local/state/nevi/state.json`, following nvim's `stdpath('state')` convention, and `$XDG_STATE_HOME` is respected. Macros are saved as readable key notation, so the file can be inspected or hand-edited, and a corrupt file never blocks startup. The frecency database and command history moved to the same directory; data in the old location is found automatically and migrates on its next save.
+- Added `&` to repeat the last `:s` on the current line, with a count for that many lines, and `g&` to repeat it on every line. Both keep the flags of the original `:s`, matching Neovim, whose default `&` is `:&&`. Neither is picked up by `.`, same as any `:` command. Along the way, `:s` and `:%s` now leave the cursor on the first non-blank of the last line they changed, as Vim does, instead of where it was. Verified against real Neovim.
+- Operators with `j`, `k`, `G`, `gg`, `{n}G`, `H`, `M`, and `L` now work on whole lines like Vim. `dj` deletes the current and next line, `cj` changes them into one line that keeps the first line's indent, and `yj` yanks them linewise; before, these ran characterwise and `dj` left an empty line behind. `dj` on the last line and `dk` on the first do nothing, while `dG` and `dgg` still delete the line they are on. `H`, `M`, and `L` under an operator now count from the lines on screen rather than from the top of the buffer, and reach the true top and bottom lines regardless of scrolloff. `M` on a buffer shorter than the window goes to the middle of the lines shown instead of the last line. Verified against real Neovim.
+- Added the special marks `'[` `']` `'<` `'>` and their backtick forms. The change marks bracket the last changed or yanked text: a yank or put brackets the text, an insert runs from where typing began to where it stopped, a delete leaves both marks at the deleted spot, `J` spans the joined line, and undo brackets the restored lines. A freshly opened file is bracketed whole, as in Vim. The visual marks hold the last selection in buffer order, and a linewise selection spans its whole lines. Yanking a selection now also records it for `gv`. Verified against real Neovim.
 - Added the rest of the `z` scroll family. `z<CR>`, `z.`, and `z-` work like `zt`, `zz`, and `zb` but also move the cursor to the first non-blank, and all six now take a count that goes to that line first, so `5zt` puts line 5 at the top. With wrap off, `zh` and `zl` scroll the view sideways by a count of columns, `zH` and `zL` by half a screen, and `zs` and `ze` put the cursor column at the left or right edge. The cursor is dragged along to stay visible, as in Vim. Verified against real Neovim where the snapshot can see it; the horizontal offset itself is pinned by native tests. Along the way, relative line numbers, the cursor-line highlight, and the view itself no longer lag one key behind after `gp` of a multi-line register, after cancelling a search with Esc, or after the visual-mode operators. They were drawn from a stale copy of the cursor; every key now refreshes that copy.
 - Saving a file opened through a symlink now writes to the link's target and keeps the link, following Vim's `backupcopy=auto` rule. The atomic save used to replace the link itself with a regular file, which quietly disconnected symlinked dotfiles from the repository they point into. A dangling link gets its target created.
 - `:new` and `:touch` on a file that already exists now open it, like Vim's `:new file`, instead of truncating it to zero bytes on the way to opening it. New files are still created on disk immediately.
@@ -54,6 +58,8 @@
 
 ### Interface
 
+- Added `nevi --help` and `nevi -h`. They print the usage for the plain, `view`, `diff`, and `pick` forms and exit. Before this, `--help` was taken as a filename and opened an empty buffer called `--help`.
+- Completion, hover, signature help, code action, and diagnostic popups now open next to the cursor's real screen row when soft wrap is on. They used to count buffer lines instead of screen rows, so in a narrow split with wrapped lines above the cursor the completion menu could open on top of the line being typed. The cursor and every popup now share one screen position calculation. (#333)
 - `:rename` and `:mv` now refuse a destination that already exists instead of silently replacing it. A case-only rename such as `Notes.txt` to `notes.txt` still works on case-insensitive filesystems.
 - The `:Keymaps` cheatsheet caught up with the editor. It had quietly stopped being updated in June and was missing everything added since: the method motions, section and unmatched-bracket motions, `gm`, `go`, `s`, several window and terminal session keys, and more. A new test now fails whenever a key documented in KEYBINDINGS.md is missing from the cheatsheet, so it cannot drift again.
 
@@ -63,17 +69,19 @@
 - Added a start screen. Launching `nevi` with nothing to edit now shows recent files with their project names, harpoon pins, startup time, and key hints; `1`–`9` opens the numbered recent file and `h` + `1`–`9` jumps to that harpoon slot. Recently opened files persist to `~/.local/state/nevi/recent_files.json`, alongside the other shada-lite state. The screen is a pure render condition — it disappears as soon as any real buffer, edit, or mode change happens, and costs nothing afterward.
 - Opening a file now scopes the project to its repository root (nearest ancestor with `.git`) instead of the file's own directory. Harpoon pins land in one `.nevi/harpoon.json` at the repo root regardless of which file you opened, and the explorer and floating terminal start at the repo root too. Outside a repository the old parent-directory behavior is unchanged.
 
-### Vim Compatibility
-
-- Macros, named and unnamed registers, global marks, and search history now survive restarts, like Vim's shada. State is stored in `~/.local/state/nevi/state.json`, following nvim's `stdpath('state')` convention, and `$XDG_STATE_HOME` is respected. Macros are saved as readable key notation, so the file can be inspected or hand-edited, and a corrupt file never blocks startup. The frecency database and command history moved to the same directory; data in the old location is found automatically and migrates on its next save.
-
 ### Configuration
 
+- Added `sign_column` to `[editor]` with the same values as nvim's `signcolumn`. `auto` shows the two-cell git/diagnostic gutter only while the buffer has something to mark, so a plain file renders flush left like `nvim --clean`. `yes` (the default, unchanged behavior) always reserves it, and `no` hides it. `:set signcolumn=auto` switches it at runtime. Completion, hover, signature help, and code action popups now share the cursor's gutter math instead of their own, so they line up with the cursor whether the sign column or line numbers are on or off, and signature help and code actions now account for the pane's position in a split. (#330)
 - Fixed `[ruby]` in `languages.toml` being ignored. Ruby files (`.rb`, `.rake`, `.gemspec`, `.ru`, `.podspec`) resolved to their raw extension instead of the `ruby` key, so formatter and tab width settings never applied. The generated `languages.toml` template now includes a commented Ruby example. (#273)
 
 ### Fixed
 
 - After `:bd`, highlighting and `=` could keep using the closed buffer's syntax tree when the two buffers happened to share a version number. Closing a buffer now reparses the one that becomes current. (#309)
+
+### Documentation
+
+- Reorganized the docs on GitHub. The README is now a short front door with a table of contents, one install section, a six-command quick start, a table of every file Nevi reads or writes, and a troubleshooting section. New `CONFIGURATION.md` documents every config option, keymap action, and formatter setting in one place (#207), and new `CONTRIBUTING.md` walks through adding a keybind: the oracle case, the coverage entry, the docs that tests check, and the PR checklist. Keybind customization moved from `KEYBINDINGS.md` to `CONFIGURATION.md`, and the command tables gained the ex commands they were missing. A Vim parity issue template asks for exactly the fields an oracle case needs.
+
 
 ## 0.3.0 - 2026-08-25
 

@@ -1,0 +1,53 @@
+name: Vim parity report
+description: A key does something different from Neovim
+title: "nvim difference: "
+labels: ["vim-parity"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks. These four fields are exactly what an oracle test case needs, so a complete report usually becomes a test as-is.
+  - type: textarea
+    id: initial_text
+    attributes:
+      label: Starting text
+      description: The buffer before the keys. Mark the cursor with `|`.
+      render: text
+      placeholder: "foo b|ar baz"
+    validations:
+      required: true
+  - type: input
+    id: keys
+    attributes:
+      label: Keys
+      description: Vim notation, for example `dw`, `3J`, `ci"`, `<C-a>`.
+      placeholder: "dw"
+    validations:
+      required: true
+  - type: textarea
+    id: nvim
+    attributes:
+      label: What Neovim does
+      description: Result in `nvim --clean`, cursor marked with `|`.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: nevi
+    attributes:
+      label: What Nevi does
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Nevi version
+      description: Output of `nevi --version`.
+      placeholder: "nevi 0.3.0"
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal
+      description: Some keys depend on the terminal (Ctrl chords, Alt, mouse).
+      placeholder: "iTerm2 3.5, macOS 15"

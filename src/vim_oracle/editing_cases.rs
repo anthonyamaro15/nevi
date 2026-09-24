@@ -934,4 +934,106 @@ pub(super) const EDITING_CASES: &[OracleCase] = &[
         initial_text: "a\n  b\n    c\n",
         keys: "yyj]pj.",
     },
+    // & repeats the last :s on the cursor line, a count covers that many
+    // lines, and g& repeats it on every line (`:%s//~/&`). Both keep the
+    // flags: Neovim maps & to `:&&` by default, which the oracle's
+    // `nvim -u NONE` still loads. Patterns stay literal so Neovim's regex
+    // engine sees the same text.
+    OracleCase {
+        name: "ampersand repeats the last substitute on the current line",
+        initial_text: "a a\na a\n",
+        keys: ":s/a/b/<CR>j&",
+    },
+    OracleCase {
+        name: "ampersand keeps the global flag like neovim",
+        initial_text: "a a\na a\n",
+        keys: ":s/a/b/g<CR>j&",
+    },
+    OracleCase {
+        name: "counted ampersand covers that many lines",
+        initial_text: "a\na\na\na\na\n",
+        keys: ":s/a/b/<CR>j3&",
+    },
+    OracleCase {
+        name: "g ampersand repeats on every line with the flags",
+        initial_text: "a a\na a\nx\na a\n",
+        keys: ":s/a/b/g<CR>g&",
+    },
+    OracleCase {
+        name: "g ampersand after ampersand still has the flags",
+        initial_text: "a a a\na a a\na a a\n",
+        keys: ":s/a/b/g<CR>j&g&",
+    },
+    OracleCase {
+        name: "ampersand with no previous substitute does nothing",
+        initial_text: "a\n",
+        keys: "&",
+    },
+    OracleCase {
+        name: "ampersand with no match leaves the cursor",
+        initial_text: "a\nx\n",
+        keys: ":s/a/b/<CR>j$&",
+    },
+    // :s itself leaves the cursor on the first non-blank of the last line
+    // it changed; Nevi used to leave it where it was.
+    OracleCase {
+        name: "substitute moves to the first non-blank of the changed line",
+        initial_text: "  a a\n",
+        keys: "$:s/a/b/<CR>",
+    },
+    OracleCase {
+        name: "file substitute moves to the last changed line",
+        initial_text: "a\nx\na\nx\n",
+        keys: ":%s/a/b/<CR>",
+    },
+    OracleCase {
+        name: "undo ampersand",
+        initial_text: "a a\na a\n",
+        keys: ":s/a/b/<CR>j&u",
+    },
+    // & runs an Ex command underneath, and `.` never repeats those: with
+    // no earlier change it does nothing, and with one it repeats that.
+    OracleCase {
+        name: "dot repeat after ampersand",
+        initial_text: "a\na\na\n",
+        keys: ":s/a/b/<CR>j&j.",
+    },
+    OracleCase {
+        name: "dot repeat skips ampersand back to the earlier change",
+        initial_text: "za\nza\nza\n",
+        keys: "x:s/a/b/<CR>j&j.",
+    },
+    // Edge cases: the pattern is remembered even when :s found nothing,
+    // an empty & must not swallow the next undo, a count past the end
+    // stops at the last line, and g& with nothing remembered is a no-op.
+    OracleCase {
+        name: "substitute with no match is still remembered",
+        initial_text: "a\nq\n",
+        keys: ":s/q/y/<CR>j&",
+    },
+    OracleCase {
+        name: "undo after a no-match ampersand undoes the substitute",
+        initial_text: "a\nx\n",
+        keys: ":s/a/b/<CR>j&u",
+    },
+    OracleCase {
+        name: "counted ampersand past the end is an invalid range",
+        initial_text: "a\na\n",
+        keys: ":s/a/b/<CR>j9&",
+    },
+    OracleCase {
+        name: "g ampersand with no previous substitute does nothing",
+        initial_text: "a\n",
+        keys: "g&",
+    },
+    OracleCase {
+        name: "substitute cursor uses character columns after multibyte",
+        initial_text: "  é a\n",
+        keys: "$:s/a/b/<CR>",
+    },
+    OracleCase {
+        name: "global substitute whose replacement contains the pattern",
+        initial_text: "a a\n",
+        keys: ":s/a/aa/g<CR>",
+    },
 ];

@@ -9,14 +9,14 @@ the test suite enforces, so it cannot drift from what is actually verified.
 
 ## Summary
 
-- **366 keybinds implemented** ([KEYBINDINGS.md](KEYBINDINGS.md)), **61 planned** ([KEYBINDS_ROADMAP.md](KEYBINDS_ROADMAP.md))
-- **203 keybinds in the coverage inventory**, each mapped to the automated test that protects it:
-  - 184 verified against real Neovim (v0.11.3) by the Vim oracle
-  - 18 protected by focused Nevi regression tests
+- **372 keybinds implemented** ([KEYBINDINGS.md](KEYBINDINGS.md)), **55 planned** ([KEYBINDS_ROADMAP.md](KEYBINDS_ROADMAP.md))
+- **226 keybinds in the coverage inventory**, each mapped to the automated test that protects it:
+  - 206 verified against real Neovim (v0.11.3) by the Vim oracle
+  - 19 protected by focused Nevi regression tests
   - 1 covered as default-keymap plumbing with dedicated tests
-- **535 oracle cases**: motions (160), editing (173), increment (31), insert-entry (17), open-line (20), replace (27), search (51), text-objects (30), undo-redo (2), visual (24)
+- **639 oracle cases**: motions (162), editing (191), increment (31), insert-entry (17), linewise-operators (39), marks (45), open-line (20), replace (27), search (51), text-objects (30), undo-redo (2), visual (24)
 - **0 tracked coverage gaps**
-- **249 of 456 documented keybind rows map to an inventoried keybind**; the rest work today but are not yet individually tracked ([full list below](#documented-but-not-yet-inventoried))
+- **253 of 464 documented keybind rows map to an inventoried keybind**; the rest work today but are not yet individually tracked ([full list below](#documented-but-not-yet-inventoried))
 
 ## How the Vim oracle works
 
@@ -75,6 +75,14 @@ claim protection.
 | `g,` | Jump to newer change position | `newer change position` |
 | `'.` | Jump to the line of the last change | `line of last change` |
 | `'^` | Jump to the line of the last insert | `line of last insert` |
+| `'[` | Jump to the first line of the last change or yank | `start line mark after a two line yank` |
+| ``[` | Jump to the exact start of the last change or yank | `start mark after a charwise put` |
+| `']` | Jump to the last line of the last change or yank | `end line mark after a two line yank` |
+| ``]` | Jump to the exact end of the last change or yank | `end mark after a charwise put` |
+| `'<` | Jump to the first line of the last visual selection | `visual start mark goes to the first line of the selection` |
+| ``<` | Jump to the exact start of the last visual selection | `exact visual start mark` |
+| `'>` | Jump to the last line of the last visual selection | `visual end mark goes to the last line of the selection` |
+| ``>` | Jump to the exact end of the last visual selection | `exact visual end mark` |
 | `gi` | Go to last insert position and enter insert mode | `go to last insert position and insert` |
 | `gm` | Move to middle of the screen line | `gm on short line` |
 | `go` | Go to [count] byte of the buffer | `go to byte` |
@@ -108,6 +116,18 @@ claim protection.
 | `de` | Delete through word end | `delete to word end` |
 | `db` | Delete to previous word start | `delete to previous word start` |
 | `d$` | Delete through line end | `delete with line-end motion` |
+| `dj` | Delete the current and next lines | `dj deletes two lines` |
+| `dk` | Delete the current and previous lines | `dk deletes two lines upward` |
+| `dG` | Delete through the end of the buffer | `dG deletes to the end of the buffer` |
+| `dgg` | Delete through the start of the buffer | `dgg deletes to the start of the buffer` |
+| `d{n}G` | Delete through line n | `counted G under d deletes through that line` |
+| `dH` | Delete through the top line of the window | `dH under an operator reaches the true top line` |
+| `dM` | Delete through the middle line of the window | `dM deletes to the middle of the window` |
+| `dL` | Delete through the bottom line of the window | `dL under an operator reaches the true bottom line` |
+| `yj` | Yank the current and next lines | `yj yanks two lines linewise` |
+| `yG` | Yank through the end of the buffer | `yG yanks to the end linewise` |
+| `cj` | Change the current and next lines into one | `cj changes two lines into one` |
+| `cG` | Change through the end of the buffer | `cG changes to the end of the buffer` |
 | `caw` | Change around word | `change around word` |
 | `q{a-z}` | Record macro into register | `record and play macro` |
 | `q` | Stop recording | `record and play macro` |
@@ -219,6 +239,8 @@ claim protection.
 | `g*` | Search word under cursor forward, also inside longer words | `g-star finds match inside longer word` |
 | `g#` | Search word under cursor backward, also inside longer words | `g-hash finds match inside longer word backward` |
 | `gn` | Search forward and select match | `gn selects next match from outside` |
+| `&` | Repeat the last :s on the current line | `ampersand repeats the last substitute on the current line` |
+| `g&` | Repeat the last :s on every line with its flags | `g ampersand repeats on every line with the flags` |
 | `gN` | Search backward and select match | `gN selects match backward` |
 
 ## Protected by Nevi regression tests
@@ -236,6 +258,7 @@ Nevi-owned behavior with no Vim equivalent to compare against.
 | `[m` | Move to previous method/function start (tree-sitter) | `method_motion_jumps_between_function_starts` |
 | `]M` | Move to next method/function end (tree-sitter) | `method_motion_ends_land_on_closing_brace` |
 | `[M` | Move to previous method/function end (tree-sitter) | `method_motion_ends_land_on_closing_brace` |
+| `>j` | Indent the current and next lines | `indent_motion_with_j_covers_two_lines` |
 | `=` | Re-indent selected lines | `visual_equals_reindents_selection_like_double_equals` |
 | `<leader>j` | Start labeled jump navigation | `labeled_jump_jumps_to_selected_visible_match` |
 | `zh` | Scroll the view left, count columns | `scroll_columns_left_pulls_a_cursor_past_the_right_edge_back_in` |
@@ -266,7 +289,7 @@ like `dw` are tracked as single inventory entries, so their building-block
 rows may already be covered compositionally.)
 
 <details>
-<summary>207 untracked rows</summary>
+<summary>211 untracked rows</summary>
 
 | Keybind | Behavior |
 |---------|----------|
@@ -429,12 +452,12 @@ rows may already be covered compositionally.)
 | `:Jump` / `:jump` | Start labeled jump mode: type 2 chars, then press a visible label |
 | `:FindBuffers` / `:fb` / `:buffers` | Open buffer finder |
 | `:FindDiagnostics` / `:diag` / `:fd` | Open diagnostics finder |
-| `:DiagnosticFloat` / `:df` | Show diagnostics for cursor line |
+| `:DiagnosticFloat` / `:df` / `:linediag` | Show diagnostics for cursor line |
 | `:GitChanges` / `:gitchanges` / `:changes` / `:gc` | Open changed Git files picker with diff preview; `Enter` opens the selected file |
 | `:Explorer` / `:ex` | Toggle file explorer |
 | `:Explore` / `:Ex` | Open file explorer |
-| `:bn` | Next buffer |
-| `:bp` | Previous buffer |
+| `:bn` / `:bnext` / `:n` / `:next` | Next buffer |
+| `:bp` / `:bprev` / `:N` / `:prev` | Previous buffer |
 | `:bd` / `:bdelete` | Close current buffer (fails if unsaved) |
 | `:bd!` / `:bdelete!` | Force close current buffer |
 | `:vs` / `:vsplit` | Vertical split |
@@ -450,12 +473,16 @@ rows may already be covered compositionally.)
 | `:codeaction` / `:ca` | Show code actions |
 | `:ToolInstall` / `:LspInstall` | Open read-only `[tool-installer]` report with missing LSP/tool install commands |
 | `:Themes` | Open theme picker |
+| `:Keymaps` / `:keys` | Open the searchable keybinding cheatsheet |
+| `:MarkdownPreview` / `:mdp` | Open a rendered Markdown reader for the current `.md` file (`j`/`k`, `Ctrl+d`/`Ctrl+u`, `g`/`G`, `q`) |
+| `:set mouse` / `:set nomouse` / `:set mouse=` | Turn mouse capture on or off for the session |
+| `:set signcolumn={auto,yes,no}` | Show the git/diagnostic gutter always, only while a sign exists, or never |
 | `:Theme {name}` / `:theme {name}` / `:colorscheme {name}` | Set theme |
 | `:LazyGit` / `:lg` | Open lazygit |
 | `:checkhealth` / `:CheckHealth` / `:Health` | Open read-only `[health]` report with config, keymap, profiling, LSP, and external tools |
 | `:FlightRecorder` / `:WhySlow` / `:flight` | Open read-only `[flight-recorder]` report with recent in-memory timing events |
-| `:ConfigOpen` / `:config` / `:configopen` | Open the user config file, creating it first if needed |
-| `:ConfigDefaults` / `:configdefaults` | Open read-only `[config-defaults]` buffer with latest built-in default config |
+| `:ConfigOpen` / `:ConfigEdit` / `:config` | Open the user config file, creating it first if needed |
+| `:ConfigDefaults` / `:defaults` | Open read-only `[config-defaults]` buffer with latest built-in default config |
 | `:!{command}` | Run external shell command |
 | `:Terminal` / `:term` | Toggle floating terminal |
 | `:TerminalNew [name]` / `:termnew [name]` | Create floating terminal session |

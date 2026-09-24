@@ -82,6 +82,34 @@ impl UiStyle {
     }
 }
 
+/// Gutter sign column mode, the same three values as nvim's `signcolumn`.
+/// The column is two cells: git marker then diagnostic glyph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignColumn {
+    /// Only while the buffer has a git change or diagnostic to mark. Text
+    /// shifts right by two cells when the first sign appears (nvim default).
+    Auto,
+    /// Always reserved, so text never shifts. Nevi's default because git
+    /// signs and LSP are built in and nearly every edited file gets a sign.
+    #[default]
+    Yes,
+    /// Never drawn; git and diagnostic markers are not shown in the gutter.
+    No,
+}
+
+impl SignColumn {
+    /// Parse a `:set signcolumn=<value>` argument.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "yes" => Some(Self::Yes),
+            "no" => Some(Self::No),
+            _ => None,
+        }
+    }
+}
+
 /// Autosave mode configuration
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -110,6 +138,8 @@ pub struct EditorSettings {
     pub line_numbers: bool,
     /// Show relative line numbers (default: false)
     pub relative_numbers: bool,
+    /// Gutter sign column: "auto", "yes", or "no" (default: yes)
+    pub sign_column: SignColumn,
     /// Highlight current line (default: false)
     pub cursor_line: bool,
     /// Lines to keep visible above/below cursor (default: 0)
@@ -144,6 +174,7 @@ impl Default for EditorSettings {
             tab_width: 4,
             line_numbers: true,
             relative_numbers: false,
+            sign_column: SignColumn::Yes,
             cursor_line: false,
             scroll_off: 8, // Neovim-like default
             auto_indent: true,
@@ -1029,6 +1060,7 @@ fn default_config_template() -> &'static str {
 # tab_width = 4              # Spaces per tab
 # line_numbers = true        # Show line numbers
 # relative_numbers = false   # Show relative line numbers
+# sign_column = "yes"        # Git/diagnostic gutter: "auto" (only when a sign exists, like nvim), "yes", "no"
 # cursor_line = false        # Highlight current line
 # scroll_off = 8             # Lines to keep visible above/below cursor
 # auto_indent = true         # Smart indentation on new lines
@@ -1776,6 +1808,25 @@ mod tests {
         assert!(!s.editor.mouse);
         let s: Settings = toml::from_str("").expect("parse empty");
         assert!(s.editor.mouse);
+    }
+
+    #[test]
+    fn sign_column_defaults_to_yes_and_parses_all_modes() {
+        assert_eq!(EditorSettings::default().sign_column, SignColumn::Yes);
+        let s: Settings = toml::from_str("").expect("parse empty");
+        assert_eq!(s.editor.sign_column, SignColumn::Yes);
+        for (text, expected) in [
+            ("auto", SignColumn::Auto),
+            ("yes", SignColumn::Yes),
+            ("no", SignColumn::No),
+        ] {
+            let toml_text = format!("[editor]\nsign_column = \"{text}\"\n");
+            let s: Settings = toml::from_str(&toml_text).expect("parse sign_column");
+            assert_eq!(s.editor.sign_column, expected, "{text}");
+            assert_eq!(SignColumn::parse(text), Some(expected));
+        }
+        assert!(toml::from_str::<Settings>("[editor]\nsign_column = \"maybe\"\n").is_err());
+        assert_eq!(SignColumn::parse("maybe"), None);
     }
 
     #[test]

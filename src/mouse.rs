@@ -233,6 +233,35 @@ mod tests {
     }
 
     #[test]
+    fn click_maps_columns_without_a_sign_column() {
+        use crate::config::SignColumn;
+        let mut editor = single_pane_editor(120, 40);
+        editor.settings.editor.line_numbers = false;
+        // No path, so no signs: under auto the gutter is 0 cells wide.
+        editor.settings.editor.sign_column = SignColumn::Auto;
+        let x = editor.panes()[0].rect.x;
+
+        handle_mouse_event(
+            &mut editor,
+            mouse(MouseEventKind::Down(MouseButton::Left), x + 2, 0),
+        );
+        assert_eq!(
+            editor.cursor.col, 2,
+            "no gutter: screen col 2 is buffer col 2"
+        );
+
+        editor.settings.editor.sign_column = SignColumn::Yes;
+        handle_mouse_event(
+            &mut editor,
+            mouse(MouseEventKind::Down(MouseButton::Left), x + 2, 0),
+        );
+        assert_eq!(
+            editor.cursor.col, 0,
+            "2-cell gutter: same cell is the first character"
+        );
+    }
+
+    #[test]
     fn click_beyond_eol_clamps_to_line_end() {
         let mut editor = editor_with_lines(100);
         let gutter = gutter_width(&editor, 0);

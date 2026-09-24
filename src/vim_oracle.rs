@@ -8,6 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod editing_cases;
 mod increment_cases;
 mod insert_entry_cases;
+mod linewise_cases;
+mod mark_cases;
 mod open_line_cases;
 mod replace_cases;
 mod search_cases;
@@ -17,6 +19,8 @@ mod visual_cases;
 use editing_cases::EDITING_CASES;
 use increment_cases::INCREMENT_CASES;
 use insert_entry_cases::INSERT_ENTRY_CASES;
+use linewise_cases::LINEWISE_CASES;
+use mark_cases::MARK_CASES;
 use open_line_cases::OPEN_LINE_CASES;
 use replace_cases::REPLACE_CASES;
 use search_cases::SEARCH_CASES;
@@ -323,6 +327,23 @@ const MOTION_CASES: &[OracleCase] = &[
         name: "cursor line to bottom",
         initial_text: SCREEN_POSITION_TEXT,
         keys: "50Gzb",
+    },
+    // :s moves the cursor to the last changed line and the view follows.
+    // These targets sit within a screen of the top, where Neovim scrolls
+    // minimally like Nevi. KNOWN DIVERGENCE, pre-existing and not covered
+    // here: after a jump of more than a screen (50G, 90G, a far search, a
+    // far :%s) Neovim centers the cursor line and clamps at the end of the
+    // file; Nevi's scroll_to_cursor scrolls minimally instead. Also k after
+    // G scrolls the view in Nevi but not in Neovim.
+    OracleCase {
+        name: "file substitute scrolls to the changed line",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: ":%s/line 031/x/<CR>",
+    },
+    OracleCase {
+        name: "g ampersand scrolls to the last changed line",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: ":s/line 031/x/<CR>g&",
     },
     // z<CR> / z. / z- scroll like zt / zz / zb and also go to the first
     // non-blank, where zt keeps the column; all six take a count that
@@ -1098,6 +1119,14 @@ const ORACLE_CATEGORIES: &[OracleCategory] = &[
     OracleCategory {
         name: "insert-entry",
         cases: INSERT_ENTRY_CASES,
+    },
+    OracleCategory {
+        name: "linewise-operators",
+        cases: LINEWISE_CASES,
+    },
+    OracleCategory {
+        name: "marks",
+        cases: MARK_CASES,
     },
     OracleCategory {
         name: "open-line",

@@ -2,139 +2,9 @@
 
 Complete reference for all keybindings in Nevi. If you're familiar with Vim/Neovim, most of these will feel natural.
 
-## Customization
-
-All available keybindings in this doc work out of the box, but you can customize them in `~/.config/nevi/config.toml`.
-
-### Changing the Leader Key
-
-The leader key is `Space` by default. To change it:
-
-```toml
-[keymap]
-leader = ","  # Use comma as leader instead
-```
-
-To disable the leader popup while keeping leader mappings active:
-
-```toml
-[keymap]
-show_leader_popup = false
-```
-
-### Configuring Explorer Width
-
-The file explorer sidebar is `35` columns wide by default. To change that:
-
-```toml
-[explorer]
-width = 42
-```
-
-### Remapping Explorer Keys
-
-Explorer-mode keys can be remapped separately from global normal-mode keys:
-
-```toml
-[[keymap.explorer]]
-key = "o"
-action = "toggle_or_open"
-desc = "Toggle directory or open file"
-
-[[keymap.explorer]]
-key = "<C-r>"
-action = "refresh"
-desc = "Refresh explorer"
-```
-
-User mappings replace the shipped default for the same Explorer action. Supported
-actions are: `close`, `move_down`, `move_up`, `move_to_top`, `move_to_bottom`,
-`half_page_down`, `half_page_up`, `page_down`, `page_up`, `toggle_or_open`,
-`expand_or_open`, `collapse_or_parent`, `toggle_expand`, `collapse_all`,
-`refresh`, `show_explorer_keymaps`, `go_to_parent`, `focus_editor`,
-`widen_sidebar`, `narrow_sidebar`, `reset_sidebar_width`, `create`, `rename`,
-`delete`, `copy`, `cut`, `paste`, `search`, `next_match`, and
-`previous_match`.
-
-### Remapping Keys in Normal Mode
-
-Want `H` to go to the start of the line and `L` to go to the end? Add this:
-
-```toml
-[[keymap.normal]]
-from = "H"
-to = "^"
-
-[[keymap.normal]]
-from = "L"
-to = "$"
-```
-
-Now pressing `H` does what `^` normally does (jump to first non-blank character).
-
-### Remapping Keys in Visual Mode
-
-Visual mode keys can be remapped with the same key notation:
-
-```toml
-[[keymap.visual]]
-from = "s"
-to = "S"
-```
-
-Now pressing `s` in visual mode surrounds the selection instead of changing it.
-
-### Adding Leader Shortcuts
-
-Create your own `<leader>` + key combinations:
-
-```toml
-[[keymap.leader_mappings]]
-key = "s"
-action = ":wa"
-desc = "Save all files"
-```
-
-Now `<Space>s` saves all open files.
-
-For example, the terminal picker is mapped to `<Space>tt` by default and can be changed the same way:
-
-```toml
-[[keymap.leader_mappings]]
-key = "tt"
-action = ":Terminals"
-desc = "Terminal picker"
-```
-
-Labeled jump is mapped to `<Space>j` by default. To move it to `<Space>s`:
-
-```toml
-[[keymap.leader_mappings]]
-key = "s"
-action = ":Jump"
-desc = "Labeled jump"
-```
-
-To use plain `s` for labeled jump instead:
-
-```toml
-[[keymap.normal]]
-from = "s"
-to = ":Jump<CR>"
-```
-
-This overrides Vim's default `s` behavior, which substitutes the character under
-the cursor and enters insert mode.
-
-### Key Notation
-
-When specifying keys, use these formats:
-- Regular keys: `"a"`, `"H"`, `";"`, `"0"`
-- Control: `"<C-s>"` (Ctrl+s)
-- Combined modifiers: `"<C-S-t>"` (Ctrl+Shift+t), `"<C-Tab>"`
-- Special keys: `"<CR>"` (Enter), `"<Esc>"`, `"<Tab>"`, `"<Space>"`, `"<BS>"` (Backspace)
-
-> **Tip:** The config file at `~/.config/nevi/config.toml` is auto-generated on first run and contains a full reference with all options commented out.
+Every keybinding here works out of the box. To change the leader key, remap
+keys, add leader shortcuts, or remap explorer and command-line keys, see
+[CONFIGURATION.md](CONFIGURATION.md#keymap).
 
 ---
 
@@ -336,6 +206,10 @@ Navigate through positions where you made edits.
 | <code>`.</code> | Jump to the exact position of the last change |
 | `'^` | Jump to the line of the last insert |
 | <code>`^</code> | Jump to the exact position of the last insert |
+| `'[` / `']` | Jump to the first / last line of the last changed or yanked text |
+| <code>`[</code> / <code>`]</code> | Jump to the exact start / end of the last changed or yanked text |
+| `'<` / `'>` | Jump to the first / last line of the last visual selection |
+| <code>`<</code> / <code>`></code> | Jump to the exact start / end of the last visual selection |
 | `gi` | Go to last insert position and enter insert mode |
 
 ---
@@ -451,6 +325,8 @@ Operators are commands that wait for a motion. For example, `d` (delete) + `w` (
 | `g*` / `g#` | Same as `*` / `#` but also match inside longer words |
 | `gn` | Search forward and select match |
 | `gN` | Search backward and select match |
+| `&` / `{n}&` | Repeat the last `:s` on the current line (or n lines), keeping its flags like Neovim's default `&` |
+| `g&` | Repeat the last `:s` on every line, keeping its flags |
 
 > **Note:** Search matches literal text and is case sensitive, like Vim with default settings. Regex patterns are not supported yet, with one exception: the word boundary atoms `\<` and `\>` work, so `/\<abc\>` matches `abc` only as a whole word. `*` and `#` search for `\<word\>` like Vim, which is why they skip the word when it sits inside a longer one.
 
@@ -1023,7 +899,7 @@ While typing an Ex command after `:`.
 | `:Jump` / `:jump` | Start labeled jump mode: type 2 chars, then press a visible label |
 | `:FindBuffers` / `:fb` / `:buffers` | Open buffer finder |
 | `:FindDiagnostics` / `:diag` / `:fd` | Open diagnostics finder |
-| `:DiagnosticFloat` / `:df` | Show diagnostics for cursor line |
+| `:DiagnosticFloat` / `:df` / `:linediag` | Show diagnostics for cursor line |
 | `:GitChanges` / `:gitchanges` / `:changes` / `:gc` | Open changed Git files picker with diff preview; `Enter` opens the selected file |
 | `:Explorer` / `:ex` | Toggle file explorer |
 | `:Explore` / `:Ex` | Open file explorer |
@@ -1032,8 +908,8 @@ While typing an Ex command after `:`.
 
 | Command | Action |
 |---------|--------|
-| `:bn` | Next buffer |
-| `:bp` | Previous buffer |
+| `:bn` / `:bnext` / `:n` / `:next` | Next buffer |
+| `:bp` / `:bprev` / `:N` / `:prev` | Previous buffer |
 | `Ctrl+^` | Switch to the alternate buffer, the one this window showed last (reopens it if closed) |
 | `[b` / `]b` | Previous / next buffer, a count moves several |
 | `:bd` / `:bdelete` | Close current buffer (fails if unsaved) |
@@ -1080,12 +956,16 @@ for example `:ProjectReplace#/api/v1#/api/v2#g`.
 | Command | Action |
 |---------|--------|
 | `:Themes` | Open theme picker |
+| `:Keymaps` / `:keys` | Open the searchable keybinding cheatsheet |
+| `:MarkdownPreview` / `:mdp` | Open a rendered Markdown reader for the current `.md` file (`j`/`k`, `Ctrl+d`/`Ctrl+u`, `g`/`G`, `q`) |
+| `:set mouse` / `:set nomouse` / `:set mouse=` | Turn mouse capture on or off for the session |
+| `:set signcolumn={auto,yes,no}` | Show the git/diagnostic gutter always, only while a sign exists, or never |
 | `:Theme {name}` / `:theme {name}` / `:colorscheme {name}` | Set theme |
 | `:LazyGit` / `:lg` | Open lazygit |
 | `:checkhealth` / `:CheckHealth` / `:Health` | Open read-only `[health]` report with config, keymap, profiling, LSP, and external tools |
 | `:FlightRecorder` / `:WhySlow` / `:flight` | Open read-only `[flight-recorder]` report with recent in-memory timing events |
-| `:ConfigOpen` / `:config` / `:configopen` | Open the user config file, creating it first if needed |
-| `:ConfigDefaults` / `:configdefaults` | Open read-only `[config-defaults]` buffer with latest built-in default config |
+| `:ConfigOpen` / `:ConfigEdit` / `:config` | Open the user config file, creating it first if needed |
+| `:ConfigDefaults` / `:defaults` | Open read-only `[config-defaults]` buffer with latest built-in default config |
 | `:!{command}` | Run external shell command |
 | `:Terminal` / `:term` | Toggle floating terminal |
 | `:TerminalNew [name]` / `:termnew [name]` | Create floating terminal session |
