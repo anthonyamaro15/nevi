@@ -7035,7 +7035,13 @@ fn report_repeat_substitute(editor: &mut Editor, result: Result<usize, &'static 
 /// draws the active window from the pane struct (see
 /// `Editor::sync_active_pane_view`).
 pub fn handle_key(editor: &mut Editor, key: KeyEvent) {
+    let was_visual = editor.mode.is_visual();
+    editor.cancel_mouse_drag();
     handle_key_inner(editor, key);
+    editor.finish_mouse_selection();
+    if was_visual && editor.mode == Mode::Normal {
+        editor.clamp_cursor();
+    }
     editor.sync_active_pane_view();
 }
 
@@ -12882,6 +12888,41 @@ mod tests {
             vec![(0, 14, 18)],
             "search highlight range should move with the match after insert edits"
         );
+    }
+
+    #[test]
+    fn mouse_drag_selection_is_highlighted_until_escape() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("alpha beta\n");
+        editor.set_size(80, 12);
+        let gutter = editor.gutter_width(editor.current_buffer_index()) as u16;
+        let _ = render_editor_to_string(&editor);
+        editor.render_damage.clear_after_full_render();
+        for (kind, column) in [
+            (MouseEventKind::Down(MouseButton::Left), gutter + 1),
+            (MouseEventKind::Drag(MouseButton::Left), gutter + 4),
+            (MouseEventKind::Up(MouseButton::Left), gutter + 4),
+        ] {
+            crate::mouse::handle_mouse_event(
+                &mut editor,
+                MouseEvent {
+                    kind,
+                    column,
+                    row: 0,
+                    modifiers: KeyModifiers::NONE,
+                },
+            );
+        }
+        assert_eq!(editor.mode, Mode::Visual);
+        assert_eq!(editor.get_visual_range(), (0, 1, 0, 4));
+        assert!(editor.render_damage.requires_full_render());
+        let selection_bg = background_sequence(editor.theme().ui.selection);
+        let rendered = render_editor_to_string(&editor);
+        assert!(rendered.contains(&selection_bg));
+        assert!(rendered.contains("lpha"));
+        handle_key(&mut editor, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!render_editor_to_string(&editor).contains(&selection_bg));
     }
 
     #[test]

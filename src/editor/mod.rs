@@ -3,6 +3,7 @@ mod cursor;
 mod increment;
 mod macros;
 mod marks;
+mod mouse;
 mod register;
 mod replace;
 mod search_pattern;
@@ -1063,6 +1064,7 @@ pub struct Editor {
     pub desired_col: Option<DesiredCol>,
     /// Current mode
     pub mode: Mode,
+    mouse: mouse::MouseState,
     /// Vertical viewport offset (for scrolling, active pane's viewport)
     pub viewport_offset: usize,
     /// Horizontal viewport offset (for scrolling, active pane's h_offset)
@@ -1672,6 +1674,7 @@ impl Editor {
             search: SearchState::default(),
             last_substitute: None,
             visual: VisualSelection::default(),
+            mouse: mouse::MouseState::default(),
             syntax,
             preview_syntax,
             last_syntax_version: 0,
@@ -3691,102 +3694,10 @@ impl Editor {
     /// window changes made with the mouse.
     pub fn focus_pane(&mut self, pane_idx: usize) {
         if pane_idx < self.panes.len() && pane_idx != self.active_pane {
+            self.mouse = mouse::MouseState::default();
             self.save_pane_state();
             self.active_pane = pane_idx;
             self.load_pane_state();
-        }
-    }
-
-    /// Left click inside a pane: focus it and move the cursor to the clicked
-    /// cell, like nvim with 'mouse' enabled. A plain click drops visual mode;
-    /// insert mode stays insert. The view never scrolls (mouse positioning
-    /// ignores 'scrolloff'), so only the cursor and pane mirror change.
-    pub fn click_at(&mut self, pane_idx: usize, screen_col: u16, screen_row: u16) {
-        self.focus_pane(pane_idx);
-        if matches!(
-            self.mode,
-            Mode::Visual | Mode::VisualLine | Mode::VisualBlock
-        ) {
-            self.exit_visual_mode();
-        }
-        if let Some((line, col)) = self.position_for_click(pane_idx, screen_col, screen_row) {
-            self.cursor.line = line;
-            self.cursor.col = col;
-            self.desired_col = None;
-            if self.active_pane < self.panes.len() {
-                self.panes[self.active_pane].cursor = self.cursor;
-                self.panes[self.active_pane].desired_col = None;
-            }
-        }
-    }
-
-    /// Map a screen cell inside a pane to a buffer (line, col), mirroring
-    /// what rendering shows: gutter, h_offset (nowrap) or wrapped display
-    /// segments (wrap). Clicks in the gutter map to the row's first column;
-    /// clicks past the end of text clamp like vim's normal-mode cursor.
-    fn position_for_click(
-        &self,
-        pane_idx: usize,
-        screen_col: u16,
-        screen_row: u16,
-    ) -> Option<(usize, usize)> {
-        let pane = self.panes.get(pane_idx)?;
-        if !pane.rect.contains(screen_col, screen_row) {
-            return None;
-        }
-        let buffer = self.buffers.get(pane.buffer_idx)?;
-        let text_width = self.pane_text_area_width(pane_idx);
-        let gutter = (pane.rect.width as usize).saturating_sub(text_width);
-        let cell = ((screen_col - pane.rect.x) as usize).saturating_sub(gutter);
-        let row = (screen_row - pane.rect.y) as usize;
-        let last_line = last_addressable_line(buffer);
-        let tab_width = self.get_effective_tab_width();
-
-        let line_text = |line: usize| {
-            let mut text = buffer.line(line).map(|l| l.to_string()).unwrap_or_default();
-            // Ropey lines keep their newline; the cursor must not land on it.
-            while text.ends_with(['\n', '\r']) {
-                text.pop();
-            }
-            text
-        };
-
-        if self.settings.editor.wrap {
-            let wrap_width = self.settings.editor.wrap_width.min(text_width);
-            let mut line = pane.viewport_offset.min(last_line);
-            let mut rows_left = row;
-            loop {
-                let text = line_text(line);
-                let segments = Self::display_line_segments(&text, wrap_width, tab_width);
-                if rows_left < segments.len() {
-                    let col = Self::display_col_to_buffer_col(
-                        &text,
-                        segments[rows_left],
-                        cell,
-                        tab_width,
-                    );
-                    return Some((line, col));
-                }
-                if line == last_line {
-                    // Clicked below the end of the buffer: last segment.
-                    let segment = *segments.last()?;
-                    let col = Self::display_col_to_buffer_col(&text, segment, cell, tab_width);
-                    return Some((line, col));
-                }
-                rows_left -= segments.len();
-                line += 1;
-            }
-        } else {
-            let line = pane.viewport_offset.saturating_add(row).min(last_line);
-            let text = line_text(line);
-            let len = text.chars().count();
-            let segment = DisplayLineSegment {
-                start_col: pane.h_offset.min(len),
-                end_col: len,
-                indent_width: 0,
-            };
-            let col = Self::display_col_to_buffer_col(&text, segment, cell, tab_width);
-            Some((line, col))
         }
     }
 
@@ -4351,6 +4262,7 @@ impl Editor {
         self.term_width = width;
         self.term_height = height;
         if size_changed {
+            self.cancel_mouse_drag();
             self.render_damage.mark_full();
         }
         if let Some(preview) = &mut self.markdown_preview {
@@ -8459,7 +8371,17 @@ impl Editor {
     /// Returns (start_line, start_col, end_line, end_col) inclusive
     pub fn get_visual_range(&self) -> (usize, usize, usize, usize) {
         match self.mode {
-            Mode::Visual => self.visual.get_range(self.cursor.line, self.cursor.col),
+            Mode::Visual => {
+                let (start_line, start_col, end_line, mut end_col) =
+                    self.visual.get_range(self.cursor.line, self.cursor.col);
+                let buffer = self.buffer();
+                if end_line == last_addressable_line(buffer) {
+                    // Vim's final file newline is not an extra selectable
+                    // character, even when the mouse rests past the last line.
+                    end_col = end_col.min(buffer.line_len(end_line).saturating_sub(1));
+                }
+                (start_line, start_col, end_line, end_col)
+            }
             Mode::VisualLine => {
                 let (start_line, end_line) = self.visual.get_line_range(self.cursor.line);
                 let end_col = self.buffers[self.current_buffer_idx].line_len(end_line);
@@ -8498,6 +8420,10 @@ impl Editor {
                 let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
                 // Record for undo
+                self.cursor = Cursor {
+                    line: start_line,
+                    col: start_col,
+                };
                 self.begin_change();
                 self.undo_stack
                     .record_change(Change::delete(start_line, start_col, text.clone()));
@@ -8692,6 +8618,10 @@ impl Editor {
                 let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
                 // Begin undo group
+                self.cursor = Cursor {
+                    line: start_line,
+                    col: start_col,
+                };
                 self.begin_change();
                 self.undo_stack
                     .record_change(Change::delete(start_line, start_col, text.clone()));
