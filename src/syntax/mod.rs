@@ -13,6 +13,26 @@ use crate::editor::Buffer;
 pub const MAX_HIGHLIGHT_LINES: usize = 200_000;
 pub const MAX_HIGHLIGHT_CHARS: usize = 2_000_000;
 
+fn to_input_edit(edit: &crate::editor::BufferEdit) -> tree_sitter::InputEdit {
+    tree_sitter::InputEdit {
+        start_byte: edit.start_byte,
+        old_end_byte: edit.old_end_byte,
+        new_end_byte: edit.new_end_byte,
+        start_position: tree_sitter::Point {
+            row: edit.start_point.0,
+            column: edit.start_point.1,
+        },
+        old_end_position: tree_sitter::Point {
+            row: edit.old_end_point.0,
+            column: edit.old_end_point.1,
+        },
+        new_end_position: tree_sitter::Point {
+            row: edit.new_end_point.0,
+            column: edit.new_end_point.1,
+        },
+    }
+}
+
 pub fn exceeds_highlight_limits(line_count: usize, char_count: usize) -> bool {
     line_count > MAX_HIGHLIGHT_LINES || char_count > MAX_HIGHLIGHT_CHARS
 }
@@ -45,6 +65,18 @@ pub struct SyntaxManager {
     /// every parse rather than version-keyed: parse_version mirrors
     /// buffer.version(), which can collide across buffer switches.
     method_boundaries: RefCell<Option<crate::method_motion::MethodBoundaries>>,
+    /// (buffer id, language) the current tree was parsed from. Incremental
+    /// reparse is only safe when both still match; anything else falls back
+    /// to a full parse.
+    incremental_identity: Option<(u64, String)>,
+}
+
+/// Kill switch: NEVI_INCREMENTAL_PARSE=0 forces full reparses, in case an
+/// incremental corruption slips past the equivalence tests in the wild.
+fn incremental_parse_disabled() -> bool {
+    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DISABLED
+        .get_or_init(|| std::env::var("NEVI_INCREMENTAL_PARSE").is_ok_and(|value| value == "0"))
 }
 
 impl SyntaxManager {
@@ -62,6 +94,7 @@ impl SyntaxManager {
             cache_version: Cell::new(0),
             parse_version: 0,
             method_boundaries: RefCell::new(None),
+            incremental_identity: None,
         }
     }
 
@@ -133,6 +166,7 @@ impl SyntaxManager {
         self.language = None;
         self.query = None;
         self.tree = None;
+        self.incremental_identity = None;
         self.source_cache.clear();
         self.line_start_bytes.clear();
         self.highlight_cache.borrow_mut().clear();
@@ -514,9 +548,14 @@ impl SyntaxManager {
         }
     }
 
-    /// Parse the entire buffer
-    pub fn parse(&mut self, buffer: &Buffer) {
+    /// Parse the buffer. Reuses the previous tree via tree-sitter's
+    /// incremental parsing when the buffer's recorded edits exactly cover
+    /// the span since the last parse; otherwise falls back to a full parse.
+    pub fn parse(&mut self, buffer: &mut Buffer) {
         if self.language.is_none() {
+            // No language means no tree; keep the buffer's edit queue from
+            // growing without bound.
+            buffer.reset_edit_history();
             return;
         }
         self.method_boundaries.replace(None);
@@ -532,6 +571,8 @@ impl SyntaxManager {
             }
             self.tree = None;
             self.query = None;
+            self.incremental_identity = None;
+            buffer.reset_edit_history();
             self.parse_version = buffer.version();
             self.cache_version.set(self.parse_version);
             self.highlight_cache
@@ -541,6 +582,8 @@ impl SyntaxManager {
 
         if exceeds_highlight_limits(buffer.len_lines(), buffer.len_chars()) {
             self.tree = None;
+            self.incremental_identity = None;
+            buffer.reset_edit_history();
             self.source_cache.clear();
             self.line_start_bytes.clear();
             self.highlight_cache.borrow_mut().clear();
@@ -558,10 +601,47 @@ impl SyntaxManager {
                 self.line_start_bytes.push(idx + 1);
             }
         }
-        // Note: Incremental parsing requires calling tree.edit() before parse()
-        // to inform tree-sitter of document changes. Without proper edit tracking,
-        // passing the old tree causes highlighting corruption. Full reparse for now.
-        self.tree = self.parser.parse(&self.source_cache, None);
+        // Reuse the old tree when it belongs to this exact buffer and
+        // language AND the buffer's edit queue covers precisely the span
+        // since the last parse. tree.edit() maps the old tree onto the new
+        // byte layout; tree-sitter then re-lexes only around the changes.
+        let identity = (buffer.id(), self.language.clone().unwrap_or_default());
+        let mut old_tree = None;
+        // The Bash grammar can produce different trees for batched heredoc
+        // edits even with correct InputEdit coordinates. Keep shell files on
+        // full parsing until that grammar's incremental behavior is reliable.
+        if self.language.as_deref() != Some("shell")
+            && !incremental_parse_disabled()
+            && self.incremental_identity.as_ref() == Some(&identity)
+            // Avoid doing both parses on every edit while an error persists.
+            && self.tree.as_ref().is_some_and(|tree| !tree.root_node().has_error())
+        {
+            if let (Some(mut tree), Some(edits)) = (
+                self.tree.take(),
+                buffer.take_edits_since(self.parse_version),
+            ) {
+                for edit in &edits {
+                    tree.edit(&to_input_edit(edit));
+                }
+                old_tree = Some(tree);
+            }
+        }
+        if old_tree.is_none() {
+            buffer.reset_edit_history();
+        }
+        self.tree = self.parser.parse(&self.source_cache, old_tree.as_ref());
+        // Error recovery can choose a different tree when it reuses nodes
+        // (for example a JS function expression vs declaration). Preserve
+        // full-parse behavior while the user is typing incomplete syntax.
+        if old_tree.is_some()
+            && self
+                .tree
+                .as_ref()
+                .is_some_and(|tree| tree.root_node().has_error())
+        {
+            self.tree = self.parser.parse(&self.source_cache, None);
+        }
+        self.incremental_identity = self.tree.is_some().then_some(identity);
         self.parse_version = buffer.version();
         self.cache_version.set(self.parse_version);
         self.highlight_cache
@@ -620,6 +700,7 @@ impl SyntaxManager {
             }
         }
         self.tree = self.parser.parse(&self.source_cache, None);
+        self.incremental_identity = None;
         self.parse_version = self.parse_version.wrapping_add(1);
         self.cache_version.set(self.parse_version);
         self.highlight_cache
@@ -939,6 +1020,86 @@ pub fn get_comment_end(language: Option<&str>) -> Option<&'static str> {
     }
 }
 
+/// Test guard for incremental parsing: the reused tree must be
+/// indistinguishable from a from-scratch parse of the buffer's text.
+/// to_sexp() omits positions, so every node's byte range and (row, column)
+/// points are compared too; those are what method motions and the indent
+/// engine actually read. Compare cached highlights with an uncached query
+/// of the fresh tree as well, so visible changes are covered.
+#[cfg(test)]
+pub(crate) fn assert_tree_matches_fresh_parse(syntax: &SyntaxManager, buffer: &Buffer) {
+    let (tree, source) = syntax.get_tree_and_source().expect("tree after parse");
+    assert_eq!(
+        source,
+        buffer.content(),
+        "syntax source is not the buffer's text"
+    );
+    let mut fresh_parser = Parser::new();
+    fresh_parser
+        .set_language(&tree.language())
+        .expect("grammar");
+    let fresh = fresh_parser.parse(source, None).expect("fresh parse");
+    assert_eq!(
+        tree.root_node().to_sexp(),
+        fresh.root_node().to_sexp(),
+        "incremental tree diverged from full parse\nsource:\n{source}"
+    );
+    if let Some(query) = &syntax.query {
+        let spans = |highlights: Vec<HighlightSpan>| {
+            highlights
+                .into_iter()
+                .map(|span| (span.start_col, span.end_col, span.fg, span.style))
+                .collect::<Vec<_>>()
+        };
+        for line in 0..syntax.line_start_bytes.len() {
+            assert_eq!(
+                spans(syntax.get_line_highlights(line)),
+                spans(highlighter::get_line_highlights(
+                    &fresh,
+                    query,
+                    source,
+                    &syntax.line_start_bytes,
+                    line,
+                    &syntax.theme,
+                )),
+                "highlights diverged from full parse on line {line}"
+            );
+        }
+    }
+    let (mut ours, mut theirs) = (tree.walk(), fresh.walk());
+    loop {
+        let (a, b) = (ours.node(), theirs.node());
+        assert_eq!(
+            (
+                a.kind(),
+                a.byte_range(),
+                a.start_position(),
+                a.end_position(),
+                a.is_missing()
+            ),
+            (
+                b.kind(),
+                b.byte_range(),
+                b.start_position(),
+                b.end_position(),
+                b.is_missing()
+            ),
+            "node position diverged from full parse\nsource:\n{source}"
+        );
+        if ours.goto_first_child() {
+            assert!(theirs.goto_first_child());
+            continue;
+        }
+        while !ours.goto_next_sibling() {
+            if !ours.goto_parent() {
+                return;
+            }
+            assert!(theirs.goto_parent());
+        }
+        assert!(theirs.goto_next_sibling());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -951,7 +1112,7 @@ mod tests {
 
         let mut buffer = Buffer::new();
         buffer.set_content("{\"enabled\": true}\n");
-        syntax.parse(&buffer);
+        syntax.parse(&mut buffer);
 
         assert_eq!(syntax.language_name(), Some("json"));
         assert!(syntax.has_highlighting());
@@ -968,7 +1129,7 @@ mod tests {
 
         let mut buffer = Buffer::new();
         buffer.set_content("$accent: #ff00aa;\n.button { color: $accent; }\n");
-        syntax.parse(&buffer);
+        syntax.parse(&mut buffer);
 
         assert_eq!(syntax.language_name(), Some("scss"));
         assert!(syntax.has_highlighting());
@@ -985,7 +1146,7 @@ mod tests {
 
         let mut buffer = Buffer::new();
         buffer.set_content("package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n");
-        syntax.parse(&buffer);
+        syntax.parse(&mut buffer);
 
         assert_eq!(syntax.language_name(), Some("go"));
         assert!(syntax.has_highlighting());
@@ -1004,7 +1165,7 @@ mod tests {
         buffer.set_content(
             "class Greeter\n  def hello(name)\n    puts \"hello #{name}\"\n  end\nend\n",
         );
-        syntax.parse(&buffer);
+        syntax.parse(&mut buffer);
 
         assert_eq!(syntax.language_name(), Some("ruby"));
         assert!(syntax.has_highlighting());
@@ -1021,7 +1182,7 @@ mod tests {
 
         let mut buffer = Buffer::new();
         buffer.set_content("source \"https://rubygems.org\"\ngem \"rails\"\n");
-        syntax.parse(&buffer);
+        syntax.parse(&mut buffer);
 
         assert_eq!(syntax.language_name(), Some("ruby"));
         assert!(syntax.has_highlighting());
@@ -1040,7 +1201,7 @@ mod tests {
         buffer.set_content(
             "<?php\nfunction greet(string $name): void {\n    echo \"Hello $name\";\n}\n",
         );
-        syntax.parse(&buffer);
+        syntax.parse(&mut buffer);
 
         assert_eq!(syntax.language_name(), Some("php"));
         assert!(syntax.has_highlighting());
@@ -1059,7 +1220,7 @@ mod tests {
     fn parse_shell_snippet(syntax: &mut SyntaxManager) {
         let mut buffer = Buffer::new();
         buffer.set_content("if true; then\n  echo hello\nfi\n");
-        syntax.parse(&buffer);
+        syntax.parse(&mut buffer);
         assert_eq!(syntax.language_name(), Some("shell"));
         assert!(syntax.has_highlighting());
         assert!(
@@ -1155,5 +1316,401 @@ mod tests {
         assert!(shebang_is_shell("#!/usr/bin/env zsh"));
         assert!(!shebang_is_shell("#!/usr/bin/env fish"));
         assert!(!shebang_is_shell("echo hi"));
+    }
+
+    use crate::editor::Buffer;
+
+    fn syntax_and_buffer(path: &str, content: &str) -> (SyntaxManager, Buffer) {
+        let mut syntax = SyntaxManager::new();
+        syntax.set_language_from_path(Path::new(path));
+        let mut buffer = Buffer::new();
+        buffer.insert_str(0, 0, content);
+        syntax.parse(&mut buffer);
+        (syntax, buffer)
+    }
+
+    fn rust_syntax_and_buffer(content: &str) -> (SyntaxManager, Buffer) {
+        syntax_and_buffer("fuzz.rs", content)
+    }
+
+    #[test]
+    fn incremental_parse_reuses_unchanged_nodes_in_other_languages() {
+        fn node_ids(tree: &Tree) -> std::collections::HashSet<usize> {
+            let mut ids = std::collections::HashSet::new();
+            let mut cursor = tree.walk();
+            loop {
+                ids.insert(cursor.node().id());
+                if cursor.goto_first_child() {
+                    continue;
+                }
+                while !cursor.goto_next_sibling() {
+                    if !cursor.goto_parent() {
+                        return ids;
+                    }
+                }
+            }
+        }
+
+        for (path, source) in [
+            (
+                "reuse.rs",
+                (0..32)
+                    .map(|i| format!("fn f{i}() {{ let x = {i}; }}\n"))
+                    .collect::<String>(),
+            ),
+            (
+                "reuse.js",
+                (0..32)
+                    .map(|i| format!("function f{i}() {{ return {i}; }}\n"))
+                    .collect::<String>(),
+            ),
+            (
+                "reuse.py",
+                (0..32)
+                    .map(|i| format!("def f{i}():\n    return {i}\n"))
+                    .collect::<String>(),
+            ),
+        ] {
+            let (mut syntax, mut buffer) = syntax_and_buffer(path, &source);
+            for after_error in [false, true] {
+                if after_error {
+                    buffer.insert_str(0, 0, ")");
+                    syntax.parse(&mut buffer);
+                    assert!(
+                        syntax
+                            .tree
+                            .as_ref()
+                            .expect("error tree")
+                            .root_node()
+                            .has_error()
+                    );
+                    assert_tree_matches_fresh_parse(&syntax, &buffer);
+                    buffer.delete_char(0, 0);
+                    syntax.parse(&mut buffer);
+                    assert_tree_matches_fresh_parse(&syntax, &buffer);
+                    assert!(
+                        !syntax
+                            .tree
+                            .as_ref()
+                            .expect("recovered tree")
+                            .root_node()
+                            .has_error()
+                    );
+                }
+                // Keep the old allocation alive: a full parse cannot accidentally
+                // receive the same node ID from a recycled allocation.
+                let before = syntax.tree.as_ref().expect("initial tree").clone();
+                assert_eq!(before.root_node().named_child_count(), 32);
+                let old_ids = node_ids(&before);
+                let name_col = source
+                    .lines()
+                    .next()
+                    .expect("first line")
+                    .find("f0")
+                    .expect("function name");
+                buffer.insert_str(0, name_col + 1, "x");
+                syntax.parse(&mut buffer);
+                assert_tree_matches_fresh_parse(&syntax, &buffer);
+                // Grammars choose different reuse boundaries, so check that
+                // actual nodes survive without requiring one particular parent.
+                let new_ids = node_ids(syntax.tree.as_ref().expect("edited tree"));
+                let disabled =
+                    std::env::var("NEVI_INCREMENTAL_PARSE").is_ok_and(|value| value == "0");
+                assert_eq!(
+                    !old_ids.is_disjoint(&new_ids),
+                    !disabled,
+                    "unexpected tree reuse for {path}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shell_heredoc_batched_edits_match_fresh_parse() {
+        for delimiter in ["EOF", "'EOF'", "\"EOF\"", "-EOF"] {
+            for newline in ["\n", "\r\n"] {
+                let source = format!(
+                    "first() {{\n cat <<{delimiter}\nhello\nEOF\n}}\nsecond() {{ echo 2; }}\n"
+                )
+                .replace('\n', newline);
+                let mut buffer = Buffer::new();
+                buffer.insert_str(0, 0, &source);
+                let mut syntax = SyntaxManager::new();
+                syntax.set_language_from_path(Path::new("heredoc.sh"));
+                syntax.parse(&mut buffer);
+                assert_tree_matches_fresh_parse(&syntax, &buffer);
+
+                // Both edits arrive before the next debounce. With Bash tree
+                // reuse, the final quote can lose its string/command node.
+                buffer.insert_str(2, 4, "\"");
+                buffer.insert_str(6, 0, "\"");
+                syntax.parse(&mut buffer);
+                assert_tree_matches_fresh_parse(&syntax, &buffer);
+
+                // Undo and redo the same edit batch without a bulk reset.
+                buffer.apply_change(6, 0, "\"", "");
+                buffer.apply_change(2, 4, "\"", "");
+                syntax.parse(&mut buffer);
+                assert_eq!(buffer.content(), source);
+                assert_tree_matches_fresh_parse(&syntax, &buffer);
+                buffer.apply_change(2, 4, "", "\"");
+                buffer.apply_change(6, 0, "", "\"");
+                syntax.parse(&mut buffer);
+                assert_tree_matches_fresh_parse(&syntax, &buffer);
+            }
+        }
+    }
+
+    #[test]
+    fn shell_heredoc_delimiter_edits_match_fresh_parse() {
+        let mut buffer = Buffer::new();
+        buffer.insert_str(0, 0, "cat <<EOF\nhello\nEOF\necho done\n");
+        let mut syntax = SyntaxManager::new();
+        syntax.set_language_from_path(Path::new("heredoc.sh"));
+        syntax.parse(&mut buffer);
+
+        // Rename each delimiter separately, passing through an unfinished
+        // heredoc, then delete and restore its closing delimiter.
+        for (line, old, new) in [
+            (0, "EOF", "END"),
+            (2, "EOF", "END"),
+            (2, "END", ""),
+            (2, "", "END"),
+        ] {
+            buffer.apply_change(line, if line == 0 { 6 } else { 0 }, old, new);
+            syntax.parse(&mut buffer);
+            assert_tree_matches_fresh_parse(&syntax, &buffer);
+        }
+        assert_eq!(buffer.content(), "cat <<END\nhello\nEND\necho done\n");
+    }
+
+    #[test]
+    fn incremental_parse_survives_targeted_edits() {
+        let (mut syntax, mut buffer) = rust_syntax_and_buffer("fn main() {\n    let x = 1;\n}\n");
+
+        // Insert a newline mid-line, splitting a statement.
+        buffer.insert_char(1, 7, '\n');
+        syntax.parse(&mut buffer);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
+
+        // Multibyte insert before existing code.
+        buffer.insert_str(0, 3, "h\u{e9}llo_\u{2713}");
+        syntax.parse(&mut buffer);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
+
+        // Delete a range spanning lines.
+        buffer.delete_range(0, 2, 2, 1);
+        syntax.parse(&mut buffer);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
+
+        // replace_line and the undo-shaped apply_change.
+        buffer.replace_line(0, "fn other() { let y = 2; }");
+        syntax.parse(&mut buffer);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
+
+        buffer.apply_change(0, 3, "other", "renamed");
+        syntax.parse(&mut buffer);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
+    }
+
+    #[test]
+    fn incremental_parse_matches_full_parse_under_random_edits() {
+        for (path, source) in [
+            (
+                "fuzz.rs",
+                "fn main() {\n let x = \"héllo\"; // comment\n}\nfn other() {}\n",
+            ),
+            (
+                "fuzz.js",
+                "function first() {\n let x = `hello ${1}`; // comment\n}\nfunction other() {}\n",
+            ),
+            (
+                "fuzz.ts",
+                "function first<T>(x: T): T {\n return x; // comment\n}\n",
+            ),
+            (
+                "fuzz.tsx",
+                "function First() {\n return <div title=\"hello\">text</div>;\n}\n",
+            ),
+            (
+                "fuzz.py",
+                "def first():\n    x = '''multi\nline'''\n    return x # comment\n",
+            ),
+            (
+                "fuzz.go",
+                "package main\nfunc first() {\n x := `multi\nline`; println(x)\n}\n",
+            ),
+            (
+                "fuzz.rb",
+                "def first\n  x = <<~TEXT\n    hello\n  TEXT\n  x\nend\n",
+            ),
+            (
+                "fuzz.sh",
+                "first() {\n cat <<EOF\nhello\nEOF\n}\nsecond() { echo 2; }\n",
+            ),
+            (
+                "fuzz.md",
+                "# Title\n\n~~~rust\nfn main() {}\n~~~\n\n- item\n",
+            ),
+            (
+                "fuzz.html",
+                "<html>\n<body><script>let x=1;</script>\n<p>hello</p></body></html>\n",
+            ),
+            (
+                "fuzz.php",
+                "<?php\nfunction first() {\n $x = <<<'TEXT'\nhello\nTEXT;\n return $x;\n}\n",
+            ),
+            ("fuzz.css", "/* comment */\nbody {\n color: red;\n}\n"),
+            (
+                "fuzz.scss",
+                "$color: red;\nbody {\n color: $color;\n &:hover { color: blue; }\n}\n",
+            ),
+            (
+                "fuzz.json",
+                "{\n \"key\": [1, 2, {\"emoji\": \"🙂\"}],\n \"other\": true\n}\n",
+            ),
+            (
+                "fuzz.toml",
+                "[first]\nvalue = \"\"\"multi\nline\"\"\"\n[second]\nvalue = 2\n",
+            ),
+        ] {
+            let (mut syntax, mut buffer) = syntax_and_buffer(path, source);
+            assert_tree_matches_fresh_parse(&syntax, &buffer);
+
+            // Deterministic xorshift so failures reproduce.
+            let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+            let mut rand = move || {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed
+            };
+            let snippets = [
+                "let y = 2;",
+                "fn f() {}",
+                "\u{e9}\u{2713}",
+                "\"s\"",
+                "}",
+                "{",
+                "// note \u{f8}\n",
+                // Line breaks Ropey counts but tree-sitter does not.
+                "\r",
+                "\u{c}",
+                "\u{2028}",
+            ];
+
+            for round in 0..150 {
+                // Keep exercising language constructs instead of eventually
+                // reducing every fixture to the same small malformed fragment.
+                if round > 0 && round % 30 == 0 {
+                    buffer.set_content(source);
+                    syntax.parse(&mut buffer);
+                }
+                // 1-4 edits per parse, like a debounced typing burst.
+                for _ in 0..(1 + rand() % 4) {
+                    let line_count = buffer.addressable_line_count().max(1);
+                    let line = (rand() as usize) % line_count;
+                    let col = (rand() as usize) % (buffer.line_len(line) + 1);
+                    match rand() % 4 {
+                        0 => {
+                            let s = snippets[(rand() as usize) % snippets.len()];
+                            buffer.insert_str(line, col, s);
+                        }
+                        1 => {
+                            let ch = ['a', '\u{e9}', '\n', '}'][(rand() as usize) % 4];
+                            buffer.insert_char(line, col, ch);
+                        }
+                        2 => buffer.delete_char(line, col),
+                        _ => {
+                            let end_line = (line + (rand() as usize) % 2)
+                                .min(buffer.addressable_line_count().saturating_sub(1));
+                            let end_col = (rand() as usize) % (buffer.line_len(end_line) + 1);
+                            buffer.delete_range(line, col, end_line, end_col);
+                        }
+                    }
+                }
+                syntax.parse(&mut buffer);
+                assert_tree_matches_fresh_parse(&syntax, &buffer);
+            }
+        }
+    }
+
+    #[test]
+    fn bulk_replace_and_buffer_switch_fall_back_to_full_parse() {
+        let (mut syntax, mut buffer) = rust_syntax_and_buffer("fn a() {}\n");
+
+        // set_content breaks the edit history; the next parse must be full
+        // and still correct.
+        buffer.set_content("fn b() { let z = 3; }\n");
+        syntax.parse(&mut buffer);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
+
+        // A different buffer must never reuse this buffer's tree.
+        let mut other = Buffer::new();
+        other.insert_str(0, 0, "fn c() {}\n");
+        syntax.parse(&mut other);
+        assert_tree_matches_fresh_parse(&syntax, &other);
+    }
+
+    /// Ropey counts a lone CR (and VT, FF, NEL, LS, PS) as a line break;
+    /// tree-sitter counts rows by LF only. Edits recorded in Ropey rows after
+    /// such a separator carry points tree-sitter disagrees with.
+    #[test]
+    fn edits_after_a_non_lf_line_break_keep_the_tree_equivalent() {
+        for sep in ['\r', '\u{b}', '\u{c}', '\u{85}', '\u{2028}', '\u{2029}'] {
+            let text = format!("fn a() {{}}{sep}fn b() {{\n    let x = 1;\n}}\nfn c() {{}}\n");
+            let (mut syntax, mut buffer) = rust_syntax_and_buffer(&text);
+            // Ropey line 1 starts right after the separator; tree-sitter
+            // still calls that row 0.
+            buffer.insert_str(2, 4, "let y = 2;\n    ");
+            buffer.insert_char(1, 3, 'x');
+            syntax.parse(&mut buffer);
+            assert_tree_matches_fresh_parse(&syntax, &buffer);
+
+            buffer.delete_range(1, 0, 3, 0);
+            syntax.parse(&mut buffer);
+            assert_tree_matches_fresh_parse(&syntax, &buffer);
+        }
+    }
+
+    #[test]
+    fn reload_from_disk_falls_back_to_full_parse() {
+        let dir = std::env::temp_dir().join(format!("nevi_syntax_reload_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("reload.rs");
+        std::fs::write(&path, "fn a() {}\n").expect("write");
+        let mut syntax = SyntaxManager::new();
+        syntax.set_language_from_path(&path);
+        let mut buffer = Buffer::from_file(path.clone()).expect("open");
+        syntax.parse(&mut buffer);
+        buffer.insert_str(0, 0, "// local edit\n");
+
+        // Autoread replaces the text wholesale; the recorded edits no longer
+        // describe the span since the last parse.
+        std::fs::write(&path, "fn b() { let z = 3; }\nfn c() {}\n").expect("rewrite");
+        buffer.reload().expect("reload");
+        syntax.parse(&mut buffer);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
+
+        // Editing after the reload is incremental again and stays right.
+        buffer.insert_char(1, 3, 'x');
+        syntax.parse(&mut buffer);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn language_switch_falls_back_to_full_parse() {
+        let (mut syntax, mut buffer) = rust_syntax_and_buffer("fn a() {}\n");
+        buffer.insert_str(0, 0, "x = 1\n");
+        syntax.set_language_from_path(Path::new("same.py"));
+        syntax.parse(&mut buffer);
+        assert_eq!(syntax.language_name(), Some("python"));
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
+
+        buffer.insert_char(0, 5, '0');
+        syntax.parse(&mut buffer);
+        assert_tree_matches_fresh_parse(&syntax, &buffer);
     }
 }

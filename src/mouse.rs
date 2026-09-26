@@ -1,4 +1,4 @@
-//! Mouse event routing: hit-testing, wheel scrolling, click positioning.
+//! Mouse event routing: hit-testing, wheel scrolling, click positioning, Visual selection.
 //!
 //! Terminal mouse capture is enabled by default (see
 //! `docs/adr/0001-mouse-capture-on-by-default.md`); events arrive here from
@@ -39,9 +39,17 @@ pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> bool {
 }
 
 fn route_event(editor: &mut Editor, event: MouseEvent) -> bool {
+    if matches!(event.kind, MouseEventKind::Down(_) | MouseEventKind::Moved) {
+        editor.cancel_mouse_drag();
+    }
+    if !editor.settings.editor.mouse || editor.floating_terminal.is_visible() {
+        editor.cancel_mouse_drag();
+        return false;
+    }
     // Overlay gates mirror handle_key's interception order (the floating
     // terminal is consumed earlier, in the main loop).
     if editor.markdown_preview.is_some() {
+        editor.cancel_mouse_drag();
         let delta = match event.kind {
             MouseEventKind::ScrollDown => WHEEL_LINES,
             MouseEventKind::ScrollUp => -WHEEL_LINES,
@@ -54,11 +62,15 @@ fn route_event(editor: &mut Editor, event: MouseEvent) -> bool {
     if editor.references_picker.is_some()
         || editor.code_actions_picker.is_some()
         || editor.theme_picker.is_some()
+        || editor.pending_expression_register.is_some()
+        || editor.labeled_jump.is_some()
     {
+        editor.cancel_mouse_drag();
         // Small selection pickers stay keyboard-driven.
         return false;
     }
     if editor.mode == Mode::Finder {
+        editor.cancel_mouse_drag();
         // The results list follows the selection; the wheel drives the
         // preview pane regardless of pointer position.
         match event.kind {
@@ -67,6 +79,17 @@ fn route_event(editor: &mut Editor, event: MouseEvent) -> bool {
             _ => return false,
         }
         return true;
+    }
+    if editor.has_mouse_drag() {
+        match event.kind {
+            MouseEventKind::Drag(MouseButton::Left) => {
+                return editor.extend_mouse_drag(event.column, event.row);
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                return editor.end_mouse_drag(event.column, event.row);
+            }
+            _ => {}
+        }
     }
     if editor.explorer.visible && event.column <= editor.explorer.width {
         // A selection list, not a viewport: one row per tick.
@@ -100,6 +123,7 @@ fn route_event(editor: &mut Editor, event: MouseEvent) -> bool {
         MouseEventKind::Down(MouseButton::Left) => match pane_at(editor, event.column, event.row) {
             Some(idx) => {
                 editor.click_at(idx, event.column, event.row);
+                editor.begin_mouse_drag(event.column, event.row);
                 true
             }
             None => false,
@@ -490,3 +514,6 @@ mod tests {
         assert_eq!(pane_at(&editor, 0, 5), None);
     }
 }
+
+#[cfg(test)]
+mod selection_tests;

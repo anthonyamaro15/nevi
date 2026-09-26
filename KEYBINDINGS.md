@@ -175,6 +175,7 @@ The mouse works like nvim's `mouse=nvi` (on by default). Turn it off with
 | Wheel | Scroll the pane under the pointer 3 lines (cursor stays put) |
 | Horizontal wheel | Scroll 6 columns (with wrap off) |
 | Left click | Focus that pane and move the cursor there |
+| Left click and drag | Select text in characterwise Visual mode; release keeps the selection for `y`, `d`, `c`, and other Visual operators |
 | Wheel / click on explorer | Move / set the selection |
 | Wheel in finder | Scroll the preview pane |
 | Wheel in markdown preview | Scroll the preview |

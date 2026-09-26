@@ -236,6 +236,7 @@ fn request_selected_completion_resolve(
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CliStartupAction {
     PrintVersion,
+    PrintHelp,
     PrintUsageError(String),
     LaunchEditor(Option<PathBuf>),
     ViewFile(PathBuf),
@@ -260,6 +261,26 @@ fn version_output() -> String {
     format!("nevi {}", env!("CARGO_PKG_VERSION"))
 }
 
+fn help_output() -> String {
+    format!(
+        "{}
+
+Usage:
+  nevi [FILE...]              open files, or the current directory with no arguments
+  nevi view <file>            read-only viewer
+  nevi diff <left> <right>    read-only diff of two files
+  nevi pick [path]            pick a file; Enter prints the path, Esc cancels
+
+Options:
+  -h, --help                  print this help
+  -V, --version               print the version
+
+Inside the editor, :checkhealth reports config paths and tool status and
+<Space>fk lists every keybinding. Docs: https://github.com/anthonyamaro15/nevi",
+        version_output()
+    )
+}
+
 fn terminal_output_target_for_pick_mode(pick_mode: bool) -> TerminalOutputTarget {
     if pick_mode {
         TerminalOutputTarget::Tty
@@ -276,6 +297,7 @@ where
     let mut args = args.into_iter();
     match args.next() {
         Some(arg) if matches!(arg.as_ref(), "--version" | "-V") => CliStartupAction::PrintVersion,
+        Some(arg) if matches!(arg.as_ref(), "--help" | "-h") => CliStartupAction::PrintHelp,
         Some(arg) if arg.as_ref() == "view" => match args.next() {
             Some(path) => CliStartupAction::ViewFile(PathBuf::from(path.as_ref())),
             None => CliStartupAction::PrintUsageError("usage: nevi view <file>".to_string()),
@@ -334,6 +356,10 @@ fn main() -> anyhow::Result<()> {
         match startup_action_from_args(env::args().skip(1)) {
             CliStartupAction::PrintVersion => {
                 println!("{}", version_output());
+                return Ok(());
+            }
+            CliStartupAction::PrintHelp => {
+                println!("{}", help_output());
                 return Ok(());
             }
             CliStartupAction::PrintUsageError(message) => {
@@ -2772,7 +2798,7 @@ fn find_workspace_root(file_path: &Path, root_markers: &[String]) -> PathBuf {
 mod tests {
     use super::{
         CliStartupAction, PickModeAction, TerminalOutputTarget, apply_edits_to_file,
-        diagnostic_to_lsp_offsets, editor_lsp_cursor_col, editor_lsp_line_len,
+        diagnostic_to_lsp_offsets, editor_lsp_cursor_col, editor_lsp_line_len, help_output,
         lsp_completion_response_matches_current_cursor, lsp_response_matches_current_buffer,
         pick_mode_action_for_key, profile_enabled_from_value, startup_action_from_args,
         terminal_output_target_for_pick_mode,
@@ -2839,6 +2865,22 @@ mod tests {
             startup_action_from_args(["-V"]),
             CliStartupAction::PrintVersion
         );
+    }
+
+    #[test]
+    fn cli_help_flags_print_usage_and_exit() {
+        assert_eq!(
+            startup_action_from_args(["--help"]),
+            CliStartupAction::PrintHelp
+        );
+        assert_eq!(
+            startup_action_from_args(["-h"]),
+            CliStartupAction::PrintHelp
+        );
+        let help = help_output();
+        for subcommand in ["nevi view", "nevi diff", "nevi pick", "--version"] {
+            assert!(help.contains(subcommand), "help is missing {subcommand}");
+        }
     }
 
     #[test]

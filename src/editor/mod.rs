@@ -3,12 +3,13 @@ mod cursor;
 mod increment;
 mod macros;
 mod marks;
+mod mouse;
 mod register;
 mod replace;
 mod search_pattern;
 mod undo;
 
-pub use buffer::Buffer;
+pub use buffer::{Buffer, BufferEdit};
 pub use cursor::{Cursor, DesiredCol};
 pub use macros::MacroState;
 pub use marks::{Mark, Marks};
@@ -1063,6 +1064,7 @@ pub struct Editor {
     pub desired_col: Option<DesiredCol>,
     /// Current mode
     pub mode: Mode,
+    mouse: mouse::MouseState,
     /// Vertical viewport offset (for scrolling, active pane's viewport)
     pub viewport_offset: usize,
     /// Horizontal viewport offset (for scrolling, active pane's h_offset)
@@ -1672,6 +1674,7 @@ impl Editor {
             search: SearchState::default(),
             last_substitute: None,
             visual: VisualSelection::default(),
+            mouse: mouse::MouseState::default(),
             syntax,
             preview_syntax,
             last_syntax_version: 0,
@@ -3715,102 +3718,10 @@ impl Editor {
     /// window changes made with the mouse.
     pub fn focus_pane(&mut self, pane_idx: usize) {
         if pane_idx < self.panes.len() && pane_idx != self.active_pane {
+            self.mouse = mouse::MouseState::default();
             self.save_pane_state();
             self.active_pane = pane_idx;
             self.load_pane_state();
-        }
-    }
-
-    /// Left click inside a pane: focus it and move the cursor to the clicked
-    /// cell, like nvim with 'mouse' enabled. A plain click drops visual mode;
-    /// insert mode stays insert. The view never scrolls (mouse positioning
-    /// ignores 'scrolloff'), so only the cursor and pane mirror change.
-    pub fn click_at(&mut self, pane_idx: usize, screen_col: u16, screen_row: u16) {
-        self.focus_pane(pane_idx);
-        if matches!(
-            self.mode,
-            Mode::Visual | Mode::VisualLine | Mode::VisualBlock
-        ) {
-            self.exit_visual_mode();
-        }
-        if let Some((line, col)) = self.position_for_click(pane_idx, screen_col, screen_row) {
-            self.cursor.line = line;
-            self.cursor.col = col;
-            self.desired_col = None;
-            if self.active_pane < self.panes.len() {
-                self.panes[self.active_pane].cursor = self.cursor;
-                self.panes[self.active_pane].desired_col = None;
-            }
-        }
-    }
-
-    /// Map a screen cell inside a pane to a buffer (line, col), mirroring
-    /// what rendering shows: gutter, h_offset (nowrap) or wrapped display
-    /// segments (wrap). Clicks in the gutter map to the row's first column;
-    /// clicks past the end of text clamp like vim's normal-mode cursor.
-    fn position_for_click(
-        &self,
-        pane_idx: usize,
-        screen_col: u16,
-        screen_row: u16,
-    ) -> Option<(usize, usize)> {
-        let pane = self.panes.get(pane_idx)?;
-        if !pane.rect.contains(screen_col, screen_row) {
-            return None;
-        }
-        let buffer = self.buffers.get(pane.buffer_idx)?;
-        let text_width = self.pane_text_area_width(pane_idx);
-        let gutter = (pane.rect.width as usize).saturating_sub(text_width);
-        let cell = ((screen_col - pane.rect.x) as usize).saturating_sub(gutter);
-        let row = (screen_row - pane.rect.y) as usize;
-        let last_line = last_addressable_line(buffer);
-        let tab_width = self.get_effective_tab_width();
-
-        let line_text = |line: usize| {
-            let mut text = buffer.line(line).map(|l| l.to_string()).unwrap_or_default();
-            // Ropey lines keep their newline; the cursor must not land on it.
-            while text.ends_with(['\n', '\r']) {
-                text.pop();
-            }
-            text
-        };
-
-        if self.settings.editor.wrap {
-            let wrap_width = self.settings.editor.wrap_width.min(text_width);
-            let mut line = pane.viewport_offset.min(last_line);
-            let mut rows_left = row;
-            loop {
-                let text = line_text(line);
-                let segments = Self::display_line_segments(&text, wrap_width, tab_width);
-                if rows_left < segments.len() {
-                    let col = Self::display_col_to_buffer_col(
-                        &text,
-                        segments[rows_left],
-                        cell,
-                        tab_width,
-                    );
-                    return Some((line, col));
-                }
-                if line == last_line {
-                    // Clicked below the end of the buffer: last segment.
-                    let segment = *segments.last()?;
-                    let col = Self::display_col_to_buffer_col(&text, segment, cell, tab_width);
-                    return Some((line, col));
-                }
-                rows_left -= segments.len();
-                line += 1;
-            }
-        } else {
-            let line = pane.viewport_offset.saturating_add(row).min(last_line);
-            let text = line_text(line);
-            let len = text.chars().count();
-            let segment = DisplayLineSegment {
-                start_col: pane.h_offset.min(len),
-                end_col: len,
-                indent_width: 0,
-            };
-            let col = Self::display_col_to_buffer_col(&text, segment, cell, tab_width);
-            Some((line, col))
         }
     }
 
@@ -4356,6 +4267,11 @@ impl Editor {
         }
 
         self.mark_bufferline_damage();
+        // The syntax tree still describes the closed buffer. Reparse for
+        // whichever buffer is current now, exactly like a buffer switch:
+        // the version-only staleness checks in maybe_update_syntax and the
+        // auto-indent path cannot tell two buffers apart.
+        self.sync_syntax_to_current_buffer();
     }
 
     /// Set the path of the current buffer (for rename operations)
@@ -4375,6 +4291,7 @@ impl Editor {
         self.term_width = width;
         self.term_height = height;
         if size_changed {
+            self.cancel_mouse_drag();
             self.render_damage.mark_full();
         }
         if let Some(preview) = &mut self.markdown_preview {
@@ -8493,7 +8410,17 @@ impl Editor {
     /// Returns (start_line, start_col, end_line, end_col) inclusive
     pub fn get_visual_range(&self) -> (usize, usize, usize, usize) {
         match self.mode {
-            Mode::Visual => self.visual.get_range(self.cursor.line, self.cursor.col),
+            Mode::Visual => {
+                let (start_line, start_col, end_line, mut end_col) =
+                    self.visual.get_range(self.cursor.line, self.cursor.col);
+                let buffer = self.buffer();
+                if end_line == last_addressable_line(buffer) {
+                    // Vim's final file newline is not an extra selectable
+                    // character, even when the mouse rests past the last line.
+                    end_col = end_col.min(buffer.line_len(end_line).saturating_sub(1));
+                }
+                (start_line, start_col, end_line, end_col)
+            }
             Mode::VisualLine => {
                 let (start_line, end_line) = self.visual.get_line_range(self.cursor.line);
                 let end_col = self.buffers[self.current_buffer_idx].line_len(end_line);
@@ -8532,6 +8459,10 @@ impl Editor {
                 let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
                 // Record for undo
+                self.cursor = Cursor {
+                    line: start_line,
+                    col: start_col,
+                };
                 self.begin_change();
                 self.undo_stack
                     .record_change(Change::delete(start_line, start_col, text.clone()));
@@ -8726,6 +8657,10 @@ impl Editor {
                 let text = self.get_range_text(start_line, start_col, end_line, end_col);
 
                 // Begin undo group
+                self.cursor = Cursor {
+                    line: start_line,
+                    col: start_col,
+                };
                 self.begin_change();
                 self.undo_stack
                     .record_change(Change::delete(start_line, start_col, text.clone()));
@@ -10503,7 +10438,13 @@ impl Editor {
             };
         }
 
-        self.parse_current_buffer();
+        // Reparse only when the buffer actually changed since the last parse.
+        // During a range re-indent every changed line bumps the version, so
+        // this still parses per changed line, but incrementally (microseconds
+        // instead of a full parse); clean lines cost nothing.
+        if self.buffers[self.current_buffer_idx].version() != self.last_syntax_version {
+            self.parse_current_buffer();
+        }
 
         let prev_line = line_num.saturating_sub(1);
         let prev_col = self.buffers[self.current_buffer_idx].line_len(prev_line);
@@ -12811,7 +12752,7 @@ impl Editor {
     fn parse_current_buffer(&mut self) {
         let buffer_idx = self.current_buffer_idx;
         let started = Instant::now();
-        self.syntax.parse(&self.buffers[buffer_idx]);
+        self.syntax.parse(&mut self.buffers[buffer_idx]);
         self.flight_recorder
             .record("syntax_parse", started.elapsed());
         self.last_syntax_version = self.buffers[buffer_idx].version();
@@ -14476,7 +14417,7 @@ mod tests {
         editor
             .syntax
             .set_language_from_path(std::path::Path::new("test.rs"));
-        editor.syntax.parse(&editor.buffers[0]);
+        editor.syntax.parse(&mut editor.buffers[0]);
         editor
     }
 
@@ -14578,7 +14519,7 @@ mod tests {
         // ...then a reparse of a different layout must invalidate it —
         // stale cached boundaries would jump to line 3 instead of line 1.
         editor.replace_buffer_content("fn one() {}\nfn two() {}\n");
-        editor.syntax.parse(&editor.buffers[0]);
+        editor.syntax.parse(&mut editor.buffers[0]);
         editor.cursor.set(0, 0);
         editor.apply_motion(Motion::Method(MethodBoundary::NextStart), 1);
         assert_eq!((editor.cursor.line, editor.cursor.col), (1, 0));
@@ -14892,6 +14833,171 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn closing_a_buffer_reparses_syntax_for_the_newly_current_buffer() {
+        let tmp = unique_temp_dir("nevi_close_buffer_syntax");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let first = tmp.join("first.rs");
+        let second = tmp.join("second.rs");
+        std::fs::write(&first, "fn first() {}\n").expect("write first");
+        std::fs::write(&second, "fn second() {\n    let x = 1;\n}\n").expect("write second");
+
+        let mut editor = Editor::default();
+        editor.open_file(first).expect("open first");
+        editor.open_file(second).expect("open second");
+        // Both buffers sit at the same version, so a version-only staleness
+        // check cannot tell the closed buffer's tree from the current one.
+        editor.close_current_buffer();
+
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn incremental_parse_survives_grouped_undo_and_redo() {
+        let mut editor = editor_with_parsed_rust("fn main() {\n    let x = 1;\n}\n");
+        // One insert-mode session is one undo group: several buffer edits
+        // that undo and redo replay together before a single reparse.
+        editor.cursor.set(1, 0);
+        editor.enter_insert_mode_end();
+        for ch in "\n    let y = \"h\u{e9}\";\n    if x > 0 {".chars() {
+            if ch == '\n' {
+                editor.insert_newline_with_indent();
+            } else {
+                editor.insert_char(ch);
+            }
+        }
+        editor.enter_normal_mode();
+        editor.maybe_update_syntax();
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        editor.undo();
+        editor.maybe_update_syntax();
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        editor.redo();
+        editor.maybe_update_syntax();
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+    }
+
+    #[test]
+    fn incremental_parse_preserves_reindent_and_undo_after_bulk_edits() {
+        let original = "fn main() {\nlet x = 1;\nif x > 0 {\nprintln!(\"hello\");\n}\n}\n";
+        let mut editor = editor_with_parsed_rust(original);
+        editor.settings.editor.tab_width = 4;
+        editor.apply_text_edits(&[
+            TextEdit {
+                start_line: 1,
+                start_col: 8,
+                end_line: 1,
+                end_col: 9,
+                new_text: "2".into(),
+            },
+            TextEdit {
+                start_line: 3,
+                start_col: 10,
+                end_line: 3,
+                end_col: 15,
+                new_text: "hé🙂".into(),
+            },
+        ]);
+        let edited = "fn main() {\nlet x = 2;\nif x > 0 {\nprintln!(\"hé🙂\");\n}\n}\n";
+        assert_eq!(editor.buffer().content(), edited);
+        // Reindent before the usual debounce has parsed the bulk edits.
+        editor.auto_indent_lines(0, 5);
+        let indented =
+            "fn main() {\n    let x = 2;\n    if x > 0 {\n        println!(\"hé🙂\");\n    }\n}\n";
+        assert_eq!(editor.buffer().content(), indented);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        editor.undo();
+        editor.maybe_update_syntax();
+        assert_eq!(editor.buffer().content(), edited);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+        editor.undo();
+        editor.maybe_update_syntax();
+        assert_eq!(editor.buffer().content(), original);
+        for _ in 0..2 {
+            editor.redo();
+            editor.maybe_update_syntax();
+            crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+        }
+        assert_eq!(editor.buffer().content(), indented);
+    }
+
+    #[test]
+    fn shell_heredoc_bulk_edits_survive_undo_redo_and_pane_switches() {
+        let tmp = unique_temp_dir("nevi_shell_heredoc_edits");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("heredoc.sh");
+        let rust_path = tmp.join("other.rs");
+        let original = "first() {\n cat <<EOF\nhello\nEOF\n}\nsecond() { echo 2; }\n";
+        let edited = "first() {\n cat <<EOF\nhell\"o\nEOF\n}\nsecond() { echo 2; }\n\"";
+        std::fs::write(&path, original).expect("write shell fixture");
+        std::fs::write(&rust_path, "fn other() {}\n").expect("write Rust fixture");
+
+        let mut editor = Editor::default();
+        editor.open_file(path.clone()).expect("open shell fixture");
+        editor.apply_text_edits(&[
+            TextEdit {
+                start_line: 2,
+                start_col: 4,
+                end_line: 2,
+                end_col: 4,
+                new_text: "\"".into(),
+            },
+            TextEdit {
+                start_line: 6,
+                start_col: 0,
+                end_line: 6,
+                end_col: 0,
+                new_text: "\"".into(),
+            },
+        ]);
+        editor.maybe_update_syntax();
+        assert_eq!(editor.buffer().content(), edited);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        editor.undo();
+        editor.maybe_update_syntax();
+        assert_eq!(editor.buffer().content(), original);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+        editor.redo();
+        editor.maybe_update_syntax();
+        assert_eq!(editor.buffer().content(), edited);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        editor.vsplit(None).expect("split the same buffer");
+        editor.focus_pane(0);
+        assert_eq!(editor.buffer().content(), edited);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+        editor.vsplit(Some(rust_path)).expect("split Rust buffer");
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+        editor.close_current_buffer();
+        assert_eq!(editor.buffer().content(), edited);
+        assert_eq!(editor.syntax.language_name(), Some("shell"));
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+
+        // Complete the unfinished string before saving and reopening it.
+        editor.buffer_mut().insert_str(6, 1, "\"\n");
+        editor.note_buffer_change();
+        editor.maybe_update_syntax();
+        let saved = "first() {\n cat <<EOF\nhell\"o\nEOF\n}\nsecond() { echo 2; }\n\"\"\n";
+        assert_eq!(editor.buffer().content(), saved);
+        editor.save().expect("save shell fixture");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read saved file"),
+            saved
+        );
+        let mut reopened = Editor::default();
+        reopened.open_file(path).expect("reopen shell fixture");
+        assert_eq!(reopened.buffer().content(), saved);
+        crate::syntax::assert_tree_matches_fresh_parse(&reopened.syntax, reopened.buffer());
+
+        let _ = std::fs::remove_dir_all(tmp);
     }
 
     #[test]
