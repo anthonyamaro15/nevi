@@ -3368,7 +3368,7 @@ impl Editor {
         }
     }
 
-    fn mark_bufferline_damage(&mut self) {
+    pub fn mark_bufferline_damage(&mut self) {
         if self.settings.editor.bufferline {
             self.render_damage.mark_bufferline();
         }

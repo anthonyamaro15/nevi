@@ -3268,7 +3268,8 @@ impl Terminal {
                     );
                     let cursor_x =
                         (prompt.len() + input_cursor_x).min(explorer_width.saturating_sub(1));
-                    let cursor_y = editor.text_rows().saturating_sub(1) as u16;
+                    let cursor_y = editor.text_rows().saturating_sub(1) as u16
+                        + editor.settings.editor.bufferline as u16;
                     execute!(
                         self.stdout,
                         cursor::MoveTo(cursor_x as u16, cursor_y),
@@ -3277,7 +3278,8 @@ impl Terminal {
                     )?;
                 } else if editor.explorer.is_searching {
                     let cursor_x = 1 + editor.explorer.search_cursor; // +1 for '/'
-                    let cursor_y = editor.text_rows().saturating_sub(1) as u16;
+                    let cursor_y = editor.text_rows().saturating_sub(1) as u16
+                        + editor.settings.editor.bufferline as u16;
                     execute!(
                         self.stdout,
                         cursor::MoveTo(cursor_x as u16, cursor_y),
