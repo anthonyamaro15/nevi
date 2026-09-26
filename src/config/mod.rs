@@ -136,6 +136,8 @@ pub struct EditorSettings {
     pub tab_width: usize,
     /// Show line numbers (default: true)
     pub line_numbers: bool,
+    /// Show the bufferline (default: false)
+    pub bufferline: bool,
     /// Show relative line numbers (default: false)
     pub relative_numbers: bool,
     /// Gutter sign column: "auto", "yes", or "no" (default: yes)
@@ -173,6 +175,7 @@ impl Default for EditorSettings {
         Self {
             tab_width: 4,
             line_numbers: true,
+            bufferline: false,
             relative_numbers: false,
             sign_column: SignColumn::Yes,
             cursor_line: false,
@@ -1808,6 +1811,16 @@ mod tests {
         assert!(!s.editor.mouse);
         let s: Settings = toml::from_str("").expect("parse empty");
         assert!(s.editor.mouse);
+    }
+
+    #[test]
+    fn bufferline_defaults_off_and_parses_true() {
+        assert!(!EditorSettings::default().bufferline);
+        let settings: Settings =
+            toml::from_str("[editor]\nbufferline = true\n").expect("parse bufferline");
+        assert!(settings.editor.bufferline);
+        let settings: Settings = toml::from_str("").expect("parse empty");
+        assert!(!settings.editor.bufferline);
     }
 
     #[test]

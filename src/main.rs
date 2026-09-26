@@ -825,6 +825,7 @@ fn main() -> anyhow::Result<()> {
                                     };
                                     handle_key(&mut editor, paste_key);
                                 }
+                                editor.mark_bufferline_damage();
                                 last_input_at = Some(Instant::now());
                                 needs_redraw = true;
                                 redraw_from_input = true;

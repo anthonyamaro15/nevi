@@ -98,9 +98,13 @@ fn route_event(editor: &mut Editor, event: MouseEvent) -> bool {
             MouseEventKind::ScrollUp => editor.explorer.move_up(),
             MouseEventKind::Down(MouseButton::Left) => {
                 let list_height = editor.text_rows().saturating_sub(1);
+                let bufferline_offset = editor.settings.editor.bufferline as usize;
                 return editor
                     .explorer
-                    .select_visible_row(event.row as usize, list_height);
+                    .select_visible_row(
+                        (event.row as usize).saturating_sub(bufferline_offset),
+                        list_height,
+                    );
             }
             _ => return false,
         }

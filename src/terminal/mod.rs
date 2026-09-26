@@ -1252,6 +1252,11 @@ impl Terminal {
                 self.render_explorer(editor)?;
             }
 
+            // Render bufferline
+            if editor.settings.editor.bufferline {
+                self.render_bufferline(editor)?;
+            }
+
             // While the start screen owns the single pane, draw it INSTEAD of
             // the buffer: painting tildes/line numbers first and covering
             // them afterwards flashes on every full render, and dashboard
@@ -1355,9 +1360,114 @@ impl Terminal {
         Ok(())
     }
 
+    fn render_bufferline(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        execute!(self.stdout, cursor::Hide, cursor::MoveTo(0, 0))?;
+
+        let active_buff_idx = editor.panes()[editor.active_pane_idx()].buffer_idx;
+
+        let entries = crate::bufferline::build(editor.buffers(), active_buff_idx);
+
+        let theme = editor.theme();
+        let glyphs = editor.ui_glyphs();
+
+        // The terminal never erases on its own: paint the whole row first so
+        // leftovers from a previous, longer bufferline die here instead of
+        // outliving the buffers they described. The bar shares the statusline
+        // background so top and bottom chrome read as one system.
+        execute!(self.stdout, SetBackgroundColor(theme.ui.statusline_bg))?;
+        terminal_print!(self, "{:width$}", "", width = editor.term_width as usize);
+        execute!(self.stdout, cursor::MoveTo(0, 0))?;
+
+        let text_width = |s: &str| -> usize {
+            s.chars()
+                .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0))
+                .sum()
+        };
+        let available = editor.term_width as usize;
+
+        let widths: Vec<usize> = entries
+            .iter()
+            .map(|entry| {
+                let marker = if entry.dirty { glyphs.modified } else { "" };
+                2 + text_width(&entry.label) + text_width(marker)
+            })
+            .collect();
+
+        // When the tabs do not fit, drop entries off the front (never the
+        // active one) so the active buffer stays on screen.
+        let start = match entries.iter().position(|entry| entry.active) {
+            Some(active) => {
+                let mut used = 0;
+                let mut idx = active;
+                for i in (0..=active).rev() {
+                    if used > 0 && used + widths[i] > available {
+                        break;
+                    }
+                    used += widths[i];
+                    idx = i;
+                }
+                idx
+            }
+            None => 0,
+        };
+
+        let mut used = 0;
+        for entry in entries.iter().skip(start) {
+            let remaining = available.saturating_sub(used);
+            if remaining == 0 {
+                break;
+            }
+            let marker = if entry.dirty { glyphs.modified } else { "" };
+            let marker_width = text_width(marker);
+            let max_label_width = remaining.saturating_sub(2 + marker_width);
+            if max_label_width == 0 {
+                break;
+            }
+            let label = if text_width(&entry.label) <= max_label_width {
+                entry.label.clone()
+            } else {
+                let mut label = String::new();
+                let mut width = 0;
+                let target = max_label_width - 1;
+                for ch in entry.label.chars() {
+                    let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if width + ch_width > target {
+                        break;
+                    }
+                    label.push(ch);
+                    width += ch_width;
+                }
+                label.push('…');
+                label
+            };
+            let label_width = text_width(&label);
+            let (bg, fg) = if entry.active {
+                (theme.ui.statusline_section_bg, theme.ui.statusline_fg)
+            } else {
+                (theme.ui.statusline_bg, theme.ui.line_number)
+            };
+            execute!(self.stdout, SetBackgroundColor(bg), SetForegroundColor(fg))?;
+            if entry.active {
+                execute!(self.stdout, SetAttribute(Attribute::Bold))?;
+            }
+            terminal_print!(self, " {} {}", label, marker);
+            if entry.active {
+                execute!(self.stdout, SetAttribute(Attribute::NormalIntensity))?;
+            }
+            used += 1 + label_width + 1 + marker_width;
+        }
+
+        execute!(self.stdout, ResetColor)?;
+
+        Ok(())
+    }
+
     fn partial_render_kind(editor: &Editor) -> Option<PartialRenderKind> {
         let damage = &editor.render_damage;
-        if damage.is_clean() || damage.requires_full_render() {
+        if damage.is_clean()
+            || damage.requires_full_render()
+            || (editor.settings.editor.bufferline && damage.bufferline())
+        {
             return None;
         }
 
@@ -2541,6 +2651,7 @@ impl Terminal {
     /// Draw separator lines between panes
     /// Render the file explorer sidebar
     fn render_explorer(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        let bufferline_offset: u16 = editor.settings.editor.bufferline as u16;
         let width = editor.explorer.width as usize;
         let height = editor.text_rows();
 
@@ -2568,7 +2679,7 @@ impl Terminal {
         // Render header with project name
         execute!(
             self.stdout,
-            cursor::MoveTo(0, 0),
+            cursor::MoveTo(0, bufferline_offset),
             SetBackgroundColor(explorer_bg)
         )?;
 
@@ -2608,7 +2719,7 @@ impl Terminal {
 
         // Render file tree
         for row in 0..list_height {
-            let y = (row + 1) as u16; // +1 for header
+            let y = (row + 1) as u16 + bufferline_offset; // +1 for header, + 1 or 0 bufferline
             execute!(
                 self.stdout,
                 cursor::MoveTo(0, y),
@@ -2825,7 +2936,7 @@ impl Terminal {
         // Render input prompt if there's a pending action
         if editor.explorer.has_pending_action() {
             let prompt_bg = explorer_bg;
-            let prompt_y = height.saturating_sub(1) as u16;
+            let prompt_y = height.saturating_sub(1) as u16 + bufferline_offset;
 
             execute!(self.stdout, cursor::MoveTo(0, prompt_y))?;
             execute!(self.stdout, SetBackgroundColor(prompt_bg))?;
@@ -2851,7 +2962,7 @@ impl Terminal {
             // Show help text if available
             let help = editor.explorer.action_help();
             if !help.is_empty() && height > 2 {
-                let help_y = height.saturating_sub(2) as u16;
+                let help_y = height.saturating_sub(2) as u16 + bufferline_offset;
                 execute!(self.stdout, cursor::MoveTo(0, help_y))?;
                 execute!(self.stdout, SetBackgroundColor(prompt_bg))?;
                 execute!(self.stdout, SetForegroundColor(line_num_color))?;
@@ -2903,7 +3014,10 @@ impl Terminal {
         execute!(self.stdout, SetBackgroundColor(explorer_bg))?;
         execute!(self.stdout, SetForegroundColor(separator_color))?;
         for y in 0..height {
-            execute!(self.stdout, cursor::MoveTo(width as u16, y as u16))?;
+            execute!(
+                self.stdout,
+                cursor::MoveTo(width as u16, y as u16 + bufferline_offset)
+            )?;
             terminal_print!(self, "\u{2502}"); // │
         }
         execute!(
@@ -2946,7 +3060,9 @@ impl Terminal {
                     let separator_y = pane.rect.y + pane.rect.height;
 
                     // Don't draw if separator is at edge of text area
-                    if separator_y >= editor.text_rows() as u16 {
+                    if separator_y
+                        >= editor.text_rows() as u16 + editor.settings.editor.bufferline as u16
+                    {
                         continue;
                     }
 
@@ -3152,7 +3268,8 @@ impl Terminal {
                     );
                     let cursor_x =
                         (prompt.len() + input_cursor_x).min(explorer_width.saturating_sub(1));
-                    let cursor_y = editor.text_rows().saturating_sub(1) as u16;
+                    let cursor_y = editor.text_rows().saturating_sub(1) as u16
+                        + editor.settings.editor.bufferline as u16;
                     execute!(
                         self.stdout,
                         cursor::MoveTo(cursor_x as u16, cursor_y),
@@ -3161,7 +3278,8 @@ impl Terminal {
                     )?;
                 } else if editor.explorer.is_searching {
                     let cursor_x = 1 + editor.explorer.search_cursor; // +1 for '/'
-                    let cursor_y = editor.text_rows().saturating_sub(1) as u16;
+                    let cursor_y = editor.text_rows().saturating_sub(1) as u16
+                        + editor.settings.editor.bufferline as u16;
                     execute!(
                         self.stdout,
                         cursor::MoveTo(cursor_x as u16, cursor_y),
@@ -11352,6 +11470,146 @@ mod tests {
         output.into_string()
     }
 
+    fn bufferline_test_editor(size: (u16, u16), names: &[&str]) -> Editor {
+        let tmp = unique_temp_dir("nevi_bufferline_test");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let mut editor = Editor::default();
+        editor.settings.editor.bufferline = true;
+        editor.set_size(size.0, size.1);
+        for name in names {
+            let path = tmp.join(name);
+            std::fs::write(&path, "content\n").expect("write buffer");
+            editor.open_file(path).expect("open buffer");
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        editor
+    }
+
+    #[test]
+    fn bufferline_renders_entries_active_state_and_modified_glyph() {
+        let mut editor = bufferline_test_editor((80, 24), &["first.rs", "second.rs"]);
+        editor.buffer_mut().dirty = true;
+
+        let rendered = render_editor_to_string(&editor);
+        let row = screen_row_text(&rendered, 0);
+
+        assert!(
+            row.contains("first.rs"),
+            "bufferline shows first buffer: {row:?}"
+        );
+        assert!(
+            row.contains("second.rs"),
+            "bufferline shows active buffer: {row:?}"
+        );
+        assert!(
+            row.contains(editor.ui_glyphs().modified),
+            "bufferline shows modified glyph: {row:?}"
+        );
+        assert!(
+            rendered.contains("\x1b[1m second.rs"),
+            "active buffer is bold in the ANSI stream: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn bufferline_clips_to_terminal_width_and_keeps_active_buffer_visible() {
+        let editor = bufferline_test_editor(
+            (24, 12),
+            &["one.rs", "two.rs", "three.rs", "four.rs", "five.rs"],
+        );
+
+        let row = screen_row_text(&render_editor_to_string(&editor), 0);
+
+        assert!(
+            row.contains("five.rs"),
+            "active buffer remains visible: {row:?}"
+        );
+        assert!(
+            row.chars().count() <= 24,
+            "bufferline exceeds terminal width: {row:?}"
+        );
+    }
+
+    #[test]
+    fn bufferline_truncates_an_overlong_label_with_ellipsis() {
+        let editor = bufferline_test_editor((12, 12), &["a_very_long_buffer_name.rs"]);
+
+        let row = screen_row_text(&render_editor_to_string(&editor), 0);
+
+        assert!(
+            row.contains('…'),
+            "overlong label is truncated with ellipsis: {row:?}"
+        );
+        assert!(
+            !row.contains("long_buffer_name"),
+            "full overlong label is not shown: {row:?}"
+        );
+        assert!(
+            row.chars().count() <= 12,
+            "truncated label still fits the terminal: {row:?}"
+        );
+    }
+
+    #[test]
+    fn bufferline_offsets_panes_for_both_split_orientations() {
+        let mut vertical = Editor::default();
+        vertical.settings.editor.bufferline = true;
+        vertical.set_size(80, 24);
+        vertical.vsplit(None).expect("vertical split");
+        assert!(
+            vertical.panes().iter().all(|pane| pane.rect.y == 1),
+            "vertical panes start below the bufferline"
+        );
+        assert_eq!(vertical.panes()[0].rect.height, vertical.text_rows() as u16);
+
+        let mut horizontal = Editor::default();
+        horizontal.settings.editor.bufferline = true;
+        horizontal.set_size(80, 24);
+        horizontal.hsplit(None).expect("horizontal split");
+        assert!(
+            horizontal.panes().iter().all(|pane| pane.rect.y >= 1),
+            "horizontal panes start below the bufferline"
+        );
+        let total_height: u16 = horizontal.panes().iter().map(|pane| pane.rect.height).sum();
+        assert_eq!(total_height, horizontal.text_rows() as u16);
+    }
+
+    #[test]
+    fn bufferline_offsets_explorer_below_the_bar() {
+        let mut editor = Editor::default();
+        editor.settings.editor.bufferline = true;
+        editor.set_size(80, 24);
+        editor.explorer.flat_view = vec![
+            crate::explorer::FlatNode {
+                path: PathBuf::from("/proj/src"),
+                name: "src".to_string(),
+                is_dir: true,
+                depth: 1,
+                is_expanded: true,
+            },
+            crate::explorer::FlatNode {
+                path: PathBuf::from("/proj/src/main.rs"),
+                name: "main.rs".to_string(),
+                is_dir: false,
+                depth: 2,
+                is_expanded: false,
+            },
+        ];
+        editor.explorer.selected = 1;
+        editor.explorer.root = Some(PathBuf::from("/proj"));
+
+        let rendered = render_explorer_to_string(&editor);
+
+        assert!(
+            screen_row_text(&rendered, 0).is_empty(),
+            "row 0 is the bufferline row, explorer must not paint there"
+        );
+        assert!(
+            screen_row_text(&rendered, 1).contains("Explorer"),
+            "explorer header starts one row below the bufferline"
+        );
+    }
+
     #[test]
     fn wheel_scrolled_frame_renders_from_new_viewport() {
         let mut editor = Editor::default();
@@ -13217,6 +13475,33 @@ mod tests {
             Terminal::partial_render_kind(&editor),
             Some(PartialRenderKind::EditorRows(vec![1])),
             "simple editor-row damage should be eligible for editor-row partial rendering"
+        );
+    }
+
+    #[test]
+    fn partial_render_kind_rejects_bufferline_damage() {
+        let mut editor = Editor::default();
+        editor.buffer_mut().path = Some(PathBuf::from("named.rs"));
+        editor.settings.editor.bufferline = true;
+
+        editor.render_damage.clear_after_full_render();
+        editor.render_damage.mark_bufferline();
+
+        assert_eq!(Terminal::partial_render_kind(&editor), None);
+    }
+
+    #[test]
+    fn partial_render_kind_allows_statusline_damage_with_clean_bufferline() {
+        let mut editor = Editor::default();
+        editor.buffer_mut().path = Some(PathBuf::from("named.rs"));
+        editor.settings.editor.bufferline = true;
+
+        editor.render_damage.clear_after_full_render();
+        editor.render_damage.mark_statusline();
+
+        assert_eq!(
+            Terminal::partial_render_kind(&editor),
+            Some(PartialRenderKind::StatusLine)
         );
     }
 

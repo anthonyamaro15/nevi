@@ -41,6 +41,7 @@ until you set it. Every key below is optional.
 |-----|---------|-------|
 | `tab_width` | `4` | Spaces per tab. Override per language in `languages.toml`. |
 | `line_numbers` | `true` | Show line numbers |
+| `bufferline` | `false` | Show the bufferline |
 | `relative_numbers` | `false` | Relative line numbers |
 | `sign_column` | `"yes"` | Git and diagnostic gutter. `"auto"` shows it only while a sign exists, like nvim. `"no"` hides it. `:set signcolumn=auto` switches it at runtime. |
 | `cursor_line` | `false` | Highlight the cursor row |
