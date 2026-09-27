@@ -7265,8 +7265,13 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
     // Handle leader key sequences
     if let Some(ref mut sequence) = editor.leader_sequence {
         // We're in leader mode, accumulating a sequence
-        // Escape cancels leader mode
-        if key.code == KeyCode::Esc {
+        // Escape and Ctrl-C cancel before a character can complete a mapping.
+        if key.code == KeyCode::Esc
+            || matches!(
+                (key.modifiers, key.code),
+                (KeyModifiers::CONTROL, KeyCode::Char('c'))
+            )
+        {
             editor.leader_sequence = None;
             editor.leader_sequence_start = None;
             editor.leader_pending_action = None;
@@ -7779,8 +7784,16 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.enter_replace_mode(count);
         }
 
-        KeyAction::Quit => {
-            editor.should_quit = true;
+        KeyAction::Interrupt { show_exit_hint } => {
+            if show_exit_hint {
+                editor.set_status(if editor.has_any_unsaved_changes() {
+                    "Type  :qa!  and press <Enter> to abandon all changes and exit Nevi"
+                } else {
+                    "Type  :qa  and press <Enter> to exit Nevi"
+                });
+            } else {
+                editor.clear_status();
+            }
         }
 
         KeyAction::Save => {
@@ -11196,6 +11209,7 @@ pub fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
 
 #[cfg(test)]
 mod tests {
+    mod normal_interrupt;
     mod viewport_rendering;
 
     use super::{

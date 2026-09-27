@@ -4,6 +4,11 @@ use super::OracleCase;
 /// Yank behavior is made observable by pasting the captured register contents.
 pub(super) const EDITING_CASES: &[OracleCase] = &[
     OracleCase {
+        name: "normal ctrl-c stays in normal mode",
+        initial_text: "abc def\n",
+        keys: "<C-c>",
+    },
+    OracleCase {
         name: "delete first char on second line",
         initial_text: "alpha\nbeta\n",
         keys: "j0x",

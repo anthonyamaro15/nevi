@@ -50,6 +50,12 @@ keys, add leader shortcuts, or remap explorer and command-line keys, see
 
 ## Normal Mode
 
+### Cancel / Exit Guidance
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+c` | Cancel pending input; otherwise show quit guidance without exiting |
+
 ### Basic Movement
 
 | Key | Action |
