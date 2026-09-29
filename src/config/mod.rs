@@ -727,6 +727,7 @@ pub struct LspServers {
     pub go: LspServerConfig,
     pub ruby: LspServerConfig,
     pub shell: LspServerConfig,
+    pub swift: LspServerConfig,
 }
 
 impl Default for LspServers {
@@ -880,6 +881,14 @@ impl Default for LspServers {
                     "eclass".to_string(),
                 ],
             },
+            swift: LspServerConfig {
+                enabled: true,
+                preset: None,
+                command: "sourcekit-lsp".to_string(),
+                args: Vec::new(),
+                root_patterns: vec!["Package.swift".to_string()],
+                file_extensions: vec!["swift".to_string()],
+            },
         }
     }
 }
@@ -904,6 +913,8 @@ pub enum LspPreset {
     Pyright,
     /// pylsp (alternative Python LSP)
     Pylsp,
+    /// sourcekit-lsp
+    Swift,
     /// Custom - use explicit command/args
     Custom,
 }
@@ -928,6 +939,7 @@ impl LspPreset {
                 vec!["--stdio".to_string()],
             )),
             LspPreset::Pylsp => Some(("pylsp".to_string(), Vec::new())),
+            LspPreset::Swift => Some(("sourcekit-lsp".to_string(), Vec::new())),
             LspPreset::Custom => None, // Use explicit command/args
         }
     }
@@ -976,6 +988,7 @@ impl LspServerConfig {
                 LspPreset::RustAnalyzer => "rust-analyzer",
                 LspPreset::Pyright => "pyright-langserver",
                 LspPreset::Pylsp => "pylsp",
+                LspPreset::Swift => "sourcekit-lsp",
                 LspPreset::Custom => &self.command,
             };
         }
@@ -1554,7 +1567,7 @@ fn default_config_template() -> &'static str {
 # LSP servers are auto-detected and enabled by default.
 # Supported: rust-analyzer, typescript-language-server, vscode-css-language-server,
 # vscode-json-language-server, taplo, vscode-html-language-server, pyright-langserver,
-# phpactor, gopls, ruby-lsp, bash-language-server
+# phpactor, gopls, ruby-lsp, bash-language-server, swift
 # Optional: marksman for Markdown (disabled by default)
 #
 # To disable LSP entirely:
@@ -1701,6 +1714,7 @@ fn merge_lsp_servers_with_defaults(user: LspServers) -> LspServers {
         go: merge_lsp_server_config(defaults.go, user.go),
         ruby: merge_lsp_server_config(defaults.ruby, user.ruby),
         shell: merge_lsp_server_config(defaults.shell, user.shell),
+        swift: merge_lsp_server_config(defaults.swift, user.swift),
     }
 }
 
@@ -1946,6 +1960,28 @@ mod tests {
                 "ru".to_string(),
                 "podspec".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn swift_lsp_defaults_use_swift_lsp() {
+        let settings = Settings::default();
+
+        assert_eq!(
+            settings.lsp.servers.swift.effective_command(),
+            "sourcekit-lsp"
+        );
+        assert_eq!(
+            settings.lsp.servers.swift.effective_args(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            settings.lsp.servers.swift.root_patterns,
+            vec!["Package.swift".to_string(),]
+        );
+        assert_eq!(
+            settings.lsp.servers.swift.file_extensions,
+            vec!["swift".to_string(),]
         );
     }
 

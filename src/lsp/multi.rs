@@ -28,6 +28,7 @@ pub enum LanguageId {
     Go,
     Ruby,
     Shell,
+    Swift,
 }
 
 impl LanguageId {
@@ -47,6 +48,7 @@ impl LanguageId {
             "go" => Some(Self::Go),
             "rb" | "rake" | "gemspec" | "ru" | "podspec" => Some(Self::Ruby),
             "sh" | "bash" | "zsh" | "ksh" | "bats" | "ebuild" | "eclass" => Some(Self::Shell),
+            "swift" => Some(Self::Swift),
             _ => None,
         }
     }
@@ -110,6 +112,7 @@ impl LanguageId {
             Self::Go => "go",
             Self::Ruby => "ruby",
             Self::Shell => "shellscript",
+            Self::Swift => "swift",
         }
     }
 }
@@ -180,6 +183,7 @@ impl MultiLspManager {
             LanguageId::Go,
             LanguageId::Ruby,
             LanguageId::Shell,
+            LanguageId::Swift,
         ]
         .into_iter()
         .find(|lang| {
@@ -375,6 +379,7 @@ impl MultiLspManager {
         go_config: LspServerConfig,
         ruby_config: LspServerConfig,
         shell_config: LspServerConfig,
+        swift_config: LspServerConfig,
     ) -> Self {
         let mut configs = HashMap::new();
         configs.insert(LanguageId::Rust, rust_config);
@@ -390,6 +395,7 @@ impl MultiLspManager {
         configs.insert(LanguageId::Go, go_config);
         configs.insert(LanguageId::Ruby, ruby_config);
         configs.insert(LanguageId::Shell, shell_config);
+        configs.insert(LanguageId::Swift, swift_config);
 
         Self {
             instances: HashMap::new(),
@@ -966,6 +972,7 @@ mod tests {
             servers.go,
             servers.ruby,
             servers.shell,
+            servers.swift,
         )
     }
 
@@ -1225,6 +1232,36 @@ mod tests {
     }
 
     #[test]
+    fn swift_paths_route_to_swift_language_server() {
+        let tmp = unique_temp_dir("nevi_lsp_swift_route");
+        let workspace_root = tmp.join("workspace");
+        fs::create_dir_all(&workspace_root).expect("create workspace");
+
+        let manager = make_manager(workspace_root);
+
+        assert_eq!(LanguageId::from_extension("swift"), Some(LanguageId::Swift));
+        assert_eq!(
+            LanguageId::from_path(Path::new("Package.swift")),
+            Some(LanguageId::Swift)
+        );
+        assert_eq!(LanguageId::Swift.as_lsp_id(), "swift");
+        assert_eq!(
+            manager.language_for_path(Path::new("sources/user.swift")),
+            Some(LanguageId::Swift)
+        );
+        assert_eq!(
+            manager.language_for_path(Path::new("Package.swift")),
+            Some(LanguageId::Swift)
+        );
+        assert_eq!(
+            manager.status(Some(Path::new("sources/user.swift"))),
+            "LSP: sourcekit-lsp not started (swift)"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn php_extension_routes_to_php_language_server() {
         let tmp = unique_temp_dir("nevi_lsp_php_route");
         let workspace_root = tmp.join("workspace");
@@ -1262,6 +1299,27 @@ mod tests {
         let manager = make_manager(workspace_root.clone());
         let file_path = nested.join("user.rb");
         let resolved = manager.resolve_server_root(LanguageId::Ruby, Some(file_path.as_path()));
+        assert_eq!(resolved, project_root);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_server_root_uses_swift_root_markers() {
+        let tmp = unique_temp_dir("nevi_lsp_swift_root");
+        let workspace_root = tmp.join("workspace");
+        let project_root = workspace_root.join("project");
+        let nested = project_root.join("sources/models");
+        fs::create_dir_all(&nested).expect("create nested tree");
+        fs::write(
+            project_root.join("Package.swift"),
+            "// swift-tools-version:5.3\n",
+        )
+        .expect("write Package.swift marker");
+
+        let manager = make_manager(workspace_root.clone());
+        let file_path = nested.join("user.swift");
+        let resolved = manager.resolve_server_root(LanguageId::Swift, Some(file_path.as_path()));
         assert_eq!(resolved, project_root);
 
         let _ = fs::remove_dir_all(&tmp);

@@ -607,6 +607,7 @@ fn main() -> anyhow::Result<()> {
             &lsp_servers.go,
             &lsp_servers.ruby,
             &lsp_servers.shell,
+            &lsp_servers.swift,
         ] {
             for marker in &cfg.root_patterns {
                 if marker.trim().is_empty() {
@@ -646,6 +647,7 @@ fn main() -> anyhow::Result<()> {
             lsp_servers.go,
             lsp_servers.ruby,
             lsp_servers.shell,
+            lsp_servers.swift,
         );
         multi_lsp = Some(mgr);
         editor.set_lsp_status("LSP: (no server)");

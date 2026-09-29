@@ -37,6 +37,7 @@ tree-sitter-php = "0.24.2"
 tree-sitter-go = "0.25.0"
 tree-sitter-ruby = "0.23.1"
 tree-sitter-bash = "0.25"
+tree-sitter-swift = "0.7.3"
 streaming-iterator = "0.1"
 
 # System clipboard

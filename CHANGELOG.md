@@ -76,6 +76,10 @@
 - Added `sign_column` to `[editor]` with the same values as nvim's `signcolumn`. `auto` shows the two-cell git/diagnostic gutter only while the buffer has something to mark, so a plain file renders flush left like `nvim --clean`. `yes` (the default, unchanged behavior) always reserves it, and `no` hides it. `:set signcolumn=auto` switches it at runtime. Completion, hover, signature help, and code action popups now share the cursor's gutter math instead of their own, so they line up with the cursor whether the sign column or line numbers are on or off, and signature help and code actions now account for the pane's position in a split. (#330)
 - Fixed `[ruby]` in `languages.toml` being ignored. Ruby files (`.rb`, `.rake`, `.gemspec`, `.ru`, `.podspec`) resolved to their raw extension instead of the `ruby` key, so formatter and tab width settings never applied. The generated `languages.toml` template now includes a commented Ruby example. (#273)
 
+### Languages And Tooling
+
+- Added Swift support.
+
 ### Fixed
 
 - After `:bd`, highlighting and `=` could keep using the closed buffer's syntax tree when the two buffers happened to share a version number. Closing a buffer now reparses the one that becomes current. (#309)

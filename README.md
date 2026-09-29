@@ -204,6 +204,7 @@ CONFIGURATION.md.
 | HTML | Yes | vscode-html-language-server | same package as CSS |
 | TOML | Yes | taplo | `cargo install taplo-cli --locked` |
 | Shell / Bash | Yes | bash-language-server | `npm install -g bash-language-server` |
+| Swift | Yes | sourcekit-lsp | Installed as part of the Swift Toolchain |
 | Markdown | Yes | marksman (off by default) | |
 
 Servers are detected on PATH. `:ToolInstall` prints the exact install commands

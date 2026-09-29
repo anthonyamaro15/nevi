@@ -133,6 +133,7 @@ impl SyntaxManager {
             Some("py") | Some("pyi") | Some("pyw") => self.set_python_language(),
             Some("php") => self.set_php_language(),
             Some("go") => self.set_go_language(),
+            Some("swift") => self.set_swift_language(),
             _ => {
                 if first_line.is_some_and(shebang_is_shell) {
                     self.set_shell_language();
@@ -544,6 +545,29 @@ impl SyntaxManager {
             }
             Err(e) => {
                 self.language = Some(format!("shell (lang error: {:?})", e));
+            }
+        }
+    }
+
+    fn set_swift_language(&mut self) {
+        let language = tree_sitter_swift::LANGUAGE;
+        match self.parser.set_language(&language.into()) {
+            Ok(()) => {
+                self.language = Some("swift".to_string());
+
+                let query_source = highlighter::swift_highlight_query();
+                match Query::new(&language.into(), query_source) {
+                    Ok(query) => {
+                        self.query = Some(query);
+                    }
+                    Err(e) => {
+                        self.language = Some(format!("swift (query error: {:?})", e));
+                        self.query = None;
+                    }
+                }
+            }
+            Err(e) => {
+                self.language = Some(format!("swift (lang error: {:?})", e));
             }
         }
     }
@@ -1208,6 +1232,40 @@ mod tests {
         assert!(
             !syntax.get_line_highlights(1).is_empty(),
             "php files should use PHP syntax highlighting"
+        );
+    }
+
+    #[test]
+    fn swift_known_filenames_use_swift_highlighting() {
+        let mut syntax = SyntaxManager::new();
+        syntax.set_language_from_path(Path::new("Package.swift"));
+
+        let mut buffer = Buffer::new();
+        buffer.set_content("// swift-tools-version:5.3\n");
+        syntax.parse(&mut buffer);
+
+        assert_eq!(syntax.language_name(), Some("swift"));
+        assert!(syntax.has_highlighting());
+        assert!(
+            !syntax.get_line_highlights(0).is_empty(),
+            "common Swift filenames should use Swift syntax highlighting"
+        );
+    }
+
+    #[test]
+    fn swift_extension_uses_swift_highlighting() {
+        let mut syntax = SyntaxManager::new();
+        syntax.set_language_from_path(Path::new("User.swift"));
+
+        let mut buffer = Buffer::new();
+        buffer.set_content("struct User {}\n");
+        syntax.parse(&mut buffer);
+
+        assert_eq!(syntax.language_name(), Some("swift"));
+        assert!(syntax.has_highlighting());
+        assert!(
+            !syntax.get_line_highlights(0).is_empty(),
+            "swift files should use Swift syntax highlighting"
         );
     }
 
