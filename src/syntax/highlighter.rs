@@ -1372,6 +1372,11 @@ pub fn shell_highlight_query() -> &'static str {
     tree_sitter_bash::HIGHLIGHT_QUERY
 }
 
+/// Get the highlight query for Swift
+pub fn swift_highlight_query() -> &'static str {
+    tree_sitter_swift::HIGHLIGHTS_QUERY
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1543,6 +1548,15 @@ mod tests {
             tree_sitter_bash::LANGUAGE.into(),
             shell_highlight_query(),
             "Bash",
+        );
+    }
+
+    #[test]
+    fn swift_highlight_query_compiles() {
+        assert_query_compiles(
+            tree_sitter_swift::LANGUAGE.into(),
+            swift_highlight_query(),
+            "Swift",
         );
     }
 

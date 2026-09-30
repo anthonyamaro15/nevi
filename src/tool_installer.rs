@@ -125,6 +125,7 @@ where
         add_lsp_tool(&mut grouped, "go", &servers.go, &is_command_available);
         add_lsp_tool(&mut grouped, "ruby", &servers.ruby, &is_command_available);
         add_lsp_tool(&mut grouped, "shell", &servers.shell, &is_command_available);
+        add_lsp_tool(&mut grouped, "swift", &servers.swift, &is_command_available);
     }
 
     for (language, config) in &languages_config.languages {
@@ -228,6 +229,7 @@ pub fn install_command_for(command: &str) -> Option<&'static str> {
         "biome" | "biome.cmd" => Some("npm install -g @biomejs/biome"),
         "oxfmt" | "oxfmt.cmd" => Some("npm install -g oxfmt"),
         "prettier" | "prettier.cmd" => Some("npm install -g prettier"),
+        "sourcekit-lsp" | "sourcekit-lsp.cmd" => None,
         _ => None,
     }
 }
@@ -261,6 +263,7 @@ mod tests {
         settings.lsp.servers.go.enabled = false;
         settings.lsp.servers.ruby.enabled = false;
         settings.lsp.servers.shell.enabled = false;
+        settings.lsp.servers.swift.enabled = false;
     }
 
     #[test]
