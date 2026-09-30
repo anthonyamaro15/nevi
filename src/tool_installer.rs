@@ -229,7 +229,7 @@ pub fn install_command_for(command: &str) -> Option<&'static str> {
         "biome" | "biome.cmd" => Some("npm install -g @biomejs/biome"),
         "oxfmt" | "oxfmt.cmd" => Some("npm install -g oxfmt"),
         "prettier" | "prettier.cmd" => Some("npm install -g prettier"),
-        "sourcekit-lsp" | "sourcekit-lsp.cmd" => Some(""),
+        "sourcekit-lsp" | "sourcekit-lsp.cmd" => None,
         _ => None,
     }
 }
