@@ -40,6 +40,13 @@
 # ----------------------------------------------------------------------------
 
 [[normal.help]]
+key = "<C-c>"
+action = "interrupt"
+desc = "Cancel pending input or show exit guidance without exiting"
+status = "implemented"
+vim_default = true
+
+[[normal.help]]
 key = "<leader>"
 action = "show_leader_popup"
 desc = "Show leader key popup"

@@ -7091,7 +7091,9 @@ fn handle_key_inner(editor: &mut Editor, key: KeyEvent) {
 
     if editor.pending_expression_register.is_some() {
         match (key.modifiers, key.code) {
-            (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('[')) => {
+            (KeyModifiers::NONE, KeyCode::Esc)
+            | (KeyModifiers::CONTROL, KeyCode::Char('['))
+            | (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
                 editor.cancel_expression_register();
             }
             (KeyModifiers::NONE, KeyCode::Enter) => {
@@ -7173,7 +7175,8 @@ fn handle_key_inner(editor: &mut Editor, key: KeyEvent) {
     if editor.pending_insert_normal_once && editor.mode == Mode::Normal {
         handle_normal_mode(editor, key);
         if !editor.input_state.has_pending_sequence() {
-            if editor.mode == Mode::Normal {
+            // Ctrl-C clears the flag so the editor stays in Normal mode.
+            if editor.mode == Mode::Normal && editor.pending_insert_normal_once {
                 editor.finish_insert_normal_once();
             } else {
                 editor.pending_insert_normal_once = false;
@@ -7280,8 +7283,8 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             return;
         }
 
-        // Convert key to character and append
-        if let KeyCode::Char(c) = key.code {
+        // Convert key to character and append (Ctrl chords cancel below)
+        if let Some(c) = leader_sequence_char(key) {
             sequence.push(c);
             let seq = sequence.clone();
 
@@ -7785,8 +7788,19 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             editor.enter_replace_mode(count);
         }
 
-        KeyAction::Quit => {
-            editor.should_quit = true;
+        KeyAction::Interrupt { show_exit_hint } => {
+            // After i_CTRL-O, Vim's Ctrl-C also drops the return to Insert
+            // (restart_edit) and skips the quit guidance.
+            let from_insert = std::mem::take(&mut editor.pending_insert_normal_once);
+            if show_exit_hint && !from_insert {
+                editor.set_status(if editor.has_any_unsaved_changes() {
+                    "Type  :qa!  and press <Enter> to abandon all changes and exit Nevi"
+                } else {
+                    "Type  :qa  and press <Enter> to exit Nevi"
+                });
+            } else {
+                editor.clear_status();
+            }
         }
 
         KeyAction::Save => {
@@ -9914,7 +9928,7 @@ fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
             return;
         }
 
-        if let KeyCode::Char(c) = key.code {
+        if let Some(c) = leader_sequence_char(key) {
             sequence.push(c);
             let seq = sequence.clone();
 
@@ -9992,6 +10006,22 @@ fn explorer_sequence_part(key: KeyEvent) -> Option<String> {
             modifiers,
             ..
         } if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => Some(c.to_string()),
+        _ => None,
+    }
+}
+
+/// The character a key adds to a pending leader sequence. A bare Ctrl chord
+/// is a command, not text (the Insert-mode rule), so it cancels the sequence
+/// instead of completing a mapping with its letter: `<C-c>` must not run
+/// `<leader>c`. AltGr, reported as Ctrl+Alt by some terminals, still types.
+fn leader_sequence_char(key: KeyEvent) -> Option<char> {
+    match key.code {
+        KeyCode::Char(c)
+            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                || key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            Some(c)
+        }
         _ => None,
     }
 }
@@ -11202,6 +11232,7 @@ pub fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
 
 #[cfg(test)]
 mod tests {
+    mod normal_interrupt;
     mod viewport_rendering;
 
     use super::{

@@ -14,6 +14,7 @@
 
 ### Vim Compatibility
 
+- Fixed Normal-mode `Ctrl+c` exiting and discarding unsaved changes. It now cancels pending input or shows quit guidance, matching Neovim. It also closes the `"=` expression prompt, and after `Ctrl+o` in Insert mode it leaves you in Normal mode, like Vim. Ctrl keys now cancel a leader sequence instead of completing a mapping with their letter, in the file explorer too, so `Space` then `Ctrl+c` can't run a `<leader>c` mapping. (#346) Verified against real Neovim.
 - Left-click dragging now selects text in characterwise Visual mode. Releasing the mouse keeps the selection for Visual operators, and selections started in Insert mode return to Insert after an operator or Escape. Selection follows wrapped/scrolled text and stays in the pane where the drag began. (#345)
 
 - Macros, named and unnamed registers, global marks, and search history now survive restarts, like Vim's shada. State is stored in `~/.local/state/nevi/state.json`, following nvim's `stdpath('state')` convention, and `$XDG_STATE_HOME` is respected. Macros are saved as readable key notation, so the file can be inspected or hand-edited, and a corrupt file never blocks startup. The frecency database and command history moved to the same directory; data in the old location is found automatically and migrates on its next save.

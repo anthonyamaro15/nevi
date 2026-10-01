@@ -244,8 +244,10 @@ pub enum KeyAction {
     EnterVisualBlock,
     /// Enter replace mode with the normal-mode numeric prefix.
     EnterReplace(usize),
-    /// Quit
-    Quit,
+    /// Cancel pending Normal-mode input, or show exit guidance when idle.
+    Interrupt {
+        show_exit_hint: bool,
+    },
     /// Save
     Save,
     /// Write if modified and quit
@@ -492,6 +494,17 @@ impl InputState {
 
     /// Process a key in normal mode
     pub fn process_normal_key(&mut self, key: KeyEvent) -> KeyAction {
+        // Interrupt before pending commands can mistake Ctrl-C for a literal
+        // 'c' (notably r{char}, f{char}, and register selection).
+        if matches!(
+            (key.modifiers, key.code),
+            (KeyModifiers::CONTROL, KeyCode::Char('c'))
+        ) {
+            let show_exit_hint = !self.has_pending_sequence();
+            self.reset();
+            return KeyAction::Interrupt { show_exit_hint };
+        }
+
         let count = self.effective_count();
 
         // Handle partial sequences first (like "gg")
@@ -1318,12 +1331,6 @@ impl InputState {
             (KeyModifiers::CONTROL, KeyCode::Char('v')) => {
                 self.reset();
                 KeyAction::EnterVisualBlock
-            }
-
-            // Quit
-            (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
-                self.reset();
-                KeyAction::Quit
             }
 
             // Save (temporary)

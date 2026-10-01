@@ -10,13 +10,13 @@ the test suite enforces, so it cannot drift from what is actually verified.
 ## Summary
 
 - **372 keybinds implemented** ([KEYBINDINGS.md](KEYBINDINGS.md)), **55 planned** ([KEYBINDS_ROADMAP.md](KEYBINDS_ROADMAP.md))
-- **226 keybinds in the coverage inventory**, each mapped to the automated test that protects it:
+- **227 keybinds in the coverage inventory**, each mapped to the automated test that protects it:
   - 206 verified against real Neovim (v0.11.3) by the Vim oracle
-  - 19 protected by focused Nevi regression tests
+  - 20 protected by focused Nevi regression tests
   - 1 covered as default-keymap plumbing with dedicated tests
-- **639 oracle cases**: motions (162), editing (191), increment (31), insert-entry (17), linewise-operators (39), marks (45), open-line (20), replace (27), search (51), text-objects (30), undo-redo (2), visual (24)
+- **643 oracle cases**: motions (162), editing (195), increment (31), insert-entry (17), linewise-operators (39), marks (45), open-line (20), replace (27), search (51), text-objects (30), undo-redo (2), visual (24)
 - **0 tracked coverage gaps**
-- **253 of 464 documented keybind rows map to an inventoried keybind**; the rest work today but are not yet individually tracked ([full list below](#documented-but-not-yet-inventoried))
+- **255 of 465 documented keybind rows map to an inventoried keybind**; the rest work today but are not yet individually tracked ([full list below](#documented-but-not-yet-inventoried))
 
 ## How the Vim oracle works
 
@@ -249,6 +249,7 @@ Nevi-owned behavior with no Vim equivalent to compare against.
 
 | Keybind | Behavior | Test |
 |---------|----------|----|
+| `<C-c>` | Cancel pending input or show exit guidance | `normal_ctrl_c_stays_open_and_shows_exit_guidance` |
 | `ZZ` | Save if modified and quit | `normal_zz_writes_modified_file_and_quits` |
 | `ZQ` | Quit without saving | `normal_zq_quits_without_saving` |
 | `<C-^>` | Switch to the alternate buffer | `normal_ctrl_caret_toggles_between_the_last_two_buffers` |
@@ -289,7 +290,7 @@ like `dw` are tracked as single inventory entries, so their building-block
 rows may already be covered compositionally.)
 
 <details>
-<summary>211 untracked rows</summary>
+<summary>210 untracked rows</summary>
 
 | Keybind | Behavior |
 |---------|----------|
@@ -410,7 +411,6 @@ rows may already be covered compositionally.)
 | `<leader>4` | Jump to harpoon slot 4 |
 | `Ctrl+j` / `Ctrl+n` / `Down` | Move to next result |
 | `Ctrl+k` / `Ctrl+p` / `Up` | Move to previous result |
-| `Ctrl+c` | Close finder |
 | `Ctrl+t` | Toggle preview panel |
 | `g` | Go to first result |
 | `K` | Move selected Harpoon item up |

@@ -43,6 +43,11 @@ pub(crate) struct KeybindCoverage {
 }
 
 const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
+    nevi_regression(
+        "<C-c>",
+        "Cancel pending input or show exit guidance",
+        "normal_ctrl_c_stays_open_and_shows_exit_guidance",
+    ),
     vim_oracle("h", "Move cursor left", "move left"),
     vim_oracle("j", "Move cursor down", "move down"),
     vim_oracle("k", "Move cursor up", "move up"),

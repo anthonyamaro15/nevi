@@ -1194,6 +1194,12 @@ fn run_nevi_case_with_options(
 
     for key in parse_key_sequence(case.keys)? {
         handle_key(&mut editor, key);
+        if editor.should_quit {
+            return Err(format!(
+                "case `{}` unexpectedly requested editor exit",
+                case.name
+            ));
+        }
     }
 
     // The renderer draws the active window from the pane mirror (content
@@ -1534,6 +1540,17 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyModifiers};
+
+    #[test]
+    fn oracle_rejects_unexpected_editor_exit() {
+        let case = OracleCase {
+            name: "unexpected exit probe",
+            initial_text: "abc\n",
+            keys: ":qa!<CR>",
+        };
+        let error = run_nevi_case(&case).expect_err("quitting must fail the oracle case");
+        assert!(error.contains("unexpectedly requested editor exit"));
+    }
 
     #[test]
     fn parses_plain_shift_control_and_named_keys() {
