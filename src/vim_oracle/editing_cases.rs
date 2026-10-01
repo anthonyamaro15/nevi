@@ -9,6 +9,21 @@ pub(super) const EDITING_CASES: &[OracleCase] = &[
         keys: "<C-c>",
     },
     OracleCase {
+        name: "insert ctrl-o then ctrl-c stays in normal mode",
+        initial_text: "abc def\n",
+        keys: "i<C-o><C-c>",
+    },
+    OracleCase {
+        name: "ctrl-c cancels the expression register prompt",
+        initial_text: "abc def\n",
+        keys: "\"=<C-c>x",
+    },
+    OracleCase {
+        name: "ctrl-c cancels the insert expression register prompt",
+        initial_text: "abc def\n",
+        keys: "i<C-r>=<C-c>x<Esc>",
+    },
+    OracleCase {
         name: "delete first char on second line",
         initial_text: "alpha\nbeta\n",
         keys: "j0x",

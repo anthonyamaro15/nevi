@@ -2,6 +2,7 @@ use super::{handle_key, unique_temp_dir};
 use crate::config::{KeymapEntry, KeymapLookup, LeaderAction, LeaderMapping};
 use crate::editor::{Editor, Mode};
 use crate::input::key_notation::parse_key_sequence;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Instant;
 
 fn feed(editor: &mut Editor, keys: &str) {
@@ -125,4 +126,95 @@ fn normal_ctrl_c_accounts_for_hidden_unsaved_changes() {
     assert_eq!(std::fs::read_to_string(first).unwrap(), "first\n");
     assert!(editor.status_message.as_deref().unwrap().contains(":qa!"));
     std::fs::remove_dir_all(tmp).unwrap();
+}
+
+#[test]
+fn insert_ctrl_o_ctrl_c_stays_in_normal_mode() {
+    // Vim's Ctrl-C also drops the pending return to Insert (restart_edit)
+    // and shows no quit guidance there, whether or not a command was pending.
+    for pending in ["", "d", "2"] {
+        let mut editor = Editor::default();
+        editor.registers.use_in_memory_clipboard_for_tests();
+        editor.replace_buffer_content("abc def\n");
+        feed(&mut editor, "i<C-o>");
+        feed(&mut editor, pending);
+        feed(&mut editor, "<C-c>");
+        assert!(!editor.should_quit, "{pending:?}");
+        assert_eq!(editor.mode, Mode::Normal, "{pending:?}");
+        assert!(editor.status_message.is_none(), "{pending:?}");
+        feed(&mut editor, "x");
+        assert_eq!(editor.buffer().content(), "bc def\n", "{pending:?}");
+        assert_eq!(editor.mode, Mode::Normal, "{pending:?}");
+    }
+}
+
+#[test]
+fn ctrl_chords_cancel_leader_sequences_instead_of_completing_mappings() {
+    // A Ctrl chord's letter must not complete a mapping: <leader><C-c> would
+    // otherwise run <leader>c, and <leader><C-q> would run <leader>q.
+    for mode in [Mode::Normal, Mode::Explorer] {
+        for chord in ["<C-c>", "<C-q>"] {
+            let mut editor = Editor::default();
+            editor.replace_buffer_content("abc def\n");
+            editor.settings.keymap.leader_mappings = ["c", "q"]
+                .into_iter()
+                .map(|key| LeaderMapping {
+                    key: key.into(),
+                    action: ":qa!<CR>".into(),
+                    desc: None,
+                })
+                .collect();
+            editor.keymap = KeymapLookup::from_settings(&editor.settings.keymap).0;
+            editor.mode = mode;
+            editor.explorer.visible = mode == Mode::Explorer;
+            feed(&mut editor, "<Space>");
+            assert!(editor.leader_sequence.is_some(), "{mode:?} {chord}");
+            feed(&mut editor, chord);
+            assert!(!editor.should_quit, "{mode:?} {chord}");
+            assert!(editor.leader_sequence.is_none(), "{mode:?} {chord}");
+            assert_eq!(editor.mode, mode, "{mode:?} {chord}");
+        }
+    }
+}
+
+#[test]
+fn ctrl_c_cancels_the_expression_register_prompt() {
+    // Normal-mode "= and Insert-mode <C-r>= share one prompt. Ctrl-C closes
+    // it without typing a 'c', and the next key acts in the original mode.
+    for (open, expected, mode) in [
+        ("\"=", "bc def\n", Mode::Normal),
+        ("i<C-r>=", "xabc def\n", Mode::Insert),
+    ] {
+        let mut editor = Editor::default();
+        editor.registers.use_in_memory_clipboard_for_tests();
+        editor.replace_buffer_content("abc def\n");
+        feed(&mut editor, open);
+        feed(&mut editor, "<C-c>x");
+        assert!(!editor.should_quit, "{open}");
+        assert_eq!(editor.buffer().content(), expected, "{open}");
+        assert_eq!(editor.mode, mode, "{open}");
+    }
+}
+
+#[test]
+fn altgr_chord_still_extends_a_leader_sequence() {
+    // AltGr chars arrive as CONTROL|ALT on some terminals; like Insert mode,
+    // they keep typing their character instead of cancelling the sequence.
+    let mut editor = Editor::default();
+    editor.replace_buffer_content("abc def\n");
+    editor.settings.keymap.leader_mappings = vec![LeaderMapping {
+        key: "@".into(),
+        action: ":qa!<CR>".into(),
+        desc: None,
+    }];
+    editor.keymap = KeymapLookup::from_settings(&editor.settings.keymap).0;
+    feed(&mut editor, "<Space>");
+    handle_key(
+        &mut editor,
+        KeyEvent::new(
+            KeyCode::Char('@'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ),
+    );
+    assert!(editor.should_quit);
 }

@@ -667,7 +667,7 @@ Split and navigate between windows.
 
 The leader key is `Space` by default. Press `Space` followed by these keys:
 Press `Space` by itself to show available continuations, keep typing to narrow
-the popup, or press `Esc` to cancel.
+the popup, or press `Esc` or `Ctrl+c` to cancel.
 
 ### Files & Navigation (Telescope-like)
 
