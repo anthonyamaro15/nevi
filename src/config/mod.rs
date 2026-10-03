@@ -921,26 +921,20 @@ pub enum LspPreset {
 
 impl LspPreset {
     /// Get the command and args for this preset
-    pub fn resolve(&self) -> Option<(String, Vec<String>)> {
+    pub fn resolve(&self) -> Option<(&'static str, &'static [&'static str])> {
+        const STDIO: &[&str] = &["--stdio"];
+        const NONE: &[&str] = &[];
+
         match self {
-            LspPreset::Typescript => Some((
-                "typescript-language-server".to_string(),
-                vec!["--stdio".to_string()],
-            )),
-            LspPreset::Biome => Some(("biome".to_string(), vec!["lsp-proxy".to_string()])),
-            LspPreset::Deno => Some(("deno".to_string(), vec!["lsp".to_string()])),
-            LspPreset::Eslint => Some((
-                "vscode-eslint-language-server".to_string(),
-                vec!["--stdio".to_string()],
-            )),
-            LspPreset::RustAnalyzer => Some(("rust-analyzer".to_string(), Vec::new())),
-            LspPreset::Pyright => Some((
-                "pyright-langserver".to_string(),
-                vec!["--stdio".to_string()],
-            )),
-            LspPreset::Pylsp => Some(("pylsp".to_string(), Vec::new())),
-            LspPreset::Swift => Some(("sourcekit-lsp".to_string(), Vec::new())),
-            LspPreset::Custom => None, // Use explicit command/args
+            Self::Biome => Some(("biome", &["lsp-proxy"])),
+            Self::Deno => Some(("deno", &["lsp"])),
+            Self::Eslint => Some(("vscode-eslint-language-server", STDIO)),
+            Self::Pylsp => Some(("pylsp", NONE)),
+            Self::Pyright => Some(("pyright-langserver", STDIO)),
+            Self::RustAnalyzer => Some(("rust-analyzer", NONE)),
+            Self::Swift => Some(("sourcekit-lsp", NONE)),
+            Self::Typescript => Some(("typescript-language-server", STDIO)),
+            Self::Custom => None,
         }
     }
 }
@@ -978,21 +972,12 @@ impl LspServerConfig {
         if !self.command.is_empty() {
             return &self.command;
         }
-        // Fall back to preset default (return static strings for known presets)
-        if let Some(preset) = &self.preset {
-            return match preset {
-                LspPreset::Typescript => "typescript-language-server",
-                LspPreset::Biome => "biome",
-                LspPreset::Deno => "deno",
-                LspPreset::Eslint => "vscode-eslint-language-server",
-                LspPreset::RustAnalyzer => "rust-analyzer",
-                LspPreset::Pyright => "pyright-langserver",
-                LspPreset::Pylsp => "pylsp",
-                LspPreset::Swift => "sourcekit-lsp",
-                LspPreset::Custom => &self.command,
-            };
-        }
-        &self.command
+
+        self.preset
+            .as_ref()
+            .and_then(|p| p.resolve())
+            .map(|(cmd, _)| cmd)
+            .unwrap_or(&self.command)
     }
 
     /// Get the effective args for this server
@@ -1002,11 +987,9 @@ impl LspServerConfig {
         if !self.command.is_empty() {
             return self.args.clone();
         }
-        // Fall back to preset defaults
-        if let Some(preset) = &self.preset {
-            if let Some((_, args)) = preset.resolve() {
-                return args;
-            }
+
+        if let Some((_, args)) = self.preset.as_ref().and_then(|p| p.resolve()) {
+            return args.iter().map(|s| s.to_string()).collect();
         }
         self.args.clone()
     }
