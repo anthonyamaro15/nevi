@@ -99,12 +99,10 @@ fn route_event(editor: &mut Editor, event: MouseEvent) -> bool {
             MouseEventKind::Down(MouseButton::Left) => {
                 let list_height = editor.text_rows().saturating_sub(1);
                 let bufferline_offset = editor.settings.editor.bufferline as usize;
-                return editor
-                    .explorer
-                    .select_visible_row(
-                        (event.row as usize).saturating_sub(bufferline_offset),
-                        list_height,
-                    );
+                return editor.explorer.select_visible_row(
+                    (event.row as usize).saturating_sub(bufferline_offset),
+                    list_height,
+                );
             }
             _ => return false,
         }
@@ -391,6 +389,16 @@ mod tests {
         handle_mouse_event(
             &mut editor,
             mouse(MouseEventKind::Down(MouseButton::Left), 1, 2),
+        );
+        assert_eq!(editor.explorer.selected, 1);
+
+        editor.settings.editor.bufferline = true;
+        editor.update_pane_rects();
+        editor.explorer.selected = 0;
+        // The bufferline shifts the header to row 1 and the second entry to row 3.
+        handle_mouse_event(
+            &mut editor,
+            mouse(MouseEventKind::Down(MouseButton::Left), 1, 3),
         );
         assert_eq!(editor.explorer.selected, 1);
 

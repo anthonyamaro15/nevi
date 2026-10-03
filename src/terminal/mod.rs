@@ -2978,7 +2978,7 @@ impl Terminal {
         // Render search input if in search mode
         if editor.explorer.is_searching {
             let prompt_bg = explorer_bg;
-            let prompt_y = height.saturating_sub(1) as u16;
+            let prompt_y = height.saturating_sub(1) as u16 + bufferline_offset;
 
             execute!(self.stdout, cursor::MoveTo(0, prompt_y))?;
             execute!(self.stdout, SetBackgroundColor(prompt_bg))?;
@@ -11608,6 +11608,45 @@ mod tests {
             screen_row_text(&rendered, 1).contains("Explorer"),
             "explorer header starts one row below the bufferline"
         );
+    }
+
+    #[test]
+    fn explorer_prompts_align_with_cursor_with_and_without_bufferline() {
+        for bufferline in [false, true] {
+            for search in [false, true] {
+                let mut editor = explorer_test_editor();
+                editor.settings.editor.bufferline = bufferline;
+                editor.set_size(80, 24);
+                editor.mode = Mode::Explorer;
+                if search {
+                    editor.explorer.start_search();
+                    editor.explorer.search_buffer = "a".to_string();
+                    editor.explorer.search_cursor = 1;
+                } else {
+                    editor.explorer.start_rename();
+                }
+
+                let output = SharedOutput::default();
+                let mut terminal = Terminal::new_for_test(Box::new(output.clone()));
+                terminal.render_explorer(&editor).expect("render explorer");
+                terminal.position_cursor(&editor).expect("position cursor");
+                let rendered = output.into_string();
+                let (row, col) = final_cursor_cell(&rendered);
+                let prompt = if search {
+                    "/a"
+                } else {
+                    editor.explorer.action_prompt()
+                };
+                assert!(screen_row_text(&rendered, row).starts_with(prompt));
+                assert_eq!(row, editor.text_rows() - 1 + usize::from(bufferline));
+                let expected_col = if search {
+                    2
+                } else {
+                    prompt.len() + editor.explorer.input_cursor
+                };
+                assert_eq!(col, expected_col);
+            }
+        }
     }
 
     #[test]
