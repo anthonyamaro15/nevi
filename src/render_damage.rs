@@ -5,6 +5,7 @@ use std::ops::Range;
 pub struct RenderDamage {
     full: bool,
     statusline: bool,
+    bufferline: bool,
     command_line: bool,
     editor_rows: BTreeSet<usize>,
 }
@@ -14,6 +15,7 @@ impl RenderDamage {
         Self {
             full: true,
             statusline: false,
+            bufferline: false,
             command_line: false,
             editor_rows: BTreeSet::new(),
         }
@@ -23,13 +25,18 @@ impl RenderDamage {
         Self {
             full: false,
             statusline: false,
+            bufferline: false,
             command_line: false,
             editor_rows: BTreeSet::new(),
         }
     }
 
     pub fn is_clean(&self) -> bool {
-        !self.full && !self.statusline && !self.command_line && self.editor_rows.is_empty()
+        !self.full
+            && !self.statusline
+            && !self.command_line
+            && self.editor_rows.is_empty()
+            && !self.bufferline
     }
 
     pub fn requires_full_render(&self) -> bool {
@@ -38,6 +45,10 @@ impl RenderDamage {
 
     pub fn statusline(&self) -> bool {
         self.statusline
+    }
+
+    pub fn bufferline(&self) -> bool {
+        self.bufferline
     }
 
     pub fn command_line(&self) -> bool {
@@ -52,12 +63,19 @@ impl RenderDamage {
         self.full = true;
         self.statusline = false;
         self.command_line = false;
+        self.bufferline = false;
         self.editor_rows.clear();
     }
 
     pub fn mark_statusline(&mut self) {
         if !self.full {
             self.statusline = true;
+        }
+    }
+
+    pub fn mark_bufferline(&mut self) {
+        if !self.full {
+            self.bufferline = true;
         }
     }
 
@@ -103,11 +121,13 @@ mod tests {
 
         damage.mark_statusline();
         damage.mark_command_line();
+        damage.mark_bufferline();
         damage.mark_editor_row(3);
         damage.mark_editor_rows(5..8);
 
         assert!(!damage.requires_full_render());
         assert!(damage.statusline());
+        assert!(damage.bufferline());
         assert!(damage.command_line());
         assert_eq!(damage.dirty_editor_rows(), vec![3, 5, 6, 7]);
 
@@ -115,6 +135,7 @@ mod tests {
 
         assert!(damage.requires_full_render());
         assert!(!damage.statusline());
+        assert!(!damage.bufferline());
         assert!(!damage.command_line());
         assert!(damage.dirty_editor_rows().is_empty());
 

@@ -1,3 +1,4 @@
+pub mod bufferline;
 pub(crate) mod command_resolver;
 pub mod commands;
 pub mod config;
