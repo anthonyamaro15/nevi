@@ -22,6 +22,10 @@ const NOT_IN_CI: &[(&str, &str)] = &[
         "fuzz_minimize",
         "developer tool driven by NEVI_FUZZ_MINIMIZE, not a pass/fail check",
     ),
+    (
+        "live_grep_bench",
+        "prints live grep timings on a generated 450 MB repo, not a pass/fail check",
+    ),
 ];
 
 fn manifest_path(relative: &str) -> PathBuf {

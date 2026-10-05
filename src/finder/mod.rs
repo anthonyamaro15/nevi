@@ -1,5 +1,7 @@
 mod file_picker;
 mod grep;
+#[cfg(test)]
+mod grep_bench;
 mod keybinds;
 mod matcher;
 
@@ -11,6 +13,8 @@ pub use matcher::FuzzyMatcher;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 
@@ -260,6 +264,10 @@ pub struct FuzzyFinder {
     grep_search_generation: u64,
     /// Receiver for the currently running async grep search
     grep_search_receiver: Option<Receiver<GrepSearchMessage>>,
+    /// Stop flag of the running grep search. Set when a newer search replaces
+    /// it or the picker closes; the search threads check it between files, on
+    /// matches, and while reading.
+    grep_search_cancel: Option<Arc<AtomicBool>>,
     /// Whether the async file walk is still streaming results
     pub file_list_running: bool,
     /// Monotonic generation used to discard stale file walk results
@@ -300,6 +308,7 @@ impl FuzzyFinder {
             grep_search_running: false,
             grep_search_generation: 0,
             grep_search_receiver: None,
+            grep_search_cancel: None,
             file_list_running: false,
             file_list_generation: 0,
             file_list_receiver: None,
@@ -335,6 +344,7 @@ impl FuzzyFinder {
             grep_search_running: false,
             grep_search_generation: 0,
             grep_search_receiver: None,
+            grep_search_cancel: None,
             file_list_running: false,
             file_list_generation: 0,
             file_list_receiver: None,
@@ -884,10 +894,20 @@ impl FuzzyFinder {
     }
 
     pub fn cancel_grep_search(&mut self) {
+        self.stop_grep_search();
         self.grep_search_pending = false;
         self.grep_search_running = false;
         self.grep_search_receiver = None;
         self.grep_search_generation = self.grep_search_generation.wrapping_add(1);
+    }
+
+    /// Tell the running search, if any, to stop. Dropping its receiver is not
+    /// enough: a search only noticed that when it handed over results, so one
+    /// with few hits scanned the whole repo after it was replaced or closed.
+    fn stop_grep_search(&mut self) {
+        if let Some(cancel) = self.grep_search_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Recompute match highlight indices for items[start..].
@@ -1023,6 +1043,10 @@ impl FuzzyFinder {
         self.grep_search_pending = false;
 
         if self.query.len() >= 2 {
+            // A newer query replaces the running search.
+            self.stop_grep_search();
+            let cancel = Arc::new(AtomicBool::new(false));
+            self.grep_search_cancel = Some(Arc::clone(&cancel));
             let cwd = self.cwd.clone();
             let query = self.query.clone();
             let searcher = self.grep_searcher.clone();
@@ -1043,7 +1067,7 @@ impl FuzzyFinder {
                 let finished_query = query.clone();
                 let tx_finished = tx.clone();
 
-                searcher.search_stream(&cwd, &query, GREP_RESULT_BATCH_SIZE, |items| {
+                searcher.search_stream(&cwd, &query, GREP_RESULT_BATCH_SIZE, &cancel, |items| {
                     tx.send(GrepSearchMessage::Batch {
                         generation,
                         query: query.clone(),
@@ -1108,7 +1132,9 @@ impl FuzzyFinder {
                     changed = true;
                 }
                 Ok(GrepSearchMessage::Finished { generation, query }) => {
+                    // The receiver is this search's own, so its flag goes too.
                     self.grep_search_receiver = None;
+                    self.grep_search_cancel = None;
 
                     if self.mode == FinderMode::Grep
                         && generation == self.grep_search_generation
@@ -1123,6 +1149,7 @@ impl FuzzyFinder {
                 Err(TryRecvError::Empty) => return changed,
                 Err(TryRecvError::Disconnected) => {
                     self.grep_search_receiver = None;
+                    self.grep_search_cancel = None;
                     self.grep_search_running = false;
                     return changed;
                 }
@@ -1408,6 +1435,7 @@ mod tests {
     };
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::Ordering;
     use std::sync::mpsc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -1682,6 +1710,58 @@ mod tests {
             .expect("preview should include deep grep match");
         assert_eq!(finder.preview_line_offset + match_idx + 1, 220);
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_newer_search_or_closing_the_picker_stops_the_running_search() {
+        let root = unique_temp_dir("finder_grep_cancel");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("a.txt"), "needle\n").unwrap();
+
+        let mut finder = FuzzyFinder::new();
+        finder.open_grep_with_query(&root, "needle");
+        let first = finder.grep_search_cancel.clone().expect("search started");
+
+        finder.query = "needles".to_string();
+        finder.grep_search_pending = true;
+        finder.execute_grep_search();
+        assert!(
+            first.load(Ordering::Relaxed),
+            "a newer search stops the old one"
+        );
+
+        let second = finder.grep_search_cancel.clone().expect("search started");
+        finder.cancel_background_work();
+        assert!(
+            second.load(Ordering::Relaxed),
+            "closing the picker stops the search"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_finished_search_lets_go_of_its_stop_flag() {
+        // The flag stands for the running search; once it finishes on its own
+        // there is nothing left to stop.
+        let root = unique_temp_dir("finder_grep_flag_release");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("a.txt"), "needle\n").unwrap();
+
+        let mut finder = FuzzyFinder::new();
+        finder.open_grep_with_query(&root, "needle");
+        assert!(finder.grep_search_cancel.is_some(), "search started");
+        for _ in 0..500 {
+            finder.poll_grep_search();
+            if !finder.grep_search_running {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(!finder.grep_search_running, "search finished");
+        assert!(finder.grep_search_cancel.is_none());
         let _ = fs::remove_dir_all(root);
     }
 
