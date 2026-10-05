@@ -14,6 +14,9 @@ A fast, Neovim-inspired terminal editor written in Rust.
 **372 keybinds implemented**, 206 of them verified against real Neovim on every
 CI run. See the generated [parity scoreboard](PARITY.md).
 
+Speed is tracked release to release with benchmarks in the repo. See the
+[performance table](PERF.md).
+
 - [Why Nevi](#why-nevi)
 - [Features](#features)
 - [Install](#install)

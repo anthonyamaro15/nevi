@@ -250,6 +250,27 @@ fn format_duration_us(us: u128) -> String {
     }
 }
 
+/// Prints one PERF.md row as `perf | <row> | <value>`. Every bench behind
+/// the page reports this way, so one command collects a whole column.
+#[cfg(test)]
+pub(crate) fn print_perf_row(row: &str, value: Duration) {
+    println!("perf | {row} | {}", perf_value(value));
+}
+
+#[cfg(test)]
+fn perf_value(value: Duration) -> String {
+    let ms = value.as_secs_f64() * 1000.0;
+    if ms >= 1000.0 {
+        format!("{:.2} s", ms / 1000.0)
+    } else if ms >= 10.0 {
+        format!("{ms:.0} ms")
+    } else if ms >= 1.0 {
+        format!("{ms:.1} ms")
+    } else {
+        format!("{:.0} µs", ms * 1000.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{FlightRecorder, PerfStats};
@@ -352,5 +373,32 @@ mod tests {
 
         assert!(report.contains("# Nevi Flight Recorder"));
         assert!(report.contains("No timing events recorded yet."));
+    }
+
+    #[test]
+    fn perf_values_read_like_the_page() {
+        use super::perf_value;
+        assert_eq!(perf_value(Duration::from_micros(250)), "250 µs");
+        assert_eq!(perf_value(Duration::from_micros(5_400)), "5.4 ms");
+        assert_eq!(perf_value(Duration::from_millis(73)), "73 ms");
+        assert_eq!(perf_value(Duration::from_millis(1_704)), "1.70 s");
+    }
+
+    /// A release bumps the version in Cargo.toml; this keeps it from shipping
+    /// without a measured column in PERF.md (its "How to update" section says
+    /// how), even when nothing speed related changed.
+    #[test]
+    fn perf_page_has_a_column_for_this_version() {
+        let page = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/PERF.md"))
+            .expect("PERF.md at the repository root");
+        let header = page
+            .lines()
+            .find(|line| line.starts_with("| Scenario |"))
+            .expect("a table whose header row starts with `| Scenario |`");
+        let version = env!("CARGO_PKG_VERSION");
+        assert!(
+            header.split('|').any(|cell| cell.trim() == version),
+            "PERF.md has no column for {version}: run the benches and add it"
+        );
     }
 }
