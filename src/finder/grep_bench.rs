@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 /// Planted in one Swift file in 2,400: a handful of hits, so the search has
 /// to scan the whole repo.
 const SPARSE: &str = "termsOfUseConsentBanner";
-/// In every 8th feature's translations: 1,500 hits, capped at 1,000.
+/// In every 8th feature's translations: 1,680 hits, capped at 1,000.
 const MEDIUM: &str = "account_registration_paragraph_terms";
 /// Matches almost every file.
 const DENSE: &str = "te";
@@ -414,20 +414,27 @@ fn live_grep_budget() {
             .map(|_| isolated(&small, NO_MATCH).finished)
             .collect(),
     );
-    let mut finder = grep_finder(&small);
-    let mut last_started = Instant::now();
-    for i in 0..8 {
-        if i > 0 {
-            poll_for(
-                &mut finder,
-                (single / 4).saturating_sub(last_started.elapsed()),
-            );
-        }
-        last_started = start_search(&mut finder, &format!("{NO_MATCH}{i}"));
-    }
-    let last = wait_for_results(&mut finder, last_started).finished;
+    // Best of three: one search can be slow for reasons that have nothing to
+    // do with us, while searches that pile up are slow every time.
+    let last = (0..3)
+        .map(|_| {
+            let mut finder = grep_finder(&small);
+            let mut last_started = Instant::now();
+            for i in 0..8 {
+                if i > 0 {
+                    poll_for(
+                        &mut finder,
+                        (single / 4).saturating_sub(last_started.elapsed()),
+                    );
+                }
+                last_started = start_search(&mut finder, &format!("{NO_MATCH}{i}"));
+            }
+            wait_for_results(&mut finder, last_started).finished
+        })
+        .min()
+        .unwrap();
     println!(
-        "live_grep_budget 3: last of 8 replaced searches took {} (one search {})",
+        "live_grep_budget 3: last of 8 replaced searches took {} at best of 3 (one search {})",
         ms(last),
         ms(single)
     );
