@@ -25,6 +25,7 @@
 
 use super::{FuzzyFinder, GrepSearcher};
 use crate::config::FinderSettings;
+use crate::perf::print_perf_row;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -251,9 +252,12 @@ fn report(label: &str, runs: &[Run]) {
 #[ignore = "measuring tool: NEVI_GREP_BENCH=1, release, --nocapture; see the module docs"]
 fn live_grep_bench() {
     // A plain `cargo test -- --ignored` shouldn't write 450 MB into the home
-    // directory and run for minutes.
-    if std::env::var_os("NEVI_GREP_BENCH").is_none() {
-        println!("live_grep_bench skipped: set NEVI_GREP_BENCH=1 to run it");
+    // directory and run for minutes. NEVI_PERF_BENCH=1 runs every bench
+    // behind PERF.md, this one included.
+    if std::env::var_os("NEVI_PERF_BENCH").is_none()
+        && std::env::var_os("NEVI_GREP_BENCH").is_none()
+    {
+        println!("live_grep_bench skipped: set NEVI_PERF_BENCH=1 to run it");
         return;
     }
     let runs = std::env::var("NEVI_GREP_BENCH_RUNS")
@@ -274,6 +278,8 @@ fn live_grep_bench() {
     );
     warm_up(&root, baseline);
 
+    // The PERF.md rows, printed together at the end.
+    let mut page_rows = Vec::new();
     for query in [DENSE, MEDIUM, SPARSE, NO_MATCH] {
         let samples: Vec<Run> = (0..runs)
             .map(|_| {
@@ -283,6 +289,17 @@ fn live_grep_bench() {
             })
             .collect();
         report(&format!("isolated  {query}"), &samples);
+        if query == SPARSE {
+            let first = samples.iter().filter_map(|run| run.first_visible);
+            page_rows.push((
+                "Live grep, rare query: first result",
+                median(first.collect()),
+            ));
+            page_rows.push((
+                "Live grep, rare query: all results",
+                median(samples.iter().map(|run| run.finished).collect()),
+            ));
+        }
     }
 
     for query in [SPARSE, NO_MATCH] {
@@ -299,6 +316,12 @@ fn live_grep_bench() {
             &format!("typing    {query} ({searches} searches)"),
             &samples,
         );
+        if query == SPARSE {
+            page_rows.push((
+                "Live grep, typing an identifier: final results",
+                median(samples.iter().map(|run| run.finished).collect()),
+            ));
+        }
         if !leftovers.is_empty() {
             println!(
                 "          old searches still running after the final results: {}",
@@ -323,6 +346,45 @@ fn live_grep_bench() {
             ms(max),
         );
     }
+
+    for (row, value) in page_rows {
+        print_perf_row(row, value);
+    }
+}
+
+/// PERF.md rows for opening the file picker on the bench repo: how long the
+/// call blocks the editor, and when the whole list is in. The default
+/// settings stop the walk at 10,000 files.
+#[test]
+#[ignore = "measuring tool for PERF.md: NEVI_PERF_BENCH=1, release, --nocapture"]
+fn file_picker_bench() {
+    if std::env::var_os("NEVI_PERF_BENCH").is_none() {
+        println!("file_picker_bench skipped: set NEVI_PERF_BENCH=1 to run it");
+        return;
+    }
+    let baseline = thread_count();
+    let root = corpus_root();
+    warm_up(&root, baseline);
+
+    let mut blocked = Vec::new();
+    let mut ready = Vec::new();
+    let mut files = 0;
+    for _ in 0..5 {
+        let mut finder = FuzzyFinder::from_settings(&FinderSettings::default());
+        let started = Instant::now();
+        finder.open_files(&root);
+        blocked.push(started.elapsed());
+        while finder.file_list_running {
+            finder.poll_file_list();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        ready.push(started.elapsed());
+        files = finder.items.len();
+        wait_for_idle(baseline);
+    }
+    println!("file picker bench: {files} files listed");
+    print_perf_row("File picker: editor frozen while it opens", median(blocked));
+    print_perf_row("File picker: full list ready", median(ready));
 }
 
 /// Planted once in each of the budget repo's 30 folders: fewer hits than one

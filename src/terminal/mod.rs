@@ -12457,6 +12457,11 @@ mod tests {
 
         let mut samples: Vec<Duration> = (0..iterations).map(|_| measure_render(editor)).collect();
         samples.sort();
+        // PERF.md reports the median frame, from a release build.
+        crate::perf::print_perf_row(
+            &format!("Drawing: one frame, {name}"),
+            samples[samples.len() / 2],
+        );
         let p95_idx = ((samples.len() - 1) * 95) / 100;
         let p95 = samples[p95_idx];
         let max = *samples.last().expect("samples");

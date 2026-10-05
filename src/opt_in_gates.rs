@@ -26,6 +26,14 @@ const NOT_IN_CI: &[(&str, &str)] = &[
         "live_grep_bench",
         "prints live grep timings on a generated 450 MB repo, not a pass/fail check",
     ),
+    (
+        "file_picker_bench",
+        "prints file picker timings for PERF.md on the same repo, not a pass/fail check",
+    ),
+    (
+        "large_file_edit_bench",
+        "prints big-file editing timings for PERF.md, not a pass/fail check",
+    ),
 ];
 
 fn manifest_path(relative: &str) -> PathBuf {

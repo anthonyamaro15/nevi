@@ -12879,6 +12879,7 @@ mod tests {
     mod editing_operators;
     mod file_lifecycle;
     mod insert_entry;
+    mod large_file_edit;
     mod linewise_operators;
     mod macro_lens;
     mod open_line;
