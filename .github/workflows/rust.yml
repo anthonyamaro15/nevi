@@ -63,6 +63,11 @@ jobs:
       - name: Run perf budget guards
         run: cargo test -- --ignored --nocapture grep_index_budget finder_filter_budget method_motion_collect_budget
 
+      # Its own step: it times searches against each other, so it shouldn't
+      # share the machine with other tests.
+      - name: Run live grep budget guard
+        run: cargo test live_grep_budget -- --ignored --nocapture
+
       - name: Install pinned Neovim for parity smoke test
         uses: rhysd/action-setup-vim@v1
         with:

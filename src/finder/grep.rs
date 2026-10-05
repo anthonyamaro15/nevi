@@ -1,12 +1,21 @@
 use grep_regex::RegexMatcherBuilder;
-use grep_searcher::{SearcherBuilder, sinks::UTF8};
+use grep_searcher::{BinaryDetection, SearcherBuilder, sinks::Lossy};
 use ignore::{WalkBuilder, WalkState};
+use std::fs::File;
+use std::io::{self, Read};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::time::{Duration, Instant};
 
 use super::FinderItem;
+
+/// How long a found result can wait before it is handed over. Without a time
+/// limit, a search with fewer hits than a batch showed nothing until the whole
+/// repo was scanned. Matches the main loop's background redraw interval, so
+/// handing over more often would not reach the screen any sooner.
+const FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Live grep searcher using ripgrep's grep crate for fast searching
 #[derive(Clone)]
@@ -143,7 +152,8 @@ impl GrepSearcher {
     /// Search for a pattern in all files under root using ripgrep's grep crate
     pub fn search(&self, root: &Path, pattern: &str) -> Vec<FinderItem> {
         let mut results = Vec::new();
-        self.search_stream(root, pattern, usize::MAX, |batch| {
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.search_stream(root, pattern, usize::MAX, &cancel, |batch| {
             results.extend(batch);
             true
         });
@@ -152,10 +162,17 @@ impl GrepSearcher {
 
     /// Search for a pattern and emit result batches while walking files.
     /// Files are walked and searched by parallel workers (ripgrep style);
-    /// results stream unordered across files. Returning false from on_batch
-    /// stops the search early.
-    pub fn search_stream<F>(&self, root: &Path, pattern: &str, batch_size: usize, mut on_batch: F)
-    where
+    /// results stream unordered across files. Setting `cancel`, or returning
+    /// false from on_batch, stops the search early. The second also sets
+    /// `cancel`, so give every search a fresh flag.
+    pub fn search_stream<F>(
+        &self,
+        root: &Path,
+        pattern: &str,
+        batch_size: usize,
+        cancel: &Arc<AtomicBool>,
+        on_batch: F,
+    ) where
         F: FnMut(Vec<FinderItem>) -> bool,
     {
         if pattern.is_empty() {
@@ -193,7 +210,6 @@ impl GrepSearcher {
 
         let (tx, rx) = mpsc::channel::<FinderItem>();
         let result_count = Arc::new(AtomicUsize::new(0));
-        let stop_flag = Arc::new(AtomicBool::new(false));
         let max_results = self.max_results;
         let walk_root = root.to_path_buf();
         let walk_pattern = pattern.to_string();
@@ -201,11 +217,17 @@ impl GrepSearcher {
         // run() blocks until the walk finishes, so it gets its own thread
         // while this one batches results in arrival order.
         let walk_count = Arc::clone(&result_count);
-        let walk_stop = Arc::clone(&stop_flag);
+        let walk_stop = Arc::clone(cancel);
         let walk_handle = std::thread::spawn(move || {
             walker.run(|| {
                 // One searcher per worker thread; the matcher is shared.
-                let mut searcher = SearcherBuilder::new().line_number(true).build();
+                let mut searcher = SearcherBuilder::new()
+                    .line_number(true)
+                    // Like ripgrep: stop reading a file at its first NUL byte,
+                    // so binaries without a known extension end early instead
+                    // of producing garbage rows.
+                    .binary_detection(BinaryDetection::quit(b'\x00'))
+                    .build();
                 let matcher = matcher.clone();
                 let tx = tx.clone();
                 let count = Arc::clone(&walk_count);
@@ -235,11 +257,20 @@ impl GrepSearcher {
                         .to_string();
                     let path_buf = path.to_path_buf();
 
-                    // Ignore per-file errors (binary content, permissions).
-                    let _ = searcher.search_path(
+                    let Ok(file) = File::open(path) else {
+                        return WalkState::Continue;
+                    };
+                    let reader = StopReader {
+                        inner: file,
+                        stop: &stop,
+                    };
+                    // Ignore per-file errors (permissions, a cancelled read).
+                    // Lossy keeps going past a matching line that isn't valid
+                    // UTF-8 (it shows U+FFFD) instead of ending the file there.
+                    let _ = searcher.search_reader(
                         &matcher,
-                        path,
-                        UTF8(|line_num, line| {
+                        reader,
+                        Lossy(|line_num, line| {
                             if stop.load(Ordering::Relaxed)
                                 || count.fetch_add(1, Ordering::Relaxed) >= max_results
                             {
@@ -272,30 +303,11 @@ impl GrepSearcher {
             // batching loop below.
         });
 
-        let batch_size = batch_size.max(1);
-        let mut batch = Vec::new();
-        let mut emitted = 0usize;
-        let mut stopped = false;
-        while let Ok(item) = rx.recv() {
-            if emitted >= max_results {
-                continue; // drain so workers can quit
-            }
-            batch.push(item);
-            emitted += 1;
-            if batch.len() >= batch_size {
-                if !on_batch(std::mem::take(&mut batch)) {
-                    stop_flag.store(true, Ordering::Relaxed);
-                    stopped = true;
-                    break;
-                }
-            }
+        if !forward_batches(rx, batch_size, max_results, on_batch) {
+            cancel.store(true, Ordering::Relaxed);
         }
-        if !batch.is_empty() && !stopped {
-            let _ = on_batch(batch);
-        }
-        // Dropping the receiver makes any pending worker send fail, which
-        // stops their file scans; then wait for the walk to wind down.
-        drop(rx);
+        // forward_batches dropped the receiver, so pending worker sends fail
+        // too; wait for the walk to wind down.
         let _ = walk_handle.join();
     }
 
@@ -319,6 +331,67 @@ impl Default for GrepSearcher {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Reads a file but fails once the search is cancelled, so a search stops
+/// partway through one huge file instead of reading to its end. grep-searcher
+/// reads 64 KB at a time, so that is how often this checks.
+struct StopReader<'a, R> {
+    inner: R,
+    stop: &'a AtomicBool,
+}
+
+impl<R: Read> Read for StopReader<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.stop.load(Ordering::Relaxed) {
+            // Not ErrorKind::Interrupted: encoding_rs_io retries those.
+            return Err(io::Error::other("search cancelled"));
+        }
+        self.inner.read(buf)
+    }
+}
+
+/// Hand results to `on_batch` in batches of `batch_size`, or whatever has
+/// arrived once FLUSH_INTERVAL has passed since the last hand-over, so rare
+/// hits show up while the scan goes on. The first result goes out right away.
+/// Returns false when `on_batch` asked to stop.
+fn forward_batches<F>(
+    rx: Receiver<FinderItem>,
+    batch_size: usize,
+    max_results: usize,
+    mut on_batch: F,
+) -> bool
+where
+    F: FnMut(Vec<FinderItem>) -> bool,
+{
+    let batch_size = batch_size.max(1);
+    let mut batch = Vec::new();
+    let mut emitted = 0usize;
+    let mut next_flush = Instant::now();
+    loop {
+        let received = if batch.is_empty() {
+            // Nothing is waiting to go out, so there is no deadline.
+            rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        } else {
+            rx.recv_timeout(next_flush.saturating_duration_since(Instant::now()))
+        };
+        match received {
+            Ok(item) if emitted < max_results => {
+                batch.push(item);
+                emitted += 1;
+            }
+            // Past the cap, keep draining so the workers can quit.
+            Ok(_) | Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        if !batch.is_empty() && (batch.len() >= batch_size || Instant::now() >= next_flush) {
+            if !on_batch(std::mem::take(&mut batch)) {
+                return false;
+            }
+            next_flush = Instant::now() + FLUSH_INTERVAL;
+        }
+    }
+    batch.is_empty() || on_batch(batch)
 }
 
 fn find_case_insensitive_char_index(line: &str, pattern: &str) -> usize {
@@ -346,10 +419,16 @@ fn find_case_insensitive_char_index(line: &str, pattern: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::GrepSearcher;
+    use super::{FinderItem, GrepSearcher, StopReader, forward_batches};
+    use grep_regex::RegexMatcherBuilder;
+    use grep_searcher::{SearcherBuilder, sinks::Lossy};
     use std::fs;
+    use std::io::{self, Read};
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -406,14 +485,21 @@ mod tests {
         let searcher = GrepSearcher::new().with_max_results(10);
         let mut batch_lengths = Vec::new();
         let mut total = 0;
-        searcher.search_stream(&root, "needle", 2, |batch| {
+        let cancel = Arc::new(AtomicBool::new(false));
+        searcher.search_stream(&root, "needle", 2, &cancel, |batch| {
             total += batch.len();
             batch_lengths.push(batch.len());
             true
         });
 
         assert_eq!(total, 5);
-        assert_eq!(batch_lengths, vec![2, 2, 1]);
+        // Batches still cap at the requested size; the first hit now goes out
+        // on its own instead of waiting for a full batch.
+        assert!(
+            batch_lengths.iter().all(|&len| len <= 2),
+            "{batch_lengths:?}"
+        );
+        assert!(batch_lengths.len() >= 3, "{batch_lengths:?}");
 
         let _ = fs::remove_dir_all(root);
     }
@@ -458,6 +544,144 @@ mod tests {
 
         assert_eq!(results.len(), 10);
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn hit(name: &str) -> FinderItem {
+        FinderItem::new(format!("{name}:1: needle"), PathBuf::from(name))
+    }
+
+    #[test]
+    fn hits_are_handed_over_while_the_scan_is_still_running() {
+        let (tx, rx) = mpsc::channel();
+        let (batches_tx, batches_rx) = mpsc::channel();
+        let forwarder = std::thread::spawn(move || {
+            forward_batches(rx, 50, 1000, |batch| batches_tx.send(batch.len()).is_ok())
+        });
+
+        // The first hit goes out right away, even though tx (the scan) is alive.
+        tx.send(hit("a.rs")).unwrap();
+        assert_eq!(batches_rx.recv_timeout(Duration::from_secs(5)), Ok(1));
+
+        // A later hit waits at most FLUSH_INTERVAL for company, not for the end.
+        tx.send(hit("b.rs")).unwrap();
+        assert_eq!(batches_rx.recv_timeout(Duration::from_secs(5)), Ok(1));
+
+        drop(tx);
+        assert!(forwarder.join().unwrap());
+    }
+
+    #[test]
+    fn cancelled_search_stops_partway_through_a_file() {
+        // Stands in for a multi-GB file with no matches: it trips the stop flag
+        // on its third read and would go on for 64 MB more without the check.
+        struct Endless<'a> {
+            reads: usize,
+            stop: &'a AtomicBool,
+        }
+        impl Read for Endless<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                self.reads += 1;
+                if self.reads == 3 {
+                    self.stop.store(true, Ordering::Relaxed);
+                }
+                if self.reads > 1000 {
+                    return Ok(0);
+                }
+                for chunk in buf.chunks_mut(4) {
+                    chunk.copy_from_slice(&b"abc\n"[..chunk.len()]);
+                }
+                Ok(buf.len())
+            }
+        }
+
+        let stop = AtomicBool::new(false);
+        let mut endless = Endless {
+            reads: 0,
+            stop: &stop,
+        };
+        let matcher = RegexMatcherBuilder::new().build("needle").unwrap();
+        let result = SearcherBuilder::new().build().search_reader(
+            &matcher,
+            StopReader {
+                inner: &mut endless,
+                stop: &stop,
+            },
+            Lossy(|_, _| Ok(true)),
+        );
+
+        assert!(result.is_err(), "the read after the flag fails the search");
+        assert!(endless.reads < 10, "stopped after {} reads", endless.reads);
+    }
+
+    #[test]
+    fn cancelled_search_reports_nothing() {
+        let root = unique_temp_dir("grep_cancelled");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("a.txt"), "needle\n").unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(true));
+        let mut batches = 0;
+        GrepSearcher::new().search_stream(&root, "needle", 50, &cancel, |_| {
+            batches += 1;
+            true
+        });
+
+        assert_eq!(batches, 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn files_with_a_nul_byte_are_skipped_like_ripgrep() {
+        let root = unique_temp_dir("grep_binary");
+        fs::create_dir_all(&root).unwrap();
+        // Extension-less, like a vendored framework binary: NUL up front.
+        fs::write(root.join("Framework"), b"\x00\x01binary needle\n").unwrap();
+        // A stray NUL 1 MB into a text file: hits in earlier 64 KB reads still
+        // count, nothing from the read with the NUL onwards does.
+        let mut dump = b"needle before\n".to_vec();
+        dump.extend(b"filler\n".repeat(150_000));
+        dump.extend(b"\x00needle after\n");
+        fs::write(root.join("dump.txt"), dump).unwrap();
+        fs::write(root.join("notes.txt"), "needle\n").unwrap();
+
+        let mut results = GrepSearcher::new().search(&root, "needle");
+        results.sort_by(|a, b| a.display.cmp(&b.display));
+
+        let displays: Vec<&str> = results.iter().map(|item| item.display.as_str()).collect();
+        assert_eq!(
+            displays,
+            ["dump.txt:1: needle before", "notes.txt:1: needle"]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn utf16_files_with_a_bom_are_still_searched() {
+        // Older iOS projects keep Localizable.strings in UTF-16, where every
+        // ASCII character comes with a NUL byte. grep-searcher decodes BOM
+        // files before the NUL check, so the binary skip must not hide them.
+        let root = unique_temp_dir("grep_utf16");
+        fs::create_dir_all(&root).unwrap();
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in "\"key\" = \"needle\";\n".encode_utf16() {
+            bytes.extend(unit.to_le_bytes());
+        }
+        fs::write(root.join("Localizable.strings"), bytes).unwrap();
+
+        let results = GrepSearcher::new().search(&root, "needle");
+        assert_eq!(results.len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_line_that_is_not_utf8_keeps_the_rest_of_the_file() {
+        let root = unique_temp_dir("grep_lossy");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("mixed.txt"), b"needle \xff one\nneedle two\n").unwrap();
+
+        let results = GrepSearcher::new().search(&root, "needle");
+        assert_eq!(results.len(), 2);
         let _ = fs::remove_dir_all(root);
     }
 }
