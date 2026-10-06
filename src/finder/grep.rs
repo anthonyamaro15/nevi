@@ -394,32 +394,63 @@ where
     batch.is_empty() || on_batch(batch)
 }
 
-fn find_case_insensitive_char_index(line: &str, pattern: &str) -> usize {
+/// Non-overlapping case-insensitive matches of `pattern` in `text`, as
+/// `(start, end)` char ranges.
+pub(crate) fn case_insensitive_match_ranges(text: &str, pattern: &str) -> Vec<(usize, usize)> {
+    if pattern.is_empty() {
+        return Vec::new();
+    }
     let pattern_lower = pattern.to_lowercase();
+    let pattern_chars = pattern.chars().count();
+    let mut ranges = Vec::new();
 
-    // Lowercase the line once and substring-search it. Falls back to the
+    // Lowercase the text once and substring-search it. Falls back to the
     // per-position scan when lowercasing changes the char count (rare
     // expansions like 'İ'), where lowered positions no longer map 1:1.
-    let line_lower = line.to_lowercase();
-    if line_lower.chars().count() == line.chars().count() {
-        return line_lower
-            .find(&pattern_lower)
-            .map(|byte_pos| line_lower[..byte_pos].chars().count())
-            .unwrap_or(0);
+    let text_lower = text.to_lowercase();
+    if text_lower.chars().count() == text.chars().count() {
+        let (mut seen_bytes, mut seen_chars) = (0, 0);
+        for (byte_pos, _) in text_lower.match_indices(&pattern_lower) {
+            seen_chars += text_lower[seen_bytes..byte_pos].chars().count();
+            seen_bytes = byte_pos;
+            ranges.push((seen_chars, seen_chars + pattern_chars));
+        }
+        return ranges;
     }
 
-    for (char_idx, (byte_idx, _)) in line.char_indices().enumerate() {
-        if line[byte_idx..].to_lowercase().starts_with(&pattern_lower) {
-            return char_idx;
+    // A char lowercases to at least one char, so a match can only span the
+    // next `probe_chars` chars: lowercase just those, not the whole rest of
+    // the line, or a long line costs time quadratic in its length.
+    let probe_chars = pattern_lower.chars().count();
+    let mut next_start = 0;
+    for (char_idx, (byte_idx, _)) in text.char_indices().enumerate() {
+        if char_idx < next_start {
+            continue;
+        }
+        let rest = &text[byte_idx..];
+        let probe_end = rest
+            .char_indices()
+            .nth(probe_chars)
+            .map_or(rest.len(), |(end, _)| end);
+        if rest[..probe_end].to_lowercase().starts_with(&pattern_lower) {
+            ranges.push((char_idx, char_idx + pattern_chars));
+            next_start = char_idx + pattern_chars.max(1);
         }
     }
+    ranges
+}
 
-    0
+fn find_case_insensitive_char_index(line: &str, pattern: &str) -> usize {
+    case_insensitive_match_ranges(line, pattern)
+        .first()
+        .map_or(0, |&(start, _)| start)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{FinderItem, GrepSearcher, StopReader, forward_batches};
+    use super::{
+        FinderItem, GrepSearcher, StopReader, case_insensitive_match_ranges, forward_batches,
+    };
     use grep_regex::RegexMatcherBuilder;
     use grep_searcher::{SearcherBuilder, sinks::Lossy};
     use std::fs;
@@ -436,6 +467,38 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("nevi_{}_{}_{}", name, std::process::id(), nanos))
+    }
+
+    #[test]
+    fn case_insensitive_match_ranges_handle_lowercase_expansion() {
+        // 'İ' lowercases to two chars, so this takes the per-position scan.
+        assert_eq!(
+            case_insensitive_match_ranges("İstanbul istanbul", "ISTANBUL"),
+            vec![(9, 17)]
+        );
+    }
+
+    #[test]
+    #[ignore = "perf budget guard; run explicitly with cargo test grep_index_budget -- --ignored --nocapture"]
+    fn grep_index_budget_match_column_on_a_long_line_stays_bounded() {
+        use std::time::Instant;
+
+        // One 'İ' sends the whole line down the per-position scan. Live grep
+        // runs this on every matching line, so it has to stay linear in the
+        // line length (a whole-suffix lowercase per position took seconds).
+        // The filler is Turkish so lowercasing can't take its ASCII fast path.
+        let line = format!("İstanbul {}needle", "ışık ".repeat(20_000));
+        let started = Instant::now();
+        let ranges = case_insensitive_match_ranges(&line, "NEEDLE");
+        let elapsed = started.elapsed();
+
+        assert_eq!(ranges, vec![(100_009, 100_015)]);
+        let budget = Duration::from_millis(500);
+        println!("match column, 100k-char line with 'İ': {elapsed:?} budget={budget:?}");
+        assert!(
+            elapsed <= budget,
+            "match column took {elapsed:?}, budget {budget:?}"
+        );
     }
 
     #[test]
