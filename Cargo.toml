@@ -66,6 +66,7 @@ alacritty_terminal = { version = "0.26", default-features = false }
 grep-regex = "0.1.14"
 grep-searcher = "0.1.16"
 grep-matcher = "0.1.8"
+encoding_rs_io = "0.1.7"  # BOM decoding in the finder preview, like grep-searcher
 regex = "1.12.2"
 
 # Git integration

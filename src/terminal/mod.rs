@@ -36,29 +36,21 @@ fn log_finder_profile(msg: &str) {
     }
 }
 
-fn finder_preview_match_ranges(line: &str, query: &str) -> Vec<(usize, usize)> {
-    if query.is_empty() {
-        return Vec::new();
-    }
-
-    let query_lower = query.to_lowercase();
-    let query_len = query.chars().count();
-    let mut ranges = Vec::new();
-    let mut next_start_col = 0;
-
-    for (char_idx, (byte_idx, _)) in line.char_indices().enumerate() {
-        if char_idx < next_start_col {
-            continue;
-        }
-
-        if line[byte_idx..].to_lowercase().starts_with(&query_lower) {
-            let end_col = char_idx + query_len;
-            ranges.push((char_idx, end_col));
-            next_start_col = end_col.max(char_idx + 1);
-        }
-    }
-
-    ranges
+/// Grep matches to highlight in a preview line whose first `visible_chars`
+/// chars are on screen. Only that part is searched, plus enough past the edge
+/// to catch a match the edge cuts, so a minified line megabytes long costs
+/// the same as a short one.
+fn finder_preview_match_ranges(
+    line: &str,
+    query: &str,
+    visible_chars: usize,
+) -> Vec<(usize, usize)> {
+    let reach = visible_chars + query.chars().count().saturating_sub(1);
+    let end = line
+        .char_indices()
+        .nth(reach)
+        .map_or(line.len(), |(byte_idx, _)| byte_idx);
+    crate::finder::case_insensitive_match_ranges(&line[..end], query)
 }
 
 use crate::commands::{Command, CommandPopupMode, CommandResult, PendingDigraph, parse_command};
@@ -5849,11 +5841,16 @@ impl Terminal {
 
             // Preview header with filename (rich prefixes the file's devicon)
             let preview_title = if let Some(item) = editor.finder.selected_item() {
-                let filename = item
+                // Control characters in the name draw as blanks, like the
+                // editor does.
+                let filename: String = item
                     .path
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .unwrap_or("Preview");
+                    .unwrap_or("Preview")
+                    .chars()
+                    .map(|ch| if ch.is_control() { ' ' } else { ch })
+                    .collect();
                 if minimal {
                     format!(" {} ", filename)
                 } else {
@@ -5869,7 +5866,9 @@ impl Terminal {
             } else {
                 " Preview ".to_string()
             };
-            let preview_title_cols = preview_title.chars().count();
+            // Center by width, so a wide name can't push the corner out.
+            let preview_title_cols =
+                text_display_width(&preview_title, editor.settings.editor.tab_width);
             let preview_title_start = (preview_width.saturating_sub(preview_title_cols)) / 2;
             for i in 0..preview_width {
                 if i == preview_title_start {
@@ -6082,7 +6081,9 @@ impl Terminal {
                         }
                         in_highlight = is_match;
                     }
-                    current_span.push(*ch);
+                    // Tabs and other control characters would move the cursor;
+                    // draw them as blanks, like the editor does.
+                    current_span.push(if ch.is_control() { ' ' } else { *ch });
                 }
 
                 // Flush final span
@@ -6273,6 +6274,8 @@ impl Terminal {
                     write!(self.stdout, "\u{2500}")?; // ─
                 }
             }
+            // The column under the results/preview separator.
+            write!(self.stdout, "\u{2500}")?; // ─
             // Preview toggle hint
             let hint = " Ctrl+t: toggle ";
             let hint_start = (preview_width.saturating_sub(hint.len())) / 2;
@@ -6374,8 +6377,13 @@ impl Terminal {
         if line_idx < preview_content.len() {
             let line = &preview_content[line_idx];
 
-            // Line number (4 chars + separator)
-            let line_num_width = 4;
+            // Line number and separator. At least 4 columns, more when the
+            // window is deep in a big file, so long numbers can't push the
+            // border out.
+            let line_num_width = (preview_line_offset + preview_content.len())
+                .to_string()
+                .len()
+                .max(4);
             queue!(self.stdout, SetForegroundColor(line_num_color))?;
             write!(
                 self.stdout,
@@ -6384,19 +6392,22 @@ impl Terminal {
                 width = line_num_width
             )?;
 
+            // Draw file text the way the editor does: tabs as spaces, control
+            // characters as blanks, wide characters as two columns, so the
+            // line stays inside the pane.
+            let tab_width = editor.settings.editor.tab_width;
+            let content_width = preview_width.saturating_sub(line_num_width + 1);
+            let visible = take_display_width(line, 0, content_width, tab_width);
+
             // Get syntax highlights if available
             let highlights = self.get_preview_highlights(editor, line_idx);
             let grep_match_ranges = if editor.finder.mode == crate::finder::FinderMode::Grep
                 && editor.finder.query.len() >= 2
             {
-                finder_preview_match_ranges(line, &editor.finder.query)
+                finder_preview_match_ranges(line, &editor.finder.query, visible.chars().count())
             } else {
                 Vec::new()
             };
-
-            // Render line content with syntax highlighting
-            let content_width = preview_width.saturating_sub(line_num_width + 1);
-            let chars: Vec<char> = line.chars().take(content_width).collect();
 
             queue!(
                 self.stdout,
@@ -6404,17 +6415,18 @@ impl Terminal {
                 SetForegroundColor(finder_fg)
             )?;
 
+            let mut used_width = 0;
             if highlights.is_empty() && grep_match_ranges.is_empty() {
                 // No highlighting, just render the text
-                for ch in &chars {
-                    write!(self.stdout, "{}", ch)?;
+                for ch in visible.chars() {
+                    used_width += write_editor_char(&mut self.stdout, ch, tab_width)?;
                 }
             } else {
                 // Render with syntax highlighting, with grep matches overlaid.
                 let mut highlight_idx = 0;
                 let mut current_fg: Option<Color> = Some(finder_fg);
                 let mut current_bg: Option<Color> = Some(finder_bg);
-                for (col, ch) in chars.iter().enumerate() {
+                for (col, ch) in visible.chars().enumerate() {
                     let syntax_color =
                         Self::get_syntax_color_at(&highlights, col, &mut highlight_idx);
                     let is_grep_match = grep_match_ranges
@@ -6435,7 +6447,7 @@ impl Terminal {
                         queue!(self.stdout, SetForegroundColor(desired_fg))?;
                         current_fg = Some(desired_fg);
                     }
-                    write!(self.stdout, "{}", ch)?;
+                    used_width += write_editor_char(&mut self.stdout, ch, tab_width)?;
                 }
             }
 
@@ -6445,7 +6457,7 @@ impl Terminal {
                 SetBackgroundColor(finder_bg),
                 SetForegroundColor(finder_fg)
             )?;
-            for _ in chars.len()..content_width {
+            for _ in used_width..content_width {
                 write!(self.stdout, " ")?;
             }
         } else {
@@ -11350,6 +11362,7 @@ pub fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
 
 #[cfg(test)]
 mod tests {
+    mod finder;
     mod normal_interrupt;
     mod viewport_rendering;
 
@@ -18095,7 +18108,7 @@ mod tests {
     #[test]
     fn finder_preview_match_ranges_are_literal_case_insensitive() {
         assert_eq!(
-            finder_preview_match_ranges("main Main remain", "MAIN"),
+            finder_preview_match_ranges("main Main remain", "MAIN", 80),
             vec![(0, 4), (5, 9), (12, 16)]
         );
     }
@@ -18103,8 +18116,27 @@ mod tests {
     #[test]
     fn finder_preview_match_ranges_skip_overlapping_matches() {
         assert_eq!(
-            finder_preview_match_ranges("aaaa", "aa"),
+            finder_preview_match_ranges("aaaa", "aa", 80),
             vec![(0, 2), (2, 4)]
+        );
+    }
+
+    #[test]
+    fn finder_preview_match_ranges_only_search_the_visible_part() {
+        let line = format!("xx needle{}needle", "x".repeat(3_000_000));
+        // A match the right edge cuts still counts, one past the edge doesn't.
+        assert_eq!(
+            finder_preview_match_ranges(&line, "NEEDLE", 5),
+            vec![(3, 9)]
+        );
+        assert_eq!(
+            finder_preview_match_ranges(&line, "needle", 3),
+            Vec::<(usize, usize)>::new()
+        );
+        // A query longer than the visible part still highlights to the edge.
+        assert_eq!(
+            finder_preview_match_ranges(&line, "xx needlexxx", 4),
+            vec![(0, 12)]
         );
     }
 

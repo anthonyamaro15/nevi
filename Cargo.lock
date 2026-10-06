@@ -954,6 +954,7 @@ dependencies = [
  "arboard",
  "crossterm",
  "dirs",
+ "encoding_rs_io",
  "git2",
  "globset",
  "grep-matcher",

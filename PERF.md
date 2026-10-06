@@ -17,10 +17,12 @@ software that scans files as they open.
 | Live grep, typing an identifier: final results | 16.91 s | 1.71 s |
 | File picker: editor frozen while it opens | 407 ms | 13 µs |
 | File picker: full list ready | 407 ms | 125 ms |
+| Finder preview: load a hit deep in a large file | 34 ms | 11 ms |
 | Editing: reparse after an edit, large Rust file | 27 ms | 3.5 ms |
 | Editing: gg=G, file with scrambled indentation | 7.06 s | 1.23 s |
 | Drawing: one frame, large multiline file | 88 µs | 89 µs |
 | Drawing: one frame, minified one-line file | 988 µs | 909 µs |
+| Drawing: one frame, grep preview of a minified one-line file | 29.62 s | 71 µs |
 
 For reference, ripgrep 15.1 takes 1.67 s to search the same repo for a string
 that isn't there, so live grep now searches at about the speed of the engine
@@ -38,12 +40,15 @@ it's built on.
 - **File picker** rows open the picker on the same repo, which lists the first
   10,000 files by default. "Editor frozen" is how long opening it blocks the
   editor, and "full list ready" is when the last file is in.
+- **Finder preview** times loading the preview for a live grep hit on line
+  999,990 of a generated 1,000,000-line text file (72 MB). The picker loads it
+  once the selection has been still for 50 ms.
 - **Editing** rows use generated Rust: an 18,060-line file for the reparse after
   typing one character into a name, and a 2,100-line file with scrambled
   indentation for `gg=G`.
 - **Drawing** rows time one full frame in a 120 by 40 terminal: the middle of a
-  100,000-line file, and the start of a 1.6 MB minified file that is all one
-  line.
+  100,000-line file, the start of a 1.6 MB minified file that is all one line,
+  and the live grep picker previewing that same line with matches in view.
 
 None of the times include drawing results on screen.
 
@@ -51,14 +56,14 @@ None of the times include drawing results on screen.
 
 ```sh
 NEVI_PERF_BENCH=1 cargo test --release --lib -- --ignored --nocapture --test-threads=1 \
-  live_grep_bench file_picker_bench large_file_edit_bench render_frame_budget \
-  2>&1 | grep -o 'perf | .*'
+  live_grep_bench file_picker_bench large_file_edit_bench finder_preview_bench \
+  render_frame_budget 2>&1 | grep -o 'perf | .*'
 ```
 
 Each line it prints is one row of the table. The first run writes the test repo
-to `~/.cache/nevi-perf` (about 500 MB) and repeats full searches until their
-times settle, which can take a while if antivirus software is scanning the new
-files.
+and a large log file to `~/.cache/nevi-perf` (about 570 MB) and repeats full
+searches until their times settle, which can take a while if antivirus software
+is scanning the new files.
 
 The 0.3.0 column comes from the same benchmarks applied to the v0.3.0 release.
 

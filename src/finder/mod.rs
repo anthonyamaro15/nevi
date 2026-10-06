@@ -7,9 +7,11 @@ mod matcher;
 
 pub use file_picker::FilePicker;
 pub use grep::GrepSearcher;
+pub(crate) use grep::case_insensitive_match_ranges;
 pub use keybinds::keymap_finder_items;
 pub use matcher::FuzzyMatcher;
 
+use encoding_rs_io::DecodeReaderBytesBuilder;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -1253,18 +1255,44 @@ impl FuzzyFinder {
 
             match File::open(&selected_path) {
                 Ok(file) => {
-                    let reader = BufReader::new(file);
+                    // Decode a UTF-16 file with a byte order mark the way live
+                    // grep does, so its hits preview; other files pass through.
+                    let decoded = DecodeReaderBytesBuilder::new()
+                        .utf8_passthru(true)
+                        .strip_bom(true)
+                        .build(file);
+                    let mut reader = BufReader::with_capacity(64 * 1024, decoded);
+                    // Skip to the window without building a string per line:
+                    // ~11ms instead of ~32ms for a hit on line 1,000,000 of a
+                    // 72 MB file. It is still a linear read on the main thread
+                    // (~150ms per GB); load off-thread if multi-GB files show up.
+                    for _ in 0..start_line {
+                        if reader.skip_until(b'\n').unwrap_or(0) == 0 {
+                            break;
+                        }
+                    }
                     let mut line_count = 0;
-                    for line in reader.lines().skip(start_line).take(MAX_PREVIEW_LINES + 1) {
+                    for line in reader.split(b'\n').take(MAX_PREVIEW_LINES + 1) {
                         match line {
-                            Ok(l) => {
+                            // Live grep treats a NUL byte as a binary file too.
+                            Ok(bytes) if bytes.contains(&0) => {
+                                self.preview_content =
+                                    vec!["(Binary file - no preview)".to_string()];
+                                self.preview_line_offset = 0;
+                                break;
+                            }
+                            Ok(bytes) => {
                                 if line_count < MAX_PREVIEW_LINES {
-                                    self.preview_content.push(l);
+                                    let bytes = bytes.strip_suffix(b"\r").unwrap_or(&bytes);
+                                    // Bytes that aren't UTF-8 show as U+FFFD,
+                                    // like live grep's rows, instead of
+                                    // ending the preview there.
+                                    self.preview_content
+                                        .push(String::from_utf8_lossy(bytes).into_owned());
                                 }
                                 line_count += 1;
                             }
                             Err(_) => {
-                                // Binary file or encoding issue - stop reading
                                 if self.preview_content.is_empty() {
                                     self.preview_content =
                                         vec!["(Unable to read file)".to_string()];
@@ -1710,6 +1738,139 @@ mod tests {
             .expect("preview should include deep grep match");
         assert_eq!(finder.preview_line_offset + match_idx + 1, 220);
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn wait_for_grep_to_finish(finder: &mut FuzzyFinder) {
+        for _ in 0..500 {
+            finder.poll_grep_search();
+            if !finder.grep_search_running {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("grep search did not finish");
+    }
+
+    /// Grep `root` for `query`, then select each hit and return the preview
+    /// line shown at it, as (hit line, text), sorted by line.
+    fn preview_at_each_hit(root: &Path, query: &str) -> Vec<(usize, String)> {
+        let mut finder = FuzzyFinder::new();
+        finder.preview_enabled = true;
+        finder.open_grep_with_query(root, query);
+        wait_for_grep_to_finish(&mut finder);
+        let mut shown = Vec::new();
+        for idx in 0..finder.filtered.len() {
+            finder.selected = idx;
+            finder.update_preview_content();
+            let hit = finder.selected_item().unwrap().line.unwrap();
+            let at = hit - 1 - finder.preview_line_offset;
+            let text = finder.preview_content.get(at).cloned().unwrap_or_else(|| {
+                format!("(no line {at} in preview {:?})", finder.preview_content)
+            });
+            shown.push((hit, text));
+        }
+        shown.sort();
+        shown
+    }
+
+    #[test]
+    fn grep_preview_shows_a_hit_deep_in_a_large_file() {
+        let root = unique_temp_dir("finder_preview_large");
+        fs::create_dir_all(&root).unwrap();
+        // CRLF endings, a line that isn't UTF-8, and a 1 MB line all come
+        // before the hit, so the skip has to count each of them as one line.
+        let mut content = Vec::new();
+        for line in 1..=200_000 {
+            match line {
+                5 => content.extend_from_slice(b"caf\xe9"),
+                6 => content.extend_from_slice("x".repeat(1_000_000).as_bytes()),
+                199_990 => content.extend_from_slice(b"the needle is here"),
+                _ => content.extend_from_slice(format!("line {line}").as_bytes()),
+            }
+            content.extend_from_slice(b"\r\n");
+        }
+        fs::write(root.join("big.txt"), content).unwrap();
+
+        assert_eq!(
+            preview_at_each_hit(&root, "needle"),
+            vec![(199_990, "the needle is here".to_string())]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn grep_preview_reads_utf16_files_with_a_byte_order_mark() {
+        let root = unique_temp_dir("finder_preview_utf16");
+        fs::create_dir_all(&root).unwrap();
+        let mut text = String::from("\"needle_first\" = \"Primera\";\n");
+        for line in 2..300 {
+            text.push_str(&format!("\"key_{line}\" = \"value {line}\";\n"));
+        }
+        text.push_str("\"needle_deep\" = \"Última\";\n");
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        fs::write(root.join("Localizable.strings"), bytes).unwrap();
+
+        assert_eq!(
+            preview_at_each_hit(&root, "needle"),
+            vec![
+                (1, "\"needle_first\" = \"Primera\";".to_string()),
+                (300, "\"needle_deep\" = \"Última\";".to_string()),
+            ]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn grep_preview_keeps_going_past_bytes_that_are_not_utf8() {
+        let root = unique_temp_dir("finder_preview_latin1");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("notes.txt"), b"one\ncaf\xe9\nthe needle\nfour\n").unwrap();
+
+        let mut finder = FuzzyFinder::new();
+        finder.preview_enabled = true;
+        finder.open_grep_with_query(&root, "needle");
+        wait_for_grep_to_finish(&mut finder);
+        finder.update_preview_content();
+
+        assert_eq!(
+            finder.preview_content,
+            vec!["one", "caf\u{FFFD}", "the needle", "four"]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_hides_a_utf8_byte_order_mark() {
+        let root = unique_temp_dir("finder_preview_utf8_bom");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("a.txt"), b"\xEF\xBB\xBFfirst needle\nsecond\n").unwrap();
+
+        assert_eq!(
+            preview_at_each_hit(&root, "needle"),
+            vec![(1, "first needle".to_string())]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_treats_a_file_with_a_nul_byte_as_binary() {
+        let root = unique_temp_dir("finder_preview_nul");
+        fs::create_dir_all(&root).unwrap();
+        // No extension, so the extension list can't catch it.
+        let path = root.join("blob");
+        fs::write(&path, b"ELF\0\x01\x02 not text\n").unwrap();
+
+        let mut finder = FuzzyFinder::new();
+        finder.preview_enabled = true;
+        finder.mode = FinderMode::Files;
+        finder.items = vec![FinderItem::new("blob".to_string(), path)];
+        finder.filtered = vec![0];
+        finder.update_preview_content();
+
+        assert_eq!(finder.preview_content, vec!["(Binary file - no preview)"]);
+        assert_eq!(finder.preview_line_offset, 0);
         let _ = fs::remove_dir_all(root);
     }
 

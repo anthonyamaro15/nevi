@@ -34,6 +34,10 @@ const NOT_IN_CI: &[(&str, &str)] = &[
         "large_file_edit_bench",
         "prints big-file editing timings for PERF.md, not a pass/fail check",
     ),
+    (
+        "finder_preview_bench",
+        "prints finder preview timings for PERF.md, not a pass/fail check",
+    ),
 ];
 
 fn manifest_path(relative: &str) -> PathBuf {
