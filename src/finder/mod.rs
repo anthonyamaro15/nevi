@@ -4,6 +4,7 @@ mod grep;
 mod grep_bench;
 mod keybinds;
 mod matcher;
+pub(crate) mod row;
 
 pub use file_picker::FilePicker;
 pub use grep::GrepSearcher;
@@ -70,7 +71,8 @@ pub enum FinderInputMode {
 /// An item in the finder list
 #[derive(Debug, Clone)]
 pub struct FinderItem {
-    /// Display text
+    /// Display text. For live grep, the hit's line, trimmed; the row adds
+    /// the path and line number when it's drawn.
     pub display: String,
     /// Associated file path
     pub path: PathBuf,
@@ -88,7 +90,8 @@ pub struct FinderItem {
     pub git_status: Option<crate::git::GitFileStatus>,
     /// Match score for sorting
     pub score: u32,
-    /// Indices of matched characters (for highlighting)
+    /// Indices of matched characters in `display` (for highlighting). Live
+    /// grep fills them while searching; other pickers when rows show.
     pub match_indices: Vec<usize>,
 }
 
@@ -115,6 +118,11 @@ impl FinderItem {
 
     pub fn with_col(mut self, col: usize) -> Self {
         self.col = Some(col);
+        self
+    }
+
+    pub fn with_match_indices(mut self, indices: Vec<usize>) -> Self {
+        self.match_indices = indices;
         self
     }
 
@@ -895,6 +903,15 @@ impl FuzzyFinder {
             .and_then(|&idx| self.items.get(idx))
     }
 
+    /// A live grep hit's path as its row shows it: relative to the folder
+    /// the search ran in.
+    pub fn grep_row_path<'a>(&self, item: &'a FinderItem) -> std::borrow::Cow<'a, str> {
+        item.path
+            .strip_prefix(&self.cwd)
+            .unwrap_or(&item.path)
+            .to_string_lossy()
+    }
+
     pub fn cancel_grep_search(&mut self) {
         self.stop_grep_search();
         self.grep_search_pending = false;
@@ -912,28 +929,15 @@ impl FuzzyFinder {
         }
     }
 
-    /// Recompute match highlight indices for items[start..].
-    fn update_grep_match_indices_from(&mut self, start: usize) {
-        for item in &mut self.items[start..] {
-            item.match_indices = grep_result_match_indices(
-                &item.display,
-                &self.query,
-                grep_result_snippet_start(&item.display),
-            );
-        }
-    }
-
     /// Update the filtered list based on the current query
     fn update_filter(&mut self) {
-        // Clear previous match indices
-        for item in &mut self.items {
-            item.match_indices.clear();
-        }
-
         match self.mode {
             FinderMode::Grep => {
                 // In grep mode, defer search to debounce mechanism
-                // This avoids running expensive grep on every keystroke
+                // This avoids running expensive grep on every keystroke.
+                // Rows keep their highlights, which came with the results,
+                // until the next search replaces them: the row layout keeps
+                // the match in view by them.
                 if self.query.len() >= 2 {
                     self.grep_search_pending = true;
                 } else {
@@ -944,6 +948,11 @@ impl FuzzyFinder {
                 }
             }
             _ => {
+                // Clear previous match indices
+                for item in &mut self.items {
+                    item.match_indices.clear();
+                }
+
                 // For files/buffers, use fuzzy matching
                 if self.query.is_empty() {
                     // No filter, show all items
@@ -1114,13 +1123,10 @@ impl FuzzyFinder {
                     }
 
                     let had_items = !self.items.is_empty();
-                    // Indices for already-applied batches are still valid (the
-                    // query is fixed for a generation), so only the new batch
-                    // needs highlighting work.
-                    let new_start = self.items.len();
+                    // Highlights come with the results, so applying a batch
+                    // only appends it.
                     self.items.extend(items);
                     self.filtered = (0..self.items.len()).collect();
-                    self.update_grep_match_indices_from(new_start);
 
                     if !had_items {
                         self.selected = 0;
@@ -1339,99 +1345,6 @@ impl FuzzyFinder {
     pub fn reset_preview_scroll(&mut self) {
         self.preview_scroll = 0;
     }
-}
-
-fn grep_result_snippet_start(display: &str) -> usize {
-    let mut colon_count = 0;
-
-    for (idx, ch) in display.char_indices() {
-        if ch == ':' {
-            colon_count += 1;
-            if colon_count == 2 {
-                let after_colon = idx + ch.len_utf8();
-                let whitespace_bytes = display[after_colon..]
-                    .chars()
-                    .take_while(|ch| ch.is_whitespace())
-                    .map(char::len_utf8)
-                    .sum::<usize>();
-                return after_colon + whitespace_bytes;
-            }
-        }
-    }
-
-    0
-}
-
-fn grep_result_match_indices(display: &str, query: &str, start_byte: usize) -> Vec<usize> {
-    if query.is_empty() {
-        return Vec::new();
-    }
-
-    let query_lower = query.to_lowercase();
-    let query_len = query.chars().count();
-
-    // Fast path: lowercase the line once and substring-search the lowered
-    // copy. This needs 1:1 char alignment between original and lowered text;
-    // lowercasing can expand a char (e.g. 'İ' becomes two chars), so fall
-    // back to the per-position scan when counts disagree.
-    let display_lower = display.to_lowercase();
-    if display_lower.chars().count() != display.chars().count()
-        || query_lower.chars().count() != query_len
-    {
-        return grep_result_match_indices_per_position(
-            display,
-            &query_lower,
-            query_len,
-            start_byte,
-        );
-    }
-
-    let start_char = display[..start_byte].chars().count();
-    let mut search_byte = display_lower
-        .char_indices()
-        .nth(start_char)
-        .map(|(byte_idx, _)| byte_idx)
-        .unwrap_or(display_lower.len());
-    let mut chars_before = start_char;
-    let mut indices = Vec::new();
-
-    while let Some(rel) = display_lower[search_byte..].find(&query_lower) {
-        let abs = search_byte + rel;
-        let match_char = chars_before + display_lower[search_byte..abs].chars().count();
-        indices.extend(match_char..match_char + query_len);
-        // Non-overlapping, matching the per-position scan: resume after the match.
-        chars_before = match_char + query_len;
-        search_byte = abs + query_lower.len();
-    }
-
-    indices
-}
-
-/// Original per-position scan, kept for text where lowercasing changes char
-/// counts. O(len^2) allocations, acceptable because this path is rare.
-fn grep_result_match_indices_per_position(
-    display: &str,
-    query_lower: &str,
-    query_len: usize,
-    start_byte: usize,
-) -> Vec<usize> {
-    let start_char = display[..start_byte].chars().count();
-    let mut next_start_char = start_char;
-    let mut indices = Vec::new();
-
-    for (char_idx, (byte_idx, _)) in display.char_indices().enumerate() {
-        if char_idx < next_start_char {
-            continue;
-        }
-
-        if display[byte_idx..].to_lowercase().starts_with(query_lower) {
-            let end_char = char_idx + query_len;
-            indices.extend(char_idx..end_char);
-            next_start_char = end_char.max(char_idx + 1);
-        }
-    }
-
-    indices
 }
 
 /// Check if a file is likely binary based on extension
@@ -2068,76 +1981,23 @@ mod tests {
     }
 
     #[test]
-    fn grep_result_highlight_ignores_path_matches() {
+    fn typing_keeps_the_highlights_of_the_rows_on_screen() {
+        // Rows keep their match in view by these until the next search
+        // replaces them, so a keystroke must not clear them.
         let mut finder = FuzzyFinder::new();
-        finder.mode = FinderMode::Grep;
-        finder.query = "main".to_string();
-        finder.items = vec![FinderItem::new(
-            "src/main.rs:12: no match here".to_string(),
-            PathBuf::from("src/main.rs"),
-        )];
+        finder.open_grep(Path::new("."));
+        finder.query = "needle".to_string();
+        finder.cursor = 6;
+        finder.items = vec![
+            FinderItem::new("a needle".to_string(), PathBuf::from("a.rs"))
+                .with_line(1)
+                .with_match_indices((2..8).collect()),
+        ];
+        finder.filtered = vec![0];
 
-        finder.update_grep_match_indices_from(0);
+        finder.insert_char('s');
 
-        assert!(finder.items[0].match_indices.is_empty());
-    }
-
-    #[test]
-    fn grep_result_highlight_starts_in_match_snippet() {
-        let mut finder = FuzzyFinder::new();
-        finder.mode = FinderMode::Grep;
-        finder.query = "main".to_string();
-        finder.items = vec![FinderItem::new(
-            "src/main.rs:12: fn main() { main(); }".to_string(),
-            PathBuf::from("src/main.rs"),
-        )];
-
-        finder.update_grep_match_indices_from(0);
-
-        let chars: Vec<char> = finder.items[0].display.chars().collect();
-        let highlighted: String = finder.items[0]
-            .match_indices
-            .iter()
-            .map(|idx| chars[*idx])
-            .collect();
-
-        assert_eq!(highlighted, "mainmain");
-        assert!(
-            finder.items[0]
-                .match_indices
-                .iter()
-                .all(|idx| *idx >= "src/main.rs:12: ".chars().count())
-        );
-    }
-
-    #[test]
-    fn grep_result_highlight_matches_mixed_case_non_overlapping() {
-        let display = "src/a.rs:1: Needle needleNEEDLE end";
-        let indices = super::grep_result_match_indices(display, "needle", "src/a.rs:1: ".len());
-
-        let chars: Vec<char> = display.chars().collect();
-        let highlighted: String = indices.iter().map(|idx| chars[*idx]).collect();
-        assert_eq!(highlighted, "NeedleneedleNEEDLE");
-
-        let snippet_start = "src/a.rs:1: ".chars().count();
-        assert_eq!(indices[0], snippet_start);
-    }
-
-    #[test]
-    fn grep_result_highlight_handles_multibyte_before_match() {
-        // 'é' is 2 bytes but 1 char; indices are char positions, so the match
-        // position must not drift after multibyte text.
-        let display = "src/é.rs:1: caf\u{e9} needle";
-        let start_byte = display.find("caf").expect("snippet start");
-        let indices = super::grep_result_match_indices(display, "needle", start_byte);
-
-        let chars: Vec<char> = display.chars().collect();
-        let highlighted: String = indices.iter().map(|idx| chars[*idx]).collect();
-        assert_eq!(highlighted, "needle");
-        assert_eq!(
-            indices[0],
-            display.chars().count() - "needle".chars().count()
-        );
+        assert_eq!(finder.items[0].match_indices, (2..8).collect::<Vec<_>>());
     }
 
     fn files_finder_with_items(count: usize) -> FuzzyFinder {
@@ -2217,61 +2077,14 @@ mod tests {
     }
 
     #[test]
-    fn grep_result_highlight_falls_back_when_lowercase_expands() {
-        // 'İ' lowercases to two chars, breaking 1:1 alignment; the fallback
-        // scan must still find the plain match after it.
-        let display = "src/a.rs:1: \u{130}stanbul needle";
-        let start_byte = "src/a.rs:1: ".len();
-        let indices = super::grep_result_match_indices(display, "needle", start_byte);
-
-        let chars: Vec<char> = display.chars().collect();
-        let highlighted: String = indices.iter().map(|idx| chars[*idx]).collect();
-        assert_eq!(highlighted, "needle");
-    }
-
-    #[test]
-    fn poll_grep_search_keeps_earlier_batch_indices_intact() {
-        let mut finder = FuzzyFinder::new();
-        finder.mode = FinderMode::Grep;
-        finder.query = "needle".to_string();
-        finder.grep_search_generation = 7;
-        finder.grep_search_running = true;
-
-        let (tx, rx) = mpsc::channel();
-        finder.grep_search_receiver = Some(rx);
-
-        for batch_num in 0..2 {
-            tx.send(GrepSearchMessage::Batch {
-                generation: 7,
-                query: "needle".to_string(),
-                items: vec![
-                    FinderItem::new(
-                        format!("src/main.rs:{}: has needle here", batch_num + 1),
-                        PathBuf::from("src/main.rs"),
-                    )
-                    .with_line(batch_num + 1),
-                ],
-            })
-            .unwrap();
-            assert!(finder.poll_grep_search());
-        }
-
-        assert_eq!(finder.items.len(), 2);
-        for item in &finder.items {
-            let chars: Vec<char> = item.display.chars().collect();
-            let highlighted: String = item.match_indices.iter().map(|idx| chars[*idx]).collect();
-            assert_eq!(highlighted, "needle", "display={}", item.display);
-        }
-    }
-
-    #[test]
     #[ignore = "perf budget guard; run explicitly with cargo test grep_index_budget -- --ignored --nocapture"]
     fn grep_index_budget_batch_apply_stays_bounded() {
         use std::time::{Duration, Instant};
 
-        // 20 batches x 50 items, 1000 total: the max_results default. Before
-        // the batch-scoped index update this re-scanned every accumulated item
-        // per batch with O(len^2) lowercasing; the budget locks in the fix.
+        // 20 batches x 50 items, 1000 total: the max_results default.
+        // Applying a batch only appends it, since highlights arrive with the
+        // results. The budget keeps per-batch work from creeping back (it
+        // used to re-scan every item per batch, then highlight each new one).
         let mut finder = FuzzyFinder::new();
         finder.mode = FinderMode::Grep;
         finder.query = "needle".to_string();

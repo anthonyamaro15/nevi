@@ -63,6 +63,7 @@
 
 ### Interface
 
+- Live grep rows now fit the finder instead of losing the match off the right edge. When a row is too long, folders shrink to their first letter, starting from the top, only as far as needed to keep the match on screen, like Vim's `pathshorten()`. If that isn't enough, the text before the match is cut instead, and the selected row's full path is shown above the query. A match far into a long line now shows too (rows used to stop after the line's first 100 characters), and rows with wide characters such as Japanese or Chinese text no longer run past the finder's border, in every picker. (#351)
 - Added `nevi --help` and `nevi -h`. They print the usage for the plain, `view`, `diff`, and `pick` forms and exit. Before this, `--help` was taken as a filename and opened an empty buffer called `--help`.
 - Completion, hover, signature help, code action, and diagnostic popups now open next to the cursor's real screen row when soft wrap is on. They used to count buffer lines instead of screen rows, so in a narrow split with wrapped lines above the cursor the completion menu could open on top of the line being typed. The cursor and every popup now share one screen position calculation. (#333)
 - `:rename` and `:mv` now refuse a destination that already exists instead of silently replacing it. A case-only rename such as `Notes.txt` to `notes.txt` still works on case-insensitive filesystems.

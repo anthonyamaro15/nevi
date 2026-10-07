@@ -17,6 +17,11 @@ use super::FinderItem;
 /// handing over more often would not reach the screen any sooner.
 const FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Chars of a hit's line kept on each side of its first match. A row is at
+/// most 200 columns wide (the finder's width cap), so this covers anything a
+/// row can show, and 1,000 hits in minified files can't hold megabytes.
+const ROW_CONTEXT_CHARS: usize = 200;
+
 /// Live grep searcher using ripgrep's grep crate for fast searching
 #[derive(Clone)]
 pub struct GrepSearcher {
@@ -211,7 +216,6 @@ impl GrepSearcher {
         let (tx, rx) = mpsc::channel::<FinderItem>();
         let result_count = Arc::new(AtomicUsize::new(0));
         let max_results = self.max_results;
-        let walk_root = root.to_path_buf();
         let walk_pattern = pattern.to_string();
 
         // run() blocks until the walk finishes, so it gets its own thread
@@ -232,7 +236,6 @@ impl GrepSearcher {
                 let tx = tx.clone();
                 let count = Arc::clone(&walk_count);
                 let stop = Arc::clone(&walk_stop);
-                let root = walk_root.clone();
                 let pattern = walk_pattern.clone();
                 Box::new(move |entry| {
                     if stop.load(Ordering::Relaxed) || count.load(Ordering::Relaxed) >= max_results
@@ -250,11 +253,6 @@ impl GrepSearcher {
                         return WalkState::Continue;
                     }
 
-                    let rel_path = path
-                        .strip_prefix(&root)
-                        .unwrap_or(path)
-                        .to_string_lossy()
-                        .to_string();
                     let path_buf = path.to_path_buf();
 
                     let Ok(file) = File::open(path) else {
@@ -277,20 +275,12 @@ impl GrepSearcher {
                                 return Ok(false);
                             }
 
-                            // Truncate long lines (safely handle UTF-8)
-                            let line_trimmed = line.trim();
-                            let line_display = if line_trimmed.chars().count() > 100 {
-                                let truncated: String = line_trimmed.chars().take(100).collect();
-                                format!("{}...", truncated)
-                            } else {
-                                line_trimmed.to_string()
-                            };
-
-                            let display = format!("{}:{}: {}", rel_path, line_num, line_display);
-                            let match_col = find_case_insensitive_char_index(line, &pattern);
-                            let item = FinderItem::new(display, path_buf.clone())
+                            let matches = case_insensitive_match_ranges(line, &pattern);
+                            let (text, match_indices) = row_text(line, &matches);
+                            let item = FinderItem::new(text, path_buf.clone())
                                 .with_line(line_num as usize)
-                                .with_col(match_col);
+                                .with_col(matches.first().map_or(0, |&(start, _)| start))
+                                .with_match_indices(match_indices);
 
                             Ok(tx.send(item).is_ok())
                         }),
@@ -440,16 +430,37 @@ pub(crate) fn case_insensitive_match_ranges(text: &str, pattern: &str) -> Vec<(u
     ranges
 }
 
-fn find_case_insensitive_char_index(line: &str, pattern: &str) -> usize {
-    case_insensitive_match_ranges(line, pattern)
-        .first()
-        .map_or(0, |&(start, _)| start)
+/// The text a row shows for a hit on `line`: indentation and the line break
+/// trimmed and, on a long line, only ROW_CONTEXT_CHARS on each side of the
+/// first match, with "…" where the start was cut. Returns it with the char
+/// indices of every match inside it; `matches` are char ranges in `line`.
+fn row_text(line: &str, matches: &[(usize, usize)]) -> (String, Vec<usize>) {
+    let first = line.chars().take_while(|ch| ch.is_whitespace()).count();
+    let end = first + line.trim().chars().count();
+    let (from, to) = match matches.first() {
+        Some(&(start, stop)) => (
+            start.saturating_sub(ROW_CONTEXT_CHARS).max(first),
+            (stop + ROW_CONTEXT_CHARS).min(end),
+        ),
+        None => (first, end.min(first + 2 * ROW_CONTEXT_CHARS)),
+    };
+    let cut = usize::from(from > first);
+    let mut text = String::from(if cut == 1 { "…" } else { "" });
+    text.extend(line.chars().skip(from).take(to.saturating_sub(from)));
+    let indices = matches
+        .iter()
+        .take_while(|&&(start, _)| start < to)
+        .flat_map(|&(start, stop)| start.max(from)..stop.min(to))
+        .map(|idx| idx - from + cut)
+        .collect();
+    (text, indices)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         FinderItem, GrepSearcher, StopReader, case_insensitive_match_ranges, forward_batches,
+        row_text,
     };
     use grep_regex::RegexMatcherBuilder;
     use grep_searcher::{SearcherBuilder, sinks::Lossy};
@@ -513,7 +524,7 @@ mod tests {
         let results = searcher.search(&root, "needle");
 
         assert_eq!(results.len(), 1);
-        assert!(results[0].display.contains("src/visible.rs"));
+        assert!(results[0].path.ends_with("src/visible.rs"));
         assert_eq!(results[0].col, Some(0));
 
         let _ = fs::remove_dir_all(root);
@@ -533,6 +544,51 @@ mod tests {
         assert_eq!(results[0].col, Some(14));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn hits_carry_their_line_and_where_it_matches() {
+        // The colons in the file name used to be able to move highlights.
+        let root = unique_temp_dir("grep_row_text");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("notes:v2:needle.txt"),
+            "\t  let x = Needle; // needle\n",
+        )
+        .unwrap();
+
+        let results = GrepSearcher::new().search(&root, "needle");
+
+        assert_eq!(results.len(), 1);
+        let hit = &results[0];
+        assert_eq!(hit.display, "let x = Needle; // needle");
+        let chars: Vec<char> = hit.display.chars().collect();
+        let highlighted: String = hit.match_indices.iter().map(|&idx| chars[idx]).collect();
+        assert_eq!(highlighted, "Needleneedle");
+        assert_eq!(hit.col, Some(11));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_long_line_keeps_the_text_around_its_first_match() {
+        // Rows used to keep the first 100 chars, so a later match never showed.
+        let line = format!("{}needle{}\n", "x".repeat(5_000), "y".repeat(5_000));
+        let (text, indices) = row_text(&line, &case_insensitive_match_ranges(&line, "needle"));
+        assert_eq!(
+            text,
+            format!("…{}needle{}", "x".repeat(200), "y".repeat(200))
+        );
+        assert_eq!(indices, (201..207).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn row_text_indices_count_chars_not_bytes() {
+        // 'é' is two bytes, and 'İ' lowercases to two chars.
+        let line = "café İstanbul needle\n";
+        let (text, indices) = row_text(line, &case_insensitive_match_ranges(line, "NEEDLE"));
+        let chars: Vec<char> = text.chars().collect();
+        let highlighted: String = indices.iter().map(|&idx| chars[idx]).collect();
+        assert_eq!(highlighted, "needle");
     }
 
     #[test]
@@ -708,13 +764,22 @@ mod tests {
         fs::write(root.join("dump.txt"), dump).unwrap();
         fs::write(root.join("notes.txt"), "needle\n").unwrap();
 
-        let mut results = GrepSearcher::new().search(&root, "needle");
-        results.sort_by(|a, b| a.display.cmp(&b.display));
+        let results = GrepSearcher::new().search(&root, "needle");
 
-        let displays: Vec<&str> = results.iter().map(|item| item.display.as_str()).collect();
+        let mut hits: Vec<(String, usize, String)> = results
+            .iter()
+            .map(|item| {
+                let name = item.path.file_name().unwrap().to_string_lossy().to_string();
+                (name, item.line.unwrap(), item.display.clone())
+            })
+            .collect();
+        hits.sort();
         assert_eq!(
-            displays,
-            ["dump.txt:1: needle before", "notes.txt:1: needle"]
+            hits,
+            [
+                ("dump.txt".to_string(), 1, "needle before".to_string()),
+                ("notes.txt".to_string(), 1, "needle".to_string()),
+            ]
         );
         let _ = fs::remove_dir_all(root);
     }
