@@ -16,7 +16,7 @@
 
 use super::{
     ReplayDimensions, SharedOutput, assert_render_frame_budget, background_sequence,
-    minified_js_document, render_editor_to_string,
+    check_render_frame_budget, minified_js_document, render_editor_to_string,
 };
 use crate::editor::{Editor, Mode};
 use crate::finder::{FinderItem, FloatingWindow};
@@ -45,9 +45,7 @@ fn grep_preview_editor(path: &Path, line: usize, query: &str) -> Editor {
         .finder
         .open_grep(path.parent().unwrap_or(Path::new(".")));
     editor.finder.query = query.to_string();
-    editor.finder.items = vec![
-        FinderItem::new(format!("{}:{line}: hit", path.display()), path.into()).with_line(line),
-    ];
+    editor.finder.items = vec![FinderItem::new("hit".to_string(), path.into()).with_line(line)];
     editor.finder.filtered = vec![0];
     editor.finder.preview_enabled = true;
     editor.mode = Mode::Finder;
@@ -213,16 +211,136 @@ fn finder_bottom_border_ends_at_the_corner_with_the_preview_on() {
 
 #[test]
 fn finder_rows_draw_control_characters_as_blanks() {
-    let path = PathBuf::from("notes.txt");
-    let mut editor = grep_preview_editor(&path, 1, "");
-    editor.finder.items[0].display = "notes.txt:1: a\tb\u{1b}c".to_string();
-    editor.finder.preview_enabled = false;
+    let editor = grep_rows_editor("notes.txt", 1, "a\tb\u{1b}c", "");
 
     // Results are drawn bottom-up, so look on every row.
     let screen = screen_after_frame(&editor);
     assert!(
         (0..40).any(|row| screen_row(&screen, row).contains("notes.txt:1: a b c")),
         "no row shows the result as plain text"
+    );
+}
+
+const DEEP_PATH: &str = "domain/CustomerAccount/AccountRegistrationFeature/Sources/Resources/Localization/en.lproj/Localizable.strings";
+const DEEP_TEXT: &str = r#""account_registration_paragraph_termsOfUse" = "By registering you agree to the Terms of Use";"#;
+
+/// Live grep searched from `/repo`, with one hit on `line` of `rel_path`,
+/// whose line is `text`, highlighted where it matches `query`.
+fn grep_rows_editor(rel_path: &str, line: usize, text: &str, query: &str) -> Editor {
+    let root = Path::new("/repo");
+    let mut editor = Editor::default();
+    editor.set_size(120, 40);
+    editor.finder.open_grep(root);
+    editor.finder.query = query.to_string();
+    let matches = crate::finder::case_insensitive_match_ranges(text, query);
+    editor.finder.items = vec![
+        FinderItem::new(text.to_string(), root.join(rel_path))
+            .with_line(line)
+            .with_match_indices(
+                matches
+                    .iter()
+                    .flat_map(|&(start, end)| start..end)
+                    .collect(),
+            ),
+    ];
+    editor.finder.filtered = vec![0];
+    editor.mode = Mode::Finder;
+    editor
+}
+
+#[test]
+fn live_grep_rows_keep_the_match_visible_with_deep_paths() {
+    for preview in [false, true] {
+        let mut editor = grep_rows_editor(DEEP_PATH, 135, DEEP_TEXT, "paragraph_terms");
+        editor.finder.preview_enabled = preview;
+        let screen = screen_after_frame(&editor);
+        assert!(
+            (0..40).any(|row| {
+                let text = screen_row(&screen, row);
+                text.contains("Localizable.strings:135:") && text.contains("paragraph_terms")
+            }),
+            "preview {preview}: no row shows the file and the match"
+        );
+    }
+}
+
+#[test]
+fn live_grep_shows_the_selected_path_above_the_query() {
+    let win = FloatingWindow::centered_with_preview(120, 40, false);
+    let separator_row = win.y + win.height - 3;
+
+    let short = grep_rows_editor("src/main.rs", 12, "fn main() {}", "main");
+    let separator = screen_row(&screen_after_frame(&short), separator_row);
+    assert!(
+        separator.contains("src/main.rs:12"),
+        "separator={separator:?}"
+    );
+
+    // Too long for the line: cut from the left at a folder.
+    let deep = grep_rows_editor(DEEP_PATH, 135, DEEP_TEXT, "paragraph_terms");
+    let separator = screen_row(&screen_after_frame(&deep), separator_row);
+    assert!(
+        separator.contains(
+            "…/AccountRegistrationFeature/Sources/Resources/Localization/en.lproj/Localizable.strings:135"
+        ),
+        "separator={separator:?}"
+    );
+}
+
+#[test]
+fn live_grep_selected_path_draws_control_characters_as_blanks() {
+    let editor = grep_rows_editor("x\u{1b}c/notes.txt", 7, "hit", "hit");
+    let win = FloatingWindow::centered_with_preview(120, 40, false);
+
+    let separator = screen_row(&screen_after_frame(&editor), win.y + win.height - 3);
+    assert!(
+        separator.contains("x c/notes.txt:7"),
+        "separator={separator:?}"
+    );
+}
+
+#[test]
+fn finder_rows_keep_wide_characters_inside_the_border() {
+    let wide = "利用規約に同意して続行してください。".repeat(10);
+    // Live grep, and a picker that shows its text as is.
+    let grep = grep_rows_editor("ja.lproj/Localizable.strings", 1, &wide, "");
+    let mut lines = Editor::default();
+    lines.set_size(120, 40);
+    lines
+        .finder
+        .open_buffer_lines(0, PathBuf::from("notes.txt"), vec![(0, wide.clone())]);
+    lines.mode = Mode::Finder;
+    let win = FloatingWindow::centered_with_preview(120, 40, false);
+    let right = Column((win.x + win.width - 1) as usize);
+
+    for editor in [grep, lines] {
+        let screen = screen_after_frame(&editor);
+        for row in win.y + 1..win.y + win.height - 3 {
+            assert_eq!(
+                screen.grid()[Line(row as i32)][right].c,
+                '│',
+                "row={:?}",
+                screen_row(&screen, row)
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "CI render frame-budget guard; run explicitly with cargo test render_frame_budget -- --ignored --nocapture"]
+fn render_frame_budget_live_grep_rows_with_deep_paths_stays_bounded() {
+    // A screen of hits like #351's, where every row shortens its path to
+    // keep the match in view. A layout check, not a PERF.md row.
+    let mut editor = grep_rows_editor(DEEP_PATH, 135, DEEP_TEXT, "paragraph_terms");
+    let hit = editor.finder.items[0].clone();
+    editor.finder.items = (1..=1000).map(|line| hit.clone().with_line(line)).collect();
+    editor.finder.filtered = (0..1000).collect();
+
+    check_render_frame_budget(
+        "live grep rows with deep paths",
+        &editor,
+        5,
+        Duration::from_millis(100),
     );
 }
 

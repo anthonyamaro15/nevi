@@ -53,6 +53,18 @@ fn finder_preview_match_ranges(
     crate::finder::case_insensitive_match_ranges(&line[..end], query)
 }
 
+/// The color of a diagnostics row's "[E]"-style severity prefix.
+fn finder_severity_color(display: &str) -> Option<Color> {
+    let rgb = |r, g, b| Some(Color::Rgb { r, g, b });
+    match display.get(..3)? {
+        "[E]" => rgb(255, 80, 80),   // errors
+        "[W]" => rgb(255, 200, 50),  // warnings
+        "[I]" => rgb(100, 180, 255), // info
+        "[H]" => rgb(150, 150, 150), // hints
+        _ => None,
+    }
+}
+
 use crate::commands::{Command, CommandPopupMode, CommandResult, PendingDigraph, parse_command};
 use crate::config::{CommandModeAction, LeaderAction};
 use crate::editor::{
@@ -5967,7 +5979,6 @@ impl Terminal {
                     )?;
                 }
 
-                // Truncate display to fit and highlight matches
                 // Leave space for the icon cell and scroll indicator if needed
                 let icon_width = 3; // icon cell
                 let base_width = if show_scroll_indicator {
@@ -5976,7 +5987,6 @@ impl Terminal {
                     results_width.saturating_sub(1) // -1 for spacing
                 };
                 let max_len = base_width.saturating_sub(icon_width + bar_col);
-                let display_chars: Vec<char> = item.display.chars().take(max_len).collect();
 
                 // Reset foreground color for text
                 if is_selected {
@@ -5989,131 +5999,40 @@ impl Terminal {
                     )?;
                 }
 
-                // For diagnostics mode, color the severity indicator
-                let is_diagnostics_mode =
-                    editor.finder.mode == crate::finder::FinderMode::Diagnostics;
-                let mut skip_severity_coloring = 0;
-
-                // Check for severity prefix and render it with color
-                if is_diagnostics_mode && display_chars.len() >= 3 {
-                    let prefix: String = display_chars[0..3].iter().collect();
-                    let severity_color = match prefix.as_str() {
-                        "[E]" => Some(Color::Rgb {
-                            r: 255,
-                            g: 80,
-                            b: 80,
-                        }), // Red for errors
-                        "[W]" => Some(Color::Rgb {
-                            r: 255,
-                            g: 200,
-                            b: 50,
-                        }), // Yellow for warnings
-                        "[I]" => Some(Color::Rgb {
-                            r: 100,
-                            g: 180,
-                            b: 255,
-                        }), // Blue for info
-                        "[H]" => Some(Color::Rgb {
-                            r: 150,
-                            g: 150,
-                            b: 150,
-                        }), // Gray for hints
-                        _ => None,
+                if editor.finder.mode == crate::finder::FinderMode::Grep {
+                    // Laid out now that the width is known, so the path gives
+                    // way before the match does.
+                    let path = editor.finder.grep_row_path(item);
+                    let cells = crate::finder::row::grep_row(
+                        &path,
+                        item.line.unwrap_or(0),
+                        &item.display,
+                        &item.match_indices,
+                        max_len,
+                    );
+                    let colored = cells
+                        .into_iter()
+                        .map(|(ch, hit)| (ch, if hit { match_color } else { finder_fg }));
+                    self.write_finder_row(colored, max_len)?;
+                } else {
+                    // Diagnostics color their "[E]"-style severity prefix.
+                    let severity = if editor.finder.mode == crate::finder::FinderMode::Diagnostics {
+                        finder_severity_color(&item.display)
+                    } else {
+                        None
                     };
-
-                    if let Some(color) = severity_color {
-                        queue!(self.stdout, SetForegroundColor(color))?;
-                        write!(self.stdout, "{}", prefix)?;
-                        skip_severity_coloring = 3;
-
-                        // Reset to normal text color
-                        if is_selected {
-                            queue!(
-                                self.stdout,
-                                SetForegroundColor(finder_fg),
-                                SetBackgroundColor(selected_bg)
-                            )?;
-                        } else {
-                            queue!(
-                                self.stdout,
-                                SetForegroundColor(finder_fg),
-                                SetBackgroundColor(finder_bg)
-                            )?;
-                        }
-                    }
+                    let colored =
+                        item.display
+                            .chars()
+                            .enumerate()
+                            .map(|(idx, ch)| match severity {
+                                Some(color) if idx < 3 => (ch, color),
+                                _ if item.match_indices.contains(&idx) => (ch, match_color),
+                                _ => (ch, finder_fg),
+                            });
+                    self.write_finder_row(colored, max_len)?;
                 }
 
-                // Batch characters into spans to reduce print calls and color changes
-                // Build normal text and highlighted text separately, then print in spans
-                let mut current_span = String::new();
-                let mut in_highlight = false;
-
-                for (char_idx, ch) in display_chars.iter().enumerate() {
-                    if char_idx < skip_severity_coloring {
-                        continue;
-                    }
-
-                    let is_match = item.match_indices.contains(&char_idx);
-
-                    if is_match != in_highlight {
-                        // Flush current span
-                        if !current_span.is_empty() {
-                            if in_highlight {
-                                queue!(self.stdout, SetForegroundColor(match_color))?;
-                            }
-                            write!(self.stdout, "{}", current_span)?;
-                            if in_highlight {
-                                if is_selected {
-                                    queue!(
-                                        self.stdout,
-                                        SetForegroundColor(finder_fg),
-                                        SetBackgroundColor(selected_bg)
-                                    )?;
-                                } else {
-                                    queue!(
-                                        self.stdout,
-                                        SetForegroundColor(finder_fg),
-                                        SetBackgroundColor(finder_bg)
-                                    )?;
-                                }
-                            }
-                            current_span.clear();
-                        }
-                        in_highlight = is_match;
-                    }
-                    // Tabs and other control characters would move the cursor;
-                    // draw them as blanks, like the editor does.
-                    current_span.push(if ch.is_control() { ' ' } else { *ch });
-                }
-
-                // Flush final span
-                if !current_span.is_empty() {
-                    if in_highlight {
-                        queue!(self.stdout, SetForegroundColor(match_color))?;
-                    }
-                    write!(self.stdout, "{}", current_span)?;
-                    if in_highlight {
-                        if is_selected {
-                            queue!(
-                                self.stdout,
-                                SetForegroundColor(finder_fg),
-                                SetBackgroundColor(selected_bg)
-                            )?;
-                        } else {
-                            queue!(
-                                self.stdout,
-                                SetForegroundColor(finder_fg),
-                                SetBackgroundColor(finder_bg)
-                            )?;
-                        }
-                    }
-                }
-
-                // Pad to fill results panel (batched)
-                let pad_len = max_len.saturating_sub(display_chars.len());
-                if pad_len > 0 {
-                    write!(self.stdout, "{}", " ".repeat(pad_len))?;
-                }
                 // Print the spacing column that was reserved
                 write!(self.stdout, " ")?;
 
@@ -6184,7 +6103,8 @@ impl Terminal {
             write!(self.stdout, "\u{2502}")?; // │ right border
         }
 
-        // Draw separator above input
+        // Draw separator above input. Live grep rows can shorten their path,
+        // so the selected row's full path goes on this line, above the query.
         let sep_y = win.y + 1 + list_height as u16;
         queue!(
             self.stdout,
@@ -6192,18 +6112,34 @@ impl Terminal {
             SetForegroundColor(border_color)
         )?;
         write!(self.stdout, "\u{251c}")?; // ├
+        let selected_path = match editor.finder.selected_item() {
+            Some(item) if editor.finder.mode == crate::finder::FinderMode::Grep => {
+                let label = format!(
+                    "{}:{}",
+                    editor.finder.grep_row_path(item),
+                    item.line.unwrap_or(0)
+                );
+                // "─ " before it, then " " and at least one "─" after.
+                crate::finder::row::cut_left(&label, results_width.saturating_sub(4))
+            }
+            _ => String::new(),
+        };
+        let mut dashes = results_width;
+        if !selected_path.is_empty() {
+            let label_width = crate::finder::row::text_width(&selected_path);
+            write!(self.stdout, "\u{2500} ")?; // ─
+            self.write_finder_row(
+                selected_path.chars().map(|ch| (ch, title_color)),
+                label_width,
+            )?;
+            queue!(self.stdout, SetForegroundColor(border_color))?;
+            write!(self.stdout, " ")?;
+            dashes = results_width.saturating_sub(label_width + 3);
+        }
+        write!(self.stdout, "{}", "\u{2500}".repeat(dashes))?; // ─
         if preview_enabled {
-            for _ in 0..results_width {
-                write!(self.stdout, "\u{2500}")?; // ─
-            }
             write!(self.stdout, "\u{2534}")?; // ┴ (junction with preview separator)
-            for _ in 0..preview_width {
-                write!(self.stdout, "\u{2500}")?; // ─
-            }
-        } else {
-            for _ in 1..(win.width - 1) {
-                write!(self.stdout, "\u{2500}")?; // ─
-            }
+            write!(self.stdout, "{}", "\u{2500}".repeat(preview_width))?;
         }
         write!(self.stdout, "\u{2524}")?; // ┤
 
@@ -6323,6 +6259,42 @@ impl Terminal {
         ));
 
         Ok(())
+    }
+
+    /// Draw `cells` in exactly `width` columns: cut at the right edge by
+    /// display width, so a wide character that doesn't fit becomes padding,
+    /// then padded with blanks. Control characters draw as blanks, like the
+    /// editor does. Only the foreground changes; the caller sets the
+    /// background.
+    fn write_finder_row(
+        &mut self,
+        cells: impl IntoIterator<Item = (char, Color)>,
+        width: usize,
+    ) -> io::Result<()> {
+        let mut used = 0;
+        let mut span = String::new();
+        let mut span_color = None;
+        for (ch, color) in cells {
+            let ch_width = crate::finder::row::cell_width(ch);
+            if used + ch_width > width {
+                break;
+            }
+            if span_color != Some(color) {
+                if let Some(previous) = span_color {
+                    queue!(self.stdout, SetForegroundColor(previous))?;
+                    write!(self.stdout, "{span}")?;
+                    span.clear();
+                }
+                span_color = Some(color);
+            }
+            span.push(if ch.is_control() { ' ' } else { ch });
+            used += ch_width;
+        }
+        if let Some(color) = span_color {
+            queue!(self.stdout, SetForegroundColor(color))?;
+            write!(self.stdout, "{span}")?;
+        }
+        write!(self.stdout, "{}", " ".repeat(width - used))
     }
 
     /// Render a single row of the preview panel
@@ -12459,22 +12431,31 @@ mod tests {
         start.elapsed()
     }
 
+    /// The frame guard, plus the frame's row for PERF.md.
     fn assert_render_frame_budget(
         name: &str,
         editor: &Editor,
         iterations: usize,
         p95_budget: Duration,
     ) {
+        let median = check_render_frame_budget(name, editor, iterations, p95_budget);
+        // PERF.md reports the median frame, from a release build.
+        crate::perf::print_perf_row(&format!("Drawing: one frame, {name}"), median);
+    }
+
+    /// Fails when the p95 frame is over budget; returns the median frame.
+    /// On its own, for frames PERF.md doesn't list.
+    fn check_render_frame_budget(
+        name: &str,
+        editor: &Editor,
+        iterations: usize,
+        p95_budget: Duration,
+    ) -> Duration {
         assert!(iterations > 0);
         let _ = measure_render(editor);
 
         let mut samples: Vec<Duration> = (0..iterations).map(|_| measure_render(editor)).collect();
         samples.sort();
-        // PERF.md reports the median frame, from a release build.
-        crate::perf::print_perf_row(
-            &format!("Drawing: one frame, {name}"),
-            samples[samples.len() / 2],
-        );
         let p95_idx = ((samples.len() - 1) * 95) / 100;
         let p95 = samples[p95_idx];
         let max = *samples.last().expect("samples");
@@ -12490,6 +12471,7 @@ mod tests {
             p95 <= p95_budget,
             "{name} render p95 exceeded budget: p95={p95:?}, budget={p95_budget:?}, max={max:?}"
         );
+        samples[samples.len() / 2]
     }
 
     fn large_numbered_document(line_count: usize) -> String {
