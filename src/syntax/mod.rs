@@ -134,6 +134,7 @@ impl SyntaxManager {
             Some("php") => self.set_php_language(),
             Some("go") => self.set_go_language(),
             Some("swift") => self.set_swift_language(),
+            Some("typ") => self.set_typst_language(),
             _ => {
                 if first_line.is_some_and(shebang_is_shell) {
                     self.set_shell_language();
@@ -568,6 +569,29 @@ impl SyntaxManager {
             }
             Err(e) => {
                 self.language = Some(format!("swift (lang error: {:?})", e));
+            }
+        }
+    }
+
+    fn set_typst_language(&mut self) {
+        let language = codebook_tree_sitter_typst::LANGUAGE;
+        match self.parser.set_language(&language.into()) {
+            Ok(()) => {
+                self.language = Some("typst".to_string());
+
+                let query_source = highlighter::typst_highlight_query();
+                match Query::new(&language.into(), query_source) {
+                    Ok(query) => {
+                        self.query = Some(query);
+                    }
+                    Err(e) => {
+                        self.language = Some(format!("typst (query error: {:?})", e));
+                        self.query = None;
+                    }
+                }
+            }
+            Err(e) => {
+                self.language = Some(format!("typst (lang error: {:?})", e));
             }
         }
     }
@@ -1029,6 +1053,7 @@ pub fn get_comment_string(language: Option<&str>) -> &'static str {
         Some("yaml") | Some("toml") => "# ",
         Some("php") | Some("go") | Some("c") | Some("cpp") | Some("java") | Some("swift") => "// ",
         Some("ruby") | Some("perl") => "# ",
+        Some("typst") => "// ",
         Some("html") | Some("xml") => "<!-- ",
         _ => "// ", // Default fallback
     }
@@ -1266,6 +1291,37 @@ mod tests {
         assert!(
             !syntax.get_line_highlights(0).is_empty(),
             "swift files should use Swift syntax highlighting"
+        );
+    }
+
+    #[test]
+    fn typst_extension_uses_typst_highlighting() {
+        let mut syntax = SyntaxManager::new();
+        syntax.set_language_from_path(Path::new("paper.typ"));
+
+        let mut buffer = Buffer::new();
+        buffer.set_content("= Introduction\n#let x = 1\n");
+        syntax.parse(&mut buffer);
+
+        assert_eq!(syntax.language_name(), Some("typst"));
+        assert!(syntax.has_highlighting());
+        assert!(
+            !syntax.get_line_highlights(0).is_empty(),
+            "typ files should use Typst syntax highlighting"
+        );
+
+        // Later captures win in nevi, so the heading marker must keep the
+        // keyword colour rather than the heading's title colour.
+        let theme = Theme::default();
+        let marker = syntax
+            .get_line_highlights(0)
+            .into_iter()
+            .find(|span| span.start_col == 0)
+            .expect("heading marker should be highlighted");
+        assert_eq!(Some(marker.fg), theme.get_color_for_capture("keyword"));
+        assert_ne!(
+            theme.get_color_for_capture("keyword"),
+            theme.get_color_for_capture("type")
         );
     }
 

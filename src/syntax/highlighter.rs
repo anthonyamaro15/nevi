@@ -1377,6 +1377,98 @@ pub fn swift_highlight_query() -> &'static str {
     tree_sitter_swift::HIGHLIGHTS_QUERY
 }
 
+pub fn typst_highlight_query() -> &'static str {
+    r##"
+; Generic identifiers first so everything below overrides them
+(ident) @variable
+
+; Headings: whole line as a title, markers as keywords (below)
+(heading) @type
+
+; Strings and raw text
+(string) @string
+(raw_blck) @string
+(raw_span) @string
+
+(comment) @comment
+
+; Values
+(number) @number
+(bool) @boolean
+(none) @constant
+(auto) @constant
+(symbol) @constant
+(shorthand) @constant
+(letter) @constant
+(linebreak) @constant
+(escape) @constant
+
+; Markup
+(emph) @attribute
+(strong) @label
+(quote) @comment
+(label) @tag
+(ref) @tag
+(url) @tag
+(raw_blck lang: (ident) @tag)
+
+; Fields and named arguments
+(field field: (ident) @property)
+(tagged field: (ident) @property)
+
+; Calls
+(call
+  item: (ident) @function)
+(call
+  item: (field field: (ident) @function.method))
+
+; Operators
+(sign ["+" "-"] @operator)
+(add "+" @operator)
+(sub "-" @operator)
+(mul "*" @operator)
+(div "/" @operator)
+(cmp ["==" "<=" ">=" "!=" "<" ">"] @operator)
+(fraction "/" @operator)
+(fac "!" @operator)
+(attach ["^" "_"] @operator)
+(wildcard) @operator
+(align) @operator
+(math "$" @operator)
+(raw_blck "```" @operator)
+(raw_span "`" @operator)
+"#" @operator
+
+; Punctuation
+["(" ")" "{" "}"] @punctuation
+(content ["[" "]"] @punctuation)
+["," ";" ".." ":" "sep"] @punctuation
+"assign" @punctuation
+(field "." @punctuation)
+(item "-" @punctuation)
+(term ["/" ":"] @punctuation)
+
+; Keywords last so they win over everything above
+(heading ["=" "==" "===" "====" "=====" "======"] @keyword)
+(let "let" @keyword)
+(branch ["if" "else"] @keyword)
+(while "while" @keyword)
+(for ["for" "in"] @keyword)
+(import "import" @keyword)
+(as "as" @keyword)
+(include "include" @keyword)
+(show "show" @keyword)
+(set "set" @keyword)
+(return "return" @keyword)
+(flow ["break" "continue"] @keyword)
+(context "context" @keyword)
+(in ["in" "not"] @keyword)
+(and "and" @keyword)
+(or "or" @keyword)
+(not "not" @keyword)
+"##
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1558,6 +1650,38 @@ mod tests {
             swift_highlight_query(),
             "Swift",
         );
+    }
+
+    #[test]
+    fn typst_highlight_query_compiles() {
+        assert_query_compiles(
+            codebook_tree_sitter_typst::LANGUAGE.into(),
+            typst_highlight_query(),
+            "Typst",
+        );
+    }
+
+    #[test]
+    fn typst_query_captures_markup_and_code() {
+        let captures = capture_texts(
+            codebook_tree_sitter_typst::LANGUAGE.into(),
+            typst_highlight_query(),
+            "= Title\n#let x = 1\n#text(fill: red)[hi] // note\n",
+        );
+
+        for (name, text) in [
+            ("keyword", "="),
+            ("keyword", "let"),
+            ("number", "1"),
+            ("function", "text"),
+            ("property", "fill"),
+            ("comment", "// note"),
+        ] {
+            assert!(
+                captures.iter().any(|(n, t)| n == name && t == text),
+                "expected @{name} on {text:?}, got {captures:?}"
+            );
+        }
     }
 
     #[test]

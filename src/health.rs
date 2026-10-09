@@ -528,6 +528,7 @@ where
         command_tool_health_if_enabled("ruby", &servers.ruby, is_command_available),
         command_tool_health_if_enabled("shell", &servers.shell, is_command_available),
         command_tool_health_if_enabled("swift", &servers.swift, is_command_available),
+        command_tool_health_if_enabled("typst", &servers.typst, is_command_available),
     ]
     .into_iter()
     .flatten()
@@ -699,6 +700,7 @@ fn lsp_server_health(settings: &crate::config::Settings) -> Vec<LspServerHealth>
         server_health("ruby", &servers.ruby),
         server_health("shell", &servers.shell),
         server_health("swift", &servers.swift),
+        server_health("typst", &servers.typst),
     ]
 }
 

@@ -630,6 +630,7 @@ fn detect_language_for_document(path: &PathBuf, text: &str) -> String {
         }
         Some("php") => "php".to_string(),
         Some("swift") => "swift".to_string(),
+        Some("typ") => "typst".to_string(),
         Some("kt") | Some("kts") => "kotlin".to_string(),
         Some("cs") => "csharp".to_string(),
         Some("lua") => "lua".to_string(),
