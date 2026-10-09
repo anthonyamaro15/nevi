@@ -10,11 +10,11 @@ the test suite enforces, so it cannot drift from what is actually verified.
 ## Summary
 
 - **374 keybinds implemented** ([KEYBINDINGS.md](KEYBINDINGS.md)), **55 planned** ([KEYBINDS_ROADMAP.md](KEYBINDS_ROADMAP.md))
-- **229 keybinds in the coverage inventory**, each mapped to the automated test that protects it:
-  - 206 verified against real Neovim (v0.11.3) by the Vim oracle
+- **230 keybinds in the coverage inventory**, each mapped to the automated test that protects it:
+  - 207 verified against real Neovim (v0.11.3) by the Vim oracle
   - 22 protected by focused Nevi regression tests
   - 1 covered as default-keymap plumbing with dedicated tests
-- **646 oracle cases**: motions (162), editing (198), increment (31), insert-entry (17), linewise-operators (39), marks (45), open-line (20), replace (27), search (51), text-objects (30), undo-redo (2), visual (24)
+- **655 oracle cases**: motions (162), editing (207), increment (31), insert-entry (17), linewise-operators (39), marks (45), open-line (20), replace (27), search (51), text-objects (30), undo-redo (2), visual (24)
 - **0 tracked coverage gaps**
 - **258 of 468 documented keybind rows map to an inventoried keybind**; the rest work today but are not yet individually tracked ([full list below](#documented-but-not-yet-inventoried))
 
@@ -146,6 +146,7 @@ claim protection.
 | `Ctrl+r {reg}` | Insert register contents | `insert ctrl-r pastes named register` |
 | `<C-e>` | Insert the character below the cursor | `insert ctrl-e copies char from line below` |
 | `<C-y>` | Insert the character above the cursor | `insert ctrl-y copies char from line above` |
+| `<C-o>` | Run one normal-mode command, then return to insert | `dot after ctrl-o redoes the restarted insert as i` |
 | `<C-a>` | Add count to the number at or after the cursor | `increment number after cursor` |
 | `<C-x>` | Subtract count from the number at or after the cursor | `decrement number after cursor` |
 | `v` | Character-wise visual mode | `visual charwise delete` |

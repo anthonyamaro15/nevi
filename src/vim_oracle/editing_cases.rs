@@ -877,6 +877,58 @@ pub(super) const EDITING_CASES: &[OracleCase] = &[
         initial_text: "ab\ncd\nef\n",
         keys: "i<C-e><Esc>j.",
     },
+    // Insert Ctrl-O ends the insert as a change of its own (as if <Esc> was
+    // typed) and the one-shot command is its own change. Text typed after
+    // it is redone like an `i` command, so a typed `.` or `@a` stays text;
+    // replaying them as commands recursed until the stack overflowed (#338).
+    OracleCase {
+        name: "dot after ctrl-o repeats a typed dot as text",
+        initial_text: "original\n",
+        keys: "i<C-o>h.<Esc>.",
+    },
+    OracleCase {
+        name: "counted dot after ctrl-o repeats the typed text",
+        initial_text: "original\n",
+        keys: "i<C-o>h.<Esc>3.",
+    },
+    OracleCase {
+        name: "dot after ctrl-o inserts the typed text at the cursor",
+        initial_text: "original\n",
+        keys: "ifoo<C-o>0xyz<Esc>.",
+    },
+    OracleCase {
+        name: "dot after ctrl-o keeps a typed macro call as text",
+        initial_text: "original\n",
+        keys: "i<C-o>h@a<Esc>.",
+    },
+    OracleCase {
+        name: "dot after ctrl-o redoes the restarted insert as i",
+        initial_text: "original\n",
+        keys: "oabc<C-o>0X<Esc>.",
+    },
+    // Nothing typed after the one-shot command, so the insert before Ctrl-O
+    // is still the last change. The trailing `k` would run as a one-shot
+    // command and land in insert mode if `.` replayed the Ctrl-O itself.
+    OracleCase {
+        name: "dot after ctrl-o with nothing typed repeats the open line",
+        initial_text: "original\n",
+        keys: "oabc<C-o>0<Esc>.k",
+    },
+    OracleCase {
+        name: "dot after ctrl-o with nothing typed repeats the append",
+        initial_text: "original\n",
+        keys: "A tail<C-o>0<Esc>.",
+    },
+    OracleCase {
+        name: "dot after ctrl-o repeats the one-shot change",
+        initial_text: "aaa\nbbb\nccc\n",
+        keys: "i<C-o>r#<Esc>j.",
+    },
+    OracleCase {
+        name: "dot after ctrl-o prefers text typed after the one-shot change",
+        initial_text: "aaa\nbbb\nccc\n",
+        keys: "i<C-o>r#zz<Esc>j0.",
+    },
     // ]p and [p paste with the indent adjusted to the current line: the
     // first non-empty pasted line takes the current line's indent and the
     // rest keep their indent relative to it. Only "]p" pastes below; [p,

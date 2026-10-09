@@ -391,6 +391,8 @@ Record and replay sequences of commands.
 
 > **Example:** `qa` starts recording into register `a`. Make your edits, press `q` to stop. Then `@a` replays it. `5@a` replays it 5 times.
 
+> **Recursive macros:** a macro that calls itself, like `qa…@aq`, stops after 32 nested calls with a message, and its changes are undone. Vim keeps going until a command in the macro fails, which Nevi does not detect yet.
+
 ### Macro Lens
 
 View and edit recorded macros as readable key notation instead of re-recording.

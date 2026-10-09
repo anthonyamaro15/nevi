@@ -1217,6 +1217,8 @@ pub struct Editor {
     /// Dot repeat (`.`): the last change's key sequence, captured in the
     /// key dispatcher and replayed like a one-shot macro.
     pub dot_repeat: crate::dot_repeat::DotRepeat,
+    /// Nesting of macro and dot-repeat playback, shared by both.
+    pub(crate) replay: crate::replay::ReplayState,
     /// Last insert position for `gi` command (line, col)
     pub last_insert_position: Option<(usize, usize)>,
     /// Where the active insert session began, the `'[` mark once it ends.
@@ -1737,6 +1739,7 @@ impl Editor {
             pending_visual_block_edit: None,
             macros: MacroState::new(),
             dot_repeat: crate::dot_repeat::DotRepeat::default(),
+            replay: crate::replay::ReplayState::default(),
             last_insert_position: None,
             insert_session_start: (0, 0),
             last_inserted_text: None,
@@ -5792,6 +5795,9 @@ impl Editor {
         self.begin_change();
         self.clamp_cursor();
         self.scroll_to_cursor();
+        let version = self.buffer().version();
+        self.dot_repeat
+            .resume_insert(version, self.current_buffer_idx);
     }
 
     fn begin_insert_session(&mut self) {

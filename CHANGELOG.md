@@ -89,6 +89,7 @@
 
 ### Fixed
 
+- Pressing `.` after an insert that used `Ctrl+o` could crash Nevi. The text typed after the `Ctrl+o` command was replayed as Normal-mode commands, so a typed `.` repeated itself until the stack overflowed, and other text could run as edits. `.` now follows Vim: the insert before `Ctrl+o` and the command it runs are changes of their own, and text typed afterwards is repeated as an insert at the cursor. A macro that calls itself, like `qa@aq`, overflowed the stack too. It now stops after 32 nested calls with a message and its changes are undone; Vim keeps going until a command in the macro fails, which Nevi does not detect yet. (#338) The `.` behavior is verified against real Neovim.
 - After `:bd`, highlighting and `=` could keep using the closed buffer's syntax tree when the two buffers happened to share a version number. Closing a buffer now reparses the one that becomes current. (#309)
 
 ### Documentation

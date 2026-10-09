@@ -458,6 +458,11 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
         "Insert the character above the cursor",
         "insert ctrl-y copies char from line above",
     ),
+    insert_oracle(
+        "<C-o>",
+        "Run one normal-mode command, then return to insert",
+        "dot after ctrl-o redoes the restarted insert as i",
+    ),
     vim_oracle(
         "<C-a>",
         "Add count to the number at or after the cursor",

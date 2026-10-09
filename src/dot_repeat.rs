@@ -29,6 +29,10 @@ pub struct DotRepeat {
     /// buffer is unchanged (`i<Esc>`), because Vim records those too and a
     /// stale earlier change must not survive as "the last change".
     ran_insert_session: bool,
+    /// The candidate is an insert resumed after an insert Ctrl-O command.
+    /// Unlike `i<Esc>`, it only becomes the last change if the buffer
+    /// changes; Vim starts its redo on the first edit, not on resuming.
+    resumed_insert: bool,
     /// The candidate touched a flow `.` never repeats (visual mode, command
     /// line, search, undo/redo).
     poisoned: bool,
@@ -62,7 +66,7 @@ impl DotRepeat {
             Mode::Normal | Mode::Insert | Mode::Replace => {}
             _ => self.poisoned = true,
         }
-        if matches!(mode, Mode::Insert | Mode::Replace) {
+        if matches!(mode, Mode::Insert | Mode::Replace) && !self.resumed_insert {
             self.ran_insert_session = true;
         }
         // u / Ctrl-r change the buffer but are never a change for `.`.
@@ -85,6 +89,7 @@ impl DotRepeat {
         self.start_version = version;
         self.start_buffer_idx = buffer_idx;
         self.ran_insert_session = false;
+        self.resumed_insert = false;
         self.poisoned = false;
     }
 
@@ -106,6 +111,21 @@ impl DotRepeat {
             self.redo_keys = keys;
         }
         Some(self.redo_keys.clone())
+    }
+
+    /// Insert mode resumed after an insert Ctrl-O command. The one-shot
+    /// command settles as a change of its own, and whatever is typed next is
+    /// recorded behind an `i`, like Vim's "pretend we start an insertion".
+    /// Typed keys then replay as text: a typed `.` replayed as a command
+    /// would repeat itself forever (#338).
+    pub fn resume_insert(&mut self, version: u64, buffer_idx: usize) {
+        if self.replaying {
+            return;
+        }
+        self.settle(version, buffer_idx);
+        self.candidate
+            .push(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        self.resumed_insert = true;
     }
 
     pub fn begin_replay(&mut self) {
@@ -134,6 +154,7 @@ impl DotRepeat {
     pub fn abandon_candidate(&mut self) {
         self.candidate.clear();
         self.ran_insert_session = false;
+        self.resumed_insert = false;
         self.poisoned = false;
     }
 
@@ -303,6 +324,49 @@ mod tests {
     fn zero_is_a_motion_not_a_count_prefix() {
         assert_eq!(leading_count_len(&[key('0'), key('x')]), 0);
         assert_eq!(leading_count_len(&[key('1'), key('0'), key('x')]), 2);
+    }
+
+    /// `A`, type `a`, Ctrl-O (recorded as Esc), then the one-shot `keys`
+    /// with `version` after them, then insert resumes.
+    fn insert_then_one_shot(dot: &mut DotRepeat, keys: &[char], version: u64) {
+        let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        dot.observe(Mode::Normal, false, 1, 0, key('A'));
+        dot.observe(Mode::Insert, false, 1, 0, key('a'));
+        dot.observe(Mode::Insert, false, 2, 0, ctrl_o);
+        dot.replace_last_key(&[esc()]);
+        for (i, &c) in keys.iter().enumerate() {
+            dot.observe(Mode::Normal, i > 0, 2, 0, key(c));
+        }
+        dot.resume_insert(version, 0);
+    }
+
+    #[test]
+    fn text_typed_after_ctrl_o_is_redone_as_an_i_command() {
+        let mut dot = DotRepeat::default();
+        insert_then_one_shot(&mut dot, &['0'], 2);
+        dot.observe(Mode::Insert, false, 2, 0, key('.'));
+        dot.observe(Mode::Insert, false, 3, 0, esc());
+        dot.observe(Mode::Normal, false, 3, 0, key('j'));
+        assert_eq!(chars(&dot.take_replay_keys(None).unwrap()), "i.␛");
+    }
+
+    #[test]
+    fn nothing_typed_after_ctrl_o_keeps_the_insert_before_it() {
+        let mut dot = DotRepeat::default();
+        insert_then_one_shot(&mut dot, &['0'], 2);
+        dot.observe(Mode::Insert, false, 2, 0, esc());
+        dot.observe(Mode::Normal, false, 2, 0, key('j'));
+        assert_eq!(chars(&dot.take_replay_keys(None).unwrap()), "Aa␛");
+    }
+
+    #[test]
+    fn one_shot_change_is_its_own_change() {
+        let mut dot = DotRepeat::default();
+        // `>>` moved the version from 2 to 3 before insert resumed.
+        insert_then_one_shot(&mut dot, &['>', '>'], 3);
+        dot.observe(Mode::Insert, false, 3, 0, esc());
+        dot.observe(Mode::Normal, false, 3, 0, key('j'));
+        assert_eq!(chars(&dot.take_replay_keys(None).unwrap()), ">>");
     }
 
     #[test]
