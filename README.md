@@ -47,9 +47,9 @@ built into the binary.
 
 - **Vim and Neovim keybindings**, including surround, comment, text objects,
   dot repeat, macros, and registers that survive restarts
-- **Built-in LSP** for 12 languages, auto-detected on your PATH, with install
+- **Built-in LSP** for 14 languages, auto-detected on your PATH, with install
   hints when a server is missing
-- **Tree-sitter highlighting** for 13 languages, with a large-file degradation
+- **Tree-sitter highlighting** for 15 languages, with a large-file degradation
   mode
 - **Telescope-style finder** for files, live grep, buffers, diagnostics, git
   changes, themes, and keymaps
@@ -209,6 +209,7 @@ CONFIGURATION.md.
 | Shell / Bash | Yes | bash-language-server | `npm install -g bash-language-server` |
 | Swift | Yes | sourcekit-lsp | Installed as part of the Swift Toolchain |
 | Markdown | Yes | marksman (off by default) | |
+| Typst | Yes | tinymist | cargo install --git https://github.com/Myriad-Dreamin/tinymist --locked tinymist-cli |
 
 Servers are detected on PATH. `:ToolInstall` prints the exact install commands
 for anything missing, and `:checkhealth` shows what was found. `:LazyGit`

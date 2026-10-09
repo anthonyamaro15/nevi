@@ -29,6 +29,7 @@ pub enum LanguageId {
     Ruby,
     Shell,
     Swift,
+    Typst,
 }
 
 impl LanguageId {
@@ -49,6 +50,7 @@ impl LanguageId {
             "rb" | "rake" | "gemspec" | "ru" | "podspec" => Some(Self::Ruby),
             "sh" | "bash" | "zsh" | "ksh" | "bats" | "ebuild" | "eclass" => Some(Self::Shell),
             "swift" => Some(Self::Swift),
+            "typ" | "typst" => Some(Self::Typst),
             _ => None,
         }
     }
@@ -113,6 +115,7 @@ impl LanguageId {
             Self::Ruby => "ruby",
             Self::Shell => "shellscript",
             Self::Swift => "swift",
+            Self::Typst => "typst",
         }
     }
 }
@@ -184,6 +187,7 @@ impl MultiLspManager {
             LanguageId::Ruby,
             LanguageId::Shell,
             LanguageId::Swift,
+            LanguageId::Typst,
         ]
         .into_iter()
         .find(|lang| {
@@ -380,6 +384,7 @@ impl MultiLspManager {
         ruby_config: LspServerConfig,
         shell_config: LspServerConfig,
         swift_config: LspServerConfig,
+        typst_config: LspServerConfig,
     ) -> Self {
         let mut configs = HashMap::new();
         configs.insert(LanguageId::Rust, rust_config);
@@ -396,6 +401,7 @@ impl MultiLspManager {
         configs.insert(LanguageId::Ruby, ruby_config);
         configs.insert(LanguageId::Shell, shell_config);
         configs.insert(LanguageId::Swift, swift_config);
+        configs.insert(LanguageId::Typst, typst_config);
 
         Self {
             instances: HashMap::new(),
@@ -973,6 +979,7 @@ mod tests {
             servers.ruby,
             servers.shell,
             servers.swift,
+            servers.typst,
         )
     }
 
@@ -1256,6 +1263,28 @@ mod tests {
         assert_eq!(
             manager.status(Some(Path::new("sources/user.swift"))),
             "LSP: sourcekit-lsp not started (swift)"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn typst_paths_route_to_tinymist() {
+        let tmp = unique_temp_dir("nevi_lsp_typst_route");
+        let workspace_root = tmp.join("workspace");
+        fs::create_dir_all(&workspace_root).expect("create workspace");
+
+        let manager = make_manager(workspace_root);
+
+        assert_eq!(LanguageId::from_extension("typ"), Some(LanguageId::Typst));
+        assert_eq!(LanguageId::Typst.as_lsp_id(), "typst");
+        assert_eq!(
+            manager.language_for_path(Path::new("docs/paper.typ")),
+            Some(LanguageId::Typst)
+        );
+        assert_eq!(
+            manager.status(Some(Path::new("docs/paper.typ"))),
+            "LSP: tinymist not started (typst)"
         );
 
         let _ = fs::remove_dir_all(&tmp);

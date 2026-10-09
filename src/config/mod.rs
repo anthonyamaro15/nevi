@@ -731,6 +731,7 @@ pub struct LspServers {
     pub ruby: LspServerConfig,
     pub shell: LspServerConfig,
     pub swift: LspServerConfig,
+    pub typst: LspServerConfig,
 }
 
 impl Default for LspServers {
@@ -892,6 +893,14 @@ impl Default for LspServers {
                 root_patterns: vec!["Package.swift".to_string()],
                 file_extensions: vec!["swift".to_string()],
             },
+            typst: LspServerConfig {
+                enabled: true,
+                preset: None,
+                command: "tinymist".to_string(),
+                args: Vec::new(),
+                root_patterns: vec!["typst.toml".to_string()],
+                file_extensions: vec!["typst".to_string(), "typ".to_string()],
+            },
         }
     }
 }
@@ -918,6 +927,8 @@ pub enum LspPreset {
     Pylsp,
     /// sourcekit-lsp
     Swift,
+    /// tinymist
+    Typst,
     /// Custom - use explicit command/args
     Custom,
 }
@@ -937,6 +948,7 @@ impl LspPreset {
             Self::RustAnalyzer => Some(("rust-analyzer", NONE)),
             Self::Swift => Some(("sourcekit-lsp", NONE)),
             Self::Typescript => Some(("typescript-language-server", STDIO)),
+            Self::Typst => Some(("tinymist", NONE)),
             Self::Custom => None,
         }
     }
@@ -1553,7 +1565,7 @@ fn default_config_template() -> &'static str {
 # LSP servers are auto-detected and enabled by default.
 # Supported: rust-analyzer, typescript-language-server, vscode-css-language-server,
 # vscode-json-language-server, taplo, vscode-html-language-server, pyright-langserver,
-# phpactor, gopls, ruby-lsp, bash-language-server, swift
+# phpactor, gopls, ruby-lsp, bash-language-server, swift, typst
 # Optional: marksman for Markdown (disabled by default)
 #
 # To disable LSP entirely:
@@ -1701,6 +1713,7 @@ fn merge_lsp_servers_with_defaults(user: LspServers) -> LspServers {
         ruby: merge_lsp_server_config(defaults.ruby, user.ruby),
         shell: merge_lsp_server_config(defaults.shell, user.shell),
         swift: merge_lsp_server_config(defaults.swift, user.swift),
+        typst: merge_lsp_server_config(defaults.typst, user.typst),
     }
 }
 
@@ -1978,6 +1991,29 @@ mod tests {
         assert_eq!(
             settings.lsp.servers.swift.file_extensions,
             vec!["swift".to_string(),]
+        );
+    }
+
+    #[test]
+    fn typst_lsp_defaults_use_tinymist() {
+        let settings = Settings::default();
+
+        assert_eq!(settings.lsp.servers.typst.effective_command(), "tinymist");
+        assert_eq!(
+            settings.lsp.servers.typst.effective_args(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            settings.lsp.servers.typst.root_patterns,
+            vec!["typst.toml".to_string()]
+        );
+        assert!(
+            settings
+                .lsp
+                .servers
+                .typst
+                .file_extensions
+                .contains(&"typ".to_string())
         );
     }
 
