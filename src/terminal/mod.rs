@@ -77,6 +77,7 @@ use crate::input::{
     InsertPosition, KeyAction, Operator, TextObject, TextObjectModifier, TextObjectType,
 };
 use crate::lsp::types::{CompletionKind, Diagnostic, DiagnosticSeverity};
+use crate::replay::{play_macro, repeat_last_change};
 use crate::syntax::{HighlightSpan, SyntaxStyle};
 
 /// Events from the terminal that the editor cares about
@@ -6686,67 +6687,6 @@ fn handle_markdown_preview_key(editor: &mut Editor, key: KeyEvent) {
     }
 }
 
-/// Repeat the last change (`.`) by replaying its keys, like Vim's redobuff.
-fn repeat_last_change(editor: &mut Editor, count: Option<usize>) {
-    // The `.` keystroke (and its count) is sitting in the capture candidate;
-    // it must never become the recorded change itself.
-    editor.dot_repeat.abandon_candidate();
-
-    let Some(keys) = editor.dot_repeat.take_replay_keys(count) else {
-        editor.set_status("No change to repeat");
-        return;
-    };
-
-    // One compound undo group so a single `u` reverts the whole repeat,
-    // matching Vim and the macro playback path.
-    editor
-        .undo_stack
-        .begin_compound_group(editor.cursor.line, editor.cursor.col);
-    editor.dot_repeat.begin_replay();
-    for key in keys {
-        handle_key(editor, key);
-    }
-    editor.dot_repeat.end_replay();
-    editor
-        .undo_stack
-        .end_compound_group(editor.cursor.line, editor.cursor.col);
-}
-
-/// Play a macro from a register
-fn play_macro(editor: &mut Editor, register: char, count: usize) {
-    // Get the macro keys (clone to avoid borrow issues)
-    let Some(keys) = editor.macros.get_macro(register).cloned() else {
-        editor.set_status(&format!("Macro @{} not recorded", register));
-        return;
-    };
-
-    if keys.is_empty() {
-        editor.set_status(&format!("Macro @{} is empty", register));
-        return;
-    }
-
-    // Set this as the last executed macro for @@
-    editor.macros.set_last_executed(register);
-
-    // Wrap the entire playback in an undo group
-    editor
-        .undo_stack
-        .begin_compound_group(editor.cursor.line, editor.cursor.col);
-
-    // Play the macro `count` times
-    for _ in 0..count {
-        for key in &keys {
-            // Process each key - note: we DON'T record during playback
-            // because is_recording() will be false
-            handle_key(editor, *key);
-        }
-    }
-
-    editor
-        .undo_stack
-        .end_compound_group(editor.cursor.line, editor.cursor.col);
-}
-
 #[derive(Debug, Clone, Copy)]
 struct CursorRowDamageCandidate {
     mode: Mode,
@@ -8528,6 +8468,11 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
 
         // Execute one normal-mode command, then return to insert mode (Ctrl+o)
         (KeyModifiers::CONTROL, KeyCode::Char('o')) => {
+            // Ends this insert as a change of its own, so `.` redoes it as
+            // if <Esc> had been typed (Vim's redo buffer gets ESC here too).
+            editor
+                .dot_repeat
+                .replace_last_key(&[KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)]);
             editor.enter_insert_normal_once();
         }
 
@@ -11310,6 +11255,7 @@ pub fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
 mod tests {
     mod finder;
     mod normal_interrupt;
+    mod replay;
     mod suspend;
     mod viewport_rendering;
 

@@ -359,6 +359,14 @@ mod tests {
         run_seeds(0..128);
     }
 
+    /// Extended-run seeds that overflowed the stack through `.` after an
+    /// insert Ctrl-O (#338), kept in the normal suite.
+    #[test]
+    fn fuzz_seeds_from_issue_338() {
+        run_seeds(2862..2863);
+        run_seeds(5143..5144);
+    }
+
     /// Extended run for CI nightly / manual use:
     /// `cargo test fuzz_key_sequences_extended -- --ignored`
     #[test]
