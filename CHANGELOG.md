@@ -84,6 +84,7 @@
 ### Languages And Tooling
 
 - Added Swift support.
+- Added Typst support.
 
 ### Fixed
 
