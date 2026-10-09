@@ -27,6 +27,8 @@ pub enum Command {
     WriteQuitIfModified,
     /// :xa - Write all if modified and quit all
     WriteQuitAllIfModified,
+    /// :sus[pend][!] / :st[op][!] - Suspend with job control
+    Suspend,
     /// :e [filename] - Edit a file
     Edit(Option<PathBuf>),
     /// :e! - Reload current file (discard changes)
@@ -293,6 +295,12 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         command: "xa",
         aliases: &[],
         description: "Write all if modified and quit all",
+        takes_args: false,
+    },
+    CommandSpec {
+        command: "suspend",
+        aliases: &["sus", "stop", "st"],
+        description: "Suspend Nevi, resume with fg",
         takes_args: false,
     },
     CommandSpec {
@@ -932,6 +940,14 @@ pub fn command_cheatsheet_rows() -> Vec<(String, String)> {
     rows
 }
 
+/// `:sus[pend][!]` and `:st[op][!]` with every abbreviation Vim accepts. The
+/// `!` only skips 'autowrite', which Nevi doesn't have, so both forms match.
+fn is_suspend_command(name: &str) -> bool {
+    let name = name.strip_suffix('!').unwrap_or(name);
+    (name.len() >= 3 && "suspend".starts_with(name))
+        || (name.len() >= 2 && "stop".starts_with(name))
+}
+
 pub fn parse_command(input: &str) -> Command {
     let input = input.trim();
 
@@ -983,6 +999,8 @@ pub fn parse_command(input: &str) -> Command {
         "wqa" | "wqall" | "xall" => Command::WriteQuitAll,
         "x" | "exit" => Command::WriteQuitIfModified,
         "xa" => Command::WriteQuitAllIfModified,
+
+        name if is_suspend_command(name) => Command::Suspend,
 
         // Edit commands
         "e" | "edit" => {
@@ -1985,6 +2003,28 @@ mod tests {
         assert!(matches!(parse_command("Keymaps"), Command::Keymaps));
         assert!(matches!(parse_command("keymaps"), Command::Keymaps));
         assert!(matches!(parse_command("keys"), Command::Keymaps));
+    }
+
+    #[test]
+    fn suspend_and_stop_accept_only_vim_abbreviations() {
+        for name in [
+            "sus", "suspe", "suspend", "sus!", "st", "sto", "stop", "stop!",
+        ] {
+            assert!(
+                matches!(parse_command(name), Command::Suspend),
+                ":{name} should suspend"
+            );
+        }
+        // Same prefix, other commands in Vim: :su is :substitute, :sta is
+        // :stag, :star is :startinsert, and :stopi is :stopinsert.
+        for name in [
+            "s", "su", "su!", "sta", "star", "stopi", "stopp", "suspendx",
+        ] {
+            assert!(
+                !matches!(parse_command(name), Command::Suspend),
+                ":{name} should not suspend"
+            );
+        }
     }
 
     #[test]

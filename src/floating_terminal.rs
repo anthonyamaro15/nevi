@@ -2233,6 +2233,13 @@ impl FloatingTerminal {
         self.sessions[idx].process_bytes(data);
     }
 
+    /// Show the active terminal without starting a shell. Used by unit tests.
+    #[cfg(test)]
+    pub(crate) fn show_without_shell_for_test(&mut self) {
+        let idx = self.ensure_active_index();
+        self.sessions[idx].visible = true;
+    }
+
     #[cfg(test)]
     fn take_pending_pty_write_for_test(&mut self) -> Vec<u8> {
         let idx = self.ensure_active_index();

@@ -2,8 +2,7 @@ use crossterm::{
     cursor,
     event::{
         self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyModifiers,
-        KeyboardEnhancementFlags, MouseEvent, PopKeyboardEnhancementFlags,
-        PushKeyboardEnhancementFlags,
+        MouseEvent,
     },
     execute, queue,
     style::{Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor},
@@ -13,6 +12,9 @@ use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
+
+mod session;
+pub use session::SuspendOutcome;
 
 macro_rules! terminal_print {
     ($terminal:expr, $($arg:tt)*) => {{
@@ -1092,7 +1094,9 @@ pub struct Terminal {
     stdout: Box<dyn Write>,
     mouse_capture_enabled: bool,
     leader_popup_rect: Option<(u16, u16)>,
-    restore_terminal_state_on_drop: bool,
+    /// False for test terminals: they write to a buffer, so they must never
+    /// switch the real tty's raw mode or restore it on drop.
+    owns_tty: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1115,23 +1119,15 @@ impl Terminal {
         Self::new_with_writer(Box::new(tty))
     }
 
-    fn new_with_writer(mut stdout: Box<dyn Write>) -> anyhow::Result<Self> {
-        // Enter raw mode and alternate screen
-        terminal::enable_raw_mode()?;
-        execute!(
-            stdout,
-            terminal::EnterAlternateScreen,
-            cursor::Hide,
-            event::EnableFocusChange,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        )?;
-
-        Ok(Self {
+    fn new_with_writer(stdout: Box<dyn Write>) -> anyhow::Result<Self> {
+        let mut terminal = Self {
             stdout,
             mouse_capture_enabled: false,
             leader_popup_rect: None,
-            restore_terminal_state_on_drop: true,
-        })
+            owns_tty: true,
+        };
+        terminal.enter_editor_screen()?;
+        Ok(terminal)
     }
 
     #[cfg(test)]
@@ -1140,7 +1136,7 @@ impl Terminal {
             stdout,
             mouse_capture_enabled: false,
             leader_popup_rect: None,
-            restore_terminal_state_on_drop: false,
+            owns_tty: false,
         }
     }
 
@@ -1177,20 +1173,7 @@ impl Terminal {
     /// Run an external process (like lazygit) suspending the editor
     /// The terminal is restored before running and re-initialized after
     pub fn run_external_process(&mut self, command: &str) -> anyhow::Result<()> {
-        let restore_mouse_capture = self.mouse_capture_enabled;
-        self.set_mouse_capture(false)?;
-
-        // Leave alternate screen and show cursor
-        execute!(
-            self.stdout,
-            PopKeyboardEnhancementFlags,
-            cursor::Show,
-            terminal::LeaveAlternateScreen
-        )?;
-        self.stdout.flush()?;
-
-        // Disable raw mode so the external process can use normal terminal
-        terminal::disable_raw_mode()?;
+        self.leave_editor_screen()?;
 
         // Run the command
         let status = std::process::Command::new("sh")
@@ -1198,20 +1181,8 @@ impl Terminal {
             .arg(command)
             .status();
 
-        // Re-enable raw mode
-        terminal::enable_raw_mode()?;
-
-        // Re-enter alternate screen, hide cursor, and re-enable focus change reporting
-        execute!(
-            self.stdout,
-            terminal::EnterAlternateScreen,
-            cursor::Hide,
-            event::EnableFocusChange,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        )?;
-        if restore_mouse_capture {
-            self.set_mouse_capture(true)?;
-        }
+        // Mouse capture comes back with the next render.
+        self.enter_editor_screen()?;
 
         // Check if command succeeded
         match status {
@@ -6517,22 +6488,10 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        if !self.restore_terminal_state_on_drop {
+        if !self.owns_tty {
             return;
         }
-
-        // Restore terminal state
-        let _ = execute!(
-            self.stdout,
-            event::DisableMouseCapture,
-            event::DisableFocusChange,
-            DisableBracketedPaste,
-            PopKeyboardEnhancementFlags,
-            cursor::SetCursorStyle::DefaultUserShape,
-            cursor::Show,
-            terminal::LeaveAlternateScreen
-        );
-        let _ = terminal::disable_raw_mode();
+        let _ = self.leave_editor_screen();
     }
 }
 
@@ -7783,6 +7742,10 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
 
         KeyAction::AlternateBuffer => {
             editor.switch_to_alternate_buffer();
+        }
+
+        KeyAction::Suspend => {
+            editor.pending_suspend = true;
         }
 
         KeyAction::ScrollLineUp(count) => {
@@ -9342,6 +9305,12 @@ fn handle_visual_mode(editor: &mut Editor, key: KeyEvent) {
             editor.exit_visual_mode();
         }
 
+        // Suspend like Normal mode; Vim goes back to Normal first
+        (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
+            editor.exit_visual_mode();
+            editor.pending_suspend = true;
+        }
+
         // Toggle visual mode type
         (KeyModifiers::NONE, KeyCode::Char('v')) => {
             if editor.mode == Mode::Visual {
@@ -10824,6 +10793,11 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
 
         Command::LazyGit => CommandResult::RunExternal("lazygit".to_string()),
 
+        Command::Suspend => {
+            editor.pending_suspend = true;
+            CommandResult::Ok
+        }
+
         Command::Shell(shell_cmd) => {
             if shell_cmd.is_empty() {
                 CommandResult::Error("No command specified".to_string())
@@ -11336,6 +11310,7 @@ pub fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
 mod tests {
     mod finder;
     mod normal_interrupt;
+    mod suspend;
     mod viewport_rendering;
 
     use super::{

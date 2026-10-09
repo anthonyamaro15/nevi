@@ -1114,6 +1114,8 @@ pub struct Editor {
     pub leader_pending_action: Option<LeaderAction>,
     /// Pending external command to run (handled by main loop)
     pub pending_external_command: Option<String>,
+    /// Ctrl-Z or `:suspend` asked the main loop to suspend the process
+    pub pending_suspend: bool,
     /// Fuzzy finder state
     pub finder: FuzzyFinder,
     /// LSP status message (persistent, shown in status bar)
@@ -1686,6 +1688,7 @@ impl Editor {
             leader_sequence_start: None,
             leader_pending_action: None,
             pending_external_command: None,
+            pending_suspend: false,
             finder,
             lsp_status: None,
             lsp_busy: false,

@@ -16,6 +16,7 @@
 
 ### Vim Compatibility
 
+- `Ctrl+z` now suspends Nevi to the shell in Normal and Visual mode, and `fg` brings it back, like Vim. `:suspend` and `:stop` (`:sus`, `:st`, with or without `!`) do the same. Visual mode is left first, and a pending operator or count is dropped. The terminal is handed back in the state the shell expects, and on return the screen is redrawn at the current window size and files changed on disk are picked up, as after lazygit. Language servers pause along with the editor. Where the shell ignores the stop, as inside a bash `$(...)`, Nevi shows a message instead. (#353) Verified against real Neovim where the snapshot can see it; the suspend itself is pinned by native tests.
 - Fixed Normal-mode `Ctrl+c` exiting and discarding unsaved changes. It now cancels pending input or shows quit guidance, matching Neovim. It also closes the `"=` expression prompt, and after `Ctrl+o` in Insert mode it leaves you in Normal mode, like Vim. Ctrl keys now cancel a leader sequence instead of completing a mapping with their letter, in the file explorer too, so `Space` then `Ctrl+c` can't run a `<leader>c` mapping. (#346) Verified against real Neovim.
 - Left-click dragging now selects text in characterwise Visual mode. Releasing the mouse keeps the selection for Visual operators, and selections started in Insert mode return to Insert after an operator or Escape. Selection follows wrapped/scrolled text and stays in the pane where the drag began. (#345)
 

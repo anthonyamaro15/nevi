@@ -79,6 +79,13 @@ status = "implemented"
 vim_default = true
 
 [[normal.file]]
+key = "<C-z>"
+action = "suspend"
+desc = "Suspend to the shell, resume with fg"
+status = "implemented"
+vim_default = true
+
+[[normal.file]]
 key = "[b"
 action = "buffer_prev"
 desc = "Go to the previous buffer, count moves several"
@@ -1656,6 +1663,13 @@ desc = "Exit visual mode"
 status = "implemented"
 vim_default = true
 locked = true
+
+[[visual.editing]]
+key = "<C-z>"
+action = "suspend"
+desc = "Leave visual mode and suspend to the shell"
+status = "implemented"
+vim_default = true
 
 [[visual.editing]]
 key = "d"

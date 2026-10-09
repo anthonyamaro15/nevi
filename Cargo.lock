@@ -961,6 +961,7 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "ignore",
+ "libc",
  "lsp-types",
  "notify",
  "nucleo",

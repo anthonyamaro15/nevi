@@ -97,6 +97,14 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
         "Switch to the alternate buffer",
         "normal_ctrl_caret_toggles_between_the_last_two_buffers",
     ),
+    // Headless nvim ignores a suspend, so the oracle only sees what Ctrl-Z does
+    // to the text and mode (the ctrl-z cases in editing_cases.rs). The request
+    // to suspend is pinned natively.
+    nevi_regression(
+        "<C-z>",
+        "Suspend to the shell, like :stop",
+        "ctrl_z_in_normal_mode_asks_to_suspend",
+    ),
     nevi_regression(
         "[b",
         "Go to the previous buffer",
@@ -504,6 +512,15 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
         kind: CoverageKind::NeviRegression,
         state: CoverageState::Protected {
             test_id: "visual_equals_reindents_selection_like_double_equals",
+        },
+    },
+    KeybindCoverage {
+        mode: KeybindMode::Visual,
+        key: "<C-z>",
+        description: "Leave Visual mode and suspend to the shell",
+        kind: CoverageKind::NeviRegression,
+        state: CoverageState::Protected {
+            test_id: "ctrl_z_in_visual_mode_returns_to_normal_and_asks_to_suspend",
         },
     },
     // Text-object batch: one entry per documented object family.

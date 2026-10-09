@@ -23,6 +23,25 @@ pub(super) const EDITING_CASES: &[OracleCase] = &[
         initial_text: "abc def\n",
         keys: "i<C-r>=<C-c>x<Esc>",
     },
+    // Headless nvim ignores Ctrl-Z and :stop (checked on 0.11.3), so these pin
+    // what Ctrl-Z does to the text, cursor, and mode. An nvim that really
+    // stopped would freeze the test run, since it shares our process group.
+    // The suspend request itself is pinned in terminal/tests/suspend.rs.
+    OracleCase {
+        name: "ctrl-z cancels a pending operator",
+        initial_text: "abc def\n",
+        keys: "d<C-z>w",
+    },
+    OracleCase {
+        name: "ctrl-z drops a pending count",
+        initial_text: "abc def\n",
+        keys: "3<C-z>x",
+    },
+    OracleCase {
+        name: "visual ctrl-z returns to normal mode",
+        initial_text: "abc def\n",
+        keys: "vl<C-z>",
+    },
     OracleCase {
         name: "delete first char on second line",
         initial_text: "alpha\nbeta\n",

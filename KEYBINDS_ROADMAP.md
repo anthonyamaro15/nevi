@@ -4,7 +4,7 @@ Nevi aims for full vim/neovim keybind compatibility. Defaults follow Neovim, and
 keybinds are configurable — sensible defaults out of the box, overridable to your
 own taste.
 
-**Status: 372 keybinds implemented, 55 planned Vim/Neovim parity defaults.**
+**Status: 374 keybinds implemented, 55 planned Vim/Neovim parity defaults.**
 
 The Status line above is the hand-maintained source that the parity report
 reads to build [PARITY.md](PARITY.md). When a planned keybind lands, remove it

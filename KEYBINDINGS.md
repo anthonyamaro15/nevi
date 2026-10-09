@@ -55,6 +55,7 @@ keys, add leader shortcuts, or remap explorer and command-line keys, see
 | Key | Action |
 |-----|--------|
 | `Ctrl+c` | Cancel pending input; otherwise show quit guidance without exiting |
+| `Ctrl+z` | Suspend to the shell, like `:stop`; `fg` brings Nevi back |
 
 ### Basic Movement
 
@@ -471,6 +472,7 @@ Moving the cursor cancels that restoration and counted replay history.
 | Key | Action |
 |-----|--------|
 | `Esc` | Exit visual mode |
+| `Ctrl+z` | Exit visual mode and suspend to the shell |
 | `d` | Delete selection |
 | `c` | Change selection |
 | `y` | Yank selection |
@@ -886,6 +888,7 @@ While typing an Ex command after `:`.
 | `:wqa` / `:wqall` / `:xall` | Save all and quit |
 | `:x` / `:exit` / `ZZ` | Save if modified and quit |
 | `:xa` | Save all modified files and quit all |
+| `:sus` / `:suspend` / `:st` / `:stop` / `Ctrl+z` | Suspend to the shell; `fg` resumes |
 | `:e {file}` / `:edit {file}` | Edit/open a file |
 | `:e!` / `:edit!` | Reload current file and discard changes |
 | `:new {path}` / `:touch {path}` | Create a file, or open it if it already exists |
