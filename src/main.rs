@@ -11,7 +11,7 @@ use nevi::copilot::{
 use nevi::editor::{CopilotAction, CopilotGhostText, LspAction};
 use nevi::lsp;
 use nevi::perf::PerfStats;
-use nevi::terminal::{EditorEvent, execute_leader_action, handle_key};
+use nevi::terminal::{EditorEvent, SuspendOutcome, execute_leader_action, handle_key};
 
 use nevi::{
     AutosaveMode, Editor, LanguageId, LspNotification, Mode, MultiLspManager, Terminal,
@@ -1381,6 +1381,10 @@ fn main() -> anyhow::Result<()> {
                     needs_redraw = true;
                     redraw_from_input = true;
                 }
+                // Keys typed after Ctrl-Z belong to the shell, so stop reading.
+                if editor.pending_suspend {
+                    break;
+                }
                 if !finish_input_batch_event(
                     &terminal,
                     &mut events_processed,
@@ -2117,6 +2121,27 @@ fn main() -> anyhow::Result<()> {
         // Check if we should quit
         if editor.should_quit {
             break;
+        }
+
+        // Ctrl-Z / :suspend: the shell has the terminal until `fg`
+        if std::mem::take(&mut editor.pending_suspend) {
+            match terminal.suspend() {
+                Ok(SuspendOutcome::Resumed) => {
+                    // Treat it like coming back from lazygit: files may have
+                    // changed on disk while the editor was stopped.
+                    if let Some(msg) = editor.handle_external_process_finished() {
+                        editor.set_status(msg);
+                    }
+                }
+                Ok(SuspendOutcome::Unavailable) => {
+                    editor.set_status("Cannot suspend: no job control here");
+                }
+                Err(e) => editor.set_status(format!("Error suspending: {}", e)),
+            }
+            // The screen was handed away, so nothing on it can be reused.
+            editor.render_damage.mark_full();
+            needs_redraw = true;
+            continue;
         }
 
         // Handle pending external command (like lazygit)

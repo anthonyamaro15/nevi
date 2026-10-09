@@ -74,6 +74,10 @@ regex = "1.12.2"
 git2 = "0.19"
 similar = "2.6"
 
+[target.'cfg(unix)'.dependencies]
+# Job-control suspend (Ctrl-Z, :suspend)
+libc = "0.2"
+
 [profile.release]
 lto = true
 codegen-units = 1

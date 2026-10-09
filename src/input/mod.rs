@@ -187,6 +187,8 @@ pub enum KeyAction {
     ForceQuit,
     /// Edit the alternate buffer, like `:e #` (<C-^>)
     AlternateBuffer,
+    /// Suspend with job control, like `:stop` (<C-z>)
+    Suspend,
     /// Repeat last change (.). Carries the typed count, if any: Vim treats
     /// an explicit count (even `1.`) as replacing the change's own count.
     RepeatLastChange(Option<usize>),
@@ -1136,6 +1138,14 @@ impl InputState {
             (KeyModifiers::CONTROL, KeyCode::Char('x')) => {
                 self.reset();
                 KeyAction::AddToNumber(-(count as i64))
+            }
+
+            // <C-z> - suspend like :stop. A pending operator or count is
+            // dropped first, as Vim's nv_suspend does; r, f, and the other
+            // keys waiting for a character take it before it gets here.
+            (KeyModifiers::CONTROL, KeyCode::Char('z')) => {
+                self.reset();
+                KeyAction::Suspend
             }
 
             // Insert mode entry (or text object modifier if operator pending)
