@@ -1236,6 +1236,17 @@ fn run_nevi_case_with_options(
         ));
     }
 
+    // The snapshot compares lines, which cannot show a missing final
+    // newline. Neovim writes one for any buffer with text ('fixendofline'),
+    // and Nevi saves the buffer text as is (#294).
+    let content = editor.buffer().content();
+    if !content.is_empty() && !content.ends_with('\n') {
+        return Err(format!(
+            "case `{}`: buffer has no final newline after keys: {content:?}",
+            case.name
+        ));
+    }
+
     Ok(snapshot_nevi(&editor))
 }
 
@@ -1677,14 +1688,14 @@ mod tests {
     }
 
     #[test]
-    /// Runs every oracle case on the Nevi side only, so the pane-mirror
-    /// check in `run_nevi_case_with_options` is enforced in the normal
-    /// suite without Neovim present.
-    fn pane_mirror_stays_in_sync_after_every_oracle_case() {
+    /// Runs every oracle case on the Nevi side only, so the pane-mirror and
+    /// final-newline checks in `run_nevi_case_with_options` are enforced in
+    /// the normal suite without Neovim present.
+    fn nevi_side_checks_hold_after_every_oracle_case() {
         let mut bad = Vec::new();
         let mut run = |case: &OracleCase, h: u16, wrap: bool| {
             if let Err(e) = run_nevi_case_with_options(case, h, wrap) {
-                if e.contains("out of sync") {
+                if e.contains("out of sync") || e.contains("no final newline") {
                     bad.push(e);
                 }
             }
@@ -1707,7 +1718,7 @@ mod tests {
         }
         assert!(
             bad.is_empty(),
-            "{} case(s) left the pane mirror behind:\n{}",
+            "{} case(s) failed a Nevi-side check:\n{}",
             bad.len(),
             bad.join("\n")
         );

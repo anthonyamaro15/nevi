@@ -72,13 +72,11 @@ impl Editor {
         };
 
         if let Some(old_char) = original {
-            self.undo_stack
-                .record_change(Change::delete(line, col, old_char.to_string()));
+            self.record_change(Change::delete(line, col, old_char.to_string()));
             self.buffers[self.current_buffer_idx].delete_char(line, col);
         }
 
-        self.undo_stack
-            .record_change(Change::insert(line, col, ch.to_string()));
+        self.record_change(Change::insert(line, col, ch.to_string()));
         self.buffers[self.current_buffer_idx].insert_char(line, col, ch);
 
         if track_session {
@@ -104,8 +102,7 @@ impl Editor {
         let line = self.cursor.line;
         let col = self.cursor.col;
 
-        self.undo_stack
-            .record_change(Change::insert(line, col, "\n".to_string()));
+        self.record_change(Change::insert(line, col, "\n".to_string()));
         self.buffers[self.current_buffer_idx].insert_char(line, col, '\n');
 
         if track_session {
@@ -148,13 +145,11 @@ impl Editor {
                 original,
                 replacement,
             } => {
-                self.undo_stack
-                    .record_change(Change::delete(line, col, replacement.to_string()));
+                self.record_change(Change::delete(line, col, replacement.to_string()));
                 self.buffers[self.current_buffer_idx].delete_char(line, col);
 
                 if let Some(old_char) = original {
-                    self.undo_stack
-                        .record_change(Change::insert(line, col, old_char.to_string()));
+                    self.record_change(Change::insert(line, col, old_char.to_string()));
                     self.buffers[self.current_buffer_idx].insert_char(line, col, old_char);
                 }
 
@@ -162,8 +157,7 @@ impl Editor {
                 self.cursor.col = col;
             }
             ReplaceEdit::Newline { line, col } => {
-                self.undo_stack
-                    .record_change(Change::delete(line, col, "\n".to_string()));
+                self.record_change(Change::delete(line, col, "\n".to_string()));
                 self.buffers[self.current_buffer_idx].delete_char(line, col);
                 self.cursor.line = line;
                 self.cursor.col = col;
@@ -226,10 +220,8 @@ impl Editor {
 
         self.begin_change();
         self.undo_stack.prefer_current_cursor_after(line, start_col);
-        self.undo_stack
-            .record_change(Change::delete(line, start_col, old_text));
-        self.undo_stack
-            .record_change(Change::insert(line, start_col, replacement.clone()));
+        self.record_change(Change::delete(line, start_col, old_text));
+        self.record_change(Change::insert(line, start_col, replacement.clone()));
 
         self.buffers[self.current_buffer_idx].delete_range(line, start_col, line, end_col + 1);
         self.buffers[self.current_buffer_idx].insert_str(line, start_col, &replacement);
