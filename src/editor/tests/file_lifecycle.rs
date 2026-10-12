@@ -80,9 +80,10 @@ fn newly_opened_path_saves_without_an_explicit_save_as() {
 
     editor.save().expect("save to original path");
 
+    // #294: a file created in the editor ends with a newline, like Neovim.
     assert_eq!(
         std::fs::read_to_string(&path).expect("read saved file"),
-        "abc"
+        "abc\n"
     );
 
     std::fs::remove_dir_all(temp_dir).expect("remove temp directory");

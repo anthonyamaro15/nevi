@@ -347,6 +347,43 @@ pub(super) const EDITING_CASES: &[OracleCase] = &[
         initial_text: "alpha\nbeta",
         keys: "GJ",
     },
+    // #294: an empty buffer (a new file) gets its final newline once text
+    // goes in, and a blank line opened at its end stays a real line.
+    OracleCase {
+        name: "type into empty buffer",
+        initial_text: "",
+        keys: "ix<Esc>",
+    },
+    OracleCase {
+        name: "open line below in empty buffer",
+        initial_text: "",
+        keys: "o<Esc>",
+    },
+    OracleCase {
+        name: "open line above in empty buffer",
+        initial_text: "",
+        keys: "O<Esc>",
+    },
+    OracleCase {
+        name: "enter in insert in empty buffer",
+        initial_text: "",
+        keys: "i<CR><Esc>",
+    },
+    OracleCase {
+        name: "open line below after typing into empty buffer",
+        initial_text: "",
+        keys: "ix<Esc>o<Esc>",
+    },
+    OracleCase {
+        name: "linewise put below into emptied buffer",
+        initial_text: "",
+        keys: "iabc<Esc>yy\"_ddp",
+    },
+    OracleCase {
+        name: "linewise put above into emptied buffer",
+        initial_text: "",
+        keys: "iabc<Esc>yy\"_ddP",
+    },
     // Case-changing operators: gu/gU/g~ with a motion, the doubled line
     // forms, and the ~ quick toggle.
     OracleCase {

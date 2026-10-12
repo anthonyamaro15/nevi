@@ -2745,13 +2745,11 @@ fn apply_copilot_completion(editor: &mut Editor, completion: &CopilotCompletion)
         };
 
         if !deleted_text.is_empty() {
-            editor
-                .undo_stack
-                .record_change(nevi::editor::Change::delete(
-                    start_line,
-                    start_col,
-                    deleted_text,
-                ));
+            editor.record_change(nevi::editor::Change::delete(
+                start_line,
+                start_col,
+                deleted_text,
+            ));
         }
 
         editor
@@ -2760,13 +2758,11 @@ fn apply_copilot_completion(editor: &mut Editor, completion: &CopilotCompletion)
     }
 
     if !completion.text.is_empty() {
-        editor
-            .undo_stack
-            .record_change(nevi::editor::Change::insert(
-                start_line,
-                start_col,
-                completion.text.clone(),
-            ));
+        editor.record_change(nevi::editor::Change::insert(
+            start_line,
+            start_col,
+            completion.text.clone(),
+        ));
         editor
             .buffer_mut()
             .insert_str(start_line, start_col, &completion.text);

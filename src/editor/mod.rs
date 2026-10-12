@@ -2824,11 +2824,7 @@ impl Editor {
 
             // Record the deletion for undo
             if !deleted_text.is_empty() {
-                self.undo_stack.record_change(Change::delete(
-                    edit.start_line,
-                    start_col,
-                    deleted_text,
-                ));
+                self.record_change(Change::delete(edit.start_line, start_col, deleted_text));
             }
 
             // Delete the range from the buffer (LSP end_col is exclusive)
@@ -2843,7 +2839,7 @@ impl Editor {
 
             // Insert the new text
             if !edit.new_text.is_empty() {
-                self.undo_stack.record_change(Change::insert(
+                self.record_change(Change::insert(
                     edit.start_line,
                     start_col,
                     edit.new_text.clone(),
@@ -3470,8 +3466,7 @@ impl Editor {
         self.buffer_mut().set_content(content);
         self.mark_bufferline_if_dirty_changed(self.current_buffer_idx, was_dirty);
         let new_content = self.buffer().content();
-        self.undo_stack
-            .record_change(Change::new(0, 0, old_content, new_content));
+        self.record_change(Change::new(0, 0, old_content, new_content));
 
         let max_line = self.buffer().addressable_line_count().saturating_sub(1);
         self.cursor.line = cursor_line.min(max_line);
@@ -3536,8 +3531,7 @@ impl Editor {
         let text = "\n".repeat(count);
 
         self.begin_change();
-        self.undo_stack
-            .record_change(Change::insert(line, col, text.clone()));
+        self.record_change(Change::insert(line, col, text.clone()));
         self.buffers[self.current_buffer_idx].insert_str(line, col, &text);
         self.mark_buffer_modified(self.current_buffer_idx);
         if above {
@@ -5111,8 +5105,7 @@ impl Editor {
 
             // Record for undo
             self.begin_change();
-            self.undo_stack
-                .record_change(Change::delete(start_line, start_col, text.clone()));
+            self.record_change(Change::delete(start_line, start_col, text.clone()));
 
             let deleted = self.delete_range(start_line, start_col, end_line, end_col);
 
@@ -5145,8 +5138,7 @@ impl Editor {
 
         // Record for undo
         self.begin_change();
-        self.undo_stack
-            .record_change(Change::delete(start_line, 0, text.clone()));
+        self.record_change(Change::delete(start_line, 0, text.clone()));
 
         let deleted = self.delete_lines(self.cursor.line, count);
 
@@ -5226,8 +5218,7 @@ impl Editor {
 
             // Begin undo group (will include the delete and subsequent inserts)
             self.begin_change();
-            self.undo_stack
-                .record_change(Change::delete(start_line, start_col, text.clone()));
+            self.record_change(Change::delete(start_line, start_col, text.clone()));
 
             let deleted = self.delete_range(start_line, start_col, end_line, end_col);
 
@@ -5253,8 +5244,7 @@ impl Editor {
             let deleted = self.get_range_text(line, start_col, line, end_col);
 
             if !deleted.is_empty() {
-                self.undo_stack
-                    .record_change(Change::delete(line, start_col, deleted.clone()));
+                self.record_change(Change::delete(line, start_col, deleted.clone()));
                 self.buffers[self.current_buffer_idx].delete_range(
                     line,
                     start_col,
@@ -5301,7 +5291,7 @@ impl Editor {
         self.begin_change();
         self.undo_stack
             .prefer_current_cursor_after(self.cursor.line, indentation_len);
-        self.undo_stack.record_change(Change::new(
+        self.record_change(Change::new(
             self.cursor.line,
             0,
             text.clone(),
@@ -5386,9 +5376,10 @@ impl Editor {
             RegisterContent::Lines(text) => {
                 // Paste on new line below
                 let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
-                let line_has_terminator = self.buffers[self.current_buffer_idx]
-                    .line_len_including_newline(self.cursor.line)
-                    > line_len;
+                // An empty buffer gets its terminator from record_change.
+                let buffer = &self.buffers[self.current_buffer_idx];
+                let line_has_terminator = buffer.is_empty()
+                    || buffer.line_len_including_newline(self.cursor.line) > line_len;
                 let trimmed = text.strip_suffix('\n').unwrap_or(&text);
                 let inserted_block = if line_has_terminator {
                     trimmed.to_string()
@@ -5398,11 +5389,7 @@ impl Editor {
 
                 // Record the insertion for undo
                 let insert_text = format!("\n{inserted_block}");
-                self.undo_stack.record_change(Change::insert(
-                    self.cursor.line,
-                    line_len,
-                    insert_text,
-                ));
+                self.record_change(Change::insert(self.cursor.line, line_len, insert_text));
 
                 self.buffers[self.current_buffer_idx].insert_char(self.cursor.line, line_len, '\n');
                 self.cursor.line += 1;
@@ -5441,11 +5428,7 @@ impl Editor {
                 };
 
                 // Record the insertion for undo
-                self.undo_stack.record_change(Change::insert(
-                    insert_line,
-                    insert_col,
-                    text.clone(),
-                ));
+                self.record_change(Change::insert(insert_line, insert_col, text.clone()));
 
                 self.buffers[self.current_buffer_idx].insert_str(insert_line, insert_col, &text);
                 if text.contains('\n') {
@@ -5587,11 +5570,7 @@ impl Editor {
                 };
 
                 // Record the insertion for undo
-                self.undo_stack.record_change(Change::insert(
-                    self.cursor.line,
-                    0,
-                    insert_text.clone(),
-                ));
+                self.record_change(Change::insert(self.cursor.line, 0, insert_text.clone()));
 
                 self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, 0, &text);
                 if !text.ends_with('\n') {
@@ -5617,11 +5596,7 @@ impl Editor {
                 let insert_line = self.cursor.line;
                 let insert_col = self.cursor.col;
                 // Record the insertion for undo
-                self.undo_stack.record_change(Change::insert(
-                    insert_line,
-                    insert_col,
-                    text.clone(),
-                ));
+                self.record_change(Change::insert(insert_line, insert_col, text.clone()));
 
                 // Paste before cursor
                 self.buffers[self.current_buffer_idx].insert_str(insert_line, insert_col, &text);
@@ -5847,8 +5822,7 @@ impl Editor {
     fn insert_text_at_cursor(&mut self, text: &str) {
         let start_line = self.cursor.line;
         let start_col = self.cursor.col;
-        self.undo_stack
-            .record_change(Change::insert(start_line, start_col, text.to_string()));
+        self.record_change(Change::insert(start_line, start_col, text.to_string()));
         self.buffers[self.current_buffer_idx].insert_str(start_line, start_col, text);
         self.record_inserted_text(text);
         let (end_line, end_col) = Self::text_position_after_insert(start_line, start_col, text);
@@ -6073,11 +6047,7 @@ impl Editor {
 
             let line_len = self.buffers[self.current_buffer_idx].line_len(line_idx);
             let insert_col = block_edit.insert_col.min(line_len);
-            self.undo_stack.record_change(Change::insert(
-                line_idx,
-                insert_col,
-                inserted_text.clone(),
-            ));
+            self.record_change(Change::insert(line_idx, insert_col, inserted_text.clone()));
             self.buffers[self.current_buffer_idx].insert_str(line_idx, insert_col, &inserted_text);
         }
     }
@@ -6122,7 +6092,7 @@ impl Editor {
             self.insert_closing_bracket(ch);
         } else {
             // Standard character insertion
-            self.undo_stack.record_change(Change::insert(
+            self.record_change(Change::insert(
                 self.cursor.line,
                 self.cursor.col,
                 ch.to_string(),
@@ -6179,7 +6149,7 @@ impl Editor {
                             self.buffers[self.current_buffer_idx].get_line_indent(self.cursor.line);
                         let insert_text = format!("\n{}\n{}", indent, base_indent);
 
-                        self.undo_stack.record_change(Change::insert(
+                        self.record_change(Change::insert(
                             self.cursor.line,
                             self.cursor.col,
                             insert_text.clone(),
@@ -6198,7 +6168,7 @@ impl Editor {
                     } else {
                         // Regular newline with indent
                         let insert_text = format!("\n{}", indent);
-                        self.undo_stack.record_change(Change::insert(
+                        self.record_change(Change::insert(
                             self.cursor.line,
                             self.cursor.col,
                             insert_text.clone(),
@@ -6264,7 +6234,7 @@ impl Editor {
         if between_brackets {
             // Bracket expansion: insert two newlines
             let insert_text = format!("\n{}\n{}", indent, base_indent);
-            self.undo_stack.record_change(Change::insert(
+            self.record_change(Change::insert(
                 self.cursor.line,
                 self.cursor.col,
                 insert_text.clone(),
@@ -6283,7 +6253,7 @@ impl Editor {
         } else {
             // Regular newline with indent
             let insert_text = format!("\n{}", indent);
-            self.undo_stack.record_change(Change::insert(
+            self.record_change(Change::insert(
                 self.cursor.line,
                 self.cursor.col,
                 insert_text.clone(),
@@ -6331,7 +6301,7 @@ impl Editor {
 
                         // Record the deletion for undo
                         let deleted_text = " ".repeat(dedent_amount);
-                        self.undo_stack.record_change(Change::delete(
+                        self.record_change(Change::delete(
                             self.cursor.line,
                             delete_start,
                             deleted_text,
@@ -6346,7 +6316,7 @@ impl Editor {
                     }
 
                     // Insert the bracket
-                    self.undo_stack.record_change(Change::insert(
+                    self.record_change(Change::insert(
                         self.cursor.line,
                         self.cursor.col,
                         bracket.to_string(),
@@ -6373,11 +6343,7 @@ impl Editor {
 
                 // Record the deletion for undo
                 let deleted_text = " ".repeat(tab_width);
-                self.undo_stack.record_change(Change::delete(
-                    self.cursor.line,
-                    delete_start,
-                    deleted_text,
-                ));
+                self.record_change(Change::delete(self.cursor.line, delete_start, deleted_text));
 
                 // Delete the indent
                 for _ in 0..tab_width {
@@ -6389,7 +6355,7 @@ impl Editor {
         }
 
         // Record and insert the bracket
-        self.undo_stack.record_change(Change::insert(
+        self.record_change(Change::insert(
             self.cursor.line,
             self.cursor.col,
             bracket.to_string(),
@@ -6429,11 +6395,7 @@ impl Editor {
             // Record the deleted character for undo
             let deleted = self.buffers[self.current_buffer_idx]
                 .get_char_str(self.cursor.line, self.cursor.col);
-            self.undo_stack.record_change(Change::delete(
-                self.cursor.line,
-                self.cursor.col,
-                deleted,
-            ));
+            self.record_change(Change::delete(self.cursor.line, self.cursor.col, deleted));
             self.buffers[self.current_buffer_idx].delete_char(self.cursor.line, self.cursor.col);
         } else if self.cursor.line > 0 {
             // Join with previous line
@@ -6442,7 +6404,7 @@ impl Editor {
             self.cursor.line -= 1;
             self.cursor.col = prev_line_len;
             // Record the deleted newline for undo
-            self.undo_stack.record_change(Change::delete(
+            self.record_change(Change::delete(
                 self.cursor.line,
                 self.cursor.col,
                 "\n".to_string(),
@@ -6474,8 +6436,7 @@ impl Editor {
         }
 
         self.begin_change();
-        self.undo_stack
-            .record_change(Change::delete(self.cursor.line, start_col, deleted.clone()));
+        self.record_change(Change::delete(self.cursor.line, start_col, deleted.clone()));
         self.buffers[self.current_buffer_idx].delete_range(
             self.cursor.line,
             start_col,
@@ -6497,7 +6458,7 @@ impl Editor {
             if let Some(ch) =
                 self.buffers[self.current_buffer_idx].char_at(self.cursor.line, self.cursor.col)
             {
-                self.undo_stack.record_change(Change::delete(
+                self.record_change(Change::delete(
                     self.cursor.line,
                     self.cursor.col,
                     ch.to_string(),
@@ -6530,8 +6491,7 @@ impl Editor {
         }
 
         self.begin_change();
-        self.undo_stack
-            .record_change(Change::delete(self.cursor.line, start_col, deleted.clone()));
+        self.record_change(Change::delete(self.cursor.line, start_col, deleted.clone()));
         self.buffers[self.current_buffer_idx].delete_range(
             self.cursor.line,
             start_col,
@@ -6607,11 +6567,7 @@ impl Editor {
             self.cursor.col = col;
 
             // Record for undo
-            self.undo_stack.record_change(Change::delete(
-                self.cursor.line,
-                self.cursor.col,
-                deleted,
-            ));
+            self.record_change(Change::delete(self.cursor.line, self.cursor.col, deleted));
 
             // Delete the characters
             for _ in 0..(start_col - col) {
@@ -6634,8 +6590,7 @@ impl Editor {
         let delete_col = self.cursor.col;
 
         // Record for undo
-        self.undo_stack
-            .record_change(Change::delete(self.cursor.line, 0, deleted));
+        self.record_change(Change::delete(self.cursor.line, 0, deleted));
 
         // Delete from start to cursor
         for _ in 0..delete_col {
@@ -6671,7 +6626,7 @@ impl Editor {
         self.begin_change();
         self.undo_stack
             .prefer_current_cursor_after(redo_cursor.0, redo_cursor.1);
-        self.undo_stack.record_change(Change::insert(
+        self.record_change(Change::insert(
             self.cursor.line,
             line_len,
             insert_text.clone(),
@@ -6704,8 +6659,7 @@ impl Editor {
         self.begin_change();
         self.undo_stack
             .prefer_current_cursor_after(redo_cursor.0, redo_cursor.1);
-        self.undo_stack
-            .record_change(Change::insert(self.cursor.line, 0, insert_text.clone()));
+        self.record_change(Change::insert(self.cursor.line, 0, insert_text.clone()));
 
         self.buffers[self.current_buffer_idx].insert_str(self.cursor.line, 0, &insert_text);
         // Cursor stays on same line number (which is now the new line with indent)
@@ -7032,6 +6986,32 @@ impl Editor {
             // Record to change list when starting a new undo group
             self.change_list.record(line, col);
         }
+    }
+
+    /// Record a change that is about to be applied to the current buffer.
+    /// An empty buffer has no line terminator for new text to go in front
+    /// of, so text typed into it would be saved without a final newline
+    /// (#294). Give it its one empty line first and fold that newline into
+    /// the recorded change, so undo still returns to the empty buffer.
+    pub fn record_change(&mut self, mut change: Change) {
+        let buffer = &mut self.buffers[self.current_buffer_idx];
+        if buffer.is_empty()
+            && !buffer.is_read_only()
+            && change.old_text.is_empty()
+            && !change.new_text.is_empty()
+        {
+            buffer.insert_char(0, 0, '\n');
+            // Text recorded at the start of the line lands in front of the
+            // new terminator; any later position lands behind it.
+            if (change.start_line, change.start_col) == (0, 0) {
+                change.new_text.push('\n');
+            } else {
+                change.new_text.insert(0, '\n');
+            }
+            change.start_line = 0;
+            change.start_col = 0;
+        }
+        self.undo_stack.record_change(change);
     }
 
     /// Save to a specific file
@@ -7971,7 +7951,7 @@ impl Editor {
         new_line.extend(&chars[change.start + change.len..]);
 
         self.begin_change();
-        self.undo_stack.record_change(Change::replace_line(
+        self.record_change(Change::replace_line(
             self.cursor.line,
             line_str,
             new_line.clone(),
@@ -8098,12 +8078,11 @@ impl Editor {
                     new_line.push_str(&line_str[last_end..]);
 
                     // Record undo
-                    self.undo_stack
-                        .record_change(crate::editor::undo::Change::replace_line(
-                            line_idx,
-                            line_str.clone(),
-                            new_line.clone(),
-                        ));
+                    self.record_change(crate::editor::undo::Change::replace_line(
+                        line_idx,
+                        line_str.clone(),
+                        new_line.clone(),
+                    ));
 
                     // Replace the line in buffer
                     self.buffers[self.current_buffer_idx].replace_line(line_idx, &new_line);
@@ -8473,8 +8452,7 @@ impl Editor {
                     col: start_col,
                 };
                 self.begin_change();
-                self.undo_stack
-                    .record_change(Change::delete(start_line, start_col, text.clone()));
+                self.record_change(Change::delete(start_line, start_col, text.clone()));
 
                 self.buffers[self.current_buffer_idx].delete_range(
                     start_line,
@@ -8519,8 +8497,7 @@ impl Editor {
                             deleted_lines.push(deleted.clone());
 
                             // Record the delete for undo
-                            self.undo_stack
-                                .record_change(Change::delete(line_idx, left, deleted));
+                            self.record_change(Change::delete(line_idx, left, deleted));
 
                             // Delete the range on this line
                             self.buffers[self.current_buffer_idx].delete_range(
@@ -8638,8 +8615,7 @@ impl Editor {
 
                 // Begin undo group
                 self.begin_change();
-                self.undo_stack
-                    .record_change(Change::delete(start_line, 0, text.clone()));
+                self.record_change(Change::delete(start_line, 0, text.clone()));
 
                 self.registers
                     .delete(None, RegisterContent::Lines(text), false);
@@ -8671,8 +8647,7 @@ impl Editor {
                     col: start_col,
                 };
                 self.begin_change();
-                self.undo_stack
-                    .record_change(Change::delete(start_line, start_col, text.clone()));
+                self.record_change(Change::delete(start_line, start_col, text.clone()));
 
                 self.buffers[self.current_buffer_idx].delete_range(
                     start_line,
@@ -8713,8 +8688,7 @@ impl Editor {
                             deleted_lines.push(deleted.clone());
 
                             // Record the delete for undo
-                            self.undo_stack
-                                .record_change(Change::delete(line_idx, left, deleted));
+                            self.record_change(Change::delete(line_idx, left, deleted));
 
                             // Delete the range on this line
                             self.buffers[self.current_buffer_idx].delete_range(
@@ -8759,11 +8733,9 @@ impl Editor {
                 let count = end_line - start_line + 1;
 
                 self.begin_change();
-                self.undo_stack
-                    .record_change(Change::delete(start_line, 0, deleted.clone()));
+                self.record_change(Change::delete(start_line, 0, deleted.clone()));
                 self.delete_lines(start_line, count);
-                self.undo_stack
-                    .record_change(Change::insert(start_line, 0, replacement.clone()));
+                self.record_change(Change::insert(start_line, 0, replacement.clone()));
                 self.buffers[self.current_buffer_idx].insert_str(start_line, 0, &replacement);
                 self.cursor.line = start_line.min(
                     self.buffers[self.current_buffer_idx]
@@ -8780,22 +8752,14 @@ impl Editor {
                 let deleted = self.get_range_text(start_line, start_col, end_line, end_col);
 
                 self.begin_change();
-                self.undo_stack.record_change(Change::delete(
-                    start_line,
-                    start_col,
-                    deleted.clone(),
-                ));
+                self.record_change(Change::delete(start_line, start_col, deleted.clone()));
                 self.buffers[self.current_buffer_idx].delete_range(
                     start_line,
                     start_col,
                     end_line,
                     end_col + 1,
                 );
-                self.undo_stack.record_change(Change::insert(
-                    start_line,
-                    start_col,
-                    replacement.clone(),
-                ));
+                self.record_change(Change::insert(start_line, start_col, replacement.clone()));
                 self.buffers[self.current_buffer_idx].insert_str(
                     start_line,
                     start_col,
@@ -8829,8 +8793,7 @@ impl Editor {
                         let actual_right = right.min(line_len.saturating_sub(1));
                         let deleted = self.get_range_text(line_idx, left, line_idx, actual_right);
                         deleted_lines.push(deleted.clone());
-                        self.undo_stack
-                            .record_change(Change::delete(line_idx, left, deleted));
+                        self.record_change(Change::delete(line_idx, left, deleted));
                         self.buffers[self.current_buffer_idx].delete_range(
                             line_idx,
                             left,
@@ -8841,7 +8804,7 @@ impl Editor {
                         deleted_lines.push(String::new());
                     }
 
-                    self.undo_stack.record_change(Change::insert(
+                    self.record_change(Change::insert(
                         line_idx,
                         insert_col,
                         replacement_line.clone(),
@@ -8882,30 +8845,17 @@ impl Editor {
         match mode {
             Mode::VisualLine => {
                 let close_col = self.buffers[self.current_buffer_idx].line_len(end_line);
-                self.undo_stack.record_change(Change::insert(
-                    end_line,
-                    close_col,
-                    close.to_string(),
-                ));
+                self.record_change(Change::insert(end_line, close_col, close.to_string()));
                 self.buffers[self.current_buffer_idx].insert_char(end_line, close_col, close);
-                self.undo_stack
-                    .record_change(Change::insert(start_line, 0, open.to_string()));
+                self.record_change(Change::insert(start_line, 0, open.to_string()));
                 self.buffers[self.current_buffer_idx].insert_char(start_line, 0, open);
                 self.cursor.line = start_line;
                 self.cursor.col = 0;
             }
             Mode::Visual => {
-                self.undo_stack.record_change(Change::insert(
-                    end_line,
-                    end_col + 1,
-                    close.to_string(),
-                ));
+                self.record_change(Change::insert(end_line, end_col + 1, close.to_string()));
                 self.buffers[self.current_buffer_idx].insert_char(end_line, end_col + 1, close);
-                self.undo_stack.record_change(Change::insert(
-                    start_line,
-                    start_col,
-                    open.to_string(),
-                ));
+                self.record_change(Change::insert(start_line, start_col, open.to_string()));
                 self.buffers[self.current_buffer_idx].insert_char(start_line, start_col, open);
                 self.cursor.line = start_line;
                 self.cursor.col = start_col;
@@ -8918,17 +8868,9 @@ impl Editor {
                     let line_len = self.buffers[self.current_buffer_idx].line_len(line_idx);
                     let close_col = (right + 1).min(line_len);
                     let open_col = left.min(line_len);
-                    self.undo_stack.record_change(Change::insert(
-                        line_idx,
-                        close_col,
-                        close.to_string(),
-                    ));
+                    self.record_change(Change::insert(line_idx, close_col, close.to_string()));
                     self.buffers[self.current_buffer_idx].insert_char(line_idx, close_col, close);
-                    self.undo_stack.record_change(Change::insert(
-                        line_idx,
-                        open_col,
-                        open.to_string(),
-                    ));
+                    self.record_change(Change::insert(line_idx, open_col, open.to_string()));
                     self.buffers[self.current_buffer_idx].insert_char(line_idx, open_col, open);
                 }
                 self.cursor.line = top;
@@ -9629,8 +9571,7 @@ impl Editor {
 
             // Record for undo
             self.begin_change();
-            self.undo_stack
-                .record_change(Change::delete(start_line, start_col, text.clone()));
+            self.record_change(Change::delete(start_line, start_col, text.clone()));
 
             // Delete the range (inclusive)
             self.buffers[self.current_buffer_idx].delete_range(
@@ -9670,8 +9611,7 @@ impl Editor {
 
             // Record for undo (will be continued in insert mode)
             self.begin_change();
-            self.undo_stack
-                .record_change(Change::delete(start_line, start_col, text.clone()));
+            self.record_change(Change::delete(start_line, start_col, text.clone()));
 
             // Delete the range (inclusive)
             self.buffers[self.current_buffer_idx].delete_range(
@@ -9783,7 +9723,7 @@ impl Editor {
         self.begin_change();
 
         // Record deletion of the newline at end of current line (always happens)
-        self.undo_stack.record_change(Change::delete(
+        self.record_change(Change::delete(
             self.cursor.line,
             current_line_len,
             "\n".to_string(),
@@ -9792,8 +9732,7 @@ impl Editor {
         // Record deletion of leading whitespace from next line (if any)
         if leading_ws > 0 {
             let ws: String = next_line.chars().take(leading_ws).collect();
-            self.undo_stack
-                .record_change(Change::delete(self.cursor.line, current_line_len, ws));
+            self.record_change(Change::delete(self.cursor.line, current_line_len, ws));
         }
 
         // Record insertion of single space ONLY if we will actually insert one
@@ -9802,7 +9741,7 @@ impl Editor {
             && !next_line.is_empty()
             && !next_line.chars().all(|c| c.is_whitespace())
         {
-            self.undo_stack.record_change(Change::insert(
+            self.record_change(Change::insert(
                 self.cursor.line,
                 current_line_len,
                 " ".to_string(),
@@ -9891,7 +9830,7 @@ impl Editor {
         self.begin_change();
 
         // Record the deletion of newline for undo
-        self.undo_stack.record_change(Change::delete(
+        self.record_change(Change::delete(
             self.cursor.line,
             current_line_len,
             "\n".to_string(),
@@ -9941,16 +9880,11 @@ impl Editor {
             self.begin_change();
 
             // Delete closing char first (so positions don't shift)
-            self.undo_stack
-                .record_change(Change::delete(end_pos.0, end_pos.1, close.to_string()));
+            self.record_change(Change::delete(end_pos.0, end_pos.1, close.to_string()));
             self.buffers[self.current_buffer_idx].delete_char(end_pos.0, end_pos.1);
 
             // Delete opening char
-            self.undo_stack.record_change(Change::delete(
-                start_pos.0,
-                start_pos.1,
-                open.to_string(),
-            ));
+            self.record_change(Change::delete(start_pos.0, start_pos.1, open.to_string()));
             self.buffers[self.current_buffer_idx].delete_char(start_pos.0, start_pos.1);
 
             // Adjust cursor if needed
@@ -9976,27 +9910,19 @@ impl Editor {
             self.begin_change();
 
             // Replace closing char first (so positions don't shift for same-line pairs)
-            self.undo_stack.record_change(Change::delete(
-                end_pos.0,
-                end_pos.1,
-                old_close.to_string(),
-            ));
+            self.record_change(Change::delete(end_pos.0, end_pos.1, old_close.to_string()));
             self.buffers[self.current_buffer_idx].delete_char(end_pos.0, end_pos.1);
-            self.undo_stack.record_change(Change::insert(
-                end_pos.0,
-                end_pos.1,
-                new_close.to_string(),
-            ));
+            self.record_change(Change::insert(end_pos.0, end_pos.1, new_close.to_string()));
             self.buffers[self.current_buffer_idx].insert_char(end_pos.0, end_pos.1, new_close);
 
             // Replace opening char
-            self.undo_stack.record_change(Change::delete(
+            self.record_change(Change::delete(
                 start_pos.0,
                 start_pos.1,
                 old_open.to_string(),
             ));
             self.buffers[self.current_buffer_idx].delete_char(start_pos.0, start_pos.1);
-            self.undo_stack.record_change(Change::insert(
+            self.record_change(Change::insert(
                 start_pos.0,
                 start_pos.1,
                 new_open.to_string(),
@@ -10026,13 +9952,11 @@ impl Editor {
             } else {
                 end_col + 1
             };
-            self.undo_stack
-                .record_change(Change::insert(end_line, close_col, close.to_string()));
+            self.record_change(Change::insert(end_line, close_col, close.to_string()));
             self.buffers[self.current_buffer_idx].insert_char(end_line, close_col, close);
 
             // Insert opening char
-            self.undo_stack
-                .record_change(Change::insert(start_line, start_col, open.to_string()));
+            self.record_change(Change::insert(start_line, start_col, open.to_string()));
             self.buffers[self.current_buffer_idx].insert_char(start_line, start_col, open);
 
             self.undo_stack
@@ -10048,11 +9972,9 @@ impl Editor {
 
         if let Some((start_line, start_col, end_line, end_col)) = self.motion_range(motion, count) {
             self.begin_change();
-            self.undo_stack
-                .record_change(Change::insert(end_line, end_col + 1, close.to_string()));
+            self.record_change(Change::insert(end_line, end_col + 1, close.to_string()));
             self.buffers[self.current_buffer_idx].insert_char(end_line, end_col + 1, close);
-            self.undo_stack
-                .record_change(Change::insert(start_line, start_col, open.to_string()));
+            self.record_change(Change::insert(start_line, start_col, open.to_string()));
             self.buffers[self.current_buffer_idx].insert_char(start_line, start_col, open);
             self.cursor.line = start_line;
             self.cursor.col = start_col;
@@ -10070,11 +9992,9 @@ impl Editor {
         let line_len = self.buffers[self.current_buffer_idx].line_len(line);
 
         self.begin_change();
-        self.undo_stack
-            .record_change(Change::insert(line, line_len, close.to_string()));
+        self.record_change(Change::insert(line, line_len, close.to_string()));
         self.buffers[self.current_buffer_idx].insert_char(line, line_len, close);
-        self.undo_stack
-            .record_change(Change::insert(line, 0, open.to_string()));
+        self.record_change(Change::insert(line, 0, open.to_string()));
         self.buffers[self.current_buffer_idx].insert_char(line, 0, open);
         self.cursor.col = 0;
         self.undo_stack
@@ -10169,8 +10089,7 @@ impl Editor {
             }
 
             // Record deletion of entire line content
-            self.undo_stack
-                .record_change(Change::delete(line_num, 0, line_str.to_string()));
+            self.record_change(Change::delete(line_num, 0, line_str.to_string()));
 
             // Build new line with comment
             let indent = &line_str[..indent_len];
@@ -10187,8 +10106,7 @@ impl Editor {
                 self.buffers[self.current_buffer_idx].delete_char(line_num, 0);
             }
 
-            self.undo_stack
-                .record_change(Change::insert(line_num, 0, new_line.clone()));
+            self.record_change(Change::insert(line_num, 0, new_line.clone()));
             self.buffers[self.current_buffer_idx].insert_str(line_num, 0, &new_line);
         }
     }
@@ -10229,8 +10147,7 @@ impl Editor {
             }
 
             // Record deletion of entire line content
-            self.undo_stack
-                .record_change(Change::delete(line_num, 0, line_str.to_string()));
+            self.record_change(Change::delete(line_num, 0, line_str.to_string()));
 
             let new_line = format!("{}{}", indent, content);
 
@@ -10240,8 +10157,7 @@ impl Editor {
                 self.buffers[self.current_buffer_idx].delete_char(line_num, 0);
             }
 
-            self.undo_stack
-                .record_change(Change::insert(line_num, 0, new_line.clone()));
+            self.record_change(Change::insert(line_num, 0, new_line.clone()));
             self.buffers[self.current_buffer_idx].insert_str(line_num, 0, &new_line);
         }
     }
@@ -10271,8 +10187,7 @@ impl Editor {
                 }
 
                 // Record insertion for undo
-                self.undo_stack
-                    .record_change(Change::insert(line_num, 0, indent_str.clone()));
+                self.record_change(Change::insert(line_num, 0, indent_str.clone()));
 
                 // Insert the indentation at the beginning
                 self.buffers[self.current_buffer_idx].insert_str(line_num, 0, &indent_str);
@@ -10323,8 +10238,7 @@ impl Editor {
 
                 // Record deletion for undo
                 let deleted_text: String = line_str.chars().take(spaces_to_remove).collect();
-                self.undo_stack
-                    .record_change(Change::delete(line_num, 0, deleted_text));
+                self.record_change(Change::delete(line_num, 0, deleted_text));
 
                 // Delete the leading whitespace
                 for _ in 0..spaces_to_remove {
@@ -10399,8 +10313,7 @@ impl Editor {
             }
 
             if !old_indent.is_empty() {
-                self.undo_stack
-                    .record_change(Change::delete(line_num, 0, old_indent.clone()));
+                self.record_change(Change::delete(line_num, 0, old_indent.clone()));
                 self.buffers[self.current_buffer_idx].delete_range(
                     line_num,
                     0,
@@ -10410,8 +10323,7 @@ impl Editor {
             }
 
             if !new_indent.is_empty() {
-                self.undo_stack
-                    .record_change(Change::insert(line_num, 0, new_indent.clone()));
+                self.record_change(Change::insert(line_num, 0, new_indent.clone()));
                 self.buffers[self.current_buffer_idx].insert_str(line_num, 0, &new_indent);
             }
 
@@ -10583,8 +10495,7 @@ impl Editor {
         }
 
         let indent = " ".repeat(tab_width);
-        self.undo_stack
-            .record_change(Change::insert(line, 0, indent.clone()));
+        self.record_change(Change::insert(line, 0, indent.clone()));
         self.buffers[self.current_buffer_idx].insert_str(line, 0, &indent);
         self.cursor.col += tab_width;
         self.scroll_to_cursor();
@@ -10634,8 +10545,7 @@ impl Editor {
         }
 
         let deleted_text: String = line_text.chars().take(chars_to_remove).collect();
-        self.undo_stack
-            .record_change(Change::delete(line, 0, deleted_text));
+        self.record_change(Change::delete(line, 0, deleted_text));
 
         for _ in 0..chars_to_remove {
             self.buffers[self.current_buffer_idx].delete_char(line, 0);
@@ -10708,8 +10618,7 @@ impl Editor {
         self.begin_change();
 
         // Record deletion of original text
-        self.undo_stack
-            .record_change(Change::delete(start_line, start_col, text.clone()));
+        self.record_change(Change::delete(start_line, start_col, text.clone()));
 
         // Delete the original text
         self.buffers[self.current_buffer_idx].delete_range(
@@ -10720,8 +10629,7 @@ impl Editor {
         );
 
         // Record and insert the transformed text
-        self.undo_stack
-            .record_change(Change::insert(start_line, start_col, transformed.clone()));
+        self.record_change(Change::insert(start_line, start_col, transformed.clone()));
         self.buffers[self.current_buffer_idx].insert_str(start_line, start_col, &transformed);
 
         self.undo_stack
@@ -10805,11 +10713,7 @@ impl Editor {
 
                 if line_str != transformed {
                     // Record deletion
-                    self.undo_stack.record_change(Change::delete(
-                        line_num,
-                        0,
-                        line_str.to_string(),
-                    ));
+                    self.record_change(Change::delete(line_num, 0, line_str.to_string()));
 
                     // Delete old content
                     let old_len = self.buffers[self.current_buffer_idx].line_len(line_num);
@@ -10818,8 +10722,7 @@ impl Editor {
                     }
 
                     // Record and insert new content
-                    self.undo_stack
-                        .record_change(Change::insert(line_num, 0, transformed.clone()));
+                    self.record_change(Change::insert(line_num, 0, transformed.clone()));
                     self.buffers[self.current_buffer_idx].insert_str(line_num, 0, &transformed);
                 }
             }
@@ -10926,11 +10829,7 @@ impl Editor {
                 })
                 .collect();
             if new_line != line_str {
-                self.undo_stack.record_change(Change::replace_line(
-                    line_idx,
-                    line_str,
-                    new_line.clone(),
-                ));
+                self.record_change(Change::replace_line(line_idx, line_str, new_line.clone()));
                 self.buffers[buffer_idx].replace_line(line_idx, &new_line);
                 changed = true;
             }
@@ -14317,7 +14216,8 @@ mod tests {
         editor.delete_char_at_in_current_group();
         editor.insert_char('a');
         editor.enter_normal_mode();
-        assert_eq!(editor.buffer().content(), "a");
+        // Text typed into an empty buffer ends with a newline (#294).
+        assert_eq!(editor.buffer().content(), "a\n");
 
         editor.undo();
         assert_eq!(editor.buffer().content(), "");
