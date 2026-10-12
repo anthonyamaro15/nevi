@@ -910,6 +910,24 @@ mod tests {
         }
     }
 
+    /// Like Vim with fileformat=unix, only LF ends a line, and a CRLF ends at
+    /// its LF. Ropey's default `unicode_lines` feature also broke lines at
+    /// CR, VT, FF, NEL, LS, and PS, which tree-sitter, grep, and git never
+    /// count, so the cursor landed on lines nothing else saw (#297).
+    #[test]
+    fn only_line_feed_ends_a_line() {
+        for sep in ['\r', '\u{b}', '\u{c}', '\u{85}', '\u{2028}', '\u{2029}'] {
+            let mut buffer = Buffer::new();
+            buffer.set_content(&format!("a{sep}b\n"));
+            assert_eq!(buffer.addressable_line_count(), 1, "sep={sep:?}");
+            assert_eq!(buffer.line_len(0), 3, "sep={sep:?}");
+        }
+
+        let mut crlf = Buffer::new();
+        crlf.set_content("a\r\nb\r\n");
+        assert_eq!(crlf.addressable_line_count(), 2);
+    }
+
     #[test]
     fn first_line_prefix_returns_short_first_line_including_newline() {
         let mut buffer = Buffer::new();

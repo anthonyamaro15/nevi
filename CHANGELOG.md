@@ -90,6 +90,7 @@
 
 ### Fixed
 
+- A carriage return inside a line, typed with `Ctrl+v` `Enter` or already in the file, split that line in two on screen. Motions and line numbers counted a line the file doesn't have, and `Ctrl+u` in Insert mode after one could crash Nevi. Form feeds, vertical tabs, and the Unicode line break characters U+0085, U+2028, and U+2029 did the same, and also shifted syntax highlighting down a line below them. Now only a line feed ends a line, as in Vim, and those characters stay inside their line. A file with old Mac line endings (CR only) opens as one long line, like it does in Vim. (#297) Verified against real Neovim.
 - Pressing `.` after an insert that used `Ctrl+o` could crash Nevi. The text typed after the `Ctrl+o` command was replayed as Normal-mode commands, so a typed `.` repeated itself until the stack overflowed, and other text could run as edits. `.` now follows Vim: the insert before `Ctrl+o` and the command it runs are changes of their own, and text typed afterwards is repeated as an insert at the cursor. A macro that calls itself, like `qa@aq`, overflowed the stack too. It now stops after 32 nested calls with a message and its changes are undone; Vim keeps going until a command in the macro fails, which Nevi does not detect yet. (#338) The `.` behavior is verified against real Neovim.
 - After `:bd`, highlighting and `=` could keep using the closed buffer's syntax tree when the two buffers happened to share a version number. Closing a buffer now reparses the one that becomes current. (#309)
 

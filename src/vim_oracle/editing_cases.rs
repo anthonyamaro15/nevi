@@ -846,6 +846,18 @@ pub(super) const EDITING_CASES: &[OracleCase] = &[
         initial_text: "\n",
         keys: "iA<C-v><Tab>B<Esc>",
     },
+    // A literal CR stays inside its line (#297). Before, it split the line,
+    // and Ctrl-U then sliced past the end of the shorter half and crashed.
+    OracleCase {
+        name: "ctrl-v enter inserts a literal carriage return",
+        initial_text: "\n",
+        keys: "iA<C-v><CR>B<Esc>",
+    },
+    OracleCase {
+        name: "ctrl-u deletes typed text across a literal carriage return",
+        initial_text: "\n",
+        keys: "iab<C-v><CR>cd<C-u><Esc>",
+    },
     // The literal path must bypass auto-pairs: Vim inserts a lone paren.
     OracleCase {
         name: "ctrl-v open paren inserts without auto pair",
@@ -858,8 +870,7 @@ pub(super) const EDITING_CASES: &[OracleCase] = &[
         keys: "i<C-v><C-y>x<C-q><C-y><Esc>",
     },
     // The literal must belong to the surrounding insert session for undo,
-    // counts, and dot repeat. A <C-v><CR> variant is blocked on ropey
-    // treating a bare CR as a line break.
+    // counts, and dot repeat.
     OracleCase {
         name: "undo removes literal insert with its session",
         initial_text: "\n",
@@ -874,6 +885,11 @@ pub(super) const EDITING_CASES: &[OracleCase] = &[
         name: "dot repeat replays literal insert",
         initial_text: "\n",
         keys: "i<C-v><C-y><Esc>.",
+    },
+    OracleCase {
+        name: "dot repeat replays a literal carriage return",
+        initial_text: "\n",
+        keys: "iA<C-v><CR>B<Esc>.",
     },
     // Insert <C-y>/<C-e> copy the character in the cursor's screen column
     // from the line above/below, one per press. Texts are asymmetric so a

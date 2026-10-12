@@ -11,8 +11,10 @@ repository = "https://github.com/anthonyamaro15/nevi"
 # Terminal handling
 crossterm = { version = "0.28", features = ["bracketed-paste"] }
 
-# Text storage (rope data structure)
-ropey = "1.6"
+# Text storage (rope data structure). Default features are off so only LF
+# (and CRLF) end a line, as in Vim with fileformat=unix. The default
+# `unicode_lines` also broke lines at CR, VT, FF, NEL, LS, and PS (#297).
+ropey = { version = "1.6", default-features = false, features = ["simd"] }
 
 # Error handling
 anyhow = "1.0"
