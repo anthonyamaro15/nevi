@@ -11253,6 +11253,7 @@ pub fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
 
 #[cfg(test)]
 mod tests {
+    mod final_newline;
     mod finder;
     mod normal_interrupt;
     mod replay;
