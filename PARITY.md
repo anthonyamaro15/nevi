@@ -14,7 +14,7 @@ the test suite enforces, so it cannot drift from what is actually verified.
   - 207 verified against real Neovim (v0.11.3) by the Vim oracle
   - 22 protected by focused Nevi regression tests
   - 1 covered as default-keymap plumbing with dedicated tests
-- **655 oracle cases**: motions (162), editing (207), increment (31), insert-entry (17), linewise-operators (39), marks (45), open-line (20), replace (27), search (51), text-objects (30), undo-redo (2), visual (24)
+- **660 oracle cases**: motions (164), editing (210), increment (31), insert-entry (17), linewise-operators (39), marks (45), open-line (20), replace (27), search (51), text-objects (30), undo-redo (2), visual (24)
 - **0 tracked coverage gaps**
 - **258 of 468 documented keybind rows map to an inventoried keybind**; the rest work today but are not yet individually tracked ([full list below](#documented-but-not-yet-inventoried))
 

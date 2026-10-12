@@ -593,6 +593,18 @@ const MOTION_CASES: &[OracleCase] = &[
         initial_text: "alpha\nbeta\ngamma\n",
         keys: "G",
     },
+    // Only LF ends a line, as in Vim with fileformat=unix. A stray CR or a
+    // form feed used to split its line in two (#297).
+    OracleCase {
+        name: "carriage return inside a line is not a line break",
+        initial_text: "A\rB\n",
+        keys: "$",
+    },
+    OracleCase {
+        name: "form feed line counts as one line",
+        initial_text: "a\n\x0c\nb\n",
+        keys: "G",
+    },
     OracleCase {
         name: "counted file bottom",
         initial_text: SCREEN_POSITION_TEXT,

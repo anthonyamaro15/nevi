@@ -367,6 +367,15 @@ mod tests {
         run_seeds(5143..5144);
     }
 
+    /// Extended-run seeds where a literal CR split its line (#297): two
+    /// crashed in insert Ctrl-U, one left the cursor past the line end.
+    #[test]
+    fn fuzz_seeds_from_issue_297() {
+        run_seeds(920..921);
+        run_seeds(10457..10458);
+        run_seeds(1700..1701);
+    }
+
     /// Extended run for CI nightly / manual use:
     /// `cargo test fuzz_key_sequences_extended -- --ignored`
     #[test]

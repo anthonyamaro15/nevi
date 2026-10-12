@@ -1766,16 +1766,15 @@ mod tests {
         assert_tree_matches_fresh_parse(&syntax, &other);
     }
 
-    /// Ropey counts a lone CR (and VT, FF, NEL, LS, PS) as a line break;
-    /// tree-sitter counts rows by LF only. Edits recorded in Ropey rows after
-    /// such a separator carry points tree-sitter disagrees with.
+    /// A lone CR (and VT, FF, NEL, LS, PS) used to end a Ropey line while
+    /// tree-sitter counts rows by LF only, so edits after one carried points
+    /// tree-sitter disagreed with (#297). Both count LF only now; edits
+    /// around these characters must still keep the tree equivalent.
     #[test]
-    fn edits_after_a_non_lf_line_break_keep_the_tree_equivalent() {
+    fn edits_around_non_lf_separators_keep_the_tree_equivalent() {
         for sep in ['\r', '\u{b}', '\u{c}', '\u{85}', '\u{2028}', '\u{2029}'] {
             let text = format!("fn a() {{}}{sep}fn b() {{\n    let x = 1;\n}}\nfn c() {{}}\n");
             let (mut syntax, mut buffer) = rust_syntax_and_buffer(&text);
-            // Ropey line 1 starts right after the separator; tree-sitter
-            // still calls that row 0.
             buffer.insert_str(2, 4, "let y = 2;\n    ");
             buffer.insert_char(1, 3, 'x');
             syntax.parse(&mut buffer);
