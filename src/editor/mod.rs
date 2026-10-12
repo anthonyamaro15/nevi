@@ -2822,9 +2822,17 @@ impl Editor {
                 String::new()
             };
 
-            // Record the deletion for undo
-            if !deleted_text.is_empty() {
-                self.record_change(Change::delete(edit.start_line, start_col, deleted_text));
+            // Record the edit as one replacement for undo. As a delete plus
+            // an insert, an edit over the whole document would hand the
+            // insert an empty buffer, and record_change would add a second
+            // final newline (#294).
+            if !deleted_text.is_empty() || !edit.new_text.is_empty() {
+                self.record_change(Change::new(
+                    edit.start_line,
+                    start_col,
+                    deleted_text,
+                    edit.new_text.clone(),
+                ));
             }
 
             // Delete the range from the buffer (LSP end_col is exclusive)
@@ -2839,12 +2847,6 @@ impl Editor {
 
             // Insert the new text
             if !edit.new_text.is_empty() {
-                self.record_change(Change::insert(
-                    edit.start_line,
-                    start_col,
-                    edit.new_text.clone(),
-                ));
-
                 // Insert the text using insert_str method
                 self.buffers[self.current_buffer_idx].insert_str(
                     edit.start_line,
@@ -2852,6 +2854,17 @@ impl Editor {
                     &edit.new_text,
                 );
             }
+        }
+
+        // Edits can leave the buffer without a final newline: a
+        // whole-document edit whose text has none, or text inserted past the
+        // last line. Neovim still writes one, so add it.
+        let buffer = &self.buffers[self.current_buffer_idx];
+        let last = buffer.addressable_line_count() - 1;
+        let last_len = buffer.line_len(last);
+        if last_len > 0 && buffer.line_len_including_newline(last) == last_len {
+            self.record_change(Change::insert(last, last_len, "\n".to_string()));
+            self.buffers[self.current_buffer_idx].insert_char(last, last_len, '\n');
         }
 
         // Mark buffer as modified and invalidate syntax
@@ -8731,11 +8744,24 @@ impl Editor {
             Mode::VisualLine => {
                 let deleted = self.get_lines_text(start_line, end_line);
                 let count = end_line - start_line + 1;
+                // Lines are replaced by whole lines: characterwise text gets
+                // its own line, as in Vim.
+                let replacement = if replacement.ends_with('\n') {
+                    replacement
+                } else {
+                    format!("{replacement}\n")
+                };
 
                 self.begin_change();
-                self.record_change(Change::delete(start_line, 0, deleted.clone()));
+                // One replacement, so the insert never lands in a buffer the
+                // delete just emptied (see record_change, #294).
+                self.record_change(Change::new(
+                    start_line,
+                    0,
+                    deleted.clone(),
+                    replacement.clone(),
+                ));
                 self.delete_lines(start_line, count);
-                self.record_change(Change::insert(start_line, 0, replacement.clone()));
                 self.buffers[self.current_buffer_idx].insert_str(start_line, 0, &replacement);
                 self.cursor.line = start_line.min(
                     self.buffers[self.current_buffer_idx]
@@ -10617,19 +10643,23 @@ impl Editor {
 
         self.begin_change();
 
-        // Record deletion of original text
-        self.record_change(Change::delete(start_line, start_col, text.clone()));
+        // Record one replacement. As a delete plus an insert, a range that
+        // covers the whole buffer would hand the insert an empty buffer,
+        // and record_change would add a second final newline (#294).
+        self.record_change(Change::new(
+            start_line,
+            start_col,
+            text.clone(),
+            transformed.clone(),
+        ));
 
-        // Delete the original text
+        // Replace the original text
         self.buffers[self.current_buffer_idx].delete_range(
             start_line,
             start_col,
             end_line,
             end_col + 1,
         );
-
-        // Record and insert the transformed text
-        self.record_change(Change::insert(start_line, start_col, transformed.clone()));
         self.buffers[self.current_buffer_idx].insert_str(start_line, start_col, &transformed);
 
         self.undo_stack
@@ -14845,7 +14875,8 @@ mod tests {
         let path = tmp.join("heredoc.sh");
         let rust_path = tmp.join("other.rs");
         let original = "first() {\n cat <<EOF\nhello\nEOF\n}\nsecond() { echo 2; }\n";
-        let edited = "first() {\n cat <<EOF\nhell\"o\nEOF\n}\nsecond() { echo 2; }\n\"";
+        // The edit past the last line still leaves a final newline, as in Neovim.
+        let edited = "first() {\n cat <<EOF\nhell\"o\nEOF\n}\nsecond() { echo 2; }\n\"\n";
         std::fs::write(&path, original).expect("write shell fixture");
         std::fs::write(&rust_path, "fn other() {}\n").expect("write Rust fixture");
 
@@ -14892,7 +14923,7 @@ mod tests {
         crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
 
         // Complete the unfinished string before saving and reopening it.
-        editor.buffer_mut().insert_str(6, 1, "\"\n");
+        editor.buffer_mut().insert_str(6, 1, "\"");
         editor.note_buffer_change();
         editor.maybe_update_syntax();
         let saved = "first() {\n cat <<EOF\nhell\"o\nEOF\n}\nsecond() { echo 2; }\n\"\"\n";
@@ -15215,6 +15246,31 @@ mod tests {
         ]);
 
         assert_eq!(editor.buffer().content(), "Xb\n");
+    }
+
+    // Formatters often send the whole document back as one edit. It replaces
+    // the final newline too, so the buffer is empty for a moment (#294).
+    #[test]
+    fn lsp_whole_document_edit_keeps_one_final_newline() {
+        for (new_text, expected) in [
+            ("A\nB\n", "A\nB\n"),
+            ("a\nb\n", "a\nb\n"),
+            ("A\nB", "A\nB\n"),
+        ] {
+            let mut editor = Editor::default();
+            editor.replace_buffer_content("a\nb\n");
+            editor.apply_text_edits(&[TextEdit {
+                start_line: 0,
+                start_col: 0,
+                end_line: 2,
+                end_col: 0,
+                new_text: new_text.to_string(),
+            }]);
+            assert_eq!(editor.buffer().content(), expected, "{new_text:?}");
+
+            editor.undo();
+            assert_eq!(editor.buffer().content(), "a\nb\n", "undo {new_text:?}");
+        }
     }
 
     fn completion_item(label: &str, sort_text: &str) -> CompletionItem {

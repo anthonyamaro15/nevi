@@ -46,6 +46,30 @@ fn edits_in_an_empty_buffer_end_with_a_newline() {
     }
 }
 
+// These delete every line and put new text in, so the buffer is empty for a
+// moment. The new text brings its own final newline; none may be added.
+#[test]
+fn replacing_every_line_keeps_one_final_newline() {
+    let cases = [
+        ("abc\n", "yyVp", "abc\n"),
+        ("a\nb\n", "yyggVGp", "a\n"),
+        ("abc\n", "gUG", "ABC\n"),
+        ("abc\n", "g~G", "ABC\n"),
+        ("a\nb\n", "gUG", "A\nB\n"),
+        ("abc\n", "yyVpu", "abc\n"),
+        ("abc\n", "gUGu<C-r>", "ABC\n"),
+        // Characterwise text put over a linewise selection gets its own line.
+        ("abc\n", "ylVp", "a\n"),
+        ("a\nb\nc\n", "yljVp", "a\na\nc\n"),
+        ("ab\ncd\n", "ylGVp", "ab\na\n"),
+    ];
+    for (text, keys, expected) in cases {
+        let mut editor = editor_with(text);
+        feed(&mut editor, keys);
+        assert_eq!(editor.buffer().content(), expected, "{text:?} keys: {keys}");
+    }
+}
+
 #[test]
 fn edits_that_add_no_text_leave_an_empty_buffer_empty() {
     for keys in ["i<Esc>", "A<Esc>", "cc<Esc>", "o<Esc>u", "ix<Esc>u"] {

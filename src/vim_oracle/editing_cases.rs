@@ -384,6 +384,44 @@ pub(super) const EDITING_CASES: &[OracleCase] = &[
         initial_text: "",
         keys: "iabc<Esc>yy\"_ddP",
     },
+    // Replacing every line empties the buffer for a moment; the new text
+    // brings its own final newline, so none may be added.
+    OracleCase {
+        name: "linewise put over the only line",
+        initial_text: "abc\n",
+        keys: "yyVp",
+    },
+    OracleCase {
+        name: "linewise put over every line",
+        initial_text: "a\nb\n",
+        keys: "yyggVGp",
+    },
+    OracleCase {
+        name: "uppercase to end of buffer",
+        initial_text: "abc\n",
+        keys: "gUG",
+    },
+    OracleCase {
+        name: "toggle case to end of buffer",
+        initial_text: "abc\n",
+        keys: "g~G",
+    },
+    // Characterwise text put over a linewise selection gets its own line.
+    OracleCase {
+        name: "characterwise put over the only line",
+        initial_text: "abc\n",
+        keys: "ylVp",
+    },
+    OracleCase {
+        name: "characterwise put over a middle line",
+        initial_text: "a\nb\nc\n",
+        keys: "yljVp",
+    },
+    OracleCase {
+        name: "characterwise put over the last line",
+        initial_text: "ab\ncd\n",
+        keys: "ylGVp",
+    },
     // Case-changing operators: gu/gU/g~ with a motion, the doubled line
     // forms, and the ~ quick toggle.
     OracleCase {
