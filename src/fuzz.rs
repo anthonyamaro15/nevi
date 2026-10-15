@@ -303,7 +303,7 @@ fn run_keys(text: &str, keys: &[FuzzKey]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ALPHABET, Rng, SEQUENCE_LEN, TEXTS, run_keys, run_seeds};
+    use super::{ALPHABET, Rng, SEQUENCE_LEN, TEXTS, plain, run_keys, run_seeds, shifted};
 
     /// Greedy delta-debugging for failing seeds. Usage:
     /// `NEVI_FUZZ_MINIMIZE=2230,11672 cargo test fuzz_minimize -- --ignored --nocapture`
@@ -374,6 +374,15 @@ mod tests {
         run_seeds(920..921);
         run_seeds(10457..10458);
         run_seeds(1700..1701);
+    }
+
+    /// Extended-run seed where `dM` deleted a short buffer as a character
+    /// range and `o` then left the cursor below the last line (#339).
+    #[test]
+    fn fuzz_seeds_from_issue_339() {
+        run_seeds(11188..11189);
+        let keys = [plain('d', "d"), shifted('M', "M"), plain('o', "o")];
+        assert_eq!(run_keys(TEXTS[0], &keys), Ok(()));
     }
 
     /// Extended run for CI nightly / manual use:

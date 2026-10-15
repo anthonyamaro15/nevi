@@ -10476,22 +10476,11 @@ impl Editor {
 
     /// Auto-indent with motion (={motion}).
     pub fn auto_indent_motion(&mut self, motion: Motion, count: usize) {
-        let start_line = self.cursor.line;
-        let text_rows = self.text_rows().max(1);
-        let Some((target_line, _)) = apply_motion(
-            &self.buffers[self.current_buffer_idx],
-            motion,
-            self.cursor.line,
-            self.cursor.col,
-            count,
-            text_rows,
-        ) else {
-            return;
-        };
-
-        let range_start = start_line.min(target_line);
-        let range_end = start_line.max(target_line);
-        self.auto_indent_lines(range_start, range_end);
+        // Same range as > and <: the pure apply_motion has no viewport, so
+        // =H, =M and =L would reindent from the top of the file.
+        if let Some((start_line, _, end_line, _)) = self.motion_range(motion, count) {
+            self.auto_indent_lines(start_line, end_line);
+        }
     }
 
     /// Indent current line and count-1 lines below (>> operation)

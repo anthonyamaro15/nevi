@@ -125,3 +125,30 @@ fn indent_motion_with_j_covers_two_lines() {
     feed(&mut editor, "G>j");
     assert_eq!(lines(&editor)[3], "seven eight");
 }
+
+#[test]
+fn reindent_with_h_m_l_covers_the_lines_on_screen() {
+    // Nothing opens a block, so = strips the indent from exactly the lines
+    // it covers. Ranges match Neovim's '[ and '] after the same keys.
+    let text: String = (1..=100).map(|i| format!("    line {i:03}\n")).collect();
+    for (motion, range) in [("H", 41..=49), ("M", 49..=51), ("L", 49..=62)] {
+        let mut editor = editor_with(&text, (80, 24), 8);
+        feed(&mut editor, &format!("50Gzt={motion}"));
+        let reindented: Vec<usize> = lines(&editor)
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| !line.starts_with(' '))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(reindented, range.clone().collect::<Vec<_>>(), "={motion}");
+        assert_eq!(editor.cursor.line, *range.start(), "={motion}");
+    }
+}
+
+#[test]
+fn reindent_with_j_and_k_at_the_buffer_edge_does_nothing() {
+    let mut editor = editor_with("    one\n    two\n", (80, 24), 0);
+    feed(&mut editor, "G=j");
+    feed(&mut editor, "gg=k");
+    assert_eq!(lines(&editor), ["    one", "    two"]);
+}
