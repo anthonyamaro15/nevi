@@ -7,6 +7,7 @@ mod mouse;
 mod register;
 mod replace;
 mod search_pattern;
+mod topline;
 mod undo;
 
 pub use buffer::{Buffer, BufferEdit};
@@ -4461,22 +4462,27 @@ impl Editor {
         self.scroll_to_cursor();
     }
 
-    /// Ensure cursor is visible by adjusting viewport
+    /// Ensure cursor is visible by adjusting viewport. Vertically this follows
+    /// Neovim: the least scroll for a short move, the cursor line centered
+    /// after a far jump (see topline.rs).
     pub fn scroll_to_cursor(&mut self) {
         let text_rows = self.active_pane_text_rows();
-        let scroll_off = self.settings.editor.scroll_off.min(text_rows / 2);
-
-        // Scroll up if cursor is above viewport (with scroll_off margin)
-        if self.cursor.line < self.viewport_offset + scroll_off {
-            self.viewport_offset = self.cursor.line.saturating_sub(scroll_off);
-        }
-
-        // Scroll down if cursor is below viewport (with scroll_off margin)
-        if self.cursor.line + scroll_off >= self.viewport_offset + text_rows {
-            self.viewport_offset = self.cursor.line + scroll_off + 1 - text_rows;
-        }
+        self.viewport_offset = topline::follow_cursor(
+            self.viewport_offset,
+            self.cursor.line,
+            text_rows,
+            self.settings.editor.scroll_off,
+            last_addressable_line(self.buffer()),
+        );
 
         if self.settings.editor.wrap {
+            // A centered cursor sits (rows - 1) / 2 rows from an edge, so a
+            // larger margin here would undo the centering.
+            let scroll_off = self
+                .settings
+                .editor
+                .scroll_off
+                .min(text_rows.saturating_sub(1) / 2);
             self.scroll_wrapped_view_to_cursor(text_rows, scroll_off);
         }
 
@@ -4524,9 +4530,13 @@ impl Editor {
             return;
         }
 
-        if cursor_visual_row + scroll_off >= text_rows {
+        // As in follow_cursor, the margin stops at the last line, so the last
+        // line may sit on the bottom row.
+        let lines_below = last_addressable_line(self.buffer()).saturating_sub(self.cursor.line);
+        let bottom_margin = scroll_off.min(lines_below);
+        if cursor_visual_row + bottom_margin >= text_rows {
             self.viewport_offset = self.cursor.line;
-            let bottom_margin = scroll_off.min(text_rows.saturating_sub(1));
+            let bottom_margin = bottom_margin.min(text_rows.saturating_sub(1));
             let rows_above_cursor = text_rows.saturating_sub(bottom_margin + 1);
             self.h_offset = cursor_segment_idx.saturating_sub(rows_above_cursor);
             return;
