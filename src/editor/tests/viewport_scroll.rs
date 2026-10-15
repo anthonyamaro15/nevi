@@ -187,3 +187,24 @@ fn zs_and_ze_put_the_cursor_at_the_screen_edges() {
     editor.scroll_cursor_to_screen_end();
     assert_eq!(editor.h_offset, 0);
 }
+
+// #340: with 'wrap' on, the long-line fix-up after the line logic kept the
+// full bottom margin at the end of the buffer, so k right after G threw the
+// cursor line to the top of the window.
+#[test]
+fn k_after_g_leaves_the_view_alone_with_wrap_on() {
+    let mut editor = editor_with_lines(100);
+    editor.settings.editor.wrap = true;
+    editor.cursor.line = 99;
+    editor.scroll_to_cursor();
+    assert_eq!(
+        editor.viewport_offset,
+        100 - 38,
+        "last line on the bottom row"
+    );
+
+    editor.cursor.line = 98;
+    editor.scroll_to_cursor();
+
+    assert_eq!(editor.viewport_offset, 100 - 38);
+}

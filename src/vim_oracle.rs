@@ -14,6 +14,7 @@ mod open_line_cases;
 mod replace_cases;
 mod search_cases;
 mod text_object_cases;
+mod viewport_cases;
 mod visual_cases;
 
 use editing_cases::EDITING_CASES;
@@ -25,6 +26,7 @@ use open_line_cases::OPEN_LINE_CASES;
 use replace_cases::REPLACE_CASES;
 use search_cases::SEARCH_CASES;
 use text_object_cases::TEXT_OBJECT_CASES;
+use viewport_cases::VIEWPORT_CASES;
 use visual_cases::VISUAL_CASES;
 
 #[derive(Debug, Clone, Copy)]
@@ -329,12 +331,8 @@ const MOTION_CASES: &[OracleCase] = &[
         keys: "50Gzb",
     },
     // :s moves the cursor to the last changed line and the view follows.
-    // These targets sit within a screen of the top, where Neovim scrolls
-    // minimally like Nevi. KNOWN DIVERGENCE, pre-existing and not covered
-    // here: after a jump of more than a screen (50G, 90G, a far search, a
-    // far :%s) Neovim centers the cursor line and clamps at the end of the
-    // file; Nevi's scroll_to_cursor scrolls minimally instead. Also k after
-    // G scrolls the view in Nevi but not in Neovim.
+    // These targets sit close to the window, so the view scrolls minimally;
+    // the viewport category covers far ones.
     OracleCase {
         name: "file substitute scrolls to the changed line",
         initial_text: SCREEN_POSITION_TEXT,
@@ -1067,6 +1065,18 @@ const SHORT_VIEWPORT_CASES: &[OracleCase] = &[
         initial_text: SCREEN_POSITION_TEXT,
         keys: "6Gzb<C-b>",
     },
+    // scrolloff 8 is more than half of these 10 rows, so Neovim keeps the
+    // cursor line in the middle of the window.
+    OracleCase {
+        name: "short viewport far jump up centers the cursor line",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "G50G",
+    },
+    OracleCase {
+        name: "short viewport j keeps the cursor in the middle",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "jjjjjj",
+    },
 ];
 
 const SMALL_VIEWPORT_CASES: &[OracleCase] = &[
@@ -1099,6 +1109,21 @@ const WRAP_ENABLED_CASES: &[OracleCase] = &[
         name: "wrap enabled display line end",
         initial_text: "alpha beta\n",
         keys: "g$",
+    },
+    OracleCase {
+        name: "wrap enabled far jump down centers the cursor line",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "50G",
+    },
+    OracleCase {
+        name: "wrap enabled far jump up centers the cursor line",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "G60G",
+    },
+    OracleCase {
+        name: "wrap enabled k after G leaves the view alone",
+        initial_text: SCREEN_POSITION_TEXT,
+        keys: "Gkkk",
     },
 ];
 
@@ -1159,6 +1184,10 @@ const ORACLE_CATEGORIES: &[OracleCategory] = &[
     OracleCategory {
         name: "undo-redo",
         cases: UNDO_REDO_CASES,
+    },
+    OracleCategory {
+        name: "viewport",
+        cases: VIEWPORT_CASES,
     },
     OracleCategory {
         name: "visual",
