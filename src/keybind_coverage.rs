@@ -391,6 +391,13 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
         "Indent the current and next lines",
         "indent_motion_with_j_covers_two_lines",
     ),
+    // `=` follows Nevi's own indenter, so the H/M/L ranges (taken from
+    // Neovim's '[ and '] marks) are pinned natively.
+    nevi_regression(
+        "={motion}",
+        "Auto-indent with motion",
+        "reindent_with_h_m_l_covers_the_lines_on_screen",
+    ),
     vim_oracle("caw", "Change around word", "change around word"),
     // Macros, registers, insert-mode, and visual-basics batch.
     vim_oracle(
