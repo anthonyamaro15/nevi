@@ -10,13 +10,13 @@ the test suite enforces, so it cannot drift from what is actually verified.
 ## Summary
 
 - **374 keybinds implemented** ([KEYBINDINGS.md](KEYBINDINGS.md)), **55 planned** ([KEYBINDS_ROADMAP.md](KEYBINDS_ROADMAP.md))
-- **230 keybinds in the coverage inventory**, each mapped to the automated test that protects it:
+- **231 keybinds in the coverage inventory**, each mapped to the automated test that protects it:
   - 207 verified against real Neovim (v0.11.3) by the Vim oracle
-  - 22 protected by focused Nevi regression tests
+  - 23 protected by focused Nevi regression tests
   - 1 covered as default-keymap plumbing with dedicated tests
 - **674 oracle cases**: motions (164), editing (224), increment (31), insert-entry (17), linewise-operators (39), marks (45), open-line (20), replace (27), search (51), text-objects (30), undo-redo (2), visual (24)
 - **0 tracked coverage gaps**
-- **258 of 468 documented keybind rows map to an inventoried keybind**; the rest work today but are not yet individually tracked ([full list below](#documented-but-not-yet-inventoried))
+- **259 of 468 documented keybind rows map to an inventoried keybind**; the rest work today but are not yet individually tracked ([full list below](#documented-but-not-yet-inventoried))
 
 ## How the Vim oracle works
 
@@ -262,6 +262,7 @@ Nevi-owned behavior with no Vim equivalent to compare against.
 | `]M` | Move to next method/function end (tree-sitter) | `method_motion_ends_land_on_closing_brace` |
 | `[M` | Move to previous method/function end (tree-sitter) | `method_motion_ends_land_on_closing_brace` |
 | `>j` | Indent the current and next lines | `indent_motion_with_j_covers_two_lines` |
+| `={motion}` | Auto-indent with motion | `reindent_with_h_m_l_covers_the_lines_on_screen` |
 | `=` | Re-indent selected lines | `visual_equals_reindents_selection_like_double_equals` |
 | `<C-z>` | Leave Visual mode and suspend to the shell | `ctrl_z_in_visual_mode_returns_to_normal_and_asks_to_suspend` |
 | `<leader>j` | Start labeled jump navigation | `labeled_jump_jumps_to_selected_visible_match` |
@@ -293,7 +294,7 @@ like `dw` are tracked as single inventory entries, so their building-block
 rows may already be covered compositionally.)
 
 <details>
-<summary>210 untracked rows</summary>
+<summary>209 untracked rows</summary>
 
 | Keybind | Behavior |
 |---------|----------|
@@ -305,7 +306,6 @@ rows may already be covered compositionally.)
 | `>{motion}` | Indent with motion (e.g., `>j` indents current and next line) |
 | `<{motion}` | Dedent with motion |
 | `==` | Auto-indent current line |
-| `={motion}` | Auto-indent with motion |
 | `Up` | Navigate to previous search history entry |
 | `Down` | Navigate to next search history entry |
 | `m{A-Z}` | Set global mark (works across files) |
