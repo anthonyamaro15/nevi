@@ -98,6 +98,16 @@ published yet.
 
 </details>
 
+### Nix (macOS and Linux)
+
+```bash
+nix run github:anthonyamaro15/nevi
+```
+
+The flake provides a pinned build, so `nix run` starts Nevi without installing
+it. `nix develop` opens a dev shell with the Rust toolchain and the libraries
+Nevi links against. Flakes must be enabled.
+
 ### From source
 
 ```bash

@@ -100,6 +100,10 @@
 
 - Reorganized the docs on GitHub. The README is now a short front door with a table of contents, one install section, a six-command quick start, a table of every file Nevi reads or writes, and a troubleshooting section. New `CONFIGURATION.md` documents every config option, keymap action, and formatter setting in one place (#207), and new `CONTRIBUTING.md` walks through adding a keybind: the oracle case, the coverage entry, the docs that tests check, and the PR checklist. Keybind customization moved from `KEYBINDINGS.md` to `CONFIGURATION.md`, and the command tables gained the ex commands they were missing. A Vim parity issue template asks for exactly the fields an oracle case needs.
 
+### Install And Upgrade
+
+- Added a Nix flake. `nix run github:anthonyamaro15/nevi` runs the editor without installing it, and `nix develop` opens a dev shell with the Rust toolchain and the libraries Nevi links against.
+
 
 ## 0.3.0 - 2026-08-25
 
