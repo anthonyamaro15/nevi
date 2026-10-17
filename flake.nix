@@ -73,7 +73,7 @@
       #   nixpkgs.overlays = [ nevi.overlays.default ];
       #   environment.systemPackages = [ pkgs.nevi ];
       overlays.default = final: _prev: {
-        nevi = self.packages.${final.system}.default;
+        nevi = self.packages.${final.stdenv.hostPlatform.system}.default;
       };
 
       devShells = forAllSystems (
