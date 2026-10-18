@@ -1,4 +1,7 @@
 /target
+/.direnv
+/result
+/result-*
 .nvimlog
 .DS_Store
 *.log
