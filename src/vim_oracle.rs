@@ -1487,6 +1487,9 @@ fn neovim_snapshot_lua(keys: &str, text_rows: u16, wrap: bool) -> String {
 local keys = vim.api.nvim_replace_termcodes("{}", true, true, true)
 vim.o.scrolloff = {}
 vim.o.wrap = {}
+-- Neovim's default commentstring is empty, so gc would do nothing; this is
+-- the "// " Nevi falls back to for a buffer with no language.
+vim.o.commentstring = "// %s"
 vim.api.nvim_win_set_width(0, {})
 vim.api.nvim_win_set_height(0, {})
 vim.api.nvim_feedkeys(keys, "xt", false)

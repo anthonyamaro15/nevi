@@ -481,6 +481,12 @@ impl InputState {
         op_count * motion_count
     }
 
+    /// The target line for `G`/`gg` when a count was typed on either side of
+    /// an operator. `2dG` names line 2 like `d2G`, and `2d3G` goes to line 6.
+    fn line_count(&self) -> Option<usize> {
+        (self.count.is_some() || self.operator_count.is_some()).then(|| self.combined_count())
+    }
+
     /// Set a pending operator, saving current count for later multiplication
     fn set_operator(&mut self, op: Operator) {
         self.operator_count = self.count;
@@ -1088,11 +1094,8 @@ impl InputState {
                 KeyAction::Pending
             }
             (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
-                if self.count.is_some() {
-                    self.motion_or_operator(Motion::GotoLine(count), 1)
-                } else {
-                    self.motion_or_operator(Motion::FileEnd, 1)
-                }
+                let motion = self.line_count().map_or(Motion::FileEnd, Motion::GotoLine);
+                self.motion_or_operator(motion, 1)
             }
 
             // Screen motions (H, M, L)
@@ -1401,15 +1404,10 @@ impl InputState {
         match (partial, key.modifiers, key.code) {
             // gg - go to start
             ('g', KeyModifiers::NONE, KeyCode::Char('g')) => {
-                if self.count.is_some() {
-                    let action = self.motion_or_operator(Motion::GotoLine(count), 1);
-                    self.reset();
-                    action
-                } else {
-                    let action = self.motion_or_operator(Motion::FileStart, 1);
-                    self.reset();
-                    action
-                }
+                let motion = self
+                    .line_count()
+                    .map_or(Motion::FileStart, Motion::GotoLine);
+                self.motion_or_operator(motion, 1)
             }
             // gd - go to definition (LSP)
             ('g', KeyModifiers::NONE, KeyCode::Char('d')) => {
@@ -1804,15 +1802,20 @@ impl InputState {
 
     /// Return a motion action, or operator+motion if operator is pending
     fn motion_or_operator(&mut self, motion: Motion, count: usize) -> KeyAction {
-        if let Some(op) = self.pending_operator.take() {
+        let action = if let Some(op) = self.pending_operator.take() {
             // Use combined count for operator+motion (e.g., 2d3w = 6 words)
-            let final_count = self.combined_count();
-            self.reset();
-            KeyAction::OperatorMotion(op, motion, final_count)
+            KeyAction::OperatorMotion(op, motion, self.combined_count())
+        } else if let Some(case_op) = self.pending_case_operator {
+            // gu/gU/g~ and gc only get here through a g-prefixed motion
+            // (gUgg, gUg_, gcgg); their other motions are matched directly.
+            KeyAction::CaseMotion(case_op, motion, count)
+        } else if self.pending_comment {
+            KeyAction::ToggleCommentMotion(motion, count)
         } else {
-            self.reset();
             KeyAction::Motion(motion, count)
-        }
+        };
+        self.reset();
+        action
     }
 
     fn page_motion_or_operator(&mut self, motion: Motion) -> KeyAction {
@@ -2115,18 +2118,14 @@ impl InputState {
             }
             // File motions
             (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
+                let motion = self.line_count().map_or(Motion::FileEnd, Motion::GotoLine);
                 self.reset();
-                if self.count.is_some() {
-                    KeyAction::ToggleCommentMotion(Motion::GotoLine(count), 1)
-                } else {
-                    KeyAction::ToggleCommentMotion(Motion::FileEnd, 1)
-                }
+                KeyAction::ToggleCommentMotion(motion, 1)
             }
-            // gg - file start (need to handle 'g' prefix)
+            // g-prefixed motions (gcgg, gcg_): the partial-key handler hands
+            // the motion to motion_or_operator, which sees pending_comment.
             (KeyModifiers::NONE, KeyCode::Char('g')) => {
-                // Set partial_key to handle gg
                 self.partial_key = Some('g');
-                // Keep pending_comment true for gcgg
                 KeyAction::Pending
             }
             // Text object support (gcip, gciw, etc.)
@@ -2249,18 +2248,14 @@ impl InputState {
             }
             // File motions
             (KeyModifiers::SHIFT, KeyCode::Char('G')) => {
+                let motion = self.line_count().map_or(Motion::FileEnd, Motion::GotoLine);
                 self.reset();
-                if self.count.is_some() {
-                    KeyAction::CaseMotion(case_op, Motion::GotoLine(count), 1)
-                } else {
-                    KeyAction::CaseMotion(case_op, Motion::FileEnd, 1)
-                }
+                KeyAction::CaseMotion(case_op, motion, 1)
             }
-            // gg - file start (need to handle 'g' prefix)
+            // g-prefixed motions (gUgg, gUg_): the partial-key handler hands
+            // the motion to motion_or_operator, which sees the case operator.
             (KeyModifiers::NONE, KeyCode::Char('g')) => {
-                // Set partial_key to handle gg
                 self.partial_key = Some('g');
-                // Keep pending_case_operator for gugg, gUgg, g~gg
                 KeyAction::Pending
             }
             // Text object support (guiw, gUaw, etc.)

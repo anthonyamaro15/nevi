@@ -202,4 +202,32 @@ pub(super) const LINEWISE_CASES: &[OracleCase] = &[
         initial_text: "one two\nthree four\nfive six\nseven eight\nnine ten\n",
         keys: "d2j",
     },
+    // A count typed before the operator is the line number for G and gg,
+    // the same as one typed after it. Both counts multiply (`2d2G` goes to
+    // line 4). The named register keeps the paste off the shared clipboard.
+    OracleCase {
+        name: "count before d makes G go to that line",
+        initial_text: "one two\nthree four\nfive six\nseven eight\nnine ten\n",
+        keys: "jj2dG",
+    },
+    OracleCase {
+        name: "count before d makes gg go to that line",
+        initial_text: "one two\nthree four\nfive six\nseven eight\nnine ten\n",
+        keys: "jjj2dgg",
+    },
+    OracleCase {
+        name: "count before c makes G go to that line",
+        initial_text: "one two\nthree four\nfive six\nseven eight\nnine ten\n",
+        keys: "jj2cGX<Esc>",
+    },
+    OracleCase {
+        name: "count before y makes G go to that line",
+        initial_text: "one two\nthree four\nfive six\nseven eight\nnine ten\n",
+        keys: "jj\"a2yG\"aP",
+    },
+    OracleCase {
+        name: "counts before d and G multiply",
+        initial_text: "one two\nthree four\nfive six\nseven eight\nnine ten\n",
+        keys: "2d2G",
+    },
 ];
