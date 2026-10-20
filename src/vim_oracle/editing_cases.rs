@@ -406,6 +406,48 @@ pub(super) const EDITING_CASES: &[OracleCase] = &[
         initial_text: "abc\n",
         keys: "g~G",
     },
+    // gu/gU/g~/gc followed by a g-prefixed motion (gg, g_), and a count
+    // typed before the operator as the line for G and gg.
+    OracleCase {
+        name: "uppercase to start of buffer",
+        initial_text: "ab\ncd\nef\n",
+        keys: "jjgUgg",
+    },
+    OracleCase {
+        name: "lowercase to start of buffer",
+        initial_text: "AB\nCD\nEF\n",
+        keys: "jjgugg",
+    },
+    OracleCase {
+        name: "toggle case to start of buffer",
+        initial_text: "aB\ncD\neF\n",
+        keys: "jjg~gg",
+    },
+    OracleCase {
+        name: "count before gU makes G go to that line",
+        initial_text: "ab\ncd\nef\n",
+        keys: "2gUG",
+    },
+    OracleCase {
+        name: "count before gU makes gg go to that line",
+        initial_text: "ab\ncd\nef\n",
+        keys: "jj2gUgg",
+    },
+    OracleCase {
+        name: "uppercase to the last non-blank",
+        initial_text: "abc def  \n",
+        keys: "gUg_",
+    },
+    OracleCase {
+        name: "count before gc makes gg go to that line",
+        initial_text: "ab\ncd\nef\n",
+        keys: "2gcgg",
+    },
+    OracleCase {
+        name: "count before gc makes G go to that line",
+        initial_text: "ab\ncd\nef\n",
+        keys: "2gcG",
+    },
     // Characterwise text put over a linewise selection gets its own line.
     OracleCase {
         name: "characterwise put over the only line",
