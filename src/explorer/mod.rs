@@ -324,6 +324,13 @@ impl FileExplorer {
         self.flat_view.get(self.selected).map(|n| &n.path)
     }
 
+    /// True on the first row, the project directory itself. Rename, delete,
+    /// copy and cut refuse it: a delete there removes the whole project, and
+    /// nothing goes to the trash.
+    pub fn root_selected(&self) -> bool {
+        self.root.is_some() && self.selected_path() == self.root.as_ref()
+    }
+
     /// Toggle expand/collapse for selected directory
     pub fn toggle_expand(&mut self) {
         if let Some(node) = self.flat_view.get(self.selected) {

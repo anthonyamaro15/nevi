@@ -10077,6 +10077,14 @@ fn execute_explorer_mode_action(editor: &mut Editor, action: crate::config::Expl
         ExplorerModeAction::NarrowSidebar => editor.narrow_explorer(),
         ExplorerModeAction::ResetSidebarWidth => editor.reset_explorer_width(),
         ExplorerModeAction::Create => editor.explorer.start_add(),
+        ExplorerModeAction::Rename
+        | ExplorerModeAction::Delete
+        | ExplorerModeAction::Copy
+        | ExplorerModeAction::Cut
+            if editor.explorer.root_selected() =>
+        {
+            editor.set_status(EXPLORER_ROOT_REFUSED);
+        }
         ExplorerModeAction::Rename => editor.explorer.start_rename(),
         ExplorerModeAction::Delete => editor.explorer.start_delete(),
         ExplorerModeAction::Copy => editor.explorer.copy_selected(),
@@ -10118,11 +10126,25 @@ fn expand_or_open_explorer_selection(editor: &mut Editor) {
     }
 }
 
+const EXPLORER_ROOT_REFUSED: &str = "The project root can't be renamed, deleted, copied or cut";
+
 fn execute_explorer_action(editor: &mut Editor) {
     use crate::explorer::ExplorerAction;
 
     let action = editor.explorer.pending_action.clone();
     let input = editor.explorer.input_buffer.clone();
+
+    // The mouse wheel can move the selection onto the root while the prompt
+    // is open, so check again before touching the disk.
+    if matches!(
+        action,
+        Some(ExplorerAction::Rename | ExplorerAction::Delete)
+    ) && editor.explorer.root_selected()
+    {
+        editor.set_status(EXPLORER_ROOT_REFUSED);
+        editor.explorer.cancel_action();
+        return;
+    }
 
     match action {
         Some(ExplorerAction::Add) => {
@@ -10290,6 +10312,13 @@ fn execute_explorer_paste(editor: &mut Editor) {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
     let dest_path = dest_dir.join(&file_name);
+
+    // A copy would keep finding the folder it just created until the path
+    // grows too long, and a move can't put a folder inside itself either.
+    if dest_path.starts_with(&clipboard.path) {
+        editor.set_status("Can't paste a folder inside itself");
+        return;
+    }
 
     // Check if destination exists
     if dest_path.exists() {
@@ -15742,6 +15771,69 @@ mod tests {
                 .unwrap_or_default()
                 .contains("Already exists")
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn explorer_file_operations_leave_the_project_root_alone() {
+        // The root row is the project directory. `gg d y <CR>` used to
+        // remove_dir_all it, with no trash to recover from.
+        let root = unique_temp_dir("nevi_explorer_root_guard");
+        std::fs::create_dir_all(root.join("src")).expect("create root");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}").expect("write file");
+
+        for keys in ["ggdy<CR>", "ggr", "ggc", "ggx"] {
+            let mut editor = editor_with_project_explorer(&root);
+            for key in crate::input::key_notation::parse_key_sequence(keys).expect("keys") {
+                handle_key(&mut editor, key);
+            }
+            assert!(root.join("src/main.rs").exists(), "{keys}");
+            assert_eq!(editor.explorer.pending_action, None, "{keys}");
+            assert!(editor.explorer.clipboard.is_none(), "{keys}");
+        }
+
+        // Prompt opened on a folder, then the wheel moves to the root row.
+        let mut editor = editor_with_project_explorer(&root);
+        select_explorer_path(&mut editor, &root.join("src"));
+        editor.explorer.start_delete();
+        editor.explorer.input_buffer = "y".to_string();
+        editor.explorer.selected = 0;
+        super::execute_explorer_action(&mut editor);
+        assert!(root.join("src/main.rs").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn explorer_refuses_to_paste_a_folder_inside_itself() {
+        let root = unique_temp_dir("nevi_explorer_paste_into_self");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).expect("create root");
+        std::fs::write(src.join("main.rs"), "fn main() {}").expect("write file");
+
+        for cut in [false, true] {
+            let mut editor = editor_with_project_explorer(&root);
+            select_explorer_path(&mut editor, &src);
+            if cut {
+                editor.explorer.cut_selected();
+            } else {
+                editor.explorer.copy_selected();
+            }
+            // A folder selected as the destination means "paste into it".
+            super::execute_explorer_paste(&mut editor);
+
+            assert!(!src.join("src").exists(), "cut={cut}");
+            assert!(src.join("main.rs").exists(), "cut={cut}");
+            assert!(
+                editor
+                    .status_message
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("inside itself"),
+                "cut={cut}"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&root);
     }
