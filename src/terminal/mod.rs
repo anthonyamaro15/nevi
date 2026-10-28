@@ -1095,6 +1095,10 @@ pub struct Terminal {
     stdout: Box<dyn Write>,
     mouse_capture_enabled: bool,
     leader_popup_rect: Option<(u16, u16)>,
+    /// Whether the editor behind the open finder / Markdown preview has been
+    /// painted since it opened. Those overlays skip the background, so the
+    /// first frame must still draw it once (see `render`).
+    overlay_background_drawn: bool,
     /// False for test terminals: they write to a buffer, so they must never
     /// switch the real tty's raw mode or restore it on drop.
     owns_tty: bool,
@@ -1125,6 +1129,7 @@ impl Terminal {
             stdout,
             mouse_capture_enabled: false,
             leader_popup_rect: None,
+            overlay_background_drawn: false,
             owns_tty: true,
         };
         terminal.enter_editor_screen()?;
@@ -1137,6 +1142,7 @@ impl Terminal {
             stdout,
             mouse_capture_enabled: false,
             leader_popup_rect: None,
+            overlay_background_drawn: false,
             owns_tty: false,
         }
     }
@@ -1208,6 +1214,17 @@ impl Terminal {
     pub fn render(&mut self, editor: &Editor) -> anyhow::Result<()> {
         self.set_mouse_capture(Self::should_capture_mouse(editor))?;
 
+        // Large overlays cover most of the screen, so repainting the editor
+        // behind them on every keystroke only wastes work and can flash
+        // between redraw phases. Their first frame still paints it once: the
+        // key that opened the overlay can leave `<leader>f` on the command
+        // line or the leader popup on screen, and skipping would freeze both.
+        // Partial renders never run while an overlay is up (see
+        // `has_partial_render_blocking_ui`), so updating this first is safe.
+        let overlay_open = Self::should_skip_background(editor);
+        let skip_background = overlay_open && self.overlay_background_drawn;
+        self.overlay_background_drawn = overlay_open;
+
         if self.leader_popup_rect.is_none() {
             if let Some(kind) = Self::partial_render_kind(editor) {
                 return self.render_partial(editor, kind);
@@ -1215,10 +1232,6 @@ impl Terminal {
         }
 
         execute!(self.stdout, cursor::Hide, cursor::MoveTo(0, 0))?;
-
-        // Large overlays fully cover the content area, so repainting the editor
-        // behind them only wastes work and can flash between redraw phases.
-        let skip_background = Self::should_skip_background(editor);
 
         if !skip_background {
             let num_panes = editor.panes().len();
@@ -19711,6 +19724,69 @@ mod tests {
         assert_eq!(editor.finder.mode, FinderMode::Files);
         assert!(editor.leader_sequence.is_none());
         assert!(editor.leader_popup_items().is_empty());
+    }
+
+    /// The finder skips repainting the editor behind it, so its FIRST frame
+    /// used to keep whatever the leader frame left: `<leader>f` stayed on the
+    /// command line, and the which-key popup was erased to the terminal's
+    /// default color instead of the editor background.
+    #[test]
+    fn opening_finder_from_leader_repaints_the_screen_behind_it() {
+        use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
+        crossterm::style::force_color_output(true);
+        let (cols, rows) = (100u16, 30u16);
+
+        for show_popup in [true, false] {
+            let mut editor = Editor::default();
+            editor.settings.keymap.show_leader_popup = show_popup;
+            editor.set_size(cols, rows);
+            let output = SharedOutput::default();
+            let mut terminal = Terminal::new_for_test(Box::new(output.clone()));
+
+            handle_key(&mut editor, key(' '));
+            handle_key(&mut editor, key('f'));
+            terminal.render(&editor).expect("leader frame");
+            handle_key(&mut editor, key('f'));
+            assert_eq!(editor.mode, Mode::Finder);
+            terminal.render(&editor).expect("first finder frame");
+
+            let dimensions = ReplayDimensions {
+                rows: rows as usize,
+                cols: cols as usize,
+            };
+            let mut replay =
+                AlacrittyTerm::new(AlacrittyConfig::default(), &dimensions, VoidListener);
+            let mut processor: VteProcessor = VteProcessor::new();
+            processor.advance(&mut replay, output.into_string().as_bytes());
+            let cell = |row: u16, col: u16| &replay.grid()[Line(row as i32)][Column(col as usize)];
+
+            // The command line row uses the terminal default on purpose, so
+            // only the rows above it must carry a painted background.
+            let win = crate::finder::FloatingWindow::centered(cols, rows);
+            let in_finder = |row: u16, col: u16| {
+                (win.y..win.y + win.height).contains(&row)
+                    && (win.x..win.x + win.width).contains(&col)
+            };
+            let unpainted: Vec<(u16, u16)> = (0..rows - 1)
+                .flat_map(|row| (0..cols).map(move |col| (row, col)))
+                .filter(|&(row, col)| !in_finder(row, col))
+                .filter(|&(row, col)| cell(row, col).bg == AnsiColor::Named(NamedColor::Background))
+                .collect();
+            assert!(
+                unpainted.is_empty(),
+                "show_leader_popup={show_popup}: {} cells outside the finder kept the terminal \
+                 default background, first at {:?}",
+                unpainted.len(),
+                unpainted.first()
+            );
+
+            let command_row: String = (0..cols).map(|col| cell(rows - 1, col).c).collect();
+            assert!(
+                !command_row.contains("<leader>"),
+                "show_leader_popup={show_popup}: command line still shows the leader sequence: \
+                 {command_row:?}"
+            );
+        }
     }
 
     #[test]
