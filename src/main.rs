@@ -201,6 +201,31 @@ fn lsp_completion_response_matches_current_cursor(
         && editor_lsp_cursor_col(editor) == request_character
 }
 
+/// Opens the rename prompt from a prepareRename answer. The rename goes out
+/// from the cursor, so the answer is dropped if the cursor moved or another
+/// mode took over meanwhile. Returns whether the screen needs a redraw.
+fn open_rename_prompt_if_current(
+    editor: &mut Editor,
+    outcome: lsp::PrepareRenameOutcome,
+    request_uri: &str,
+    request_version: u64,
+    request_line: u32,
+    request_character: u32,
+) -> bool {
+    let current = editor.mode == Mode::Normal
+        && lsp_completion_response_matches_current_cursor(
+            editor,
+            request_uri,
+            request_version,
+            request_line,
+            request_character,
+        );
+    if current {
+        editor.open_rename_prompt(outcome);
+    }
+    current
+}
+
 fn request_selected_completion_resolve(
     editor: &mut Editor,
     mlsp: &mut MultiLspManager,
@@ -1055,6 +1080,14 @@ fn main() -> anyhow::Result<()> {
                                                 diagnostics,
                                             );
                                         }
+                                        LspAction::PrepareRename => {
+                                            let _ = mlsp.prepare_rename(
+                                                &path,
+                                                line,
+                                                col,
+                                                editor.buffer().version(),
+                                            );
+                                        }
                                         LspAction::RenameSymbol(new_name) => {
                                             let _ = mlsp.rename(
                                                 &path,
@@ -1892,6 +1925,24 @@ fn main() -> anyhow::Result<()> {
                                 editor.show_code_actions_picker(actions);
                             }
                             needs_redraw = true;
+                        }
+                        LspNotification::PrepareRenameResult {
+                            outcome,
+                            request_uri,
+                            request_version,
+                            request_line,
+                            request_character,
+                        } => {
+                            if open_rename_prompt_if_current(
+                                &mut editor,
+                                outcome,
+                                &request_uri,
+                                request_version,
+                                request_line,
+                                request_character,
+                            ) {
+                                needs_redraw = true;
+                            }
                         }
                         LspNotification::RenameResult {
                             edits,
@@ -2825,8 +2876,8 @@ mod tests {
         CliStartupAction, PickModeAction, TerminalOutputTarget, apply_edits_to_file,
         diagnostic_to_lsp_offsets, editor_lsp_cursor_col, editor_lsp_line_len, help_output,
         lsp_completion_response_matches_current_cursor, lsp_response_matches_current_buffer,
-        pick_mode_action_for_key, profile_enabled_from_value, startup_action_from_args,
-        terminal_output_target_for_pick_mode,
+        open_rename_prompt_if_current, pick_mode_action_for_key, profile_enabled_from_value,
+        startup_action_from_args, terminal_output_target_for_pick_mode,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use nevi::lsp::types::{Diagnostic, DiagnosticSeverity, TextEdit};
@@ -3240,6 +3291,57 @@ mod tests {
             0,
             request_col
         ));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn prepare_rename_answer_opens_the_prompt_only_from_the_requesting_cursor() {
+        use nevi::lsp::PrepareRenameOutcome;
+
+        let tmp = unique_temp_dir("nevi_prepare_rename_context");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("test.swift");
+        std::fs::write(
+            &path,
+            "func makeSUT(\n    preferredCountry: String,\n) {}\n",
+        )
+        .expect("write file");
+        let placeholder = || PrepareRenameOutcome::Placeholder("makeSUT(preferredCountry:)".into());
+
+        let mut editor = Editor::default();
+        editor.open_file(path.clone()).expect("open file");
+        editor.cursor.line = 1;
+        editor.cursor.col = 4;
+        let uri = nevi::lsp::path_to_uri(&path);
+        let version = editor.buffer().version();
+
+        editor.mode = Mode::Insert;
+        assert!(
+            !open_rename_prompt_if_current(&mut editor, placeholder(), &uri, version, 1, 4),
+            "a prompt must not steal keys from insert mode"
+        );
+        assert_eq!(editor.mode, Mode::Insert);
+
+        editor.mode = Mode::Normal;
+        editor.cursor.line = 0;
+        assert!(
+            !open_rename_prompt_if_current(&mut editor, placeholder(), &uri, version, 1, 4),
+            "the rename would go out from the new cursor position"
+        );
+        assert_eq!(editor.mode, Mode::Normal);
+
+        editor.cursor.line = 1;
+        assert!(open_rename_prompt_if_current(
+            &mut editor,
+            placeholder(),
+            &uri,
+            version,
+            1,
+            4
+        ));
+        assert_eq!(editor.mode, Mode::RenamePrompt);
+        assert_eq!(editor.rename_input, "makeSUT(preferredCountry:)");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

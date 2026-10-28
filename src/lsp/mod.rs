@@ -282,6 +282,23 @@ impl LspManager {
         })
     }
 
+    /// Ask what the rename prompt should start with
+    pub fn prepare_rename(
+        &self,
+        path: &PathBuf,
+        line: u32,
+        character: u32,
+        buffer_version: u64,
+    ) -> anyhow::Result<()> {
+        let uri = path_to_uri(path);
+        self.send(LspRequest::PrepareRename {
+            uri,
+            line,
+            character,
+            buffer_version,
+        })
+    }
+
     /// Request rename symbol
     pub fn rename(
         &self,
@@ -558,6 +575,19 @@ fn run_lsp_thread(
                         ) {
                             let _ = notification_tx.send(LspNotification::Error {
                                 message: format!("Failed to request code actions: {}", e),
+                            });
+                        }
+                    }
+                    LspRequest::PrepareRename {
+                        uri,
+                        line,
+                        character,
+                        buffer_version,
+                    } => {
+                        if let Err(e) = client.prepare_rename(&uri, line, character, buffer_version)
+                        {
+                            let _ = notification_tx.send(LspNotification::Error {
+                                message: format!("Failed to request rename: {}", e),
                             });
                         }
                     }

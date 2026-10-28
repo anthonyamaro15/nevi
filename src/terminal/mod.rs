@@ -7970,8 +7970,8 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         }
 
         KeyAction::RenameSymbol => {
-            // Enter rename prompt mode
-            editor.enter_rename_prompt();
+            // The prompt opens once the server answers prepareRename
+            editor.pending_lsp_action = Some(crate::editor::LspAction::PrepareRename);
         }
 
         KeyAction::JumpBack => {
@@ -11026,8 +11026,8 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
         }
 
         Command::RenamePrompt => {
-            // Enter rename prompt mode
-            editor.enter_rename_prompt();
+            // The prompt opens once the server answers prepareRename
+            editor.pending_lsp_action = Some(LspAction::PrepareRename);
             CommandResult::Ok
         }
 

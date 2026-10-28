@@ -844,6 +844,28 @@ impl MultiLspManager {
         Ok(())
     }
 
+    /// Ask what the rename prompt should start with
+    pub fn prepare_rename(
+        &mut self,
+        path: &PathBuf,
+        line: u32,
+        character: u32,
+        buffer_version: u64,
+    ) -> anyhow::Result<()> {
+        let lang = self
+            .language_for_path(path)
+            .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
+
+        if let Some(instance) = self.get_instance_mut(lang) {
+            if instance.ready {
+                instance
+                    .manager
+                    .prepare_rename(path, line, character, buffer_version)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Request rename
     pub fn rename(
         &mut self,

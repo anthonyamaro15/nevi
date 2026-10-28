@@ -23,8 +23,8 @@ use serde_json::{Value, json};
 
 use super::types::{
     CodeActionItem, CompletionItem, CompletionKind, Diagnostic, DiagnosticSeverity, Location,
-    LspNavigationTargetKind, LspNotification, ParameterInfo, RequestKind, SignatureHelpResult,
-    SignatureInfo, TextEdit,
+    LspNavigationTargetKind, LspNotification, ParameterInfo, PrepareRenameOutcome, RequestKind,
+    SignatureHelpResult, SignatureInfo, TextEdit,
 };
 #[cfg(test)]
 use super::watched_files::WATCHED_FILES_METHOD;
@@ -189,6 +189,10 @@ fn client_capabilities() -> ClientCapabilities {
                         ],
                     },
                 }),
+                ..Default::default()
+            }),
+            rename: Some(lsp_types::RenameClientCapabilities {
+                prepare_support: Some(true),
                 ..Default::default()
             }),
             ..Default::default()
@@ -604,6 +608,32 @@ impl LspClient {
         )
     }
 
+    /// Ask what the rename prompt should start with
+    pub fn prepare_rename(
+        &mut self,
+        uri: &str,
+        line: u32,
+        character: u32,
+        buffer_version: u64,
+    ) -> Result<u64> {
+        let params = TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier {
+                uri: lsp_types::Url::parse(uri)?,
+            },
+            position: lsp_types::Position { line, character },
+        };
+        self.send_request(
+            "textDocument/prepareRename",
+            serde_json::to_value(params)?,
+            RequestKind::PrepareRename {
+                uri: uri.to_string(),
+                line,
+                character,
+                buffer_version,
+            },
+        )
+    }
+
     /// Request rename symbol
     pub fn rename(
         &mut self,
@@ -910,8 +940,29 @@ fn handle_message(
 
     // Handle JSON-RPC errors - remove from pending map
     if let Some(error) = msg.error {
-        if let Ok(mut pending_map) = pending.lock() {
-            pending_map.remove(&id_num);
+        let kind = match pending.lock() {
+            Ok(mut pending_map) => pending_map.remove(&id_num),
+            Err(_) => None,
+        };
+        // A server without prepareRename answers MethodNotFound. Open the
+        // prompt with the word under the cursor instead of failing the rename.
+        if let Some(RequestKind::PrepareRename {
+            uri,
+            line,
+            character,
+            buffer_version,
+        }) = kind
+        {
+            return (
+                Some(LspNotification::PrepareRenameResult {
+                    outcome: PrepareRenameOutcome::WordUnderCursor,
+                    request_uri: uri,
+                    request_version: buffer_version,
+                    request_line: line,
+                    request_character: character,
+                }),
+                None,
+            );
         }
         return (
             Some(LspNotification::Error {
@@ -1071,6 +1122,18 @@ fn handle_message(
                 request_version: buffer_version,
             }),
         },
+        RequestKind::PrepareRename {
+            uri,
+            line,
+            character,
+            buffer_version,
+        } => Some(LspNotification::PrepareRenameResult {
+            outcome: parse_prepare_rename_result(msg.result.as_ref()),
+            request_uri: uri,
+            request_version: buffer_version,
+            request_line: line,
+            request_character: character,
+        }),
         RequestKind::Rename {
             uri,
             buffer_version,
@@ -1938,6 +2001,39 @@ fn handle_code_action_response(
     })
 }
 
+/// Read a prepareRename result: `Range`, `{ range, placeholder }`,
+/// `{ defaultBehavior }`, or null.
+fn parse_prepare_rename_result(result: Option<&Value>) -> PrepareRenameOutcome {
+    let Some(result) = result.filter(|result| !result.is_null()) else {
+        return PrepareRenameOutcome::NotRenameable;
+    };
+    if let Some(placeholder) = result.get("placeholder").and_then(Value::as_str) {
+        if !placeholder.is_empty() {
+            return PrepareRenameOutcome::Placeholder(placeholder.to_string());
+        }
+    }
+    let range = result.get("range").unwrap_or(result);
+    let position = |key: &str| {
+        let position = range.get(key)?;
+        Some((
+            position.get("line")?.as_u64()? as usize,
+            position.get("character")?.as_u64()? as usize,
+        ))
+    };
+    match (position("start"), position("end")) {
+        // A multi-line range is a whole declaration (sourcekit-lsp sends one
+        // next to its placeholder), not a name to prefill.
+        (Some((line, start_col)), Some((end_line, end_col))) if line == end_line => {
+            PrepareRenameOutcome::Range {
+                line,
+                start_col,
+                end_col,
+            }
+        }
+        _ => PrepareRenameOutcome::WordUnderCursor,
+    }
+}
+
 /// Handle rename response
 fn handle_rename_response(
     result: Value,
@@ -2472,6 +2568,215 @@ mod tests {
         match indexing {
             LspNotification::ServerStatus { quiescent, .. } => assert!(!quiescent),
             other => panic!("expected server status notification, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn client_capabilities_advertise_prepare_rename() {
+        let capabilities = client_capabilities();
+
+        assert_eq!(
+            capabilities
+                .text_document
+                .and_then(|text_document| text_document.rename)
+                .and_then(|rename| rename.prepare_support),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn prepare_rename_result_shapes() {
+        // sourcekit-lsp on a Swift argument label: the placeholder is the
+        // compound name and the range spans the whole declaration.
+        assert_eq!(
+            parse_prepare_rename_result(Some(&json!({
+                "placeholder": "makeSUT(preferredCountry:)",
+                "range": {
+                    "start": {"line": 0, "character": 5},
+                    "end": {"line": 2, "character": 1}
+                }
+            }))),
+            PrepareRenameOutcome::Placeholder("makeSUT(preferredCountry:)".to_string())
+        );
+        assert_eq!(
+            parse_prepare_rename_result(Some(&json!({
+                "start": {"line": 3, "character": 4},
+                "end": {"line": 3, "character": 9}
+            }))),
+            PrepareRenameOutcome::Range {
+                line: 3,
+                start_col: 4,
+                end_col: 9
+            }
+        );
+        assert_eq!(
+            parse_prepare_rename_result(Some(&json!({
+                "range": {
+                    "start": {"line": 3, "character": 4},
+                    "end": {"line": 3, "character": 9}
+                },
+                "placeholder": ""
+            }))),
+            PrepareRenameOutcome::Range {
+                line: 3,
+                start_col: 4,
+                end_col: 9
+            }
+        );
+        assert_eq!(
+            parse_prepare_rename_result(Some(&json!({
+                "start": {"line": 0, "character": 5},
+                "end": {"line": 2, "character": 1}
+            }))),
+            PrepareRenameOutcome::WordUnderCursor,
+            "a multi-line range is not a name"
+        );
+        assert_eq!(
+            parse_prepare_rename_result(Some(&json!({"defaultBehavior": true}))),
+            PrepareRenameOutcome::WordUnderCursor
+        );
+        assert_eq!(
+            parse_prepare_rename_result(Some(&Value::Null)),
+            PrepareRenameOutcome::NotRenameable
+        );
+        assert_eq!(
+            parse_prepare_rename_result(None),
+            PrepareRenameOutcome::NotRenameable
+        );
+    }
+
+    #[test]
+    fn prepare_rename_answer_keeps_its_request_context() {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        pending.lock().unwrap().insert(
+            6,
+            RequestKind::PrepareRename {
+                uri: "file:///tmp/test.swift".to_string(),
+                line: 1,
+                character: 4,
+                buffer_version: 3,
+            },
+        );
+        // sourcekit-lsp's answer on the issue #385 snippet.
+        let response = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Num(6)),
+            result: Some(json!({
+                "placeholder": "makeSUT(preferredCountry:)",
+                "range": {
+                    "start": {"line": 0, "character": 5},
+                    "end": {"line": 2, "character": 1}
+                }
+            })),
+            error: None,
+            method: None,
+            params: None,
+        };
+
+        let (notification, server_response) = handle_message(response, &pending, None);
+
+        assert!(server_response.is_none());
+        match notification {
+            Some(LspNotification::PrepareRenameResult {
+                outcome,
+                request_uri,
+                request_version,
+                request_line,
+                request_character,
+            }) => {
+                assert_eq!(
+                    outcome,
+                    PrepareRenameOutcome::Placeholder("makeSUT(preferredCountry:)".to_string())
+                );
+                assert_eq!(request_uri, "file:///tmp/test.swift");
+                assert_eq!(
+                    (request_version, request_line, request_character),
+                    (3, 1, 4)
+                );
+            }
+            other => panic!("expected prepareRename result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prepare_rename_error_falls_back_to_word_under_cursor() {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        pending.lock().unwrap().insert(
+            7,
+            RequestKind::PrepareRename {
+                uri: "file:///tmp/test.swift".to_string(),
+                line: 1,
+                character: 4,
+                buffer_version: 3,
+            },
+        );
+        let response = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Num(7)),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32601,
+                message: "Unhandled method textDocument/prepareRename".to_string(),
+            }),
+            method: None,
+            params: None,
+        };
+
+        let (notification, server_response) = handle_message(response, &pending, None);
+
+        assert!(server_response.is_none());
+        assert!(pending.lock().unwrap().is_empty());
+        match notification {
+            Some(LspNotification::PrepareRenameResult {
+                outcome,
+                request_uri,
+                request_version,
+                request_line,
+                request_character,
+            }) => {
+                assert_eq!(outcome, PrepareRenameOutcome::WordUnderCursor);
+                assert_eq!(request_uri, "file:///tmp/test.swift");
+                assert_eq!(
+                    (request_version, request_line, request_character),
+                    (3, 1, 4)
+                );
+            }
+            other => panic!("expected prepareRename result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rename_error_still_reaches_the_status_line() {
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        pending.lock().unwrap().insert(
+            8,
+            RequestKind::Rename {
+                uri: "file:///tmp/test.swift".to_string(),
+                line: 1,
+                character: 4,
+                new_name: "makeSUT(preferredCountry2)".to_string(),
+                buffer_version: 3,
+            },
+        );
+        let response = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: Some(JsonRpcId::Num(8)),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "invalid name".to_string(),
+            }),
+            method: None,
+            params: None,
+        };
+
+        let (notification, _) = handle_message(response, &pending, None);
+
+        match notification {
+            Some(LspNotification::Error { message }) => {
+                assert!(message.contains("invalid name"), "{message}")
+            }
+            other => panic!("expected LSP error, got {other:?}"),
         }
     }
 }
