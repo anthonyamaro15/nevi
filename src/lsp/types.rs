@@ -71,6 +71,12 @@ pub enum RequestKind {
         end_character: u32,
         buffer_version: u64,
     },
+    PrepareRename {
+        uri: String,
+        line: u32,
+        character: u32,
+        buffer_version: u64,
+    },
     Rename {
         uri: String,
         line: u32,
@@ -189,6 +195,14 @@ pub enum LspRequest {
         diagnostics: Vec<Diagnostic>,
     },
 
+    /// Ask the server what the rename prompt should start with
+    PrepareRename {
+        uri: String,
+        line: u32,
+        character: u32,
+        buffer_version: u64,
+    },
+
     /// Request rename symbol
     Rename {
         uri: String,
@@ -200,6 +214,27 @@ pub enum LspRequest {
 }
 
 /// Notifications sent from the LSP client thread to the editor
+/// What `textDocument/prepareRename` said about the cursor position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrepareRenameOutcome {
+    /// The name to edit, as the server wants it back. Swift uses this for
+    /// argument labels, which belong to the compound function name
+    /// (`makeSUT(preferredCountry:)`), so a bare label would rename the function.
+    Placeholder(String),
+    /// Single-line range of the name (UTF-16 columns); the prompt starts with
+    /// the buffer text there.
+    Range {
+        line: usize,
+        start_col: usize,
+        end_col: usize,
+    },
+    /// The server gave nothing usable (error, unsupported request, or a shape
+    /// we don't read), so fall back to the word under the cursor.
+    WordUnderCursor,
+    /// The server answered null: nothing at the cursor can be renamed.
+    NotRenameable,
+}
+
 #[derive(Debug, Clone)]
 pub enum LspNotification {
     /// Server initialization complete
@@ -284,6 +319,16 @@ pub enum LspNotification {
         /// Request context for validation
         request_uri: String,
         request_version: u64,
+    },
+
+    /// prepareRename answer, used to fill the rename prompt
+    PrepareRenameResult {
+        outcome: PrepareRenameOutcome,
+        /// Request context for validation
+        request_uri: String,
+        request_version: u64,
+        request_line: u32,
+        request_character: u32,
     },
 
     /// Rename result with workspace edits

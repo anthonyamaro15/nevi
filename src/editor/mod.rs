@@ -29,7 +29,9 @@ use crate::input::{
     CaseOperator, InputState, Motion, TextObject, TextObjectModifier, TextObjectType, apply_motion,
     motion::{change_word_end, last_addressable_line},
 };
-use crate::lsp::types::{CodeActionItem, CompletionItem, Diagnostic, Location, TextEdit};
+use crate::lsp::types::{
+    CodeActionItem, CompletionItem, Diagnostic, Location, PrepareRenameOutcome, TextEdit,
+};
 use crate::syntax::SyntaxManager;
 use crate::theme::ThemeManager;
 use std::collections::HashMap;
@@ -154,6 +156,8 @@ pub enum LspAction {
     FindReferences,
     /// Show code actions (ga)
     CodeActions,
+    /// Ask the server for the rename prompt's starting text (<leader>rn, :rn)
+    PrepareRename,
     /// Rename symbol
     RenameSymbol(String),
 }
@@ -5973,11 +5977,36 @@ impl Editor {
         true
     }
 
-    /// Enter rename prompt mode with the word under cursor
-    pub fn enter_rename_prompt(&mut self) {
-        let word = self.get_word_under_cursor().unwrap_or_default();
-        self.rename_original = word.clone();
-        self.rename_input = word;
+    /// Enter rename prompt mode with the text prepareRename asked for, like
+    /// Neovim's `vim.lsp.buf.rename()`: placeholder, then range text, then the
+    /// word under the cursor.
+    pub fn open_rename_prompt(&mut self, outcome: PrepareRenameOutcome) {
+        let text = match outcome {
+            PrepareRenameOutcome::NotRenameable => {
+                self.set_status("Nothing to rename here");
+                return;
+            }
+            PrepareRenameOutcome::Placeholder(text) => Some(text),
+            PrepareRenameOutcome::Range {
+                line,
+                start_col,
+                end_col,
+            } => {
+                let start = self.lsp_utf16_col_to_buffer_col(line, start_col);
+                let end = self.lsp_utf16_col_to_buffer_col(line, end_col);
+                self.buffer()
+                    .line(line)
+                    .map(|text| text.chars().skip(start).take(end.saturating_sub(start)))
+                    .map(String::from_iter)
+                    .filter(|text| !text.is_empty())
+            }
+            PrepareRenameOutcome::WordUnderCursor => None,
+        };
+        let text = text
+            .or_else(|| self.get_word_under_cursor())
+            .unwrap_or_default();
+        self.rename_original = text.clone();
+        self.rename_input = text;
         self.mode = Mode::RenamePrompt;
     }
 
@@ -12818,6 +12847,7 @@ mod tests {
     mod insert_entry;
     mod large_file_edit;
     mod linewise_operators;
+    mod lsp_rename;
     mod macro_lens;
     mod open_line;
     mod replace;
