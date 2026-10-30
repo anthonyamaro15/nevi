@@ -55,6 +55,7 @@ pub enum RequestKind {
         character: u32,
     },
     Formatting {
+        token: u64,
         uri: String,
         buffer_version: u64,
     },
@@ -172,6 +173,7 @@ pub enum LspRequest {
 
     /// Request document formatting
     Formatting {
+        token: u64,
         uri: String,
         tab_size: u32,
         buffer_version: u64,
@@ -300,7 +302,8 @@ pub enum LspNotification {
 
     /// Formatting result with text edits to apply
     Formatting {
-        edits: Vec<TextEdit>,
+        token: u64,
+        result: Result<Vec<TextEdit>, String>,
         /// Request context for validation
         request_uri: String,
         request_version: u64,

@@ -507,7 +507,13 @@ impl LspClient {
     }
 
     /// Request document formatting
-    pub fn formatting(&mut self, uri: &str, tab_size: u32, buffer_version: u64) -> Result<u64> {
+    pub fn formatting(
+        &mut self,
+        uri: &str,
+        tab_size: u32,
+        buffer_version: u64,
+        token: u64,
+    ) -> Result<u64> {
         let params = lsp_types::DocumentFormattingParams {
             text_document: TextDocumentIdentifier {
                 uri: lsp_types::Url::parse(uri)?,
@@ -523,6 +529,7 @@ impl LspClient {
             "textDocument/formatting",
             serde_json::to_value(params)?,
             RequestKind::Formatting {
+                token,
                 uri: uri.to_string(),
                 buffer_version,
             },
@@ -944,25 +951,44 @@ fn handle_message(
             Ok(mut pending_map) => pending_map.remove(&id_num),
             Err(_) => None,
         };
-        // A server without prepareRename answers MethodNotFound. Open the
-        // prompt with the word under the cursor instead of failing the rename.
-        if let Some(RequestKind::PrepareRename {
-            uri,
-            line,
-            character,
-            buffer_version,
-        }) = kind
-        {
-            return (
-                Some(LspNotification::PrepareRenameResult {
-                    outcome: PrepareRenameOutcome::WordUnderCursor,
-                    request_uri: uri,
-                    request_version: buffer_version,
-                    request_line: line,
-                    request_character: character,
-                }),
-                None,
-            );
+        match kind {
+            // A server without prepareRename answers MethodNotFound. Open the
+            // prompt with the word under the cursor instead of failing the rename.
+            Some(RequestKind::PrepareRename {
+                uri,
+                line,
+                character,
+                buffer_version,
+            }) => {
+                return (
+                    Some(LspNotification::PrepareRenameResult {
+                        outcome: PrepareRenameOutcome::WordUnderCursor,
+                        request_uri: uri,
+                        request_version: buffer_version,
+                        request_line: line,
+                        request_character: character,
+                    }),
+                    None,
+                );
+            }
+            // A failed format must reach the save that is waiting on it, so the
+            // write can fall back to the unformatted text.
+            Some(RequestKind::Formatting {
+                token,
+                uri,
+                buffer_version,
+            }) => {
+                return (
+                    Some(LspNotification::Formatting {
+                        token,
+                        request_uri: uri,
+                        request_version: buffer_version,
+                        result: Err(format!("LSP error ({}): {}", error.code, error.message)),
+                    }),
+                    None,
+                );
+            }
+            _ => {}
         }
         return (
             Some(LspNotification::Error {
@@ -1085,18 +1111,15 @@ fn handle_message(
             }),
         },
         RequestKind::Formatting {
+            token,
             uri,
             buffer_version,
-        } => match msg.result {
-            Some(result) if !result.is_null() => {
-                handle_formatting_response(result, uri, buffer_version)
-            }
-            _ => Some(LspNotification::Formatting {
-                edits: vec![],
-                request_uri: uri,
-                request_version: buffer_version,
-            }),
-        },
+        } => handle_formatting_response(
+            msg.result.unwrap_or(Value::Null),
+            uri,
+            buffer_version,
+            token,
+        ),
         RequestKind::References {
             uri,
             line: _,
@@ -1866,29 +1889,29 @@ fn handle_formatting_response(
     result: Value,
     request_uri: String,
     request_version: u64,
+    token: u64,
 ) -> Option<LspNotification> {
-    // Result is an array of TextEdits or null
-    let edits_json = result.as_array()?;
-
-    let edits: Vec<TextEdit> = edits_json
-        .iter()
-        .filter_map(|edit| {
-            let range = edit.get("range")?;
-            let start = range.get("start")?;
-            let end = range.get("end")?;
-
-            Some(TextEdit {
-                start_line: start.get("line")?.as_u64()? as usize,
-                start_col: start.get("character")?.as_u64()? as usize,
-                end_line: end.get("line")?.as_u64()? as usize,
-                end_col: end.get("character")?.as_u64()? as usize,
-                new_text: edit.get("newText")?.as_str()?.to_string(),
+    let result = if result.is_null() {
+        Ok(vec![])
+    } else {
+        serde_json::from_value::<Vec<lsp_types::TextEdit>>(result)
+            .map(|edits| {
+                edits
+                    .into_iter()
+                    .map(|e| TextEdit {
+                        start_line: e.range.start.line as usize,
+                        start_col: e.range.start.character as usize,
+                        end_line: e.range.end.line as usize,
+                        end_col: e.range.end.character as usize,
+                        new_text: e.new_text,
+                    })
+                    .collect()
             })
-        })
-        .collect();
-
+            .map_err(|e| format!("Invalid formatting response: {e}"))
+    };
     Some(LspNotification::Formatting {
-        edits,
+        token,
+        result,
         request_uri,
         request_version,
     })
@@ -2130,6 +2153,47 @@ mod tests {
     use std::path::Path;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn formatting_results_and_errors_preserve_request_context() {
+        for payload in [
+            json!({"result":null}),
+            json!({"result":[]}),
+            json!({"result":{"bad":"shape"}}),
+            json!({"error":{"code":-32601,"message":"unsupported"}}),
+        ] {
+            let pending: PendingRequests = Arc::new(Mutex::new(HashMap::new()));
+            pending.lock().unwrap().insert(
+                7,
+                RequestKind::Formatting {
+                    token: 42,
+                    uri: "file:///a.rs".into(),
+                    buffer_version: 3,
+                },
+            );
+            let mut response = payload.clone();
+            response["id"] = json!(7);
+            response["jsonrpc"] = json!("2.0");
+            let (notification, _) =
+                handle_message(serde_json::from_value(response).unwrap(), &pending, None);
+            let Some(LspNotification::Formatting {
+                token,
+                request_uri,
+                request_version,
+                result,
+            }) = notification
+            else {
+                panic!("formatting errors must retain their target")
+            };
+            assert_eq!(token, 42);
+            assert_eq!(request_uri, "file:///a.rs");
+            assert_eq!(request_version, 3);
+            assert_eq!(
+                result.is_err(),
+                payload.get("error").is_some() || payload["result"].is_object()
+            );
+        }
+    }
 
     fn watched_file_register_params(root: &Path) -> Option<Value> {
         Some(json!({

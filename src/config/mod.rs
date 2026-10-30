@@ -154,7 +154,8 @@ pub struct EditorSettings {
     pub wrap_width: usize,
     /// Enable auto-pairs (auto-close brackets/quotes) (default: true)
     pub auto_pairs: bool,
-    /// Format document on save using LSP (default: false)
+    /// Format explicit writes using the external formatter, otherwise LSP (default: false).
+    /// Quit writes use external formatters only; save-as and autosave skip formatting.
     pub format_on_save: bool,
     /// Autosave mode (default: off)
     pub autosave: AutosaveMode,
@@ -1078,7 +1079,8 @@ fn default_config_template() -> &'static str {
 # wrap = false               # Soft word wrap
 # wrap_width = 80            # Column to wrap at
 # auto_pairs = true          # Auto-close brackets and quotes
-# format_on_save = false     # Format with LSP on save
+# format_on_save = false     # External formatter, otherwise LSP; quit writes: external only
+#                            # Save-as and autosave skip formatting
 # autosave = "off"           # Options: "off", "after_delay", "on_focus_change"
 # autosave_delay_ms = 1000   # Delay for after_delay mode
 # use_nerd_font_icons = true # Use Nerd Font icons in explorer (set false for Unicode fallback)

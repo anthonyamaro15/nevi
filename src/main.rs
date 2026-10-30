@@ -1,3 +1,4 @@
+mod save_runtime;
 use std::env;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -614,6 +615,7 @@ fn main() -> anyhow::Result<()> {
     // lsp_current_file. Changes are sent once per loop iteration, not per
     // keystroke; this survives skipped iterations so no edit is ever lost.
     let mut lsp_synced_version: Option<u64> = None;
+    let mut save_runtime = save_runtime::SaveRuntime::default();
 
     if lsp_enabled {
         // Collect configured root markers so workspace detection is not Cargo-only.
@@ -1047,14 +1049,6 @@ fn main() -> anyhow::Result<()> {
                                         LspAction::Hover => {
                                             let _ = mlsp.hover(&path, line, col);
                                         }
-                                        LspAction::Formatting => {
-                                            editor.pending_format = true;
-                                            let _ = mlsp.formatting(
-                                                &path,
-                                                editor.settings.editor.tab_width as u32,
-                                                editor.buffer().version(),
-                                            );
-                                        }
                                         LspAction::FindReferences => {
                                             let _ = mlsp.references(&path, line, col);
                                         }
@@ -1204,6 +1198,7 @@ fn main() -> anyhow::Result<()> {
                                 // If server is ready, send did_open
                                 if mlsp.is_ready_for_file(new_path) {
                                     let text = editor.buffer().content();
+                                    save_runtime.before_current_open(new_path, mlsp);
                                     if let Err(e) = mlsp.did_open(new_path, &text) {
                                         editor.set_lsp_status(format!("LSP: open error: {}", e));
                                     } else {
@@ -1538,6 +1533,7 @@ fn main() -> anyhow::Result<()> {
                             if let Some(path) = current_path {
                                 if mlsp.language_for_path(&path) == Some(lang) {
                                     let text = editor.buffer().content();
+                                    save_runtime.before_current_open(&path, mlsp);
                                     if let Err(e) = mlsp.did_open(&path, &text) {
                                         editor.set_lsp_status(format!("LSP: open error: {}", e));
                                     } else {
@@ -1816,58 +1812,19 @@ fn main() -> anyhow::Result<()> {
                             }
                         }
                         LspNotification::Formatting {
-                            edits,
+                            token,
+                            result,
                             request_uri,
                             request_version,
                         } => {
-                            if !lsp_response_matches_current_buffer(
-                                &editor,
+                            save_runtime.handle_response(
+                                &mut editor,
+                                mlsp,
+                                token,
                                 &request_uri,
                                 request_version,
-                            ) {
-                                // Stale response - ignore
-                                editor.pending_format = false;
-                                needs_redraw = true;
-                                continue;
-                            }
-
-                            // Apply formatting edits to the buffer
-                            if !edits.is_empty() {
-                                editor.apply_text_edits(&edits);
-                                editor.set_status(format!(
-                                    "Applied {} formatting edits",
-                                    edits.len()
-                                ));
-
-                                // Send didChange to LSP so it knows about the formatted content
-                                if let Some(path) = editor.buffer().path.clone() {
-                                    let text = editor.buffer().content();
-                                    let _ = mlsp.did_change(&path, &text);
-                                    if lsp_current_file.as_ref() == Some(&path) {
-                                        lsp_synced_version = Some(editor.buffer().version());
-                                    }
-                                }
-                            }
-                            // Clear the pending format flag
-                            editor.pending_format = false;
-
-                            // If save_after_format is set, save the file now
-                            if editor.save_after_format {
-                                editor.save_after_format = false;
-                                match editor.save() {
-                                    Ok(()) => {
-                                        let msg = if edits.is_empty() {
-                                            "Saved".to_string()
-                                        } else {
-                                            format!("Formatted and saved ({} edits)", edits.len())
-                                        };
-                                        editor.set_status(msg);
-                                    }
-                                    Err(e) => {
-                                        editor.set_status(format!("Error saving: {}", e));
-                                    }
-                                }
-                            }
+                                result,
+                            );
                             needs_redraw = true;
                         }
                         LspNotification::References {
@@ -2171,6 +2128,7 @@ fn main() -> anyhow::Result<()> {
 
         // Check if we should quit
         if editor.should_quit {
+            save_runtime.finish_session(&editor, multi_lsp.as_mut());
             break;
         }
 
@@ -2355,36 +2313,10 @@ fn main() -> anyhow::Result<()> {
             grep_pending_since = None;
         }
 
-        // Check for autosave (only if not in modal/picker and buffer has file path)
-        if let Some(scheduled_time) = autosave_pending {
-            if Instant::now() >= scheduled_time {
-                // Only autosave if:
-                // - Not in command mode (user might be typing :w manually)
-                // - Finder is not open
-                // - File explorer is not open
-                // - Buffer has a file path
-                // - Buffer is modified
-                let is_modal_open = editor.mode == Mode::Command
-                    || editor.finder.populated
-                    || editor.explorer.visible;
+        needs_redraw |= save_runtime.poll(&mut editor, multi_lsp.as_mut(), Instant::now());
 
-                if !is_modal_open && editor.has_unsaved_changes() && editor.buffer().path.is_some()
-                {
-                    // Save without formatting to avoid cursor jumping
-                    match editor.save() {
-                        Ok(()) => {
-                            editor.set_status("Autosaved");
-                        }
-                        Err(e) => {
-                            editor.set_status(format!("Autosave failed: {}", e));
-                        }
-                    }
-                    needs_redraw = true;
-                }
-                // Clear the pending autosave regardless of whether we saved
-                autosave_pending = None;
-            }
-        }
+        needs_redraw |=
+            save_runtime::try_autosave(&mut editor, &mut autosave_pending, Instant::now());
 
         if flush_deferred_lsp_status_redraw(
             &mut last_lsp_status_redraw_at,

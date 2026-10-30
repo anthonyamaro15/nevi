@@ -1939,6 +1939,35 @@ fn display_command_char(ch: char) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn write_command_bang_and_alias_parsing_is_unchanged() {
+        use super::{Command, parse_command};
+        for text in ["wa!", "wall!", "wq!", "wqa!", "wqall!"] {
+            assert!(matches!(parse_command(text), Command::Unknown(_)));
+        }
+        for text in ["w", "write"] {
+            assert!(matches!(parse_command(text), Command::Write(None)));
+        }
+        for text in ["w!", "write!"] {
+            assert!(matches!(parse_command(text), Command::ForceWrite(None)));
+        }
+        for text in ["wa", "wall"] {
+            assert!(matches!(parse_command(text), Command::WriteAll));
+        }
+        for text in ["wqa", "wqall", "xall"] {
+            assert!(matches!(parse_command(text), Command::WriteQuitAll));
+        }
+        for text in ["x", "exit"] {
+            assert!(matches!(parse_command(text), Command::WriteQuitIfModified));
+        }
+        assert!(matches!(
+            parse_command("xa"),
+            Command::WriteQuitAllIfModified
+        ));
+        assert!(matches!(parse_command("wq"), Command::WriteQuit));
+        assert!(matches!(parse_command("q!"), Command::ForceQuit));
+        assert!(matches!(parse_command("qa!"), Command::ForceQuitAll));
+    }
     use super::*;
 
     #[test]

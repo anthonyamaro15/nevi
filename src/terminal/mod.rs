@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
 
+mod save_commands;
 mod session;
 pub use session::SuspendOutcome;
 
@@ -70,8 +71,7 @@ fn finder_severity_color(display: &str) -> Option<Color> {
 use crate::commands::{Command, CommandPopupMode, CommandResult, PendingDigraph, parse_command};
 use crate::config::{CommandModeAction, LeaderAction};
 use crate::editor::{
-    BufferFormatOutcome, Editor, ExpressionRegisterTarget, LspAction, Mode, Pane, PaneDirection,
-    SplitLayout,
+    Editor, ExpressionRegisterTarget, LspAction, Mode, Pane, PaneDirection, SplitLayout,
 };
 use crate::input::{
     InsertPosition, KeyAction, Operator, TextObject, TextObjectModifier, TextObjectType,
@@ -7821,11 +7821,7 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             }
         }
 
-        KeyAction::Save => {
-            if let Err(e) = editor.save() {
-                editor.set_status(format!("Error saving: {}", e));
-            }
-        }
+        KeyAction::Save => execute_command(editor, Command::Write(None)),
 
         KeyAction::WriteQuitIfModified => {
             execute_command(editor, Command::WriteQuitIfModified);
@@ -7845,7 +7841,9 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         }
 
         KeyAction::WindowClose => {
-            if !editor.close_pane() {
+            if editor.panes().len() == 1 && editor.has_pending_saves() {
+                editor.set_status("Save still pending; wait or use :q! to discard");
+            } else if !editor.close_pane() {
                 // Last pane - quit the editor
                 editor.should_quit = true;
             }
@@ -10480,99 +10478,17 @@ fn close_pane_or_quit(editor: &mut Editor) -> CommandResult {
 
 fn execute_command(editor: &mut Editor, cmd: Command) {
     let result = match cmd {
-        Command::Write(path) => {
-            // A macro-edit buffer's `:w` applies the notation to the register
-            // instead of writing a file (it has no path to write to anyway).
-            if path.is_none() && editor.macro_edit_register().is_some() {
-                match editor.save_macro_edit_buffer() {
-                    Ok(message) => CommandResult::Message(message),
-                    Err(error) => CommandResult::Error(error),
-                }
-            } else if let Some(p) = path {
-                // Save as: skip format_on_save for explicit path
-                match editor.save_as(p) {
-                    Ok(()) => CommandResult::Ok,
-                    Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
-                }
-            } else if editor.buffer().path.is_some() {
-                // Check if format_on_save is enabled
-                if editor.settings.editor.format_on_save {
-                    if let Err(e) = editor.ensure_current_buffer_can_save(false) {
-                        CommandResult::Error(format!("Error saving: {}", e))
-                    } else {
-                        match editor.format_current_buffer() {
-                            BufferFormatOutcome::Applied { command, changed } => {
-                                match editor.save() {
-                                    Ok(()) => {
-                                        if changed {
-                                            CommandResult::Message(format!(
-                                                "Formatted with {} and saved",
-                                                command
-                                            ))
-                                        } else {
-                                            CommandResult::Message(format!(
-                                                "Saved (formatted with {})",
-                                                command
-                                            ))
-                                        }
-                                    }
-                                    Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
-                                }
-                            }
-                            BufferFormatOutcome::RequestLsp => {
-                                editor.save_after_format = true;
-                                editor.pending_lsp_action = Some(LspAction::Formatting);
-                                CommandResult::Message("Formatting with LSP...".to_string())
-                            }
-                            BufferFormatOutcome::Failed { command, error } => {
-                                editor.set_status(format!("{} error: {}", command, error));
-                                match editor.save() {
-                                    Ok(()) => CommandResult::Message(format!(
-                                        "Saved ({} failed: {})",
-                                        command, error
-                                    )),
-                                    Err(save_err) => {
-                                        CommandResult::Error(format!("Error saving: {}", save_err))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // Format on save disabled - save directly
-                    match editor.save() {
-                        Ok(()) => CommandResult::Ok,
-                        Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
-                    }
-                }
-            } else {
-                CommandResult::Error("No filename".to_string())
-            }
-        }
+        command @ (Command::Write(_)
+        | Command::ForceWrite(_)
+        | Command::WriteAll
+        | Command::WriteQuit
+        | Command::WriteQuitIfModified
+        | Command::WriteQuitAll
+        | Command::WriteQuitAllIfModified) => save_commands::execute_write_command(editor, command),
 
-        Command::ForceWrite(path) => {
-            // `:w!` in a macro-edit buffer applies the notation, same as `:w` —
-            // force has nothing extra to override for a register.
-            if path.is_none() && editor.macro_edit_register().is_some() {
-                match editor.save_macro_edit_buffer() {
-                    Ok(message) => CommandResult::Message(message),
-                    Err(error) => CommandResult::Error(error),
-                }
-            } else if let Some(p) = path {
-                match editor.save_as_force(p) {
-                    Ok(()) => CommandResult::Ok,
-                    Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
-                }
-            } else if editor.buffer().path.is_some() {
-                match editor.save_force() {
-                    Ok(()) => CommandResult::Ok,
-                    Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
-                }
-            } else {
-                CommandResult::Error("No filename".to_string())
-            }
+        Command::Quit if editor.has_pending_saves() => {
+            CommandResult::Error("A requested write is still pending".into())
         }
-
         Command::Quit => {
             // If multiple panes, :q closes just the active pane after checking
             // the active buffer. If this is the last pane, quitting exits the
@@ -10597,58 +10513,18 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             }
         }
 
-        Command::ForceQuit => close_pane_or_quit(editor),
-
-        Command::WriteQuit => {
-            if editor.buffer().path.is_some() {
-                match editor.save() {
-                    Ok(()) => close_pane_or_quit(editor),
-                    Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
-                }
-            } else {
-                CommandResult::Error("No filename".to_string())
+        Command::ForceQuit => {
+            // Closing a split doesn't exit, so writes already requested must
+            // still finish. Only the last pane abandons them.
+            if editor.panes().len() == 1 {
+                editor.discard_pending_saves();
             }
+            close_pane_or_quit(editor)
         }
 
-        Command::WriteQuitIfModified => {
-            if editor.has_unsaved_changes() {
-                if editor.buffer().path.is_some() {
-                    match editor.save() {
-                        Ok(()) => close_pane_or_quit(editor),
-                        Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
-                    }
-                } else {
-                    CommandResult::Error("No filename".to_string())
-                }
-            } else {
-                close_pane_or_quit(editor)
-            }
+        Command::QuitAll if editor.has_pending_saves() => {
+            CommandResult::Error("A requested write is still pending".into())
         }
-
-        Command::WriteAll => match editor.format_and_save_all() {
-            Ok((saved_count, formatted_count, formatter_name)) => {
-                if saved_count == 0 {
-                    CommandResult::Message("No modified buffers to save".to_string())
-                } else {
-                    let buffer_word = if saved_count == 1 {
-                        "buffer"
-                    } else {
-                        "buffers"
-                    };
-                    if formatted_count > 0 {
-                        let formatter = formatter_name.unwrap_or_else(|| "formatter".to_string());
-                        CommandResult::Message(format!(
-                            "Formatted with {} and saved {} {}",
-                            formatter, saved_count, buffer_word
-                        ))
-                    } else {
-                        CommandResult::Message(format!("Saved {} {}", saved_count, buffer_word))
-                    }
-                }
-            }
-            Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
-        },
-
         Command::QuitAll => {
             if editor.has_any_unsaved_changes() {
                 let names = editor.unsaved_buffer_names();
@@ -10661,22 +10537,9 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             }
         }
 
-        Command::ForceQuitAll => CommandResult::Quit,
-
-        Command::WriteQuitAll => match editor.save_all() {
-            Ok(_) => CommandResult::Quit,
-            Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
-        },
-
-        Command::WriteQuitAllIfModified => {
-            if editor.has_any_unsaved_changes() {
-                match editor.save_all() {
-                    Ok(_) => CommandResult::Quit,
-                    Err(e) => CommandResult::Error(format!("Error saving: {}", e)),
-                }
-            } else {
-                CommandResult::Quit
-            }
+        Command::ForceQuitAll => {
+            editor.discard_pending_saves();
+            CommandResult::Quit
         }
 
         Command::Edit(path) => {
@@ -10996,22 +10859,7 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             CommandResult::Ok
         }
 
-        Command::Format => match editor.format_current_buffer() {
-            BufferFormatOutcome::Applied { command, changed } => {
-                if changed {
-                    CommandResult::Message(format!("Formatted with {}", command))
-                } else {
-                    CommandResult::Message(format!("Already formatted with {}", command))
-                }
-            }
-            BufferFormatOutcome::RequestLsp => {
-                editor.pending_lsp_action = Some(LspAction::Formatting);
-                CommandResult::Message("Formatting...".to_string())
-            }
-            BufferFormatOutcome::Failed { command, error } => {
-                CommandResult::Error(format!("{} error: {}", command, error))
-            }
-        },
+        Command::Format => save_commands::execute_format(editor),
 
         Command::CodeAction => {
             // Trigger code actions picker
@@ -11311,8 +11159,8 @@ mod tests {
         should_show_floating_terminal_cursor,
     };
     use crate::commands::{Command, CommandPopupMode};
-    use crate::config::{FormatterConfig, KeymapEntry, LanguageConfig, LanguagesConfig, Settings};
-    use crate::editor::{Editor, LspAction, Mode, RegisterContent};
+    use crate::config::{KeymapEntry, Settings};
+    use crate::editor::{Editor, Mode, RegisterContent};
     use crate::explorer::{ExplorerAction, FlatNode};
     use crate::finder::FinderMode;
     use crate::floating_terminal::TerminalCursorShape;
@@ -11327,7 +11175,6 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use crossterm::style::{Color, SetBackgroundColor, SetForegroundColor};
     use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::fmt::Write as FmtWrite;
     use std::io::{self, Write};
     use std::path::Path;
@@ -17074,175 +16921,13 @@ mod tests {
         );
         assert!(editor.buffer().dirty);
         assert!(editor.pending_lsp_action.is_none());
-        assert!(!editor.save_after_format);
+        assert!(!editor.has_pending_saves());
         assert!(
             editor
                 .status_message
                 .as_deref()
                 .is_some_and(|message| message.contains("Write blocked")),
             "expected write-blocked status, got {:?}",
-            editor.status_message
-        );
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    fn markdown_languages_with_formatter(command: &str, args: &[&str]) -> LanguagesConfig {
-        LanguagesConfig {
-            languages: HashMap::from([(
-                "markdown".to_string(),
-                LanguageConfig {
-                    formatter: Some(FormatterConfig {
-                        command: command.to_string(),
-                        args: args.iter().map(|arg| arg.to_string()).collect(),
-                        timeout: 5,
-                    }),
-                    tab_width: None,
-                },
-            )]),
-        }
-    }
-
-    #[test]
-    fn colon_format_uses_languages_toml_formatter() {
-        let tmp = unique_temp_dir("nevi_colon_format_external");
-        std::fs::create_dir_all(&tmp).expect("create temp dir");
-        let path = tmp.join("note.md");
-        std::fs::write(&path, "foo\n").expect("write markdown");
-
-        let mut editor = Editor::default();
-        editor.languages_config = markdown_languages_with_formatter("sed", &["-e", "s/foo/bar/"]);
-        editor.open_file(path.clone()).expect("open markdown");
-
-        execute_command(&mut editor, Command::Format);
-
-        assert_eq!(editor.buffer().content(), "bar\n");
-        assert!(editor.buffer().dirty);
-        assert!(editor.pending_lsp_action.is_none());
-        assert_eq!(std::fs::read_to_string(&path).expect("read file"), "foo\n");
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn colon_format_without_formatter_requests_lsp() {
-        let tmp = unique_temp_dir("nevi_colon_format_lsp");
-        std::fs::create_dir_all(&tmp).expect("create temp dir");
-        let path = tmp.join("note.md");
-        std::fs::write(&path, "foo\n").expect("write markdown");
-
-        let mut editor = Editor::default();
-        editor.languages_config = LanguagesConfig::default();
-        editor.open_file(path.clone()).expect("open markdown");
-
-        execute_command(&mut editor, Command::Format);
-
-        assert_eq!(editor.pending_lsp_action, Some(LspAction::Formatting));
-        assert_eq!(editor.buffer().content(), "foo\n");
-        assert!(!editor.buffer().dirty);
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn colon_format_formatter_error_does_not_request_lsp() {
-        let tmp = unique_temp_dir("nevi_colon_format_error");
-        std::fs::create_dir_all(&tmp).expect("create temp dir");
-        let path = tmp.join("note.md");
-        std::fs::write(&path, "foo\n").expect("write markdown");
-
-        let mut editor = Editor::default();
-        editor.languages_config = markdown_languages_with_formatter("false", &[]);
-        editor.open_file(path.clone()).expect("open markdown");
-
-        execute_command(&mut editor, Command::Format);
-
-        assert_eq!(editor.buffer().content(), "foo\n");
-        assert!(!editor.buffer().dirty);
-        assert!(editor.pending_lsp_action.is_none());
-        assert!(
-            editor
-                .status_message
-                .as_deref()
-                .is_some_and(|message| message.contains("false")),
-            "expected formatter error to mention command, got {:?}",
-            editor.status_message
-        );
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn colon_format_unchanged_output_does_not_dirty_buffer() {
-        let tmp = unique_temp_dir("nevi_colon_format_unchanged");
-        std::fs::create_dir_all(&tmp).expect("create temp dir");
-        let path = tmp.join("note.md");
-        std::fs::write(&path, "foo\n").expect("write markdown");
-
-        let mut editor = Editor::default();
-        editor.languages_config = markdown_languages_with_formatter("cat", &[]);
-        editor.open_file(path.clone()).expect("open markdown");
-
-        execute_command(&mut editor, Command::Format);
-
-        assert_eq!(editor.buffer().content(), "foo\n");
-        assert!(!editor.buffer().dirty);
-        assert!(editor.pending_lsp_action.is_none());
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn colon_write_formats_with_languages_toml_then_saves() {
-        let tmp = unique_temp_dir("nevi_colon_write_format_external");
-        std::fs::create_dir_all(&tmp).expect("create temp dir");
-        let path = tmp.join("note.md");
-        std::fs::write(&path, "foo\n").expect("write markdown");
-
-        let mut editor = Editor::default();
-        editor.settings.editor.format_on_save = true;
-        editor.languages_config = markdown_languages_with_formatter("sed", &["-e", "s/foo/bar/"]);
-        editor.open_file(path.clone()).expect("open markdown");
-        editor.replace_buffer_content("foo\n");
-
-        execute_command(&mut editor, Command::Write(None));
-
-        assert_eq!(editor.buffer().content(), "bar\n");
-        assert!(!editor.buffer().dirty);
-        assert!(editor.pending_lsp_action.is_none());
-        assert_eq!(std::fs::read_to_string(&path).expect("read file"), "bar\n");
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn colon_write_saves_when_languages_toml_formatter_fails() {
-        let tmp = unique_temp_dir("nevi_colon_write_format_error");
-        std::fs::create_dir_all(&tmp).expect("create temp dir");
-        let path = tmp.join("note.md");
-        std::fs::write(&path, "original\n").expect("write markdown");
-
-        let mut editor = Editor::default();
-        editor.settings.editor.format_on_save = true;
-        editor.languages_config = markdown_languages_with_formatter("false", &[]);
-        editor.open_file(path.clone()).expect("open markdown");
-        editor.replace_buffer_content("edited\n");
-
-        execute_command(&mut editor, Command::Write(None));
-
-        assert_eq!(editor.buffer().content(), "edited\n");
-        assert!(!editor.buffer().dirty);
-        assert!(editor.pending_lsp_action.is_none());
-        assert_eq!(
-            std::fs::read_to_string(&path).expect("read file"),
-            "edited\n"
-        );
-        assert!(
-            editor
-                .status_message
-                .as_deref()
-                .is_some_and(|message| message.contains("false")),
-            "expected save message to mention formatter failure, got {:?}",
             editor.status_message
         );
 

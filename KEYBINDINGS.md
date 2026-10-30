@@ -877,19 +877,21 @@ While typing an Ex command after `:`.
 
 ### File Operations
 
+`Ctrl-S` uses the same format/save policy as `:w`. Explicit-path writes (`:w path` / `:w! path`) and autosave skip formatting. Formatting requires `format_on_save = true`; formatter failure still saves. Write-and-quit commands never request or wait for LSP formatting.
+
 | Command | Action |
 |---------|--------|
-| `:w` / `:write` | Save file, refusing to overwrite external disk changes |
-| `:w!` / `:write!` | Force save file, overwriting external disk changes |
-| `:wa` / `:wall` | Save all files |
+| `:w` / `:write` | Format if enabled, then save; refuse external disk changes |
+| `:w!` / `:write!` | Format if enabled, then overwrite external disk changes |
+| `:wa` / `:wall` | Format if enabled and save each modified named buffer |
 | `:q` / `:quit` | Quit |
 | `:q!` / `:quit!` / `ZQ` | Force quit (discard changes) |
 | `:qa` / `:qall` | Quit all |
 | `:qa!` / `:qall!` | Force quit all |
-| `:wq` | Save and quit |
-| `:wqa` / `:wqall` / `:xall` | Save all and quit |
-| `:x` / `:exit` / `ZZ` | Save if modified and quit |
-| `:xa` | Save all modified files and quit all |
+| `:wq` | Format with an external formatter if enabled, then save and quit; never wait for LSP |
+| `:wqa` / `:wqall` / `:xall` | Format externally if enabled, save all modified named buffers, and quit |
+| `:x` / `:exit` / `ZZ` | If modified, format externally if enabled and save; then quit |
+| `:xa` | Format externally if enabled, save all modified named buffers, and quit all |
 | `:sus` / `:suspend` / `:st` / `:stop` / `Ctrl+z` | Suspend to the shell; `fg` resumes |
 | `:e {file}` / `:edit {file}` | Edit/open a file |
 | `:e!` / `:edit!` | Reload current file and discard changes |

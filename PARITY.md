@@ -431,15 +431,15 @@ rows may already be covered compositionally.)
 | `Tab` | Accept selected command completion |
 | `Shift+Tab` | Accept previous completion |
 | `Ctrl+n` / `Ctrl+p` | Select next / previous popup item |
-| `:w` / `:write` | Save file, refusing to overwrite external disk changes |
-| `:w!` / `:write!` | Force save file, overwriting external disk changes |
-| `:wa` / `:wall` | Save all files |
+| `:w` / `:write` | Format if enabled, then save; refuse external disk changes |
+| `:w!` / `:write!` | Format if enabled, then overwrite external disk changes |
+| `:wa` / `:wall` | Format if enabled and save each modified named buffer |
 | `:q` / `:quit` | Quit |
 | `:qa` / `:qall` | Quit all |
 | `:qa!` / `:qall!` | Force quit all |
-| `:wq` | Save and quit |
-| `:wqa` / `:wqall` / `:xall` | Save all and quit |
-| `:xa` | Save all modified files and quit all |
+| `:wq` | Format with an external formatter if enabled, then save and quit; never wait for LSP |
+| `:wqa` / `:wqall` / `:xall` | Format externally if enabled, save all modified named buffers, and quit |
+| `:xa` | Format externally if enabled, save all modified named buffers, and quit all |
 | `:e {file}` / `:edit {file}` | Edit/open a file |
 | `:e!` / `:edit!` | Reload current file and discard changes |
 | `:new {path}` / `:touch {path}` | Create a file, or open it if it already exists |

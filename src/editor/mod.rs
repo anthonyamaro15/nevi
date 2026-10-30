@@ -1,11 +1,17 @@
 mod buffer;
 mod cursor;
+mod formatting;
+mod save;
+pub use formatting::{BufferFormatOutcome, FormatPolicy};
+pub use save::{FormatRequest, SaveProgress, SaveSummary, WriteOptions};
 mod increment;
 mod macros;
 mod marks;
 mod mouse;
 mod register;
 mod replace;
+#[cfg(test)]
+pub(crate) mod save_test_support;
 mod search_pattern;
 mod topline;
 mod undo;
@@ -150,8 +156,6 @@ pub enum LspAction {
     GotoImplementation,
     /// Show hover documentation (K)
     Hover,
-    /// Format document
-    Formatting,
     /// Find references (gr)
     FindReferences,
     /// Show code actions (ga)
@@ -160,20 +164,6 @@ pub enum LspAction {
     PrepareRename,
     /// Rename symbol
     RenameSymbol(String),
-}
-
-/// Outcome of formatting the current buffer from `languages.toml` or LSP.
-#[derive(Debug)]
-pub enum BufferFormatOutcome {
-    /// External formatter ran successfully.
-    Applied { command: String, changed: bool },
-    /// No external formatter is configured; request LSP formatting.
-    RequestLsp,
-    /// External formatter was configured but failed.
-    Failed {
-        command: String,
-        error: crate::formatter::FormatterError,
-    },
 }
 
 /// Rectangle representing a screen region
@@ -1168,10 +1158,7 @@ pub struct Editor {
     pub explorer: FileExplorer,
     /// Harpoon quick file marks
     pub harpoon: crate::harpoon::Harpoon,
-    /// Flag to indicate a formatting request is pending
-    pub pending_format: bool,
-    /// Flag to indicate we should save after formatting completes
-    pub save_after_format: bool,
+    save_state: save::SaveState,
     /// References picker state
     pub references_picker: Option<ReferencesPicker>,
     /// Code actions picker state
@@ -1718,8 +1705,7 @@ impl Editor {
             project_root: None,
             explorer: FileExplorer::with_width(explorer_width),
             harpoon: crate::harpoon::Harpoon::new(),
-            pending_format: false,
-            save_after_format: false,
+            save_state: save::SaveState::default(),
             references_picker: None,
             code_actions_picker: None,
             rename_input: String::new(),
@@ -1843,51 +1829,6 @@ impl Editor {
             "sh" | "bash" | "zsh" | "ksh" | "bats" => "shell".to_string(),
             _ => ext_lower,
         }
-    }
-
-    /// Get the formatter config for the current buffer (if any)
-    pub fn get_current_formatter(&self) -> Option<&crate::config::FormatterConfig> {
-        let path = self.buffer().path.as_ref()?;
-        let language = Self::config_language_for_path(path)?;
-        self.languages_config.get_formatter(&language)
-    }
-
-    /// Format the current buffer with `languages.toml`, or request LSP formatting.
-    pub fn format_current_buffer(&mut self) -> BufferFormatOutcome {
-        let Some(formatter_config) = self.get_current_formatter().cloned() else {
-            return BufferFormatOutcome::RequestLsp;
-        };
-
-        let command = formatter_config.command.clone();
-        let content = self.buffer().content();
-        let file_path = self
-            .buffer()
-            .path
-            .as_ref()
-            .map(|path| path.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        match crate::formatter::format_with_external(&content, &file_path, &formatter_config) {
-            Ok(formatted) => {
-                let changed = formatted != content;
-                if changed {
-                    self.replace_buffer_content_with_undo(&formatted);
-                }
-                BufferFormatOutcome::Applied { command, changed }
-            }
-            Err(error) => BufferFormatOutcome::Failed { command, error },
-        }
-    }
-
-    /// Get the formatter config for a specific buffer by index (if any)
-    pub fn get_formatter_for_buffer(
-        &self,
-        buffer_idx: usize,
-    ) -> Option<&crate::config::FormatterConfig> {
-        let buffer = self.buffers.get(buffer_idx)?;
-        let path = buffer.path.as_ref()?;
-        let language = Self::config_language_for_path(path)?;
-        self.languages_config.get_formatter(&language)
     }
 
     /// Get the effective tab width for the current buffer
@@ -6724,52 +6665,6 @@ impl Editor {
         self.scroll_to_cursor();
     }
 
-    /// Save the current buffer
-    pub fn save(&mut self) -> anyhow::Result<()> {
-        self.save_current_buffer(false)
-    }
-
-    /// Check whether the current buffer can be saved without writing it.
-    pub(crate) fn ensure_current_buffer_can_save(&mut self, force: bool) -> anyhow::Result<()> {
-        self.ensure_buffer_can_save(self.current_buffer_idx, force)
-    }
-
-    /// Save the current buffer, intentionally overwriting external disk changes.
-    pub fn save_force(&mut self) -> anyhow::Result<()> {
-        self.save_current_buffer(true)
-    }
-
-    fn save_current_buffer(&mut self, force: bool) -> anyhow::Result<()> {
-        self.ensure_buffer_can_save(self.current_buffer_idx, force)?;
-        let was_dirty = self.buffers[self.current_buffer_idx].dirty;
-        self.buffers[self.current_buffer_idx].save()?;
-        self.mark_bufferline_if_dirty_changed(self.current_buffer_idx, was_dirty);
-        self.status_message = Some(format!(
-            "\"{}\" written",
-            self.buffers[self.current_buffer_idx].display_name()
-        ));
-        // Update git diff after save (file now matches HEAD if no other changes)
-        self.update_git_diff();
-        self.refresh_explorer_git_statuses();
-        Ok(())
-    }
-
-    fn ensure_buffer_can_save(&mut self, buffer_idx: usize, force: bool) -> anyhow::Result<()> {
-        if self.buffers[buffer_idx].is_read_only() {
-            self.set_status("Buffer is read-only");
-            anyhow::bail!("Buffer is read-only");
-        }
-        if !force
-            && self.buffers[buffer_idx].dirty
-            && self.buffers[buffer_idx].has_external_changes()
-        {
-            let message = "Write blocked: file changed on disk; use :w! to overwrite".to_string();
-            self.set_status(message.clone());
-            anyhow::bail!(message);
-        }
-        Ok(())
-    }
-
     /// Set a status message
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_message = Some(msg.into());
@@ -7066,26 +6961,6 @@ impl Editor {
         self.undo_stack.record_change(change);
     }
 
-    /// Save to a specific file
-    pub fn save_as(&mut self, path: std::path::PathBuf) -> anyhow::Result<()> {
-        if self.buffers[self.current_buffer_idx].is_read_only() {
-            anyhow::bail!("Buffer is read-only");
-        }
-        self.buffers[self.current_buffer_idx].set_file_path(path);
-        self.mark_bufferline_damage();
-        self.save()
-    }
-
-    /// Save to a specific file, intentionally overwriting external disk changes.
-    pub fn save_as_force(&mut self, path: std::path::PathBuf) -> anyhow::Result<()> {
-        if self.buffers[self.current_buffer_idx].is_read_only() {
-            anyhow::bail!("Buffer is read-only");
-        }
-        self.buffers[self.current_buffer_idx].set_file_path(path);
-        self.mark_bufferline_damage();
-        self.save_force()
-    }
-
     /// Reload the current file
     pub fn reload(&mut self) -> anyhow::Result<()> {
         if let Some(path) = self.buffers[self.current_buffer_idx].path.clone() {
@@ -7168,81 +7043,6 @@ impl Editor {
     /// Check if any buffer has unsaved changes
     pub fn has_any_unsaved_changes(&self) -> bool {
         self.buffers.iter().any(|b| b.dirty)
-    }
-
-    /// Save all modified buffers
-    /// Returns the count of buffers saved, or error if any buffer fails
-    pub fn save_all(&mut self) -> anyhow::Result<usize> {
-        let mut saved_count = 0;
-        for i in 0..self.buffers.len() {
-            if self.buffers[i].dirty && self.buffers[i].path.is_some() {
-                self.ensure_buffer_can_save(i, false)?;
-                let was_dirty = self.buffers[i].dirty;
-                self.buffers[i].save()?;
-                self.mark_bufferline_if_dirty_changed(i, was_dirty);
-                saved_count += 1;
-            }
-        }
-        self.update_git_diff();
-        self.refresh_explorer_git_statuses();
-        Ok(saved_count)
-    }
-
-    /// Format and save all modified buffers (respects format_on_save setting)
-    /// Returns (saved_count, formatted_count, formatter_name)
-    pub fn format_and_save_all(&mut self) -> anyhow::Result<(usize, usize, Option<String>)> {
-        let mut saved_count = 0;
-        let mut formatted_count = 0;
-        let mut formatter_name: Option<String> = None;
-        let format_on_save = self.settings.editor.format_on_save;
-
-        for i in 0..self.buffers.len() {
-            if self.buffers[i].dirty && self.buffers[i].path.is_some() {
-                self.ensure_buffer_can_save(i, false)?;
-                // Try to format if format_on_save is enabled
-                if format_on_save {
-                    if let Some(formatter_config) = self.get_formatter_for_buffer(i).cloned() {
-                        let content = self.buffers[i].content();
-                        let file_path = self.buffers[i]
-                            .path
-                            .as_ref()
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_default();
-
-                        match crate::formatter::format_with_external(
-                            &content,
-                            &file_path,
-                            &formatter_config,
-                        ) {
-                            Ok(formatted) => {
-                                if formatted != content {
-                                    if i == self.current_buffer_idx {
-                                        self.replace_buffer_content_with_undo(&formatted);
-                                    } else {
-                                        self.buffers[i].set_content(&formatted);
-                                        self.reset_undo_stack_for_buffer(i);
-                                    }
-                                    formatted_count += 1;
-                                }
-                                formatter_name = Some(formatter_config.command.clone());
-                            }
-                            Err(_e) => {
-                                // Formatter failed - continue with save anyway
-                            }
-                        }
-                    }
-                }
-                // Save the buffer
-                self.ensure_buffer_can_save(i, false)?;
-                let was_dirty = self.buffers[i].dirty;
-                self.buffers[i].save()?;
-                self.mark_bufferline_if_dirty_changed(i, was_dirty);
-                saved_count += 1;
-            }
-        }
-        self.update_git_diff();
-        self.refresh_explorer_git_statuses();
-        Ok((saved_count, formatted_count, formatter_name))
     }
 
     /// Get list of buffers with unsaved changes (for error messages)
