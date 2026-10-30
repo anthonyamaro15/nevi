@@ -50,11 +50,13 @@ until you set it. Every key below is optional.
 | `wrap` | `false` | Soft wrap |
 | `wrap_width` | `80` | Column to wrap at |
 | `auto_pairs` | `true` | Auto-close brackets and quotes |
-| `format_on_save` | `false` | Uses the `languages.toml` formatter, otherwise the LSP |
+| `format_on_save` | `false` | Formats before `:w`, `Ctrl-S`, `:wa`, and `:w!`: the `languages.toml` formatter takes precedence, otherwise LSP. Write-and-quit commands use only an external formatter. Save-as and autosave skip formatting. |
 | `autosave` | `"off"` | `"off"`, `"after_delay"`, or `"on_focus_change"` |
 | `autosave_delay_ms` | `1000` | Delay for `after_delay` |
 | `mouse` | `true` | Wheel scrolls the buffer and clicks move the cursor, like nvim's `mouse=nvi`. `:set mouse=` or `:set nomouse` turns it off for the session. |
 | `use_nerd_font_icons` | `true` | Setting this to `false` selects the minimal UI style automatically |
+
+Formatter failure still saves the buffer. `!` only overrides the external disk-change check; it does not disable formatting or bypass read-only protection. A new write, `:Format`, or write-and-quit command finishes pending saves without waiting for LSP before running.
 
 ### [theme], [ui], [terminal], [finder], [explorer]
 

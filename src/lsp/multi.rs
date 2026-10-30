@@ -132,7 +132,7 @@ struct LspInstance {
     last_error: Option<String>,
     progress: Option<LspProgressState>,
     current_file: Option<PathBuf>,
-    document_version: i32,
+    document_versions: HashMap<PathBuf, i32>,
 }
 
 struct LspProgressState {
@@ -458,7 +458,7 @@ impl MultiLspManager {
                         last_error: None,
                         progress: None,
                         current_file: None,
-                        document_version: 1,
+                        document_versions: HashMap::new(),
                     },
                 );
                 Ok(true)
@@ -495,6 +495,13 @@ impl MultiLspManager {
     /// Check if a server is ready for the given language
     pub fn is_ready(&self, lang: LanguageId) -> bool {
         self.instances.get(&lang).map_or(false, |i| i.ready)
+    }
+
+    /// Whether a server was started for this file's language, ready or not.
+    /// A missing or disabled server never gets an instance.
+    pub fn has_server_for_file(&self, path: &Path, first_line: Option<&str>) -> bool {
+        self.language_for_path_and_first_line(path, first_line)
+            .is_some_and(|lang| self.instances.contains_key(&lang))
     }
 
     /// Check if any server is ready for the given file
@@ -601,7 +608,7 @@ impl MultiLspManager {
 
         if let Some(instance) = self.get_instance_mut(lang) {
             if instance.ready {
-                instance.document_version = 1;
+                instance.document_versions.insert(path.clone(), 1);
                 instance.manager.did_open(path, text)?;
                 instance.current_file = Some(path.clone());
             }
@@ -617,10 +624,9 @@ impl MultiLspManager {
 
         if let Some(instance) = self.get_instance_mut(lang) {
             if instance.ready {
-                instance.document_version += 1;
-                instance
-                    .manager
-                    .did_change(path, instance.document_version, text)?;
+                let version = instance.document_versions.entry(path.clone()).or_insert(1);
+                *version += 1;
+                instance.manager.did_change(path, *version, text)?;
             }
         }
         Ok(())
@@ -635,6 +641,7 @@ impl MultiLspManager {
         if let Some(instance) = self.get_instance_mut(lang) {
             if instance.ready {
                 instance.manager.did_close(path)?;
+                instance.document_versions.remove(path);
                 if instance.current_file.as_ref() == Some(path) {
                     instance.current_file = None;
                 }
@@ -798,19 +805,40 @@ impl MultiLspManager {
         path: &PathBuf,
         tab_size: u32,
         buffer_version: u64,
+        token: u64,
     ) -> anyhow::Result<()> {
         let lang = self
             .language_for_path(path)
             .ok_or_else(|| anyhow::anyhow!("Unknown language for {:?}", path))?;
+        let instance = self
+            .get_instance_mut(lang)
+            .filter(|i| i.ready)
+            .ok_or_else(|| anyhow::anyhow!("LSP not available"))?;
+        instance
+            .manager
+            .formatting(path, tab_size, buffer_version, token)
+    }
 
-        if let Some(instance) = self.get_instance_mut(lang) {
-            if instance.ready {
-                instance
-                    .manager
-                    .formatting(path, tab_size, buffer_version)?;
-            }
+    /// Open a hidden formatting target without changing current-file ownership.
+    /// Returns whether the caller owns a temporary open and must close it.
+    pub fn open_format_target(&mut self, path: &PathBuf, text: &str) -> anyhow::Result<bool> {
+        self.remember_shebang_language(path, text.lines().next());
+        let lang = self
+            .language_for_path(path)
+            .ok_or_else(|| anyhow::anyhow!("Unknown language"))?;
+        let instance = self
+            .get_instance_mut(lang)
+            .filter(|i| i.ready)
+            .ok_or_else(|| anyhow::anyhow!("LSP not available"))?;
+        if let Some(version) = instance.document_versions.get_mut(path) {
+            *version += 1;
+            instance.manager.did_change(path, *version, text)?;
+            Ok(false)
+        } else {
+            instance.manager.did_open(path, text)?;
+            instance.document_versions.insert(path.clone(), 1);
+            Ok(true)
         }
-        Ok(())
     }
 
     /// Request code actions
@@ -1039,10 +1067,80 @@ mod tests {
                 last_error: None,
                 progress: None,
                 current_file: None,
-                document_version: 0,
+                document_versions: HashMap::new(),
             },
         );
         manager
+    }
+
+    #[test]
+    fn hidden_format_targets_use_per_path_versions_and_temporary_opens() {
+        let mut manager = manager_with_rust_notifications(vec![]);
+        let (tx, rx) = mpsc::channel();
+        manager
+            .instances
+            .get_mut(&LanguageId::Rust)
+            .unwrap()
+            .manager
+            .request_tx = tx;
+        let a = PathBuf::from("/tmp/a.rs");
+        let b = PathBuf::from("/tmp/b.rs");
+        manager.did_open(&a, "active").unwrap();
+        assert!(manager.open_format_target(&b, "hidden").unwrap());
+        manager.did_change(&a, "active2").unwrap();
+        manager.did_change(&b, "hidden2").unwrap();
+        manager.did_change(&a, "active3").unwrap();
+        manager.formatting(&b, 4, 12, 99).unwrap();
+        manager.did_close(&b).unwrap();
+        assert_eq!(
+            manager.instances[&LanguageId::Rust].current_file,
+            Some(a.clone())
+        );
+        let messages: Vec<_> = rx.try_iter().collect();
+        use crate::lsp::LspRequest as R;
+        assert!(matches!(&messages[0],R::DidOpen{uri,version:1,..} if uri.ends_with("a.rs")));
+        assert!(matches!(&messages[1],R::DidOpen{uri,version:1,..} if uri.ends_with("b.rs")));
+        assert!(matches!(&messages[2], R::DidChange { version: 2, .. }));
+        assert!(matches!(&messages[3], R::DidChange { version: 2, .. }));
+        assert!(matches!(&messages[4], R::DidChange { version: 3, .. }));
+        assert!(matches!(
+            &messages[5],
+            R::Formatting {
+                token: 99,
+                buffer_version: 12,
+                ..
+            }
+        ));
+        assert!(matches!(&messages[6],R::DidClose{uri} if uri.ends_with("b.rs")));
+        manager.did_close(&a).unwrap();
+        manager.did_open(&b, "now current").unwrap();
+        assert_eq!(
+            manager.instances[&LanguageId::Rust].current_file,
+            Some(b.clone())
+        );
+        manager.instances.get_mut(&LanguageId::Rust).unwrap().ready = false;
+        assert!(manager.formatting(&b, 4, 12, 100).is_err());
+    }
+
+    // Format-on-save writes silently when this is false, so a wrong `false`
+    // would quietly turn off LSP formatting for every language.
+    #[test]
+    fn has_server_for_file_means_a_server_was_started() {
+        let mut manager = manager_with_rust_notifications(vec![]);
+        assert!(manager.has_server_for_file(Path::new("/tmp/a.rs"), None));
+        // Still starting is a real server: the save should report the miss.
+        manager.instances.get_mut(&LanguageId::Rust).unwrap().ready = false;
+        assert!(manager.has_server_for_file(Path::new("/tmp/a.rs"), None));
+        // A known language whose server never started, and an unknown file.
+        assert!(!manager.has_server_for_file(Path::new("/tmp/a.ts"), None));
+        assert!(!manager.has_server_for_file(Path::new("/tmp/notes.txt"), None));
+
+        // An extensionless script is matched by its first line.
+        let rust = manager.instances.remove(&LanguageId::Rust).unwrap();
+        manager.instances.insert(LanguageId::Shell, rust);
+        let script = Path::new("/tmp/build");
+        assert!(manager.has_server_for_file(script, Some("#!/usr/bin/env bash")));
+        assert!(!manager.has_server_for_file(script, None));
     }
 
     #[test]

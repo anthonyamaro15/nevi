@@ -240,9 +240,11 @@ impl LspManager {
         path: &PathBuf,
         tab_size: u32,
         buffer_version: u64,
+        token: u64,
     ) -> anyhow::Result<()> {
         let uri = path_to_uri(path);
         self.send(LspRequest::Formatting {
+            token,
             uri,
             tab_size,
             buffer_version,
@@ -534,13 +536,17 @@ fn run_lsp_thread(
                         }
                     }
                     LspRequest::Formatting {
+                        token,
                         uri,
                         tab_size,
                         buffer_version,
                     } => {
-                        if let Err(e) = client.formatting(&uri, tab_size, buffer_version) {
-                            let _ = notification_tx.send(LspNotification::Error {
-                                message: format!("Failed to request formatting: {}", e),
+                        if let Err(e) = client.formatting(&uri, tab_size, buffer_version, token) {
+                            let _ = notification_tx.send(LspNotification::Formatting {
+                                token,
+                                request_uri: uri,
+                                request_version: buffer_version,
+                                result: Err(format!("Failed to request formatting: {e}")),
                             });
                         }
                     }
