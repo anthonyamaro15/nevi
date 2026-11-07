@@ -822,6 +822,17 @@ fn send_initialized_notification(stdin: &SharedStdin) -> Result<()> {
     Ok(())
 }
 
+/// The server's stdout closed: it exited or crashed. Report it as a fatal
+/// transport error ("channel closed" is in `MultiLspManager::is_fatal_error`)
+/// so the statusline stops showing a spinner for a server that is gone. On a
+/// normal shutdown the manager has already dropped the receiver and this
+/// send goes nowhere.
+fn server_exited(tx: &Sender<LspNotification>) {
+    let _ = tx.send(LspNotification::Error {
+        message: "LSP server exited: channel closed".to_string(),
+    });
+}
+
 /// Read JSON-RPC messages from the server stdout
 ///
 /// Uses a shared pending requests map that is populated by the client thread
@@ -845,7 +856,7 @@ pub fn read_messages(
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
-                Ok(0) => return, // EOF
+                Ok(0) => return server_exited(&tx), // EOF
                 Ok(_) => {
                     let line = line.trim();
                     if line.is_empty() {
@@ -855,7 +866,7 @@ pub fn read_messages(
                         content_length = len_str.parse().ok();
                     }
                 }
-                Err(_) => return,
+                Err(_) => return server_exited(&tx),
             }
         }
 
@@ -867,7 +878,7 @@ pub fn read_messages(
 
         let mut content = vec![0u8; content_length];
         if reader.read_exact(&mut content).is_err() {
-            return;
+            return server_exited(&tx);
         }
 
         // Parse JSON

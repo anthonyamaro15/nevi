@@ -1115,8 +1115,9 @@ pub struct Editor {
     pub finder: FuzzyFinder,
     /// LSP status message (persistent, shown in status bar)
     pub lsp_status: Option<String>,
-    /// Whether the LSP looks busy (indexing/loading), from the status text
-    pub lsp_busy: bool,
+    /// Lifecycle of the current buffer's server; the statusline glyph
+    /// follows this, never the free-form `lsp_status` text.
+    pub lsp_state: crate::lsp::LspStatus,
     /// Spinner position; advances per LSP notification, never on a timer
     lsp_spinner_idx: usize,
     /// LSP diagnostics per file URI
@@ -1685,7 +1686,7 @@ impl Editor {
             pending_suspend: false,
             finder,
             lsp_status: None,
-            lsp_busy: false,
+            lsp_state: crate::lsp::LspStatus::Stopped,
             lsp_spinner_idx: 0,
             diagnostics: HashMap::new(),
             diag_rollup: HashMap::new(),
@@ -2563,20 +2564,28 @@ impl Editor {
         crate::ui_glyphs::UiGlyphs::for_minimal(self.settings.resolved_ui_style().is_minimal())
     }
 
-    /// Set the LSP status (persistent, shown in status bar)
+    /// Set the LSP lifecycle state together with its status text, as
+    /// returned by `MultiLspManager::status_and_lifecycle`.
+    pub fn set_lsp_state(&mut self, (state, msg): (crate::lsp::LspStatus, String)) {
+        self.lsp_state = state;
+        self.set_lsp_status(msg);
+    }
+
+    /// Set the LSP status text only (persistent; shown by `:checkhealth`).
+    /// The lifecycle state is left alone: diagnostics counts and server
+    /// log messages say nothing about whether the server is up.
     pub fn set_lsp_status<S: Into<String>>(&mut self, msg: S) {
-        let msg = msg.into();
-        // Busy heuristic over the free-form status strings main.rs emits.
-        // The spinner advances only here — event-driven, never on a timer.
-        let lower = msg.to_lowercase();
-        self.lsp_busy = ["indexing", "loading", "starting", "%"]
-            .iter()
-            .any(|needle| lower.contains(needle));
-        if self.lsp_busy {
+        // The spinner advances only here, event-driven, never on a timer.
+        if self.lsp_busy() {
             self.lsp_spinner_idx = self.lsp_spinner_idx.wrapping_add(1);
         }
-        self.lsp_status = Some(msg);
+        self.lsp_status = Some(msg.into());
         self.render_damage.mark_statusline();
+    }
+
+    /// Server is spawning, indexing, or reporting progress.
+    pub fn lsp_busy(&self) -> bool {
+        self.lsp_state == crate::lsp::LspStatus::Starting
     }
 
     /// Current spinner frame for the statusline's LSP busy indicator
@@ -15273,19 +15282,38 @@ mod tests {
     }
 
     #[test]
-    fn lsp_status_drives_busy_flag_and_spinner_frame() {
+    fn lsp_state_drives_busy_flag_and_spinner_frame() {
+        use crate::lsp::LspStatus;
         let mut editor = Editor::default();
-        editor.set_lsp_status("LSP: indexing 40%");
-        assert!(editor.lsp_busy);
+        editor.set_lsp_state((LspStatus::Starting, "LSP: indexing 40%".into()));
+        assert!(editor.lsp_busy());
         let f1 = editor.lsp_spinner_frame();
-        editor.set_lsp_status("LSP: indexing 60%");
+        editor.set_lsp_state((LspStatus::Starting, "LSP: indexing 60%".into()));
         let f2 = editor.lsp_spinner_frame();
         assert_ne!(
             f1, f2,
             "spinner advances per notification (event-driven, no timer)"
         );
-        editor.set_lsp_status("rust-analyzer: idle");
-        assert!(!editor.lsp_busy);
+        editor.set_lsp_state((LspStatus::Ready, "LSP: rust-analyzer ready".into()));
+        assert!(!editor.lsp_busy());
+    }
+
+    #[test]
+    fn lsp_status_text_never_changes_the_lifecycle_state() {
+        use crate::lsp::LspStatus;
+        let mut editor = Editor::default();
+        // Startup text for "no server" must not light the statusline glyph.
+        editor.set_lsp_status("LSP: (no server)");
+        assert_eq!(editor.lsp_state, LspStatus::Stopped);
+        // Words that used to trip the old string heuristic stay text only.
+        editor.set_lsp_status("LSP: indexing 40%");
+        assert_eq!(editor.lsp_state, LspStatus::Stopped);
+        assert!(!editor.lsp_busy());
+
+        editor.set_lsp_state((LspStatus::Error, "LSP: failed to initialize".into()));
+        // A later diagnostics count does not paper over the failure.
+        editor.set_lsp_status("LSP: 2E 1W");
+        assert_eq!(editor.lsp_state, LspStatus::Error);
     }
 
     #[test]

@@ -24,6 +24,8 @@ pub struct UiGlyphs {
     pub diag_warn: &'static str,
     /// LSP idle indicator.
     pub lsp_ok: &'static str,
+    /// Server failed to start or crashed.
+    pub lsp_err: &'static str,
     /// LSP busy indicator frames; advanced per LSP notification
     /// (event-driven — never on a timer).
     pub lsp_busy_frames: &'static [&'static str],
@@ -70,6 +72,7 @@ pub static RICH: UiGlyphs = UiGlyphs {
     diag_error: "\u{f057} ",
     diag_warn: "\u{f071} ",
     lsp_ok: "✓",
+    lsp_err: "✗",
     lsp_busy_frames: &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"],
     corner_tl: "╭",
     corner_tr: "╮",
@@ -101,6 +104,7 @@ pub static MINIMAL: UiGlyphs = UiGlyphs {
     diag_error: "E:",
     diag_warn: "W:",
     lsp_ok: "✓",
+    lsp_err: "!",
     lsp_busy_frames: &["~"],
     corner_tl: "┌",
     corner_tr: "┐",
@@ -251,6 +255,7 @@ mod tests {
             g.diag_error,
             g.diag_warn,
             g.lsp_ok,
+            g.lsp_err,
             g.corner_tl,
             g.corner_tr,
             g.corner_bl,

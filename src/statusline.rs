@@ -9,6 +9,7 @@
 use crossterm::style::Color;
 
 use crate::editor::Mode;
+use crate::lsp::LspStatus;
 use crate::theme::Theme;
 use crate::ui_glyphs::UiGlyphs;
 
@@ -30,6 +31,8 @@ pub struct StatusLineContent {
 /// Render-reads-cache-only rule: callers must not compute git/LSP data here.
 pub struct StatusContext<'a> {
     pub mode: Mode,
+    /// The finder is open in live-grep mode; the badge reads GREP, not FINDER.
+    pub live_grep: bool,
     /// Preformatted pending count/operator, e.g. "3d" ("" when none).
     pub pending: &'a str,
     /// Macro register currently recording.
@@ -45,8 +48,9 @@ pub struct StatusContext<'a> {
     /// (errors, warnings) for the current buffer.
     pub diag: (usize, usize),
     pub lang: &'a str,
-    pub lsp_attached: bool,
-    pub lsp_busy: bool,
+    /// Lifecycle of the buffer's server: nothing when `Stopped`, spinner
+    /// while `Starting`, check when `Ready`, cross when `Error`.
+    pub lsp: LspStatus,
     /// Current spinner frame (advanced per LSP notification, never a timer).
     pub lsp_spinner: &'a str,
     /// `[current/total]` search counter, cached on search state — event-driven,
@@ -106,11 +110,27 @@ fn mode_color(mode: Mode, theme: &Theme) -> Color {
 }
 
 /// Vim parity: command mode keeps showing NORMAL in the statusline.
-fn mode_label(mode: Mode) -> &'static str {
-    if mode == Mode::Command {
-        "NORMAL"
-    } else {
-        mode.as_str()
+fn mode_label(ctx: &StatusContext) -> &'static str {
+    match ctx.mode {
+        Mode::Command => "NORMAL",
+        Mode::Finder if ctx.live_grep => "GREP",
+        mode => mode.as_str(),
+    }
+}
+
+/// The LSP glyph after the language name, with its color. `None` when the
+/// buffer has no server, so nothing claims a state it doesn't have.
+fn lsp_indicator<'a>(
+    ctx: &StatusContext<'a>,
+    glyphs: &UiGlyphs,
+    theme: &Theme,
+    fg: Color,
+) -> Option<(&'a str, Color)> {
+    match ctx.lsp {
+        LspStatus::Stopped => None,
+        LspStatus::Starting => Some((ctx.lsp_spinner, fg)),
+        LspStatus::Ready => Some((glyphs.lsp_ok, fg)),
+        LspStatus::Error => Some((glyphs.lsp_err, theme.diagnostic.error)),
     }
 }
 
@@ -186,11 +206,7 @@ fn build_rich(ctx: &StatusContext, glyphs: &UiGlyphs, theme: &Theme) -> StatusLi
     let section_bg = theme.ui.statusline_section_bg;
 
     let mut left = Vec::new();
-    left.push(seg_bold(
-        format!(" {} ", mode_label(ctx.mode)),
-        base_bg,
-        mode_bg,
-    ));
+    left.push(seg_bold(format!(" {} ", mode_label(ctx)), base_bg, mode_bg));
 
     // Mode → git (or file) powerline transition.
     let after_mode_bg = if ctx.branch.is_some() {
@@ -250,14 +266,11 @@ fn build_rich(ctx: &StatusContext, glyphs: &UiGlyphs, theme: &Theme) -> StatusLi
         ));
     }
     right.push(seg(glyphs.sep_right.to_string(), section_bg, base_bg));
-    let lsp = if !ctx.lsp_attached {
-        String::new()
-    } else if ctx.lsp_busy {
-        format!(" {}", ctx.lsp_spinner)
-    } else {
-        format!(" {}", glyphs.lsp_ok)
-    };
-    right.push(seg(format!(" {}{} ", ctx.lang, lsp), base_fg, section_bg));
+    right.push(seg(format!(" {}", ctx.lang), base_fg, section_bg));
+    if let Some((glyph, color)) = lsp_indicator(ctx, glyphs, theme, base_fg) {
+        right.push(seg(format!(" {}", glyph), color, section_bg));
+    }
+    right.push(seg(" ".to_string(), base_fg, section_bg));
     right.push(seg(glyphs.sep_right.to_string(), mode_bg, section_bg));
     right.push(seg_bold(
         format!(" {}:{}  {} ", ctx.line, ctx.col, ctx.position.label()),
@@ -274,7 +287,7 @@ fn build_minimal(ctx: &StatusContext, glyphs: &UiGlyphs, theme: &Theme) -> Statu
 
     let mut left = Vec::new();
     left.push(seg_bold(
-        format!(" {}", mode_label(ctx.mode)),
+        format!(" {}", mode_label(ctx)),
         mode_color(ctx.mode, theme),
         bg,
     ));
@@ -317,13 +330,8 @@ fn build_minimal(ctx: &StatusContext, glyphs: &UiGlyphs, theme: &Theme) -> Statu
         ));
     }
     right.push(seg(format!(" {}", ctx.lang), fg, bg));
-    if ctx.lsp_attached {
-        let indicator = if ctx.lsp_busy {
-            ctx.lsp_spinner
-        } else {
-            glyphs.lsp_ok
-        };
-        right.push(seg(format!(" {}", indicator), fg, bg));
+    if let Some((glyph, color)) = lsp_indicator(ctx, glyphs, theme, fg) {
+        right.push(seg(format!(" {}", glyph), color, bg));
     }
     right.push(seg(format!(" {}:{} ", ctx.line, ctx.col), fg, bg));
 
@@ -353,6 +361,7 @@ mod tests {
     fn ctx_base<'a>() -> StatusContext<'a> {
         StatusContext {
             mode: Mode::Normal,
+            live_grep: false,
             pending: "",
             recording: None,
             project: Some("rvim"),
@@ -364,8 +373,7 @@ mod tests {
             diff: Some((12, 3)),
             diag: (2, 1),
             lang: "rust",
-            lsp_attached: true,
-            lsp_busy: false,
+            lsp: LspStatus::Ready,
             lsp_spinner: "",
             search_count: None,
             line: 128,
@@ -506,5 +514,95 @@ mod tests {
         }];
         // 2 double-width chars = 4 columns (6 bytes).
         assert_eq!(display_width(&segs), 4);
+    }
+
+    /// The LSP glyph segment(s) and their colors, for both layouts.
+    fn lsp_text(ctx: &StatusContext, minimal: bool) -> (String, Vec<Color>) {
+        let content = build_status_segments(ctx, UiGlyphs::for_minimal(minimal), &theme(), minimal);
+        let glyphs = UiGlyphs::for_minimal(minimal);
+        let marks = [glyphs.lsp_ok, glyphs.lsp_err, "⠹"];
+        let hits: Vec<&StatusSegment> = content
+            .right
+            .iter()
+            .filter(|s| marks.iter().any(|m| s.text.trim() == *m))
+            .collect();
+        (
+            hits.iter().map(|s| s.text.trim()).collect(),
+            hits.iter().map(|s| s.fg).collect(),
+        )
+    }
+
+    #[test]
+    fn lsp_glyph_follows_the_lifecycle_state_in_both_layouts() {
+        let theme = theme();
+        for minimal in [false, true] {
+            let glyphs = UiGlyphs::for_minimal(minimal);
+            let mut ctx = ctx_base();
+            ctx.lsp_spinner = "⠹";
+
+            // No server for this buffer: nothing after the language name,
+            // even though main.rs stores "LSP: (no server)" text at startup.
+            ctx.lsp = LspStatus::Stopped;
+            assert_eq!(lsp_text(&ctx, minimal).0, "", "minimal={minimal}");
+
+            ctx.lsp = LspStatus::Starting;
+            assert_eq!(lsp_text(&ctx, minimal).0, "⠹", "minimal={minimal}");
+
+            ctx.lsp = LspStatus::Ready;
+            assert_eq!(
+                lsp_text(&ctx, minimal).0,
+                glyphs.lsp_ok,
+                "minimal={minimal}"
+            );
+
+            ctx.lsp = LspStatus::Error;
+            let (text, colors) = lsp_text(&ctx, minimal);
+            assert_eq!(text, glyphs.lsp_err, "minimal={minimal}");
+            assert_eq!(
+                colors,
+                vec![theme.diagnostic.error],
+                "a failed server reads as an error, minimal={minimal}"
+            );
+        }
+    }
+
+    #[test]
+    fn lsp_state_does_not_change_the_statusline_width_between_ready_and_error() {
+        // Ready and Error swap one glyph for another; the right side must not
+        // jump when a server dies.
+        for minimal in [false, true] {
+            let mut ctx = ctx_base();
+            ctx.lsp = LspStatus::Ready;
+            let ready =
+                build_status_segments(&ctx, UiGlyphs::for_minimal(minimal), &theme(), minimal);
+            ctx.lsp = LspStatus::Error;
+            let error =
+                build_status_segments(&ctx, UiGlyphs::for_minimal(minimal), &theme(), minimal);
+            assert_eq!(display_width(&ready.right), display_width(&error.right));
+        }
+    }
+
+    #[test]
+    fn live_grep_badge_reads_grep_and_other_finders_keep_finder() {
+        for minimal in [false, true] {
+            let mut ctx = ctx_base();
+            ctx.mode = Mode::Finder;
+            ctx.live_grep = true;
+            let grep =
+                build_status_segments(&ctx, UiGlyphs::for_minimal(minimal), &theme(), minimal);
+            assert!(grep.left[0].text.contains("GREP"), "minimal={minimal}");
+
+            ctx.live_grep = false;
+            let files =
+                build_status_segments(&ctx, UiGlyphs::for_minimal(minimal), &theme(), minimal);
+            assert!(files.left[0].text.contains("FINDER"), "minimal={minimal}");
+
+            // A stale grep flag never relabels a non-finder mode.
+            ctx.mode = Mode::Normal;
+            ctx.live_grep = true;
+            let normal =
+                build_status_segments(&ctx, UiGlyphs::for_minimal(minimal), &theme(), minimal);
+            assert!(normal.left[0].text.contains("NORMAL"), "minimal={minimal}");
+        }
     }
 }

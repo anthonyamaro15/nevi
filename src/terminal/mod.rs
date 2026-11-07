@@ -3350,6 +3350,7 @@ impl Terminal {
         // state — no git2, LSP, or filesystem calls on this path.
         let ctx = crate::statusline::StatusContext {
             mode: editor.mode,
+            live_grep: editor.finder.mode == crate::finder::FinderMode::Grep,
             pending: &pending,
             recording: editor.macros.recording_register(),
             project: project_name,
@@ -3361,8 +3362,7 @@ impl Terminal {
             diff: editor.current_git_diff_totals(),
             diag: editor.current_diagnostic_counts(),
             lang: editor.syntax.language_name().unwrap_or("plain"),
-            lsp_attached: editor.lsp_status.is_some(),
-            lsp_busy: editor.lsp_busy,
+            lsp: editor.lsp_state,
             lsp_spinner: editor.lsp_spinner_frame(),
             search_count: editor.search.match_stats,
             line: editor.cursor.line + 1,
@@ -13371,7 +13371,7 @@ mod tests {
 
         let _ = render_editor_to_string(&editor);
         editor.render_damage.clear_after_full_render();
-        editor.set_lsp_status("LSP: ready");
+        editor.set_lsp_state((crate::lsp::LspStatus::Ready, "LSP: ready".into()));
 
         let rendered = render_editor_to_string(&editor);
 
@@ -14464,7 +14464,7 @@ mod tests {
         let _ = render_editor_to_string(&editor);
         editor.render_damage.clear_after_full_render();
         editor.render_damage.mark_editor_row(1);
-        editor.set_lsp_status("LSP: ready");
+        editor.set_lsp_state((crate::lsp::LspStatus::Ready, "LSP: ready".into()));
 
         let rendered = render_editor_to_string(&editor);
 
