@@ -3691,8 +3691,12 @@ impl Terminal {
         } else if let Some(ref msg) = editor.status_message {
             // Show status message
             terminal_print!(self, "{}", msg);
-        } else if let Some(diag) = editor.diagnostic_at_cursor() {
-            // Show diagnostic message when cursor is on a line with diagnostics
+        } else if let Some(diag) = editor
+            .diagnostic_at_cursor()
+            .filter(|_| !matches!(editor.mode, Mode::Insert | Mode::Replace))
+        {
+            // Show diagnostic message when cursor is on a line with diagnostics.
+            // Not while typing: the line is mid-edit, so the message is stale.
             let (color, prefix) = match diag.severity {
                 DiagnosticSeverity::Error => (Color::Red, "Error"),
                 DiagnosticSeverity::Warning => (Color::Yellow, "Warning"),
@@ -11897,6 +11901,45 @@ mod tests {
             i += 1;
         }
         cells.into_iter().collect::<String>().trim_end().to_string()
+    }
+
+    /// The cursor-line diagnostic echo is for reading, not typing: while
+    /// inserting, the line is mid-edit and the server's message (for
+    /// example "undefined: fmt.Pr") is stale noise on every keystroke.
+    #[test]
+    fn diagnostic_echo_hides_while_inserting_and_returns_in_normal_mode() {
+        let tmp = unique_temp_dir("nevi_insert_echo");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("main.go");
+        std::fs::write(&path, "fmt.Pr\n").expect("write file");
+
+        let mut editor = Editor::default();
+        editor.set_size(40, 6);
+        editor.open_file(path.clone()).expect("open file");
+        editor.set_diagnostics(
+            crate::lsp::path_to_uri(&path),
+            vec![crate::lsp::Diagnostic {
+                line: 0,
+                end_line: 0,
+                col_start: 0,
+                col_end: 6,
+                severity: crate::lsp::DiagnosticSeverity::Error,
+                message: "undefined: fmt.Pr".to_string(),
+                source: None,
+                code: None,
+            }],
+        );
+        let cmd_row = |editor: &Editor| screen_row_text(&render_editor_to_string(editor), 5);
+
+        assert_eq!(cmd_row(&editor), "Error: undefined: fmt.Pr");
+        for mode in [Mode::Insert, Mode::Replace] {
+            editor.mode = mode;
+            assert_eq!(cmd_row(&editor), "", "no echo in {mode:?}");
+        }
+        editor.mode = Mode::Normal;
+        assert_eq!(cmd_row(&editor), "Error: undefined: fmt.Pr");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// Issue #330: with line numbers off and nothing to mark, `auto` puts
