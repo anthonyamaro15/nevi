@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::config::LspServerConfig;
-use crate::lsp::{LspManager, LspNotification};
+use crate::lsp::{LspManager, LspNotification, LspStatus};
 
 const PROGRESS_DISPLAY_DELAY: Duration = Duration::from_millis(250);
 
@@ -927,6 +927,16 @@ impl MultiLspManager {
 
     /// Get status string for display
     pub fn status(&self, path: Option<&Path>) -> String {
+        self.status_and_lifecycle(path).1
+    }
+
+    /// Status text plus the lifecycle state the statusline glyph follows.
+    /// Both come out of the same branches so the glyph can never disagree
+    /// with the text: `Error` only for a fatal per-server failure (stderr
+    /// noise and request errors never set `last_error`), `Starting` while the
+    /// server is spawning, indexing, or showing progress, `Stopped` when the
+    /// buffer has no server at all.
+    pub fn status_and_lifecycle(&self, path: Option<&Path>) -> (LspStatus, String) {
         if let Some(p) = path {
             if let Some(lang) = self.language_for_path(p) {
                 if let Some(instance) = self.instances.get(&lang) {
@@ -940,38 +950,56 @@ impl MultiLspManager {
                     // `ready` (handshake) gates requests; `analysis_ready == Some(false)`
                     // means the server is up but still indexing, so don't claim "ready".
                     let indexing = instance.analysis_ready == Some(false);
+                    let ready_state = if indexing {
+                        LspStatus::Starting
+                    } else {
+                        LspStatus::Ready
+                    };
 
                     if let Some(error) = &instance.last_error {
-                        return format!("LSP: {error}");
+                        return (LspStatus::Error, format!("LSP: {error}"));
                     } else if let Some(progress) = &instance.progress {
                         if Self::should_show_progress(progress.started_at, Instant::now()) {
-                            return format!(
-                                "LSP: {} loading: {} ({})",
-                                server_name,
-                                progress.label,
-                                lang.as_lsp_id()
+                            return (
+                                LspStatus::Starting,
+                                format!(
+                                    "LSP: {} loading: {} ({})",
+                                    server_name,
+                                    progress.label,
+                                    lang.as_lsp_id()
+                                ),
                             );
                         }
-                    } else if instance.ready {
-                        return Self::lifecycle_label(server_name, lang, indexing);
                     }
 
                     if instance.ready {
-                        return Self::lifecycle_label(server_name, lang, indexing);
+                        return (
+                            ready_state,
+                            Self::lifecycle_label(server_name, lang, indexing),
+                        );
                     }
 
-                    return format!("LSP: starting {} ({})...", server_name, lang.as_lsp_id());
+                    return (
+                        LspStatus::Starting,
+                        format!("LSP: starting {} ({})...", server_name, lang.as_lsp_id()),
+                    );
                 } else {
                     // Check if config exists and is enabled
                     if let Some(config) = self.configs.get(&lang) {
                         if config.enabled {
-                            return format!(
-                                "LSP: {} not started ({})",
-                                config.effective_command(),
-                                lang.as_lsp_id()
+                            return (
+                                LspStatus::Stopped,
+                                format!(
+                                    "LSP: {} not started ({})",
+                                    config.effective_command(),
+                                    lang.as_lsp_id()
+                                ),
                             );
                         } else {
-                            return format!("LSP: {} (disabled)", lang.as_lsp_id());
+                            return (
+                                LspStatus::Stopped,
+                                format!("LSP: {} (disabled)", lang.as_lsp_id()),
+                            );
                         }
                     }
                 }
@@ -981,11 +1009,12 @@ impl MultiLspManager {
         // Count active servers
         let active = self.instances.len();
         let ready = self.instances.values().filter(|i| i.ready).count();
-        if active > 0 {
+        let text = if active > 0 {
             format!("LSP: {}/{} servers", ready, active)
         } else {
             "LSP: (no server)".to_string()
-        }
+        };
+        (LspStatus::Stopped, text)
     }
 
     pub fn user_facing_error(&self, lang: LanguageId, message: &str) -> String {
@@ -1577,6 +1606,66 @@ mod tests {
             now - PROGRESS_DISPLAY_DELAY,
             now
         ));
+    }
+
+    #[test]
+    fn lifecycle_state_matches_the_status_text() {
+        let path = Path::new("/tmp/nevi_lsp_test/src/main.rs");
+        let mut manager = manager_with_rust_notifications(vec![]);
+        fn rust(m: &mut MultiLspManager) -> &mut LspInstance {
+            m.instances.get_mut(&LanguageId::Rust).unwrap()
+        }
+
+        let (state, text) = manager.status_and_lifecycle(Some(path));
+        assert_eq!(state, LspStatus::Ready, "got: {text}");
+        assert!(text.contains("ready"), "got: {text}");
+
+        rust(&mut manager).analysis_ready = Some(false);
+        let (state, text) = manager.status_and_lifecycle(Some(path));
+        assert_eq!(state, LspStatus::Starting, "indexing is busy, got: {text}");
+
+        rust(&mut manager).ready = false;
+        rust(&mut manager).analysis_ready = None;
+        let (state, text) = manager.status_and_lifecycle(Some(path));
+        assert_eq!(state, LspStatus::Starting, "handshake pending, got: {text}");
+        assert!(text.contains("starting"), "got: {text}");
+
+        rust(&mut manager).last_error = Some("ra-multiplex: Failed to initialize LSP".into());
+        let (state, text) = manager.status_and_lifecycle(Some(path));
+        assert_eq!(state, LspStatus::Error, "got: {text}");
+        assert!(text.contains("Failed to initialize"), "got: {text}");
+
+        // A buffer with no server, or no file at all, claims nothing.
+        assert_eq!(
+            manager.status_and_lifecycle(Some(Path::new("notes.txt"))).0,
+            LspStatus::Stopped
+        );
+        assert_eq!(manager.status_and_lifecycle(None).0, LspStatus::Stopped);
+    }
+
+    #[test]
+    fn non_fatal_error_notifications_keep_the_server_ready() {
+        let path = Path::new("/tmp/nevi_lsp_test/src/main.rs");
+        let mut manager = manager_with_rust_notifications(vec![
+            LspNotification::Error {
+                message: "LSP error (-32603): request failed".into(),
+            },
+            LspNotification::Error {
+                message: "LSP stderr: rust-analyzer: using proc-macro server".into(),
+            },
+        ]);
+        let _ = manager.poll_notifications_limited(None);
+        assert_eq!(
+            manager.status_and_lifecycle(Some(path)).0,
+            LspStatus::Ready,
+            "request errors and stderr logs are not a dead server"
+        );
+
+        let mut manager = manager_with_rust_notifications(vec![LspNotification::Error {
+            message: "Failed to initialize LSP: Failed to convert root path to URI".into(),
+        }]);
+        let _ = manager.poll_notifications_limited(None);
+        assert_eq!(manager.status_and_lifecycle(Some(path)).0, LspStatus::Error);
     }
 
     #[test]
