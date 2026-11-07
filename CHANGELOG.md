@@ -68,6 +68,7 @@
 
 ### Interface
 
+- The command line no longer shows the cursor line's diagnostic while you type in insert or replace mode. The message was about the half-typed line, so it flashed errors like `undefined: fmt.Pr` on every keystroke. It comes back when you leave insert mode.
 - Opening the finder with a leader key, such as `<leader>ff` or `<leader>fg`, no longer leaves the key sequence (`<leader>f`) on the command line while the finder is open. With the leader popup on, the rows it covered no longer turn the terminal's background color under the finder. The finder's first frame now redraws the editor behind it once.
 - Live grep rows now fit the finder instead of losing the match off the right edge. When a row is too long, folders shrink to their first letter, starting from the top, only as far as needed to keep the match on screen, like Vim's `pathshorten()`. If that isn't enough, the text before the match is cut instead, and the selected row's full path is shown above the query. A match far into a long line now shows too (rows used to stop after the line's first 100 characters), and rows with wide characters such as Japanese or Chinese text no longer run past the finder's border, in every picker. (#351)
 - Added `nevi --help` and `nevi -h`. They print the usage for the plain, `view`, `diff`, and `pick` forms and exit. Before this, `--help` was taken as a filename and opened an empty buffer called `--help`.
