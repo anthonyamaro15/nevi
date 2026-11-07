@@ -1029,8 +1029,9 @@ fn main() -> anyhow::Result<()> {
                                             .unwrap_or_else(|| e.to_string());
                                         editor.set_status(format!("LSP: {}", message));
                                     } else {
-                                        let status = mlsp.status(Some(path.as_path()));
-                                        editor.set_lsp_status(status.clone());
+                                        let (state, status) =
+                                            mlsp.status_and_lifecycle(Some(path.as_path()));
+                                        editor.set_lsp_state((state, status.clone()));
                                         editor.set_status(status);
                                     }
                                 } else {
@@ -1176,13 +1177,15 @@ fn main() -> anyhow::Result<()> {
                                     first_line.as_deref(),
                                 ) {
                                     Ok(Some(_lang)) => {
-                                        editor
-                                            .set_lsp_status(mlsp.status(Some(new_path.as_path())));
+                                        editor.set_lsp_state(
+                                            mlsp.status_and_lifecycle(Some(new_path.as_path())),
+                                        );
                                     }
                                     Ok(None) => {
                                         // No LSP for this file type
-                                        editor
-                                            .set_lsp_status(mlsp.status(Some(new_path.as_path())));
+                                        editor.set_lsp_state(
+                                            mlsp.status_and_lifecycle(Some(new_path.as_path())),
+                                        );
                                     }
                                     Err(e) => {
                                         let message = mlsp
@@ -1191,7 +1194,10 @@ fn main() -> anyhow::Result<()> {
                                                 mlsp.user_facing_error(lang, &e.to_string())
                                             })
                                             .unwrap_or_else(|| e.to_string());
-                                        editor.set_lsp_status(format!("LSP: {}", message));
+                                        editor.set_lsp_state((
+                                            lsp::LspStatus::Error,
+                                            format!("LSP: {}", message),
+                                        ));
                                     }
                                 }
 
@@ -1200,7 +1206,10 @@ fn main() -> anyhow::Result<()> {
                                     let text = editor.buffer().content();
                                     save_runtime.before_current_open(new_path, mlsp);
                                     if let Err(e) = mlsp.did_open(new_path, &text) {
-                                        editor.set_lsp_status(format!("LSP: open error: {}", e));
+                                        editor.set_lsp_state((
+                                            lsp::LspStatus::Error,
+                                            format!("LSP: open error: {}", e),
+                                        ));
                                     } else {
                                         lsp_current_file = Some(new_path.clone());
                                         lsp_synced_version = Some(editor.buffer().version());
@@ -1525,8 +1534,10 @@ fn main() -> anyhow::Result<()> {
                         LspNotification::Initialized => {
                             // Update status - server is now ready
                             let current_path = editor.buffer().path.clone();
-                            editor.set_lsp_status(
-                                mlsp.status(current_path.as_ref().map(|p| p.as_path())),
+                            editor.set_lsp_state(
+                                mlsp.status_and_lifecycle(
+                                    current_path.as_ref().map(|p| p.as_path()),
+                                ),
                             );
 
                             // Now that this server is ready, send did_open for current file if it matches
@@ -1535,7 +1546,10 @@ fn main() -> anyhow::Result<()> {
                                     let text = editor.buffer().content();
                                     save_runtime.before_current_open(&path, mlsp);
                                     if let Err(e) = mlsp.did_open(&path, &text) {
-                                        editor.set_lsp_status(format!("LSP: open error: {}", e));
+                                        editor.set_lsp_state((
+                                            lsp::LspStatus::Error,
+                                            format!("LSP: open error: {}", e),
+                                        ));
                                     } else {
                                         lsp_current_file = Some(path);
                                         lsp_synced_version = Some(editor.buffer().version());
@@ -1545,10 +1559,15 @@ fn main() -> anyhow::Result<()> {
                             needs_redraw = true;
                         }
                         LspNotification::Error { message } => {
-                            // Update status with error
-                            editor.set_lsp_status(format!(
-                                "LSP: {}",
-                                mlsp.user_facing_error(lang, &message)
+                            // The manager marks only fatal errors on the failing
+                            // server, so the glyph turns red for the current
+                            // buffer's server and not for request noise from others.
+                            let current_path = editor.buffer().path.clone();
+                            let (state, _) = mlsp
+                                .status_and_lifecycle(current_path.as_ref().map(|p| p.as_path()));
+                            editor.set_lsp_state((
+                                state,
+                                format!("LSP: {}", mlsp.user_facing_error(lang, &message)),
                             ));
                             needs_redraw = true;
                         }
@@ -1780,8 +1799,10 @@ fn main() -> anyhow::Result<()> {
                         }
                         LspNotification::Progress { .. } => {
                             let current_path = editor.buffer().path.clone();
-                            editor.set_lsp_status(
-                                mlsp.status(current_path.as_ref().map(|p| p.as_path())),
+                            editor.set_lsp_state(
+                                mlsp.status_and_lifecycle(
+                                    current_path.as_ref().map(|p| p.as_path()),
+                                ),
                             );
                             if request_lsp_redraw(
                                 LspRedrawPriority::StatusOnly,
@@ -1798,8 +1819,10 @@ fn main() -> anyhow::Result<()> {
                             // refresh the statusline so it stops claiming "ready"
                             // while the server is still indexing.
                             let current_path = editor.buffer().path.clone();
-                            editor.set_lsp_status(
-                                mlsp.status(current_path.as_ref().map(|p| p.as_path())),
+                            editor.set_lsp_state(
+                                mlsp.status_and_lifecycle(
+                                    current_path.as_ref().map(|p| p.as_path()),
+                                ),
                             );
                             if request_lsp_redraw(
                                 LspRedrawPriority::StatusOnly,

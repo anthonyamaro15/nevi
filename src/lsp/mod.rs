@@ -706,6 +706,30 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
+    fn a_server_that_exits_reports_a_fatal_channel_closed_error() {
+        // `false` starts and exits at once, before any handshake. The reader
+        // must say so; a silent EOF left the statusline spinning forever.
+        let root = std::env::temp_dir();
+        let mut manager = super::LspManager::start("/usr/bin/false", &[], root)
+            .expect("spawning the worker thread does not fail");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut seen = Vec::new();
+        while Instant::now() < deadline {
+            match manager.try_recv() {
+                Some(super::LspNotification::Error { message }) => {
+                    if message.contains("channel closed") {
+                        return;
+                    }
+                    seen.push(message);
+                }
+                Some(_) => {}
+                None => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        panic!("no channel-closed error after the server exited; other errors: {seen:?}");
+    }
+
+    #[test]
     fn reader_thread_join_helper_returns_without_waiting_forever() {
         let (release_tx, release_rx) = mpsc::channel::<()>();
         let handle = thread::spawn(move || {
