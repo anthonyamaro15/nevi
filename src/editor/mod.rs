@@ -844,6 +844,10 @@ pub struct CompletionState {
     matcher: crate::finder::FuzzyMatcher,
     /// If true, the completion list is incomplete and typing more should re-request
     pub is_incomplete: bool,
+    /// Matched char positions in the label for the rows on screen, keyed by
+    /// item index. Only the visible window is computed, so filtering a long
+    /// list doesn't pay for highlight work it never draws.
+    visible_match_indices: Vec<(usize, Vec<usize>)>,
 }
 
 impl Default for CompletionState {
@@ -858,11 +862,52 @@ impl Default for CompletionState {
             filter_text: String::new(),
             matcher: crate::finder::FuzzyMatcher::new(),
             is_incomplete: false,
+            visible_match_indices: Vec::new(),
         }
     }
 }
 
 impl CompletionState {
+    /// Rows the completion popup shows at once.
+    pub const VISIBLE_ROWS: usize = 10;
+
+    /// First filtered row on screen: the list scrolls just enough to keep
+    /// the selection visible.
+    pub fn scroll_offset(&self) -> usize {
+        (self.selected + 1).saturating_sub(Self::VISIBLE_ROWS)
+    }
+
+    /// Matched char positions in `items[item_idx].label`, sorted. Empty when
+    /// there is no filter or the row is off screen.
+    pub fn match_indices_for(&self, item_idx: usize) -> &[usize] {
+        self.visible_match_indices
+            .iter()
+            .find(|(idx, _)| *idx == item_idx)
+            .map_or(&[], |(_, indices)| indices)
+    }
+
+    fn update_visible_match_indices(&mut self) {
+        self.visible_match_indices.clear();
+        if self.filter_text.is_empty() {
+            return;
+        }
+        let start = self.scroll_offset();
+        for &idx in self.filtered.iter().skip(start).take(Self::VISIBLE_ROWS) {
+            let Some(item) = self.items.get(idx) else {
+                continue;
+            };
+            // Positions are into the text that was matched, so they only
+            // line up with the label when the server matched on the label.
+            if item.filter_text.as_deref().is_some_and(|t| t != item.label) {
+                continue;
+            }
+            let mut indices = self.matcher.match_indices(&self.filter_text, &item.label);
+            indices.sort_unstable();
+            indices.dedup();
+            self.visible_match_indices.push((idx, indices));
+        }
+    }
+
     /// Show completion popup with items
     pub fn show(
         &mut self,
@@ -890,6 +935,7 @@ impl CompletionState {
         self.selected = 0;
         self.filter_text.clear();
         self.is_incomplete = false;
+        self.visible_match_indices.clear();
     }
 
     /// Update filter with new prefix text
@@ -956,6 +1002,7 @@ impl CompletionState {
             self.filtered = scored.into_iter().map(|(i, _, _, _, _)| i).collect();
         }
         self.selected = 0;
+        self.update_visible_match_indices();
     }
 
     /// Move selection up
@@ -966,6 +1013,7 @@ impl CompletionState {
             } else {
                 self.selected = self.filtered.len() - 1;
             }
+            self.update_visible_match_indices();
         }
     }
 
@@ -973,6 +1021,7 @@ impl CompletionState {
     pub fn select_next(&mut self) {
         if !self.filtered.is_empty() {
             self.selected = (self.selected + 1) % self.filtered.len();
+            self.update_visible_match_indices();
         }
     }
 
