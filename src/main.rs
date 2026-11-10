@@ -729,6 +729,9 @@ fn main() -> anyhow::Result<()> {
     // Stores (request_time, path, line, col) - request is sent after debounce period
     let completion_debounce = Duration::from_millis(50);
     let mut completion_pending: Option<(Instant, PathBuf, u32, u32)> = None;
+    // Signature help typed on `(` or `,`, sent after the batched did_change
+    // so the server sees the character that triggered it.
+    let mut signature_help_pending: Option<(PathBuf, u32, u32)> = None;
 
     // Track which completion item we've already requested resolve for
     // (to avoid spamming resolve requests on every key press)
@@ -1296,11 +1299,11 @@ fn main() -> anyhow::Result<()> {
                                     if editor.mode == Mode::Insert
                                         && should_trigger_signature_help(&editor)
                                     {
-                                        let _ = mlsp.signature_help(
-                                            &path,
+                                        signature_help_pending = Some((
+                                            path.clone(),
                                             editor.cursor.line as u32,
                                             editor_lsp_cursor_col(&editor),
-                                        );
+                                        ));
                                     }
                                 }
                             }
@@ -1492,6 +1495,16 @@ fn main() -> anyhow::Result<()> {
                         t_cop.elapsed()
                     );
                     copilot_synced_version = Some(doc_version);
+                }
+            }
+        }
+
+        // Sent after the did_change sync above: asked before it, the server
+        // answers for the text without the `(` and returns nothing.
+        if let Some((path, line, col)) = signature_help_pending.take() {
+            if let Some(ref mut mlsp) = multi_lsp {
+                if mlsp.is_ready_for_file(&path) {
+                    let _ = mlsp.signature_help(&path, line, col);
                 }
             }
         }

@@ -71,7 +71,8 @@ fn finder_severity_color(display: &str) -> Option<Color> {
 use crate::commands::{Command, CommandPopupMode, CommandResult, PendingDigraph, parse_command};
 use crate::config::{CommandModeAction, LeaderAction};
 use crate::editor::{
-    Editor, ExpressionRegisterTarget, LspAction, Mode, Pane, PaneDirection, SplitLayout,
+    CompletionState, Editor, ExpressionRegisterTarget, LspAction, Mode, Pane, PaneDirection,
+    SplitLayout,
 };
 use crate::input::{
     InsertPosition, KeyAction, Operator, TextObject, TextObjectModifier, TextObjectType,
@@ -3757,7 +3758,7 @@ impl Terminal {
             .min(35);
 
         // Popup dimensions (use filtered count)
-        let max_items = 10.min(completion.filtered.len());
+        let max_items = CompletionState::VISIBLE_ROWS.min(completion.filtered.len());
         let popup_height = max_items as u16 + 2; // +2 for border
         let label_col_width = max_label_len + 5; // +5 for kind and padding
         let detail_col_width = if max_detail_len > 0 {
@@ -3782,6 +3783,8 @@ impl Terminal {
         let selected_bg = theme.ui.completion_selected;
         let detail_color = theme.ui.completion_detail;
         let text_color = theme.ui.foreground;
+        let match_color = theme.ui.finder_match;
+        let minimal = editor.settings.resolved_ui_style().is_minimal();
         let doc_bg = theme.ui.completion_bg;
         let signature_color = theme.syntax.function.fg;
 
@@ -3799,11 +3802,7 @@ impl Terminal {
         terminal_print!(self, "╮");
 
         // Draw items - iterate over filtered indices
-        let scroll_offset = if completion.selected >= max_items {
-            completion.selected - max_items + 1
-        } else {
-            0
-        };
+        let scroll_offset = completion.scroll_offset();
 
         for (display_idx, &item_idx) in completion
             .filtered
@@ -3834,26 +3833,64 @@ impl Terminal {
             // Kind indicator (colored per-kind)
             let kind_color = completion_kind_color(item.kind, theme);
             execute!(self.stdout, SetForegroundColor(kind_color))?;
-            terminal_print!(self, " {} ", item.kind.short_name());
-
-            execute!(self.stdout, SetForegroundColor(text_color))?;
-            let available_label_width = (popup_width as usize).saturating_sub(detail_col_width + 7);
-            let label = if item.label.len() > available_label_width {
-                format!(
-                    "{}…",
-                    &item.label[..available_label_width.saturating_sub(1)]
-                )
+            let kind = if minimal {
+                item.kind.short_name()
             } else {
-                format!("{:width$}", item.label, width = available_label_width)
+                item.kind.icon()
             };
-            terminal_print!(self, "{}", label);
+            terminal_print!(self, " {} ", kind);
+
+            // Label in runs: typed letters in the finder's match color.
+            let available_label_width = (popup_width as usize).saturating_sub(detail_col_width + 7);
+            let label_chars = item.label.chars().count();
+            let truncated = label_chars > available_label_width;
+            let shown = if truncated {
+                available_label_width.saturating_sub(1)
+            } else {
+                label_chars
+            };
+            let matched = completion.match_indices_for(item_idx);
+            let mut run = String::new();
+            let mut run_is_match = false;
+            for (i, ch) in item.label.chars().take(shown).enumerate() {
+                let is_match = matched.binary_search(&i).is_ok();
+                if is_match != run_is_match && !run.is_empty() {
+                    let fg = if run_is_match {
+                        match_color
+                    } else {
+                        text_color
+                    };
+                    execute!(self.stdout, SetForegroundColor(fg))?;
+                    terminal_print!(self, "{}", run);
+                    run.clear();
+                }
+                run_is_match = is_match;
+                run.push(ch);
+            }
+            let fg = if run_is_match {
+                match_color
+            } else {
+                text_color
+            };
+            execute!(self.stdout, SetForegroundColor(fg))?;
+            terminal_print!(self, "{}", run);
+            execute!(self.stdout, SetForegroundColor(text_color))?;
+            if truncated {
+                terminal_print!(self, "…");
+            } else {
+                terminal_print!(self, "{:width$}", "", width = available_label_width - shown);
+            }
 
             // Detail/type signature (dimmed, right-aligned)
             if let Some(detail) = &item.detail {
                 execute!(self.stdout, SetForegroundColor(detail_color))?;
                 let detail_width = detail_col_width;
-                let detail_str = if detail.len() > detail_width {
-                    format!("{}…", &detail[..detail_width.saturating_sub(1)])
+                let detail_str = if detail.chars().count() > detail_width {
+                    let kept: String = detail
+                        .chars()
+                        .take(detail_width.saturating_sub(1))
+                        .collect();
+                    format!("{kept}…")
                 } else {
                     format!("{:>width$}", detail, width = detail_width)
                 };
@@ -4427,27 +4464,13 @@ impl Terminal {
             .saturating_sub(2)
             .min(editor.term_width.saturating_sub(popup_width + 1));
 
-        // Colors
-        let border_color = Color::Rgb {
-            r: 100,
-            g: 100,
-            b: 140,
-        };
-        let bg_color = Color::Rgb {
-            r: 30,
-            g: 30,
-            b: 45,
-        };
-        let text_color = Color::Rgb {
-            r: 200,
-            g: 200,
-            b: 210,
-        };
-        let highlight_color = Color::Rgb {
-            r: 255,
-            g: 200,
-            b: 100,
-        }; // Yellow for active param
+        // Same frame and colors as the completion menu; the argument being
+        // typed is underlined in the match color.
+        let theme = editor.theme();
+        let border_color = theme.ui.completion_border;
+        let bg_color = theme.ui.completion_bg;
+        let text_color = theme.ui.foreground;
+        let highlight_color = theme.ui.finder_match;
 
         // Draw top border
         execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
@@ -4481,32 +4504,29 @@ impl Terminal {
             .and_then(|idx| signature.parameters.get(idx).and_then(|p| p.label_offsets));
 
         let mut chars_printed = 0;
-        let label_chars: Vec<char> = label.chars().collect();
-        let mut i = 0;
-
-        while i < label_chars.len() && chars_printed < content_width {
-            let in_highlight = highlight_range
-                .map(|(start, end)| i >= start && i < end)
-                .unwrap_or(false);
-
-            if in_highlight {
-                execute!(
-                    self.stdout,
-                    SetForegroundColor(highlight_color),
-                    SetBackgroundColor(bg_color)
-                )?;
-            } else {
-                execute!(
-                    self.stdout,
-                    SetForegroundColor(text_color),
-                    SetBackgroundColor(bg_color)
-                )?;
+        let mut was_highlight = None;
+        for (i, ch) in label.chars().take(content_width).enumerate() {
+            let in_highlight = highlight_range.is_some_and(|(start, end)| i >= start && i < end);
+            if was_highlight != Some(in_highlight) {
+                if in_highlight {
+                    execute!(
+                        self.stdout,
+                        SetForegroundColor(highlight_color),
+                        SetAttribute(Attribute::Underlined)
+                    )?;
+                } else {
+                    execute!(
+                        self.stdout,
+                        SetForegroundColor(text_color),
+                        SetAttribute(Attribute::NoUnderline)
+                    )?;
+                }
+                was_highlight = Some(in_highlight);
             }
-
-            terminal_print!(self, "{}", label_chars[i]);
+            terminal_print!(self, "{}", ch);
             chars_printed += 1;
-            i += 1;
         }
+        execute!(self.stdout, SetAttribute(Attribute::NoUnderline))?;
 
         // Pad remaining space
         if chars_printed < content_width {
@@ -11715,6 +11735,16 @@ mod tests {
         output.into_string()
     }
 
+    fn render_signature_help_to_string(editor: &Editor) -> String {
+        crossterm::style::force_color_output(true);
+        let output = SharedOutput::default();
+        let mut terminal = Terminal::new_for_test(Box::new(output.clone()));
+        terminal
+            .render_signature_help(editor)
+            .expect("signature help render should succeed");
+        output.into_string()
+    }
+
     fn render_hover_to_string(editor: &Editor) -> String {
         crossterm::style::force_color_output(true);
         let output = SharedOutput::default();
@@ -12373,6 +12403,138 @@ mod tests {
         crossterm::execute!(output, crossterm::cursor::MoveTo(x, y))
             .expect("write cursor position");
         String::from_utf8(output).expect("ansi cursor position should be utf-8")
+    }
+
+    fn completion_editor(labels: &[&str], filter: &str) -> Editor {
+        let mut editor = Editor::default();
+        editor.set_size(120, 30);
+        editor.replace_buffer_content("x\n");
+        editor.mode = Mode::Insert;
+        let items = labels
+            .iter()
+            .enumerate()
+            .map(|(i, label)| CompletionItem {
+                item_id: i as u64,
+                label: label.to_string(),
+                kind: CompletionKind::Function,
+                detail: None,
+                documentation: None,
+                insert_text: None,
+                filter_text: None,
+                sort_text: Some(format!("{i:02}")),
+                text_edit: None,
+                additional_text_edits: Vec::new(),
+                raw_data: None,
+            })
+            .collect();
+        editor.show_completions(items, 0, 0, false);
+        editor.completion.update_filter(filter);
+        editor
+    }
+
+    #[test]
+    fn completion_kind_column_uses_the_icon_in_rich_and_the_letter_in_minimal() {
+        let mut editor = completion_editor(&["demo"], "");
+        let icon = CompletionKind::Function.icon();
+        assert!(render_completion_to_string(&editor).contains(&format!(" {icon} ")));
+
+        editor.settings.ui.style = Some(crate::config::UiStyle::Minimal);
+        let rendered = render_completion_to_string(&editor);
+        assert!(rendered.contains(" f "), "minimal keeps the ASCII letter");
+        assert!(!rendered.contains(icon));
+    }
+
+    #[test]
+    fn completion_labels_color_the_typed_letters() {
+        let editor = completion_editor(&["demo"], "dm");
+        let theme = editor.theme();
+        let hit = foreground_sequence(theme.ui.finder_match);
+        let text = foreground_sequence(theme.ui.foreground);
+        let rendered = render_completion_to_string(&editor);
+        assert!(
+            rendered.contains(&format!("{hit}d{text}e{hit}m{text}o")),
+            "d and m are highlighted, e and o are not; output={rendered:?}"
+        );
+    }
+
+    #[test]
+    fn completion_highlights_follow_the_list_when_it_scrolls() {
+        let labels: Vec<String> = (0..12).map(|i| format!("item{i:02}")).collect();
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let mut editor = completion_editor(&labels, "it");
+        assert_eq!(editor.completion.match_indices_for(0), &[0, 1]);
+        assert!(
+            editor.completion.match_indices_for(11).is_empty(),
+            "off screen"
+        );
+
+        for _ in 0..11 {
+            editor.completion.select_next();
+        }
+        assert_eq!(editor.completion.scroll_offset(), 2);
+        assert!(
+            editor.completion.match_indices_for(0).is_empty(),
+            "scrolled off"
+        );
+        assert_eq!(editor.completion.match_indices_for(11), &[0, 1]);
+    }
+
+    /// Labels and details are cut by characters: slicing bytes panicked
+    /// mid-character on long non-ASCII text.
+    #[test]
+    fn completion_truncates_long_non_ascii_labels_and_details() {
+        let mut editor = completion_editor(&[&"𝑥".repeat(60)], "");
+        editor.completion.items[0].detail = Some("→".repeat(60));
+        let rendered = render_completion_to_string(&editor);
+        let label_chars = rendered.matches('𝑥').count();
+        assert!(
+            (1..60).contains(&label_chars) && rendered.contains('…'),
+            "label is cut with an ellipsis; output={rendered:?}"
+        );
+        assert!(rendered.contains("→→…"), "detail is cut with an ellipsis");
+    }
+
+    #[test]
+    fn signature_help_uses_theme_colors_and_underlines_the_active_argument() {
+        use crate::lsp::types::{ParameterInfo, SignatureHelpResult, SignatureInfo};
+        let mut editor = Editor::default();
+        editor.set_size(100, 20);
+        editor.replace_buffer_content("\n\n\nfmt.Printf(\"x\", )\n");
+        editor.cursor.line = 3;
+        editor.cursor.col = 16;
+        assert!(editor.set_theme("github-light"));
+        let label = "Printf(format string, a ...any)";
+        let param = |text: &str| {
+            let start = label.find(text).unwrap();
+            ParameterInfo {
+                label_offsets: Some((start, start + text.len())),
+                label: text.to_string(),
+                documentation: None,
+            }
+        };
+        editor.signature_help = Some(SignatureHelpResult {
+            signatures: vec![SignatureInfo {
+                label: label.to_string(),
+                documentation: None,
+                parameters: vec![param("format string"), param("a ...any")],
+            }],
+            active_signature: 0,
+            active_parameter: Some(1),
+        });
+
+        let theme = editor.theme().clone();
+        let rendered = render_signature_help_to_string(&editor);
+        let underline = "\x1b[4m"; // SGR underline
+        let no_underline = "\x1b[24m"; // SGR underline off
+        let hit = foreground_sequence(theme.ui.finder_match);
+        assert!(
+            rendered.contains(&format!(
+                "{no_underline}Printf(format string, {hit}{underline}a ...any"
+            )),
+            "only the active argument is underlined; output={rendered:?}"
+        );
+        assert!(rendered.contains(&background_sequence(theme.ui.completion_bg)));
+        assert!(rendered.contains(&foreground_sequence(theme.ui.completion_border)));
     }
 
     #[test]
