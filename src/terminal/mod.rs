@@ -848,6 +848,48 @@ fn dim_color(color: Color) -> Color {
     }
 }
 
+/// How much of the text color an unfocused split keeps; the rest is the
+/// theme background, so the fade reads the same on dark and light themes.
+const INACTIVE_PANE_TEXT_KEEP: f32 = 0.55;
+
+/// Mix `color` toward `bg`, keeping `keep` of the original (1.0 = unchanged).
+/// Unlike `dim_color`, which darkens toward black, this lowers contrast on
+/// light themes too.
+fn fade_toward(color: Color, bg: Color, keep: f32) -> Color {
+    match (color, bg) {
+        (
+            Color::Rgb { r, g, b },
+            Color::Rgb {
+                r: bg_r,
+                g: bg_g,
+                b: bg_b,
+            },
+        ) => {
+            let mix =
+                |c: u8, base: u8| (base as f32 + (c as f32 - base as f32) * keep).round() as u8;
+            Color::Rgb {
+                r: mix(r, bg_r),
+                g: mix(g, bg_g),
+                b: mix(b, bg_b),
+            }
+        }
+        _ => Color::DarkGrey,
+    }
+}
+
+/// Text color for a pane: the theme foreground when focused, faded otherwise.
+fn pane_text_color(theme: &crate::theme::Theme, is_active: bool) -> Color {
+    if is_active {
+        theme.ui.foreground
+    } else {
+        fade_toward(
+            theme.ui.foreground,
+            theme.ui.background,
+            INACTIVE_PANE_TEXT_KEEP,
+        )
+    }
+}
+
 /// Calculate wrapped segments for a line
 /// Returns a vector of segments, each representing one visual row
 fn calculate_wrap_segments(
@@ -2008,10 +2050,12 @@ impl Terminal {
         let sign_column_width = editor.sign_column_width(pane.buffer_idx);
         let cursor_line_bg = theme.ui.cursor_line;
         let editor_bg = theme.ui.background;
-        let editor_fg = theme.ui.foreground;
+        let editor_fg = pane_text_color(theme, is_active);
         let tab_width = editor.get_effective_tab_width();
         let line_count = buffer.addressable_line_count();
-        let line_context_factory = RenderLineContextFactory::new(editor, visual_range, tab_width);
+        let mut line_context_factory =
+            RenderLineContextFactory::new(editor, visual_range, tab_width);
+        line_context_factory.colors.editor_fg = editor_fg;
 
         // Pre-compute URI for diagnostic lookups (avoids repeated string allocations)
         let cached_uri = if is_active {
@@ -2119,7 +2163,7 @@ impl Terminal {
                 // Line number (only on first segment)
                 if show_line_numbers {
                     if segment.is_first {
-                        let line_num = if show_relative && is_active {
+                        let line_num = if show_relative {
                             let distance =
                                 (file_line as isize - pane.cursor.line as isize).abs() as usize;
                             if distance == 0 {
@@ -2294,10 +2338,12 @@ impl Terminal {
         let sign_column_width = editor.sign_column_width(pane.buffer_idx);
         let cursor_line_bg = theme.ui.cursor_line;
         let editor_bg = theme.ui.background;
-        let editor_fg = theme.ui.foreground;
+        let editor_fg = pane_text_color(theme, is_active);
         let tab_width = editor.get_effective_tab_width();
         let line_count = buffer.addressable_line_count();
-        let line_context_factory = RenderLineContextFactory::new(editor, visual_range, tab_width);
+        let mut line_context_factory =
+            RenderLineContextFactory::new(editor, visual_range, tab_width);
+        line_context_factory.colors.editor_fg = editor_fg;
 
         // Pre-compute URI for diagnostic lookups (avoids repeated string allocations)
         let cached_uri = if is_active {
@@ -2370,8 +2416,8 @@ impl Terminal {
 
                 // Line number (if enabled)
                 if show_line_numbers {
-                    let line_num = if show_relative && is_active {
-                        // Relative line numbers: show distance from cursor, current line shows absolute
+                    let line_num = if show_relative {
+                        // Relative to this pane's own cursor, so unfocused splits keep them too
                         let distance =
                             (file_line as isize - pane.cursor.line as isize).abs() as usize;
                         if distance == 0 {
@@ -11175,12 +11221,12 @@ mod tests {
     mod viewport_rendering;
 
     use super::{
-        PartialRenderKind, RenderLineColors, RenderLineContext, RenderLineContextFactory,
-        RenderLineTextScope, RenderTextOptions, Terminal, apply_diagnostic_underline,
-        apply_labeled_jump_style, diagnostic_at_col, diagnostic_underline_color, execute_command,
-        execute_leader_action, finder_preview_match_ranges, handle_insert_mode, handle_key,
-        render_line_text_with_context, replace_completion_text, restore_after_labeled_jump,
-        should_show_floating_terminal_cursor,
+        INACTIVE_PANE_TEXT_KEEP, PartialRenderKind, RenderLineColors, RenderLineContext,
+        RenderLineContextFactory, RenderLineTextScope, RenderTextOptions, Terminal,
+        apply_diagnostic_underline, apply_labeled_jump_style, diagnostic_at_col,
+        diagnostic_underline_color, execute_command, execute_leader_action, fade_toward,
+        finder_preview_match_ranges, handle_insert_mode, handle_key, render_line_text_with_context,
+        replace_completion_text, restore_after_labeled_jump, should_show_floating_terminal_cursor,
     };
     use crate::commands::{Command, CommandPopupMode};
     use crate::config::{KeymapEntry, Settings};
@@ -15346,6 +15392,93 @@ mod tests {
         handle_key(&mut editor, ctrl_key('w'));
         handle_key(&mut editor, key('w'));
         assert_eq!(editor.h_offset, 5, "and the scrolled pane keeps its own");
+    }
+
+    /// Split the window, move the first pane's cursor to line 3, then focus
+    /// the other pane. Returns the index of the now-unfocused first pane.
+    fn split_with_unfocused_cursor_on_line_three() -> (Editor, usize) {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("a\nb\nc\nd\ne\n");
+        editor.set_size(80, 24);
+        editor.settings.editor.line_numbers = true;
+        editor.settings.editor.relative_numbers = true;
+        editor.vsplit(None).expect("vsplit");
+        editor.update_pane_rects();
+        handle_key(&mut editor, key('j'));
+        handle_key(&mut editor, key('j'));
+        let unfocused = editor.active_pane_idx();
+        handle_key(&mut editor, ctrl_key('w'));
+        handle_key(&mut editor, key('w'));
+        assert_ne!(editor.active_pane_idx(), unfocused);
+        (editor, unfocused)
+    }
+
+    #[test]
+    fn unfocused_split_keeps_relative_numbers_from_its_own_cursor() {
+        let (editor, unfocused) = split_with_unfocused_cursor_on_line_three();
+        let rendered = render_editor_to_string(&editor);
+        let rect = editor.panes()[unfocused].rect;
+
+        let numbers: Vec<String> = (0..5)
+            .map(|row| {
+                let text: String = screen_row_text(&rendered, rect.y as usize + row)
+                    .chars()
+                    .skip(rect.x as usize)
+                    .take(rect.width as usize)
+                    .collect();
+                text.split_whitespace()
+                    .find(|token| token.parse::<usize>().is_ok())
+                    .unwrap_or("")
+                    .to_string()
+            })
+            .collect();
+        // Its cursor sits on line 3, so it shows 3 there and distances around it.
+        assert_eq!(numbers, ["2", "1", "3", "1", "2"]);
+    }
+
+    #[test]
+    fn unfocused_split_fades_its_text_toward_the_background() {
+        let (editor, _) = split_with_unfocused_cursor_on_line_three();
+        let theme = editor.theme();
+        let faded = foreground_sequence(fade_toward(
+            theme.ui.foreground,
+            theme.ui.background,
+            INACTIVE_PANE_TEXT_KEEP,
+        ));
+        assert_ne!(faded, foreground_sequence(theme.ui.foreground));
+
+        let split = render_editor_to_string(&editor);
+        assert!(
+            split.contains(&faded),
+            "the unfocused pane uses the faded color"
+        );
+
+        let mut single = Editor::default();
+        single.replace_buffer_content("a\nb\nc\nd\ne\n");
+        single.set_size(80, 24);
+        let rendered = render_editor_to_string(&single);
+        assert!(!rendered.contains(&faded), "a lone pane is never faded");
+    }
+
+    #[test]
+    fn fade_toward_keeps_the_given_share_of_the_color() {
+        let white = Color::Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let black = Color::Rgb { r: 0, g: 0, b: 0 };
+        // Light theme: dark text fades up toward the white background.
+        assert_eq!(
+            fade_toward(black, white, 0.55),
+            Color::Rgb {
+                r: 115,
+                g: 115,
+                b: 115
+            }
+        );
+        assert_eq!(fade_toward(white, black, 1.0), white);
+        assert_eq!(fade_toward(Color::White, black, 0.55), Color::DarkGrey);
     }
 
     #[test]
