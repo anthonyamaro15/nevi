@@ -68,6 +68,7 @@
 
 ### Interface
 
+- In a split, the panes you are not in now fade their text toward the background, so the focused pane stands out. They also keep relative line numbers, counted from their own cursor, instead of switching to absolute numbers.
 - The completion menu shows a kind icon for each item (functions, fields, structs, and so on) instead of a single letter. The minimal style keeps the letters. The letters you typed are highlighted in each label, like the finder. Long labels and details with non-ASCII text no longer crash the menu when they are cut to fit.
 - Signature help shows up again when you type `(` or `,` in a call. The request went out before the server had the new text, so servers like gopls answered with nothing. The popup now uses the theme's colors instead of fixed dark ones, and the argument you are typing is underlined.
 - The LSP mark next to the language name in the statusline now shows the server's real state. It used to show a check whenever any LSP message existed, including "no server" at startup and a server that failed to start. Now it is blank when the file has no language server, a spinner while the server starts or indexes, a check once it is ready, and a red cross (`!` in the minimal style) when it fails to start or crashes. Request errors and server log lines no longer change it. The statusline also reads GREP instead of FINDER while live grep is open.
