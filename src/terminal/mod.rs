@@ -71,8 +71,8 @@ fn finder_severity_color(display: &str) -> Option<Color> {
 use crate::commands::{Command, CommandPopupMode, CommandResult, PendingDigraph, parse_command};
 use crate::config::{CommandModeAction, LeaderAction};
 use crate::editor::{
-    CompletionState, Editor, ExpressionRegisterTarget, LspAction, Mode, Pane, PaneDirection,
-    SplitLayout,
+    CompletionState, Editor, ExpressionRegisterTarget, LspAction, MessageLevel, Mode, Pane,
+    PaneDirection, SplitLayout,
 };
 use crate::input::{
     InsertPosition, KeyAction, Operator, TextObject, TextObjectModifier, TextObjectType,
@@ -910,6 +910,55 @@ fn pane_text_color(theme: &crate::theme::Theme, is_active: bool) -> Color {
             INACTIVE_PANE_TEXT_KEEP,
         )
     }
+}
+
+/// Vim's own error shape: `E:` or `E123:` at the start.
+fn has_vim_error_prefix(msg: &str) -> bool {
+    msg.strip_prefix('E').is_some_and(|rest| {
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        rest[digits..].starts_with(':')
+    })
+}
+
+/// Fit a message on one row of `max` columns. Messages that fit are left
+/// alone; a long one gets the home directory as `~`, then the middle of its
+/// longest path dropped (`~/Desktop/…/rvim`), then its end cut with `…`.
+fn fit_message(msg: &str, max: usize, home: Option<&str>) -> String {
+    use unicode_width::UnicodeWidthStr;
+    if msg.width() <= max {
+        return msg.to_string();
+    }
+    let mut text = match home.filter(|h| h.len() > 1) {
+        Some(home) => msg.replace(home, "~"),
+        None => msg.to_string(),
+    };
+    if text.width() > max {
+        let longest_path = text
+            .split_whitespace()
+            .filter(|word| word.matches('/').count() >= 3)
+            .max_by_key(|word| word.len())
+            .map(str::to_string);
+        if let Some(path) = longest_path {
+            let parts: Vec<&str> = path.split('/').collect();
+            let short = format!("{}/{}/…/{}", parts[0], parts[1], parts[parts.len() - 1]);
+            text = text.replacen(&path, &short, 1);
+        }
+    }
+    if text.width() > max {
+        let mut cut = String::new();
+        let mut used = 0;
+        for ch in text.chars() {
+            let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if used + w + 1 > max {
+                break;
+            }
+            cut.push(ch);
+            used += w;
+        }
+        cut.push('…');
+        text = cut;
+    }
+    text
 }
 
 /// Calculate wrapped segments for a line
@@ -3741,6 +3790,34 @@ impl Terminal {
         Ok(())
     }
 
+    /// One line, never wrapped: warnings and errors take the diagnostic
+    /// colors, and errors lead with the error glyph unless Vim's `E:` prefix
+    /// already says it.
+    fn render_status_message(&mut self, editor: &Editor, msg: &str) -> anyhow::Result<()> {
+        let theme = editor.theme();
+        let (color, glyph) = match editor.status_level {
+            MessageLevel::Info => (None, None),
+            MessageLevel::Warning => (Some(theme.diagnostic.warning), None),
+            MessageLevel::Error => (
+                Some(theme.diagnostic.error),
+                (!has_vim_error_prefix(msg)).then(|| editor.ui_glyphs().lsp_err),
+            ),
+        };
+        let lead = glyph.map(|g| format!("{g} ")).unwrap_or_default();
+        let width = (editor.term_width as usize)
+            .saturating_sub(unicode_width::UnicodeWidthStr::width(lead.as_str()));
+        let home = std::env::var("HOME").ok();
+        let text = fit_message(msg, width, home.as_deref());
+        if let Some(color) = color {
+            execute!(self.stdout, SetForegroundColor(color))?;
+        }
+        terminal_print!(self, "{}{}", lead, text);
+        if color.is_some() {
+            execute!(self.stdout, ResetColor)?;
+        }
+        Ok(())
+    }
+
     fn render_command_line(&mut self, editor: &Editor) -> anyhow::Result<()> {
         if editor.mode == Mode::Command {
             self.render_command_popup(editor)?;
@@ -3768,8 +3845,7 @@ impl Terminal {
             execute!(self.stdout, ResetColor)?;
             terminal_print!(self, "_"); // Cursor indicator
         } else if let Some(ref msg) = editor.status_message {
-            // Show status message
-            terminal_print!(self, "{}", msg);
+            self.render_status_message(editor, msg)?;
         } else if let Some(diag) = editor
             .diagnostic_at_cursor()
             .filter(|_| !matches!(editor.mode, Mode::Insert | Mode::Replace))
@@ -3785,14 +3861,10 @@ impl Terminal {
             execute!(self.stdout, SetForegroundColor(color))?;
             // Take only the first line of the message (LSP messages can be multi-line)
             let first_line = diag.message.lines().next().unwrap_or(&diag.message);
-            // Truncate message to fit terminal width (use chars count for proper Unicode handling)
-            let max_len = editor.term_width as usize - prefix.len() - 3;
-            let msg: String = first_line.chars().take(max_len).collect();
-            let msg = if first_line.chars().count() > max_len {
-                format!("{}...", &msg[..msg.len().saturating_sub(3)])
-            } else {
-                msg
-            };
+            // By display width: the old cut sliced bytes and panicked when a
+            // multi-byte char sat at the cut.
+            let max_len = (editor.term_width as usize).saturating_sub(prefix.len() + 2);
+            let msg = fit_message(first_line, max_len, None);
             terminal_print!(self, "{}: {}", prefix, msg);
             execute!(self.stdout, ResetColor)?;
         }
@@ -6739,7 +6811,7 @@ fn handle_theme_picker_key(editor: &mut Editor, key: KeyEvent) {
                     match crate::config::save_theme(&name) {
                         Ok(()) => editor.set_status(format!("Theme set to '{}' (saved)", name)),
                         Err(e) => editor
-                            .set_status(format!("Theme set to '{}' (save failed: {})", name, e)),
+                            .set_warning(format!("Theme set to '{}' (save failed: {})", name, e)),
                     }
                 }
             }
@@ -7932,13 +8004,13 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         // Window/pane operations
         KeyAction::WindowSplitVertical => {
             if let Err(e) = editor.vsplit(None) {
-                editor.set_status(format!("Error: {}", e));
+                editor.set_error(format!("Couldn't split the window: {}", e));
             }
         }
 
         KeyAction::WindowSplitHorizontal => {
             if let Err(e) = editor.hsplit(None) {
-                editor.set_status(format!("Error: {}", e));
+                editor.set_error(format!("Couldn't split the window: {}", e));
             }
         }
 
@@ -8250,7 +8322,7 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
                 let msg = editor.harpoon.add_file(&path);
                 editor.set_status(msg);
             } else {
-                editor.set_status("Cannot add unsaved buffer to harpoon");
+                editor.set_warning("Cannot add unsaved buffer to harpoon");
             }
         }
 
@@ -8261,7 +8333,7 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         KeyAction::HarpoonJump(slot) => {
             if let Some(path) = editor.harpoon.get_slot(slot).cloned() {
                 if let Err(e) = editor.open_file(path) {
-                    editor.set_status(format!("Error opening file: {}", e));
+                    editor.set_error(format!("Couldn't open the file: {}", e));
                 }
             } else {
                 editor.set_status(format!("Harpoon slot {} is empty", slot));
@@ -8271,7 +8343,7 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         KeyAction::HarpoonNext => {
             if let Some(path) = editor.harpoon.next().cloned() {
                 if let Err(e) = editor.open_file(path) {
-                    editor.set_status(format!("Error opening file: {}", e));
+                    editor.set_error(format!("Couldn't open the file: {}", e));
                 }
             } else {
                 editor.set_status("Harpoon is empty");
@@ -8281,7 +8353,7 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         KeyAction::HarpoonPrev => {
             if let Some(path) = editor.harpoon.prev().cloned() {
                 if let Err(e) = editor.open_file(path) {
-                    editor.set_status(format!("Error opening file: {}", e));
+                    editor.set_error(format!("Couldn't open the file: {}", e));
                 }
             } else {
                 editor.set_status("Harpoon is empty");
@@ -9652,7 +9724,7 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
                 if let Some(position) = item.terminal_session_position {
                     match editor.floating_terminal.select_session(position) {
                         Ok(message) => editor.set_status(message),
-                        Err(e) => editor.set_status(format!("Terminal select failed: {}", e)),
+                        Err(e) => editor.set_error(format!("Terminal select failed: {}", e)),
                     }
                 } else if let Some(buf_idx) = item.buffer_idx {
                     if !editor.switch_to_buffer(buf_idx) {
@@ -9674,7 +9746,7 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
                     let target_line = item.line;
                     let target_col = item.col;
                     if let Err(e) = editor.open_file(item.path) {
-                        editor.set_status(format!("Error opening file: {}", e));
+                        editor.set_error(format!("Couldn't open the file: {}", e));
                     } else if let Some(line_num) = target_line {
                         // Jump to the line (for grep results)
                         editor.cursor.line = line_num.saturating_sub(1);
@@ -9743,7 +9815,7 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
                     editor.close_finder();
                     editor.set_status(message);
                 }
-                Err(e) => editor.set_status(format!("Terminal new failed: {}", e)),
+                Err(e) => editor.set_error(format!("Terminal new failed: {}", e)),
             }
         }
 
@@ -9789,7 +9861,7 @@ fn handle_finder_mode(editor: &mut Editor, key: KeyEvent) {
                             editor.set_status(message);
                         }
                     }
-                    Err(e) => editor.set_status(format!("Terminal kill failed: {}", e)),
+                    Err(e) => editor.set_error(format!("Terminal kill failed: {}", e)),
                 }
             }
         }
@@ -10216,7 +10288,7 @@ fn toggle_or_open_explorer_selection(editor: &mut Editor) {
         } else {
             let path_clone = path.clone();
             if let Err(e) = editor.open_file(path_clone) {
-                editor.set_status(format!("Error opening file: {}", e));
+                editor.set_error(format!("Couldn't open the file: {}", e));
             } else {
                 editor.mode = Mode::Normal;
             }
@@ -10231,7 +10303,7 @@ fn expand_or_open_explorer_selection(editor: &mut Editor) {
         } else {
             let path_clone = path.clone();
             if let Err(e) = editor.open_file(path_clone) {
-                editor.set_status(format!("Error opening file: {}", e));
+                editor.set_error(format!("Couldn't open the file: {}", e));
             } else {
                 editor.mode = Mode::Normal;
             }
@@ -10298,7 +10370,7 @@ fn execute_explorer_action(editor: &mut Editor) {
                         editor.refresh_explorer_git_statuses();
                     }
                     Err(e) => {
-                        editor.set_status(format!("Error: {}", e));
+                        editor.set_error(format!("Couldn't create {}: {}", new_path.display(), e));
                         return;
                     }
                 }
@@ -10306,7 +10378,11 @@ fn execute_explorer_action(editor: &mut Editor) {
                 // Create parent dirs if needed
                 if let Some(parent) = new_path.parent() {
                     if let Err(e) = std::fs::create_dir_all(parent) {
-                        editor.set_status(format!("Error creating parent directory: {}", e));
+                        editor.set_error(format!(
+                            "Couldn't create the folder {}: {}",
+                            parent.display(),
+                            e
+                        ));
                         return;
                     }
                 }
@@ -10321,13 +10397,13 @@ fn execute_explorer_action(editor: &mut Editor) {
                         editor.refresh_explorer_git_statuses();
                         // Auto-open the newly created file
                         if let Err(e) = editor.open_file(new_path.clone()) {
-                            editor.set_status(format!("Created but failed to open: {}", e));
+                            editor.set_error(format!("Created but couldn't open it: {}", e));
                         } else {
                             editor.mode = Mode::Normal;
                         }
                     }
                     Err(e) => {
-                        editor.set_status(format!("Error: {}", e));
+                        editor.set_error(format!("Couldn't create {}: {}", new_path.display(), e));
                         return;
                     }
                 }
@@ -10359,7 +10435,7 @@ fn execute_explorer_action(editor: &mut Editor) {
                         editor.refresh_explorer_git_statuses();
                     }
                     Err(e) => {
-                        editor.set_status(format!("Error: {}", e));
+                        editor.set_error(format!("Couldn't rename {}: {}", old_path.display(), e));
                         return;
                     }
                 }
@@ -10382,7 +10458,7 @@ fn execute_explorer_action(editor: &mut Editor) {
                             editor.refresh_explorer_git_statuses();
                         }
                         Err(e) => {
-                            editor.set_status(format!("Error: {}", e));
+                            editor.set_error(format!("Couldn't delete {}: {}", path.display(), e));
                         }
                     }
                 }
@@ -10464,7 +10540,7 @@ fn execute_explorer_paste(editor: &mut Editor) {
             editor.refresh_explorer_git_statuses();
         }
         Err(e) => {
-            editor.set_status(format!("Error: {}", e));
+            editor.set_error(format!("Couldn't paste {}: {}", dest_path.display(), e));
         }
     }
 }
@@ -11205,7 +11281,7 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             editor.set_status(msg);
         }
         CommandResult::Error(err) => {
-            editor.set_status(format!("E: {}", err));
+            editor.set_error(format!("E: {}", err));
         }
         CommandResult::Quit => {
             editor.should_quit = true;
@@ -11257,8 +11333,9 @@ mod tests {
         RenderLineContextFactory, RenderLineTextScope, RenderTextOptions, Terminal,
         apply_diagnostic_underline, apply_labeled_jump_style, diagnostic_at_col,
         diagnostic_underline_color, execute_command, execute_leader_action, fade_toward,
-        finder_preview_match_ranges, handle_insert_mode, handle_key, render_line_text_with_context,
-        replace_completion_text, restore_after_labeled_jump, should_show_floating_terminal_cursor,
+        finder_preview_match_ranges, fit_message, handle_insert_mode, handle_key,
+        has_vim_error_prefix, render_line_text_with_context, replace_completion_text,
+        restore_after_labeled_jump, should_show_floating_terminal_cursor,
     };
     use crate::commands::{Command, CommandPopupMode};
     use crate::config::{KeymapEntry, Settings};
@@ -12048,6 +12125,106 @@ mod tests {
         assert_eq!(cmd_row(&editor), "Error: undefined: fmt.Pr");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn diagnostic_echo_cuts_multibyte_messages_without_panicking() {
+        let tmp = unique_temp_dir("nevi_echo_cut");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("main.go");
+        std::fs::write(&path, "x\n").expect("write file");
+
+        let mut editor = Editor::default();
+        editor.set_size(40, 6);
+        editor.open_file(path.clone()).expect("open file");
+        editor.set_diagnostics(
+            crate::lsp::path_to_uri(&path),
+            vec![crate::lsp::Diagnostic {
+                line: 0,
+                end_line: 0,
+                col_start: 0,
+                col_end: 1,
+                severity: crate::lsp::DiagnosticSeverity::Error,
+                // Two bytes per char: the old byte slice landed mid-char.
+                message: "ñ".repeat(100),
+                source: None,
+                code: None,
+            }],
+        );
+        let row = screen_row_text(&render_editor_to_string(&editor), 5);
+        assert!(row.starts_with("Error: ññ"), "got: {row}");
+        assert!(row.ends_with('…'), "got: {row}");
+        assert!(row.chars().count() <= 40, "got: {row}");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn messages_take_their_level_color_and_errors_lead_with_the_glyph() {
+        let mut editor = Editor::default();
+        editor.set_size(60, 6);
+        let error_fg = foreground_sequence(editor.theme().diagnostic.error);
+        let warning_fg = foreground_sequence(editor.theme().diagnostic.warning);
+        let glyph = editor.ui_glyphs().lsp_err;
+        let render = |editor: &Editor| {
+            let raw = render_editor_to_string(editor);
+            (screen_row_text(&raw, 5), raw)
+        };
+
+        editor.set_error("Couldn't delete a.txt: denied");
+        let (row, raw) = render(&editor);
+        assert_eq!(row, format!("{glyph} Couldn't delete a.txt: denied"));
+        assert!(raw.contains(&format!("{error_fg}{glyph} Couldn't")));
+
+        // Vim's prefix is the lead already, so no glyph on top of it.
+        editor.set_error("E: Not an editor command: foo");
+        let (row, raw) = render(&editor);
+        assert_eq!(row, "E: Not an editor command: foo");
+        assert!(raw.contains(&format!("{error_fg}E: Not")));
+
+        editor.set_warning("Theme set to 'nord' (save failed: denied)");
+        let (_, raw) = render(&editor);
+        assert!(raw.contains(&format!("{warning_fg}Theme set")));
+
+        // Info replaces the error and drops its color.
+        editor.set_status("\"a.txt\" written");
+        let (row, raw) = render(&editor);
+        assert_eq!(row, "\"a.txt\" written");
+        assert!(!raw.contains(&format!("{error_fg}\"a.txt\"")));
+        assert!(!raw.contains(&format!("{error_fg}{glyph}")));
+    }
+
+    #[test]
+    fn long_messages_fit_one_row() {
+        let mut editor = Editor::default();
+        editor.set_size(40, 6);
+        editor.set_error(format!("Couldn't open {}: denied", "/a".repeat(40)));
+        let row = screen_row_text(&render_editor_to_string(&editor), 5);
+        assert!(row.chars().count() <= 40, "got: {row}");
+        assert!(row.contains("/…/"), "got: {row}");
+    }
+
+    #[test]
+    fn fit_message_shortens_home_then_paths_then_the_end() {
+        let msg = "Couldn't open /Users/me/Desktop/a/b/rvim/src/main.rs: denied";
+        assert_eq!(
+            fit_message(msg, 80, Some("/Users/me")),
+            msg,
+            "fits: untouched"
+        );
+        assert_eq!(
+            fit_message(msg, 41, Some("/Users/me")),
+            "Couldn't open ~/Desktop/…/main.rs: denied"
+        );
+        assert_eq!(fit_message("日本語のメッセージ", 7, None), "日本語…");
+    }
+
+    #[test]
+    fn vim_error_prefix_is_e_with_optional_digits_and_a_colon() {
+        assert!(has_vim_error_prefix("E: Not an editor command"));
+        assert!(has_vim_error_prefix("E492: Not an editor command"));
+        assert!(!has_vim_error_prefix("Error: something"));
+        assert!(!has_vim_error_prefix("Expression error: x"));
     }
 
     /// Issue #330: with line numbers off and nothing to mark, `auto` puts

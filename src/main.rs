@@ -512,7 +512,7 @@ fn main() -> anyhow::Result<()> {
     if !startup_errors.is_empty() {
         // Join multiple errors with semicolons for display
         let error_msg = startup_errors.join("; ");
-        editor.set_status(format!("Config errors: {}", error_msg));
+        editor.set_error(format!("Config has errors: {}", error_msg));
     }
 
     // Check command line argument - could be file or directory
@@ -1030,7 +1030,9 @@ fn main() -> anyhow::Result<()> {
                                                 mlsp.user_facing_error(lang, &e.to_string())
                                             })
                                             .unwrap_or_else(|| e.to_string());
-                                        editor.set_status(format!("LSP: {}", message));
+                                        // :checkhealth reads lsp_status, so the pointer holds.
+                                        editor.set_lsp_status(format!("LSP: {}", message));
+                                        editor.set_error(format!("{message}  ·  :checkhealth"));
                                     } else {
                                         let (state, status) =
                                             mlsp.status_and_lifecycle(Some(path.as_path()));
@@ -1578,10 +1580,16 @@ fn main() -> anyhow::Result<()> {
                             let current_path = editor.buffer().path.clone();
                             let (state, _) = mlsp
                                 .status_and_lifecycle(current_path.as_ref().map(|p| p.as_path()));
-                            editor.set_lsp_state((
-                                state,
-                                format!("LSP: {}", mlsp.user_facing_error(lang, &message)),
-                            ));
+                            let text = mlsp.user_facing_error(lang, &message);
+                            editor.set_lsp_state((state, format!("LSP: {}", text)));
+                            // A server that died or never started is worth a
+                            // line; request noise only feeds :checkhealth.
+                            let current_lang = current_path
+                                .as_ref()
+                                .and_then(|p| mlsp.language_for_path(p));
+                            if state == lsp::LspStatus::Error && current_lang == Some(lang) {
+                                editor.set_error(format!("{text}  ·  :checkhealth"));
+                            }
                             needs_redraw = true;
                         }
                         LspNotification::Diagnostics { uri, diagnostics } => {
@@ -1988,7 +1996,7 @@ fn main() -> anyhow::Result<()> {
                                 }
 
                                 if !errors.is_empty() {
-                                    editor.set_status(format!(
+                                    editor.set_error(format!(
                                         "Rename: {} error(s) - {}",
                                         errors.len(),
                                         errors.first().unwrap_or(&String::new())
@@ -2087,8 +2095,7 @@ fn main() -> anyhow::Result<()> {
                                     editor.set_status("Copilot: Signing in...");
                                 }
                                 AuthStatus::Failed { message } => {
-                                    editor
-                                        .set_status(format!("Copilot: Auth failed - {}", message));
+                                    editor.set_error(format!("Copilot: Auth failed - {}", message));
                                 }
                             }
                             needs_redraw = true;
@@ -2109,7 +2116,7 @@ fn main() -> anyhow::Result<()> {
                             needs_redraw = true;
                         }
                         CopilotNotification::Error { ref message } => {
-                            editor.set_status(format!("Copilot error: {}", message));
+                            editor.set_error(format!("Copilot error: {}", message));
                             needs_redraw = true;
                         }
                         CopilotNotification::Status { message } => {
@@ -2181,7 +2188,7 @@ fn main() -> anyhow::Result<()> {
                 Ok(SuspendOutcome::Unavailable) => {
                     editor.set_status("Cannot suspend: no job control here");
                 }
-                Err(e) => editor.set_status(format!("Error suspending: {}", e)),
+                Err(e) => editor.set_error(format!("Couldn't suspend: {}", e)),
             }
             // The screen was handed away, so nothing on it can be reused.
             editor.render_damage.mark_full();

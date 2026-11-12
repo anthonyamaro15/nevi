@@ -68,6 +68,8 @@
 
 ### Interface
 
+- Errors on the command line now look like errors: they use the theme's error color and start with a cross (`!` in the minimal style), and they say what failed in plain words, such as "Couldn't delete notes.txt: ..." instead of "Error: ...". Command errors keep Vim's `E:` text and get the error color. Warnings use the warning color, and info messages such as `"file" written` are unchanged. A message too long for one line has the home folder shortened to `~` and the middle of long paths left out, instead of running off the screen. When the language server for the current file fails to start or stops, the command line says so, for example "gopls didn't start: ...  ·  :checkhealth".
+- The diagnostic message on the command line no longer crashes Nevi when a long message is cut in the middle of a non-ASCII character.
 - The search match under the cursor now has its own color (bold, orange in the bundled themes), so after `n` you can see which match you are on. Themes set it with `current_bg` and `current_fg` under `[ui.search]`; themes without them keep using the match colors. The statusline counter is now a small badge in the match colors.
 - Text right after something bold, such as bold keywords in the gruvbox theme, is no longer drawn with a double underline. Bold was turned off with a code most terminals read as double underline.
 - In a split, the panes you are not in now fade their text toward the background, so the focused pane stands out. They also keep relative line numbers, counted from their own cursor, instead of switching to absolute numbers.

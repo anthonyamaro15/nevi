@@ -189,7 +189,7 @@ impl SaveRuntime {
 fn report(e: &mut Editor, result: anyhow::Result<SaveProgress>) {
     match result {
         Ok(progress) => e.set_status(e.save_progress_message(progress)),
-        Err(error) => e.set_status(format!("Error saving/formatting: {error}")),
+        Err(error) => e.set_error(format!("Couldn't save: {error}")),
     }
 }
 /// The existing background-write eligibility and raw-save path.
@@ -204,7 +204,7 @@ pub(super) fn try_autosave(e: &mut Editor, pending: &mut Option<Instant>, now: I
     }
     match e.save() {
         Ok(()) => e.set_status("Autosaved"),
-        Err(error) => e.set_status(format!("Autosave failed: {error}")),
+        Err(error) => e.set_error(format!("Autosave failed: {error}")),
     }
     true
 }

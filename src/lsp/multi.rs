@@ -290,6 +290,22 @@ impl MultiLspManager {
             return format!("{command_name} not found. Add it to PATH or update config.toml");
         }
 
+        // Lead with what happened in plain words; the transport's own
+        // wording ("Failed to initialize LSP: ...") stays as the reason.
+        let message = message.trim();
+        for prefix in ["Failed to initialize LSP:", "Failed to start LSP server:"] {
+            if let Some(reason) = message.strip_prefix(prefix) {
+                let reason = reason.trim().trim_end_matches(':').trim();
+                return if reason.is_empty() {
+                    format!("{command_name} didn't start")
+                } else {
+                    format!("{command_name} didn't start: {reason}")
+                };
+            }
+        }
+        if message.contains("channel closed") {
+            return format!("{command_name} stopped unexpectedly");
+        }
         format!("{command_name}: {message}")
     }
 
@@ -1530,6 +1546,29 @@ mod tests {
         assert_eq!(
             message,
             "typescript-language-server not found. Install: npm install -g typescript typescript-language-server"
+        );
+    }
+
+    #[test]
+    fn start_and_crash_errors_lead_with_what_happened() {
+        assert_eq!(
+            MultiLspManager::format_error_for_display(
+                "/opt/bin/ra-multiplex",
+                "Failed to initialize LSP: Failed to convert root path to URI:",
+            ),
+            "ra-multiplex didn't start: Failed to convert root path to URI"
+        );
+        assert_eq!(
+            MultiLspManager::format_error_for_display("gopls", "Failed to initialize LSP: "),
+            "gopls didn't start"
+        );
+        assert_eq!(
+            MultiLspManager::format_error_for_display("gopls", "LSP server exited: channel closed"),
+            "gopls stopped unexpectedly"
+        );
+        assert_eq!(
+            MultiLspManager::format_error_for_display("gopls", "LSP error (-32603): boom"),
+            "gopls: LSP error (-32603): boom"
         );
     }
 
