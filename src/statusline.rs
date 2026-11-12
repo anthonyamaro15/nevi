@@ -247,9 +247,7 @@ fn build_rich(ctx: &StatusContext, glyphs: &UiGlyphs, theme: &Theme) -> StatusLi
     push_file_markers(&mut left, ctx, glyphs, theme, base_bg, false);
 
     let mut right = Vec::new();
-    if let Some((current, total)) = ctx.search_count {
-        right.push(seg(format!("[{}/{}] ", current, total), base_fg, base_bg));
-    }
+    push_search_count(&mut right, ctx, theme, base_fg, base_bg);
     let (errors, warnings) = ctx.diag;
     if errors > 0 {
         right.push(seg(
@@ -279,6 +277,26 @@ fn build_rich(ctx: &StatusContext, glyphs: &UiGlyphs, theme: &Theme) -> StatusLi
     ));
 
     StatusLineContent { left, right }
+}
+
+/// The `n/m` search counter as a badge in the match colors, so it reads as
+/// part of the search. Plain match-colored text would vanish on light themes,
+/// whose match color is a pale background tint.
+fn push_search_count(
+    right: &mut Vec<StatusSegment>,
+    ctx: &StatusContext,
+    theme: &Theme,
+    fg: Color,
+    bg: Color,
+) {
+    if let Some((current, total)) = ctx.search_count {
+        right.push(seg(
+            format!(" {}/{} ", current, total),
+            theme.ui.search_match_fg,
+            theme.ui.search_match_bg,
+        ));
+        right.push(seg(" ".to_string(), fg, bg));
+    }
 }
 
 fn build_minimal(ctx: &StatusContext, glyphs: &UiGlyphs, theme: &Theme) -> StatusLineContent {
@@ -311,9 +329,7 @@ fn build_minimal(ctx: &StatusContext, glyphs: &UiGlyphs, theme: &Theme) -> Statu
     push_file_markers(&mut left, ctx, glyphs, theme, bg, true);
 
     let mut right = Vec::new();
-    if let Some((current, total)) = ctx.search_count {
-        right.push(seg(format!("[{}/{}] ", current, total), fg, bg));
-    }
+    push_search_count(&mut right, ctx, theme, fg, bg);
     let (errors, warnings) = ctx.diag;
     if errors > 0 {
         right.push(seg(
@@ -487,12 +503,18 @@ mod tests {
         for minimal in [false, true] {
             let glyphs = UiGlyphs::for_minimal(minimal);
             let content = build_status_segments(&ctx_base(), glyphs, &theme(), minimal);
-            assert!(!all_text(&content).contains("[3/12]"));
+            assert!(!all_text(&content).contains("3/12"));
 
             let mut ctx = ctx_base();
             ctx.search_count = Some((3, 12));
             let content = build_status_segments(&ctx, glyphs, &theme(), minimal);
-            assert!(all_text(&content).contains("[3/12]"));
+            let badge = content
+                .right
+                .iter()
+                .find(|s| s.text == " 3/12 ")
+                .expect("counter badge");
+            assert_eq!(badge.fg, theme().ui.search_match_fg);
+            assert_eq!(badge.bg, theme().ui.search_match_bg);
         }
     }
 

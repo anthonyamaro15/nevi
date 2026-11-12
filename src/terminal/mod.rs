@@ -204,6 +204,8 @@ struct RenderLineColors {
     selection_bg: Color,
     search_match_bg: Color,
     search_match_fg: Color,
+    search_current_bg: Color,
+    search_current_fg: Color,
     jump_label_bg: Color,
     jump_label_fg: Color,
     diagnostic_error_color: Color,
@@ -220,6 +222,8 @@ impl RenderLineColors {
             selection_bg: theme.ui.selection,
             search_match_bg: theme.ui.search_match_bg,
             search_match_fg: theme.ui.search_match_fg,
+            search_current_bg: theme.ui.search_current_bg,
+            search_current_fg: theme.ui.search_current_fg,
             jump_label_bg: theme.ui.finder_match,
             jump_label_fg: Color::Black,
             diagnostic_error_color: theme.diagnostic.error,
@@ -247,6 +251,8 @@ struct RenderLineContext<'a> {
     mode: &'a Mode,
     is_cursor_line: bool,
     search_matches: &'a [(usize, usize, usize)],
+    /// The search match under the cursor, drawn in the current-match colors.
+    current_search_match: Option<(usize, usize, usize)>,
     jump_labels: &'a [(usize, char)],
     diagnostics: &'a [&'a Diagnostic],
     colors: RenderLineColors,
@@ -257,6 +263,7 @@ struct RenderLineContextFactory<'a> {
     visual_range: Option<(usize, usize, usize, usize)>,
     mode: &'a Mode,
     search_matches: &'a [(usize, usize, usize)],
+    current_search_match: Option<(usize, usize, usize)>,
     colors: RenderLineColors,
     tab_width: usize,
 }
@@ -271,6 +278,12 @@ impl<'a> RenderLineContextFactory<'a> {
             visual_range,
             mode: &editor.mode,
             search_matches: &editor.search_matches,
+            // Found once per frame; matches are already limited to the view.
+            current_search_match: editor.search_matches.iter().copied().find(
+                |&(line, start, end)| {
+                    line == editor.cursor.line && (start..end).contains(&editor.cursor.col)
+                },
+            ),
             colors: RenderLineColors::from_editor(editor),
             tab_width,
         }
@@ -295,6 +308,7 @@ impl<'a> RenderLineContextFactory<'a> {
             mode: self.mode,
             is_cursor_line,
             search_matches: self.search_matches,
+            current_search_match: self.current_search_match,
             jump_labels,
             diagnostics,
             colors: self.colors,
@@ -347,6 +361,10 @@ impl RenderLineContext<'_> {
         let syntax_color = syntax_style.map(|style| style.fg);
         let in_visual = self.is_visual_col(source_col);
         let is_search = self.is_search_match(source_col);
+        let is_current_search = is_search
+            && self.current_search_match.is_some_and(|(line, start, end)| {
+                line == self.line_idx && (start..end).contains(&source_col)
+            });
         let jump_label = self.jump_label_at(source_col);
         let diag_at_col = diagnostic_at_col(self.diagnostics, self.line_idx, source_col);
         let is_hint_diagnostic =
@@ -359,6 +377,8 @@ impl RenderLineContext<'_> {
                 self.colors.selection_bg,
                 syntax_color.unwrap_or(self.colors.editor_fg),
             )
+        } else if is_current_search {
+            (self.colors.search_current_bg, self.colors.search_current_fg)
         } else if is_search {
             (self.colors.search_match_bg, self.colors.search_match_fg)
         } else if is_hint_diagnostic {
@@ -383,7 +403,9 @@ impl RenderLineContext<'_> {
         RenderLineCellStyle {
             fg,
             bg,
-            bold: jump_label.is_some() || desired_style.map_or(false, |style| style.bold),
+            bold: jump_label.is_some()
+                || (is_current_search && !in_visual)
+                || desired_style.map_or(false, |style| style.bold),
             italic: desired_style.map_or(false, |style| style.italic),
             underline_color,
             jump_label,
@@ -1084,7 +1106,9 @@ fn render_line_text_with_context<W: Write>(
                 SetAttribute(if cell_style.bold {
                     Attribute::Bold
                 } else {
-                    Attribute::NoBold
+                    // SGR 22, not NoBold's SGR 21: most terminals read 21 as
+                    // double underline, which then sticks to the text after.
+                    Attribute::NormalIntensity
                 })
             )?;
             current_bold = cell_style.bold;
@@ -2056,6 +2080,10 @@ impl Terminal {
         let mut line_context_factory =
             RenderLineContextFactory::new(editor, visual_range, tab_width);
         line_context_factory.colors.editor_fg = editor_fg;
+        if !is_active {
+            // The cursor that picks the current match belongs to the focused pane.
+            line_context_factory.current_search_match = None;
+        }
 
         // Pre-compute URI for diagnostic lookups (avoids repeated string allocations)
         let cached_uri = if is_active {
@@ -2344,6 +2372,10 @@ impl Terminal {
         let mut line_context_factory =
             RenderLineContextFactory::new(editor, visual_range, tab_width);
         line_context_factory.colors.editor_fg = editor_fg;
+        if !is_active {
+            // The cursor that picks the current match belongs to the focused pane.
+            line_context_factory.current_search_match = None;
+        }
 
         // Pre-compute URI for diagnostic lookups (avoids repeated string allocations)
         let cached_uri = if is_active {
@@ -13247,6 +13279,34 @@ mod tests {
     }
 
     #[test]
+    fn match_under_the_cursor_uses_the_current_search_colors() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 12);
+        editor.replace_buffer_content("foo one\nfoo two\n");
+        handle_key(&mut editor, key('/'));
+        for ch in "foo".chars() {
+            handle_key(&mut editor, key(ch));
+        }
+        handle_key(&mut editor, enter_key());
+        assert_eq!((editor.cursor.line, editor.cursor.col), (1, 0));
+
+        let theme = editor.theme();
+        let rendered = render_editor_to_string(&editor);
+        assert!(rendered.contains(&background_sequence(theme.ui.search_current_bg)));
+        assert!(rendered.contains(&background_sequence(theme.ui.search_match_bg)));
+        let current =
+            |editor: &Editor| RenderLineContextFactory::new(editor, None, 4).current_search_match;
+        assert_eq!(current(&editor), Some((1, 0, 3)));
+        // The bold match ends with SGR 22; SGR 21 underlines the rest of the line.
+        assert!(rendered.contains("\x1b[22m"));
+        assert!(!rendered.contains("\x1b[21m"));
+
+        // `n` wraps to the first line and the current color follows it.
+        handle_key(&mut editor, key('n'));
+        assert_eq!(current(&editor), Some((0, 0, 3)));
+    }
+
+    #[test]
     fn insert_edit_before_confirmed_search_match_refreshes_visible_search_highlights() {
         let mut editor = Editor::default();
         editor.set_size(80, 12);
@@ -16214,6 +16274,8 @@ mod tests {
             selection_bg: Color::DarkBlue,
             search_match_bg: Color::Yellow,
             search_match_fg: Color::Black,
+            search_current_bg: Color::DarkYellow,
+            search_current_fg: Color::Black,
             jump_label_bg: Color::Green,
             jump_label_fg: Color::Black,
             diagnostic_error_color: Color::Red,
@@ -16228,6 +16290,7 @@ mod tests {
             mode: &Mode::Normal,
             is_cursor_line: false,
             search_matches: &search_matches,
+            current_search_match: None,
             jump_labels: &jump_labels,
             diagnostics: &diagnostics,
             colors,
@@ -16240,6 +16303,58 @@ mod tests {
         assert_eq!(cell.fg, Color::Black);
         assert!(!cell.bold, "search match should not inherit syntax bold");
         assert_eq!(cell.underline_color, None);
+    }
+
+    #[test]
+    fn render_line_context_draws_only_the_current_match_in_current_colors() {
+        let diagnostics = Vec::<&Diagnostic>::new();
+        let highlights = Vec::<HighlightSpan>::new();
+        let search_matches = vec![(3, 2, 5), (3, 7, 10)];
+        let jump_labels = Vec::<(usize, char)>::new();
+        let colors = RenderLineColors {
+            editor_bg: Color::Black,
+            editor_fg: Color::White,
+            cursor_line_bg: Color::DarkGrey,
+            selection_bg: Color::DarkBlue,
+            search_match_bg: Color::Yellow,
+            search_match_fg: Color::Black,
+            search_current_bg: Color::DarkYellow,
+            search_current_fg: Color::White,
+            jump_label_bg: Color::Green,
+            jump_label_fg: Color::Black,
+            diagnostic_error_color: Color::Red,
+            diagnostic_hint_color: Color::DarkGrey,
+        };
+        let context = RenderLineContext {
+            line_idx: 3,
+            col_offset: 0,
+            virtual_prefix_chars: 0,
+            highlights: &highlights,
+            visual_range: None,
+            mode: &Mode::Normal,
+            is_cursor_line: true,
+            search_matches: &search_matches,
+            current_search_match: Some((3, 7, 10)),
+            jump_labels: &jump_labels,
+            diagnostics: &diagnostics,
+            colors,
+            tab_width: 4,
+        };
+
+        let other = context.style_for_source_col(2);
+        assert_eq!(
+            (other.bg, other.fg, other.bold),
+            (Color::Yellow, Color::Black, false)
+        );
+        for col in 7..10 {
+            let current = context.style_for_source_col(col);
+            assert_eq!(
+                (current.bg, current.fg, current.bold),
+                (Color::DarkYellow, Color::White, true)
+            );
+        }
+        let after = context.style_for_source_col(10);
+        assert_eq!(after.bg, Color::DarkGrey, "past the match is plain text");
     }
 
     #[test]
@@ -16290,6 +16405,8 @@ mod tests {
             selection_bg: Color::DarkBlue,
             search_match_bg: Color::Yellow,
             search_match_fg: Color::Black,
+            search_current_bg: Color::DarkYellow,
+            search_current_fg: Color::Black,
             jump_label_bg: Color::Green,
             jump_label_fg: Color::Black,
             diagnostic_error_color: Color::Red,
@@ -16304,6 +16421,7 @@ mod tests {
             mode: &Mode::Visual,
             is_cursor_line: false,
             search_matches: &search_matches,
+            current_search_match: None,
             jump_labels: &jump_labels,
             diagnostics: &diagnostics,
             colors,
@@ -16341,6 +16459,8 @@ mod tests {
             selection_bg: Color::DarkBlue,
             search_match_bg: Color::Yellow,
             search_match_fg: Color::Black,
+            search_current_bg: Color::DarkYellow,
+            search_current_fg: Color::Black,
             jump_label_bg: Color::Green,
             jump_label_fg: Color::Black,
             diagnostic_error_color: Color::Red,
@@ -16355,6 +16475,7 @@ mod tests {
             mode: &Mode::Visual,
             is_cursor_line: false,
             search_matches: &search_matches,
+            current_search_match: None,
             jump_labels: &jump_labels,
             diagnostics: &diagnostics,
             colors,

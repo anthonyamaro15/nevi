@@ -145,6 +145,37 @@ mod tests {
     }
 
     #[test]
+    fn every_bundled_theme_gives_the_current_search_match_its_own_color() {
+        for theme in get_bundled_themes() {
+            assert_ne!(
+                theme.ui.search_current_bg, theme.ui.search_match_bg,
+                "theme {} should set [ui.search] current_bg",
+                theme.name
+            );
+        }
+    }
+
+    #[test]
+    fn current_search_colors_fall_back_to_the_themes_own_match_colors() {
+        let toml = r##"
+[ui.search]
+match_bg = "#123456"
+match_fg = "#abcdef"
+"##;
+        let theme = load_theme_from_toml("test-theme", toml).expect("theme should load");
+        assert_eq!(theme.ui.search_current_bg, theme.ui.search_match_bg);
+        assert_eq!(theme.ui.search_current_fg, theme.ui.search_match_fg);
+        assert_eq!(
+            theme.ui.search_current_bg,
+            Color::Rgb {
+                r: 0x12,
+                g: 0x34,
+                b: 0x56
+            }
+        );
+    }
+
+    #[test]
     fn statusline_section_bg_parses_when_present() {
         let toml = r##"
 [palette]

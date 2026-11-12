@@ -78,6 +78,8 @@ prompt = "type"
 [ui.search]
 match_bg = "func"
 match_fg = "bg"
+current_bg = "keyword"
+current_fg = "bg"
 
 [ui.explorer]
 background = "bg_surface"

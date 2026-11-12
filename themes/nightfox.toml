@@ -82,6 +82,8 @@ prompt = "blue"
 [ui.search]
 match_bg = "yellow"
 match_fg = "bg0"
+current_bg = "orange"
+current_fg = "bg0"
 
 [ui.explorer]
 background = "bg0"

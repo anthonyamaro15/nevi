@@ -75,6 +75,8 @@ prompt = "aqua"
 [ui.search]
 match_bg = "yellow"
 match_fg = "#282828"
+current_bg = "orange"
+current_fg = "#282828"
 
 [ui.explorer]
 background = "bg_dark"
