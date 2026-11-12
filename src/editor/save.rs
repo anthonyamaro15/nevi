@@ -10,6 +10,7 @@ impl Editor {
                 self.ensure_buffer_can_save(i, false)?;
                 let was_dirty = self.buffers[i].dirty;
                 self.buffers[i].save()?;
+                self.note_written(i);
                 self.mark_bufferline_if_dirty_changed(i, was_dirty);
                 saved_count += 1;
             }
@@ -53,6 +54,7 @@ impl Editor {
         self.ensure_buffer_can_save(buffer_idx, force)?;
         let was_dirty = self.buffers[buffer_idx].dirty;
         self.buffers[buffer_idx].save()?;
+        self.note_written(buffer_idx);
         self.mark_bufferline_if_dirty_changed(buffer_idx, was_dirty);
         self.set_status(format!(
             "\"{}\" written",
@@ -62,6 +64,20 @@ impl Editor {
         self.update_git_diff();
         self.refresh_explorer_git_statuses();
         Ok(())
+    }
+
+    /// Every successful write funnels through here. The event loop drains the
+    /// list after its batched didChange, so the language server always has the
+    /// saved text before it hears about the save.
+    fn note_written(&mut self, buffer_idx: usize) {
+        if let Some(path) = &self.buffers[buffer_idx].path {
+            self.save_state.written.push(path.clone());
+        }
+    }
+
+    /// Paths written since the last call, for `textDocument/didSave`.
+    pub fn take_written_paths(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.save_state.written)
     }
 
     pub(super) fn ensure_buffer_can_save(
@@ -190,6 +206,7 @@ pub(super) struct SaveState {
     pending: Option<PendingFormat>,
     summary: SaveSummary,
     next_token: u64,
+    written: Vec<PathBuf>,
 }
 
 impl Editor {

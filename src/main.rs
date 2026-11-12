@@ -1501,6 +1501,14 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        // After the didChange above, so a `:w` in the same input batch as an
+        // edit reaches the server as didChange then didSave.
+        for path in editor.take_written_paths() {
+            if let Some(mlsp) = multi_lsp.as_mut() {
+                let _ = mlsp.did_save(&path);
+            }
+        }
+
         // Sent after the did_change sync above: asked before it, the server
         // answers for the text without the `(` and returns nothing.
         if let Some((path, line, col)) = signature_help_pending.take() {
