@@ -56,8 +56,13 @@ pub(super) fn prompt_box(editor: &Editor) -> Option<PromptBox> {
     let list_height = height.saturating_sub(1);
     let first_row = top + 1;
     let last_row = top + height.saturating_sub(1);
-    let offset = explorer.scroll_offset(list_height as usize);
-    let selected_row = first_row + explorer.selected.saturating_sub(offset) as u16;
+    // The root is the header row; the list starts at `scroll_offset`.
+    let selected_row = match explorer.selected {
+        0 => top,
+        selected => {
+            first_row + selected.saturating_sub(explorer.scroll_offset(list_height as usize)) as u16
+        }
+    };
     let y = if selected_row + BOX_ROWS <= last_row {
         selected_row + 1
     } else if selected_row >= first_row + BOX_ROWS {
@@ -152,7 +157,7 @@ pub(super) fn prompt_cursor(editor: &Editor) -> Option<(u16, u16)> {
 }
 
 /// `text` cut to `width` columns, with "…" when it doesn't fit.
-fn fit(text: &str, width: usize) -> String {
+pub(super) fn fit(text: &str, width: usize) -> String {
     if text.width() <= width {
         return text.to_string();
     }
@@ -165,6 +170,18 @@ fn fit(text: &str, width: usize) -> String {
     }
     out.push('…');
     out
+}
+
+/// A box border `width` columns wide with `label` in it: "╭─ label ───╮".
+/// Split in three so the label can take its own color.
+pub(super) fn edge(width: usize, left: &str, label: &str, right: &str) -> (String, String, String) {
+    let label = fit(label, width.saturating_sub(5));
+    let fill = width.saturating_sub(label.width() + 5);
+    (
+        format!("{left}─ "),
+        label,
+        format!(" {}{right}", "─".repeat(fill)),
+    )
 }
 
 impl Terminal {
@@ -186,16 +203,7 @@ impl Terminal {
             theme.ui.popup_border
         };
         let inner = prompt.inner_width();
-        // "─ label ─────" across the box, between two corners.
-        let edge = |left: &str, label: &str, right: &str| {
-            let label = fit(label, inner.saturating_sub(1));
-            let fill = (prompt.width - 2).saturating_sub(label.width() + 3);
-            (
-                format!("{left}─ "),
-                label,
-                format!(" {}{right}", "─".repeat(fill)),
-            )
-        };
+        let edge = |left: &str, label: &str, right: &str| edge(prompt.width, left, label, right);
 
         // Top border with the title.
         let (start, title, end) = edge(glyphs.corner_tl, &prompt.title, glyphs.corner_tr);

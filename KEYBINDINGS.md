@@ -805,7 +805,7 @@ When the file explorer sidebar is focused:
 | `Tab` | Toggle expand/collapse |
 | `W` | Collapse all directories |
 | `R` | Refresh explorer and git status |
-| `?` | Show explorer keymaps |
+| `?` | Show the explorer key card (any key closes it) |
 | `-` | Go to parent directory |
 | `Ctrl+l` | Focus editor and keep explorer open |
 | `>` | Widen explorer sidebar |

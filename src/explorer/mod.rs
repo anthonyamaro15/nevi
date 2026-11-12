@@ -153,6 +153,8 @@ pub struct FileExplorer {
     pub current_match: usize,
     /// Whether explorer is waiting for the second `g` in `gg`.
     pending_goto_top: bool,
+    /// The `?` key card is open; the next key closes it.
+    pub show_keys: bool,
     /// Git status by file and ancestor directory path
     git_statuses: HashMap<PathBuf, GitFileStatus>,
 }
@@ -177,6 +179,7 @@ impl Default for FileExplorer {
             search_matches: Vec::new(),
             current_match: 0,
             pending_goto_top: false,
+            show_keys: false,
             git_statuses: HashMap::new(),
         }
     }
@@ -253,26 +256,30 @@ impl FileExplorer {
         }
     }
 
-    /// Scroll offset of the visible window for a list of `list_height` rows,
-    /// keeping the selection roughly centered. Rendering and mouse hit
-    /// testing must share this so a click lands on the row it appears on.
+    /// Index of the entry on the first list row. The root (entry 0) is drawn
+    /// as the header, so the list starts at 1 and scrolls over the rest,
+    /// keeping the selection roughly centered. Rendering, mouse hit testing
+    /// and the prompt box share this so a click lands on the row it shows on.
     pub fn scroll_offset(&self, list_height: usize) -> usize {
-        if self.selected < list_height / 2 {
+        let entries = self.flat_view.len().saturating_sub(1);
+        let selected = self.selected.saturating_sub(1);
+        let offset = if selected < list_height / 2 {
             0
-        } else if self.selected >= self.flat_view.len().saturating_sub(list_height / 2) {
-            self.flat_view.len().saturating_sub(list_height)
+        } else if selected >= entries.saturating_sub(list_height / 2) {
+            entries.saturating_sub(list_height)
         } else {
-            self.selected.saturating_sub(list_height / 2)
-        }
+            selected - list_height / 2
+        };
+        1 + offset
     }
 
-    /// Select the entry shown on screen row `row` (row 0 is the header).
-    /// Returns false for the header or rows past the last entry.
+    /// Select the entry shown on screen row `row`; row 0 is the header,
+    /// which is the root. Returns false for rows past the last entry.
     pub fn select_visible_row(&mut self, row: usize, list_height: usize) -> bool {
-        if row == 0 {
-            return false;
-        }
-        let idx = self.scroll_offset(list_height) + (row - 1);
+        let idx = match row {
+            0 => 0,
+            _ => self.scroll_offset(list_height) + (row - 1),
+        };
         if idx < self.flat_view.len() {
             self.selected = idx;
             true
