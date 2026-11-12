@@ -120,6 +120,9 @@ pub struct UiColors {
     // Search
     pub search_match_bg: Color,
     pub search_match_fg: Color,
+    /// The match under the cursor (Vim's CurSearch).
+    pub search_current_bg: Color,
+    pub search_current_fg: Color,
 
     // Visual mode
     pub visual_bg: Color,
@@ -332,6 +335,12 @@ impl Theme {
                     b: 60,
                 },
                 search_match_fg: Color::Rgb { r: 0, g: 0, b: 0 },
+                search_current_bg: Color::Rgb {
+                    r: 209,
+                    g: 154,
+                    b: 102,
+                },
+                search_current_fg: Color::Rgb { r: 0, g: 0, b: 0 },
 
                 visual_bg: Color::Rgb {
                     r: 62,

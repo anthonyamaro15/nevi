@@ -81,6 +81,8 @@ prompt = "accent_fg"
 [ui.search]
 match_bg = "attention_fg"
 match_fg = "canvas_default"
+current_bg = "syntax_variable"
+current_fg = "canvas_default"
 
 [ui.explorer]
 background = "canvas_subtle"

@@ -73,6 +73,8 @@ prompt = "purple"
 [ui.search]
 match_bg = "yellow"
 match_fg = "#282a36"
+current_bg = "orange"
+current_fg = "#282a36"
 
 [ui.explorer]
 background = "bg_dark"

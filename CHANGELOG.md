@@ -68,6 +68,8 @@
 
 ### Interface
 
+- The search match under the cursor now has its own color (bold, orange in the bundled themes), so after `n` you can see which match you are on. Themes set it with `current_bg` and `current_fg` under `[ui.search]`; themes without them keep using the match colors. The statusline counter is now a small badge in the match colors.
+- Text right after something bold, such as bold keywords in the gruvbox theme, is no longer drawn with a double underline. Bold was turned off with a code most terminals read as double underline.
 - In a split, the panes you are not in now fade their text toward the background, so the focused pane stands out. They also keep relative line numbers, counted from their own cursor, instead of switching to absolute numbers.
 - The completion menu shows a kind icon for each item (functions, fields, structs, and so on) instead of a single letter. The minimal style keeps the letters. The letters you typed are highlighted in each label, like the finder. Long labels and details with non-ASCII text no longer crash the menu when they are cut to fit.
 - Signature help shows up again when you type `(` or `,` in a call. The request went out before the server had the new text, so servers like gopls answered with nothing. The popup now uses the theme's colors instead of fixed dark ones, and the argument you are typing is underlined.

@@ -144,6 +144,8 @@ pub struct FinderToml {
 pub struct SearchToml {
     pub match_bg: Option<String>,
     pub match_fg: Option<String>,
+    pub current_bg: Option<String>,
+    pub current_fg: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -276,6 +278,22 @@ fn load_theme_from_toml_inner(name: &str, toml: &ThemeToml) -> Theme {
         .as_ref()
         .and_then(|v| resolve_color(v, palette))
         .unwrap_or(base.ui.cursor_line);
+    // Hoisted so a theme without `current_*` keys falls back to its own match
+    // colors, not the base theme's: the current match then looks like any other.
+    let search_match_bg = toml
+        .ui
+        .search
+        .match_bg
+        .as_ref()
+        .and_then(|v| resolve_color(v, palette))
+        .unwrap_or(base.ui.search_match_bg);
+    let search_match_fg = toml
+        .ui
+        .search
+        .match_fg
+        .as_ref()
+        .and_then(|v| resolve_color(v, palette))
+        .unwrap_or(base.ui.search_match_fg);
     let ui = UiColors {
         background: toml
             .ui
@@ -460,20 +478,22 @@ fn load_theme_from_toml_inner(name: &str, toml: &ThemeToml) -> Theme {
             .and_then(|v| resolve_color(v, palette))
             .unwrap_or(base.ui.finder_prompt),
 
-        search_match_bg: toml
+        search_match_bg,
+        search_match_fg,
+        search_current_bg: toml
             .ui
             .search
-            .match_bg
+            .current_bg
             .as_ref()
             .and_then(|v| resolve_color(v, palette))
-            .unwrap_or(base.ui.search_match_bg),
-        search_match_fg: toml
+            .unwrap_or(search_match_bg),
+        search_current_fg: toml
             .ui
             .search
-            .match_fg
+            .current_fg
             .as_ref()
             .and_then(|v| resolve_color(v, palette))
-            .unwrap_or(base.ui.search_match_fg),
+            .unwrap_or(search_match_fg),
 
         visual_bg: toml
             .ui
@@ -761,6 +781,8 @@ prompt = "blue"                          # input prompt
 [ui.search]
 match_bg = "#b4a03c"                     # search match background
 match_fg = "#000000"                     # search match text
+current_bg = "#d19a66"                   # match under the cursor (defaults to match_bg)
+current_fg = "#000000"                   # its text (defaults to match_fg)
 
 # File explorer (Space+e)
 [ui.explorer]

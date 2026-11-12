@@ -80,6 +80,8 @@ prompt = "nord8"
 [ui.search]
 match_bg = "nord13"
 match_fg = "nord0"
+current_bg = "nord12"
+current_fg = "nord0"
 
 [ui.explorer]
 background = "nord1"

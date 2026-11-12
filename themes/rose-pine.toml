@@ -75,6 +75,8 @@ prompt = "rose"
 [ui.search]
 match_bg = "gold"
 match_fg = "base"
+current_bg = "rose"
+current_fg = "base"
 
 [ui.explorer]
 background = "surface"

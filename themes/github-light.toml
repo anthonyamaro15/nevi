@@ -83,6 +83,8 @@ prompt = "accent_fg"
 [ui.search]
 match_bg = "#fff8c5"
 match_fg = "fg_default"
+current_bg = "#ffb77c"
+current_fg = "fg_default"
 
 [ui.explorer]
 background = "canvas_subtle"

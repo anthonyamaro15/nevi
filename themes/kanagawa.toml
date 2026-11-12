@@ -95,6 +95,8 @@ prompt = "crystalBlue"
 [ui.search]
 match_bg = "carpYellow"
 match_fg = "sumiInk0"
+current_bg = "surimiOrange"
+current_fg = "sumiInk0"
 
 [ui.explorer]
 background = "sumiInk0"
