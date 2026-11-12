@@ -137,6 +137,12 @@ impl LspManager {
         })
     }
 
+    /// Notify that a document was written to disk
+    pub fn did_save(&self, path: &PathBuf) -> anyhow::Result<()> {
+        let uri = path_to_uri(path);
+        self.send(LspRequest::DidSave { uri })
+    }
+
     /// Notify that a document was closed
     pub fn did_close(&self, path: &PathBuf) -> anyhow::Result<()> {
         let uri = path_to_uri(path);
@@ -446,6 +452,13 @@ fn run_lsp_thread(
                         if let Err(e) = client.did_change(&uri, version, &text) {
                             let _ = notification_tx.send(LspNotification::Error {
                                 message: format!("Failed to send didChange: {}", e),
+                            });
+                        }
+                    }
+                    LspRequest::DidSave { uri } => {
+                        if let Err(e) = client.did_save(&uri) {
+                            let _ = notification_tx.send(LspNotification::Error {
+                                message: format!("Failed to send didSave: {}", e),
                             });
                         }
                     }

@@ -115,6 +115,10 @@ pub struct LspClient {
 fn client_capabilities() -> ClientCapabilities {
     ClientCapabilities {
         text_document: Some(lsp_types::TextDocumentClientCapabilities {
+            synchronization: Some(lsp_types::TextDocumentSyncClientCapabilities {
+                did_save: Some(true),
+                ..Default::default()
+            }),
             completion: Some(lsp_types::CompletionClientCapabilities {
                 completion_item: Some(lsp_types::CompletionItemCapability {
                     snippet_support: Some(false),
@@ -349,6 +353,20 @@ impl LspClient {
             }],
         };
         self.send_notification("textDocument/didChange", serde_json::to_value(params)?)
+    }
+
+    /// Notify server that a document was written to disk. rust-analyzer only
+    /// reruns `cargo check` on this, so without it compiler diagnostics freeze.
+    pub fn did_save(&mut self, uri: &str) -> Result<()> {
+        // Never sends `text`: honouring a server's `save.includeText` needs the
+        // server capabilities, which the client does not store yet.
+        let params = lsp_types::DidSaveTextDocumentParams {
+            text_document: TextDocumentIdentifier {
+                uri: lsp_types::Url::parse(uri)?,
+            },
+            text: None,
+        };
+        self.send_notification("textDocument/didSave", serde_json::to_value(params)?)
     }
 
     /// Notify server that a document was closed
@@ -2656,6 +2674,53 @@ mod tests {
                 .and_then(|text_document| text_document.rename)
                 .and_then(|rename| rename.prepare_support),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn client_capabilities_advertise_did_save() {
+        let capabilities = client_capabilities();
+
+        assert_eq!(
+            capabilities
+                .text_document
+                .and_then(|text_document| text_document.synchronization)
+                .and_then(|sync| sync.did_save),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn did_save_sends_a_text_free_notification_for_the_uri() {
+        // `cat` echoes the framed message back, so this reads the exact bytes
+        // a server would receive.
+        let (mut client, _, _) = LspClient::spawn("cat", &[]).expect("spawn cat");
+        let mut stdout = BufReader::new(client.take_stdout().expect("stdout"));
+        client
+            .did_save("file:///tmp/main.rs")
+            .expect("send didSave");
+
+        let mut header = String::new();
+        stdout.read_line(&mut header).expect("header");
+        let length: usize = header
+            .trim()
+            .strip_prefix("Content-Length: ")
+            .expect("content length")
+            .parse()
+            .unwrap();
+        stdout.read_line(&mut String::new()).expect("blank line");
+        let mut body = vec![0; length];
+        stdout.read_exact(&mut body).expect("body");
+        let _ = client.process.kill();
+
+        let message: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            message,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didSave",
+                "params": {"textDocument": {"uri": "file:///tmp/main.rs"}}
+            })
         );
     }
 

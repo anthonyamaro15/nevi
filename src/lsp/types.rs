@@ -117,6 +117,9 @@ pub enum LspRequest {
         text: String,
     },
 
+    /// Document was written to disk
+    DidSave { uri: String },
+
     /// Document was closed
     DidClose { uri: String },
 

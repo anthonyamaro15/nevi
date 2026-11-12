@@ -1220,6 +1220,95 @@ mod tests {
         }
     }
 
+    // didSave must follow exactly the writes that reached disk.
+    #[test]
+    fn every_write_path_records_the_written_file_for_did_save() {
+        for cmd in [
+            "w",
+            "w!",
+            "wa",
+            "wq",
+            "x",
+            "Ctrl-S",
+            "autosave",
+            "w dest.md",
+        ] {
+            let f = Fixture::new();
+            let mut e = f.editor();
+            e.settings.editor.format_on_save = false;
+            let dest = f.0.join("dest.md");
+            if cmd == "autosave" {
+                let now = Instant::now();
+                assert!(try_autosave(&mut e, &mut Some(now), now));
+            } else {
+                command(&mut e, &cmd.replace("dest.md", dest.to_str().unwrap()));
+            }
+            let written = if cmd == "w dest.md" {
+                dest
+            } else {
+                f.0.join("a.md")
+            };
+            assert_eq!(e.take_written_paths(), vec![written], "{cmd}");
+            assert!(e.take_written_paths().is_empty(), "{cmd} drains");
+        }
+        // The editor records hidden writes too; MultiLspManager::did_save
+        // drops the ones the server does not have open.
+        let f = Fixture::new();
+        let mut e = f.editor();
+        e.settings.editor.format_on_save = false;
+        let b = f.0.join("b.md");
+        std::fs::write(&b, "old\n").unwrap();
+        e.open_file(b.clone()).unwrap();
+        e.replace_buffer_content("hidden\n");
+        e.open_file(f.0.join("a.md")).unwrap();
+        command(&mut e, "wa");
+        assert_eq!(e.take_written_paths(), vec![f.0.join("a.md"), b]);
+    }
+    #[test]
+    fn refused_or_failed_writes_record_nothing_for_did_save() {
+        for case in ["read-only", "conflict", "write error", "autosave conflict"] {
+            let f = Fixture::new();
+            let mut e = f.editor();
+            e.settings.editor.format_on_save = false;
+            match case {
+                "read-only" => e.buffer_mut().set_read_only(true),
+                "write error" => std::fs::remove_dir_all(&f.0).unwrap(),
+                _ => std::fs::write(f.0.join("a.md"), "external\n").unwrap(),
+            }
+            match case {
+                "autosave conflict" => {
+                    let now = Instant::now();
+                    try_autosave(&mut e, &mut Some(now), now);
+                }
+                // Force skips the conflict check, so this reaches the disk write.
+                "write error" => command(&mut e, "w!"),
+                _ => command(&mut e, "w"),
+            }
+            assert!(e.buffer().dirty, "{case}");
+            assert!(e.take_written_paths().is_empty(), "{case}");
+        }
+    }
+    #[test]
+    fn lsp_formatted_save_records_the_file_only_once_written() {
+        for conflict in [false, true] {
+            let f = Fixture::new();
+            let mut e = f.editor();
+            e.settings.editor.format_on_save = true;
+            let mut rt = SaveRuntime::default();
+            let mut t = Transport::default();
+            command(&mut e, "w");
+            rt.tick(&mut e, Some(&mut t), Instant::now());
+            assert!(e.take_written_paths().is_empty(), "still formatting");
+            let r = rt.pending.as_ref().unwrap().request.clone();
+            if conflict {
+                std::fs::write(&r.path, "external\n").unwrap();
+            }
+            let uri = nevi::lsp::path_to_uri(&r.path);
+            rt.complete(&mut e, &mut t, r.token, &uri, r.version, Ok(edits()));
+            let expected = if conflict { vec![] } else { vec![r.path] };
+            assert_eq!(e.take_written_paths(), expected, "conflict={conflict}");
+        }
+    }
     #[test]
     fn autosave_remains_unformatted() {
         for mode in 0..8 {

@@ -648,6 +648,21 @@ impl MultiLspManager {
         Ok(())
     }
 
+    /// Send did_save to the server that has this document open. didSave is
+    /// only valid for an open document, and Nevi keeps just the current buffer
+    /// open, so writes of hidden buffers (`:wa`) are not reported.
+    pub fn did_save(&mut self, path: &PathBuf) -> anyhow::Result<()> {
+        let Some(lang) = self.language_for_path(path) else {
+            return Ok(());
+        };
+        if let Some(instance) = self.get_instance_mut(lang) {
+            if instance.ready && instance.document_versions.contains_key(path) {
+                instance.manager.did_save(path)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Send did_close notification to appropriate server
     pub fn did_close(&mut self, path: &PathBuf) -> anyhow::Result<()> {
         let lang = self
@@ -1165,6 +1180,34 @@ mod tests {
         );
         manager.instances.get_mut(&LanguageId::Rust).unwrap().ready = false;
         assert!(manager.formatting(&b, 4, 12, 100).is_err());
+    }
+
+    #[test]
+    fn did_save_only_reaches_documents_the_server_has_open() {
+        let mut manager = manager_with_rust_notifications(vec![]);
+        let (tx, rx) = mpsc::channel();
+        manager
+            .instances
+            .get_mut(&LanguageId::Rust)
+            .unwrap()
+            .manager
+            .request_tx = tx;
+        let open = PathBuf::from("/tmp/a.rs");
+        let hidden = PathBuf::from("/tmp/b.rs");
+        manager.did_open(&open, "a").unwrap();
+        manager.did_change(&open, "a2").unwrap();
+        manager.did_save(&open).unwrap();
+        manager.did_save(&hidden).unwrap();
+        manager.did_save(&PathBuf::from("/tmp/notes.txt")).unwrap();
+        manager.did_close(&open).unwrap();
+        manager.did_save(&open).unwrap();
+
+        use crate::lsp::LspRequest as R;
+        let messages: Vec<_> = rx.try_iter().collect();
+        assert_eq!(messages.len(), 4, "{messages:?}");
+        assert!(matches!(&messages[1], R::DidChange { version: 2, .. }));
+        assert!(matches!(&messages[2], R::DidSave { uri } if uri.ends_with("a.rs")));
+        assert!(matches!(&messages[3], R::DidClose { .. }));
     }
 
     // Format-on-save writes silently when this is false, so a wrong `false`
