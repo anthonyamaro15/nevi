@@ -68,6 +68,7 @@
 
 ### Interface
 
+- The explorer's create, rename and delete prompts open in a small box right under the selected row (above it near the bottom of the list), instead of on the last line of the sidebar. Create and rename show the folder the name goes in. Delete asks in red, names the file or folder, and says what is lost, such as unsaved changes. It now takes a single key: `y` deletes and `n` or `Esc` keeps, with no Enter.
 - Live grep rows draw their `path:line:` in the line-number gray, so the code you searched for stands out. A line cut at the right edge now ends with `…`, unless that last cell is needed to keep the match whole.
 - Errors on the command line now look like errors: they use the theme's error color and start with a cross (`!` in the minimal style), and they say what failed in plain words, such as "Couldn't delete notes.txt: ..." instead of "Error: ...". Command errors keep Vim's `E:` text and get the error color. Warnings use the warning color, and info messages such as `"file" written` are unchanged. A message too long for one line has the home folder shortened to `~` and the middle of long paths left out, instead of running off the screen. When the language server for the current file fails to start or stops, the command line says so, for example "gopls didn't start: ...  ·  :checkhealth".
 - The diagnostic message on the command line no longer crashes Nevi when a long message is cut in the middle of a non-ASCII character.

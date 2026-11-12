@@ -1291,26 +1291,6 @@ impl FileExplorer {
         self.input_cursor = self.input_buffer.len();
     }
 
-    /// Get the prompt text for the current action
-    pub fn action_prompt(&self) -> &'static str {
-        match self.pending_action {
-            Some(ExplorerAction::Add) => "Name: ",
-            Some(ExplorerAction::Rename) => "Rename: ",
-            Some(ExplorerAction::Delete) => "Delete? (y/n): ",
-            None => "",
-        }
-    }
-
-    /// Get the help text for the current action (shown above prompt)
-    pub fn action_help(&self) -> &'static str {
-        match self.pending_action {
-            Some(ExplorerAction::Add) => "(/ for dir)",
-            Some(ExplorerAction::Rename) => "",
-            Some(ExplorerAction::Delete) => "",
-            None => "",
-        }
-    }
-
     // === Copy/Cut/Paste methods ===
 
     /// Copy the selected item to clipboard

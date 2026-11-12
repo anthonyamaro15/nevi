@@ -813,7 +813,7 @@ When the file explorer sidebar is focused:
 | `=` | Reset explorer sidebar width |
 | `a` | Create file or directory |
 | `r` | Rename selected item |
-| `d` | Delete selected item |
+| `d` | Delete selected item (then `y` to delete, `n` or `Esc` to keep) |
 | `/` | Search explorer |
 | `Ctrl+w` / `Ctrl+u` | Delete previous word / delete to start in explorer search |
 | `n` / `N` | Next/previous search match |
