@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
 
+mod explorer_keys;
 mod explorer_prompt;
 mod save_commands;
 mod session;
@@ -1439,6 +1440,10 @@ impl Terminal {
             self.render_code_actions_picker(editor)?;
         }
 
+        if editor.explorer.show_keys && editor.mode == Mode::Explorer {
+            self.render_explorer_keys(editor)?;
+        }
+
         // Render Markdown preview if active
         if editor.markdown_preview.is_some() {
             self.render_markdown_preview(editor)?;
@@ -2769,6 +2774,7 @@ impl Terminal {
     /// Draw separator lines between panes
     /// Render the file explorer sidebar
     fn render_explorer(&mut self, editor: &Editor) -> anyhow::Result<()> {
+        use unicode_width::UnicodeWidthStr;
         let bufferline_offset: u16 = editor.settings.editor.bufferline as u16;
         let width = editor.explorer.width as usize;
         let height = editor.text_rows();
@@ -2794,30 +2800,55 @@ impl Terminal {
         // Line number column width (3 chars + 1 space)
         let line_num_width = 4;
 
-        // Render header with project name
+        // The header is the root (entry 0), so the project shows once, with
+        // its branch. It takes the selection like any other row.
+        let root_selected = editor.explorer.selected == 0 && !editor.explorer.flat_view.is_empty();
+        let project_name = editor
+            .explorer
+            .flat_view
+            .first()
+            .map(|node| node.name.clone())
+            .unwrap_or_else(|| "Explorer".to_string());
+        let name = explorer_prompt::fit(
+            &format!("{}{}", glyphs.explorer_header_icon, project_name),
+            width.saturating_sub(2),
+        );
+        let room = width.saturating_sub(1 + name.width());
+        let branch = match editor.git_branch.as_deref() {
+            Some(branch) if room >= 4 => {
+                explorer_prompt::fit(&format!("  {}{}", glyphs.branch, branch), room)
+            }
+            _ => String::new(),
+        };
+        let lead = if root_selected && !minimal {
+            "▌"
+        } else {
+            " "
+        };
         execute!(
             self.stdout,
             cursor::MoveTo(0, bufferline_offset),
-            SetBackgroundColor(explorer_bg)
+            SetBackgroundColor(if root_selected {
+                selected_bg
+            } else {
+                explorer_bg
+            }),
+            SetForegroundColor(dir_color)
         )?;
-
-        let project_name = editor
-            .project_root
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Explorer".to_string());
-
-        let header = format!(" {}{} ", glyphs.explorer_header_icon, project_name);
-        let header = if header.len() > width {
-            format!("{}…", &header[..width.saturating_sub(1)])
-        } else {
-            header
-        };
-
-        execute!(self.stdout, SetForegroundColor(explorer_fg))?;
-        execute!(self.stdout, SetAttribute(Attribute::Bold))?;
-        terminal_print!(self, "{:width$}", header, width = width);
+        terminal_print!(self, "{lead}");
+        execute!(
+            self.stdout,
+            SetForegroundColor(explorer_fg),
+            SetAttribute(Attribute::Bold)
+        )?;
+        terminal_print!(self, "{name}");
+        execute!(
+            self.stdout,
+            SetAttribute(Attribute::NormalIntensity),
+            SetForegroundColor(line_num_color)
+        )?;
+        let pad = width.saturating_sub(1 + name.width() + branch.width());
+        terminal_print!(self, "{branch}{:pad$}", "");
         execute!(
             self.stdout,
             SetAttribute(Attribute::Reset),
@@ -9993,6 +10024,12 @@ fn explorer_half_page_rows(editor: &Editor) -> usize {
 }
 
 fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
+    // The `?` key card closes on the next key, and that key does nothing else.
+    if editor.explorer.show_keys {
+        editor.explorer.show_keys = false;
+        return;
+    }
+
     // Handle search input mode
     if editor.explorer.is_searching {
         match (key.modifiers, key.code) {
@@ -10233,7 +10270,7 @@ fn execute_explorer_mode_action(editor: &mut Editor, action: crate::config::Expl
             editor.explorer.refresh();
             editor.refresh_explorer_git_statuses();
         }
-        ExplorerModeAction::ShowExplorerKeymaps => editor.open_keymaps_picker_with_query("expl"),
+        ExplorerModeAction::ShowExplorerKeymaps => editor.explorer.show_keys = true,
         ExplorerModeAction::GoToParent => editor.explorer.go_to_parent(),
         ExplorerModeAction::FocusEditor => editor.unfocus_explorer(),
         ExplorerModeAction::WidenSidebar => editor.widen_explorer(),
@@ -11565,6 +11602,13 @@ mod tests {
         editor.set_size(80, 24);
         editor.explorer.flat_view = vec![
             crate::explorer::FlatNode {
+                path: PathBuf::from("/proj"),
+                name: "proj".to_string(),
+                is_dir: true,
+                depth: 0,
+                is_expanded: true,
+            },
+            crate::explorer::FlatNode {
                 path: PathBuf::from("/proj/src"),
                 name: "src".to_string(),
                 is_dir: true,
@@ -11579,7 +11623,7 @@ mod tests {
                 is_expanded: false,
             },
         ];
-        editor.explorer.selected = 1;
+        editor.explorer.selected = 2;
         editor.explorer.root = Some(PathBuf::from("/proj"));
 
         let rendered = render_explorer_to_string(&editor);
@@ -11589,7 +11633,7 @@ mod tests {
             "row 0 is the bufferline row, explorer must not paint there"
         );
         assert!(
-            screen_row_text(&rendered, 1).contains("Explorer"),
+            screen_row_text(&rendered, 1).contains("proj"),
             "explorer header starts one row below the bufferline"
         );
     }
@@ -11666,16 +11710,18 @@ mod tests {
     #[test]
     fn explorer_prompt_opens_above_a_row_at_the_bottom() {
         let mut editor = explorer_test_editor();
-        editor.explorer.flat_view = (0..40)
-            .map(|i| crate::explorer::FlatNode {
+        editor.explorer.flat_view.truncate(1);
+        editor
+            .explorer
+            .flat_view
+            .extend((0..40).map(|i| crate::explorer::FlatNode {
                 path: PathBuf::from(format!("/proj/f{i}.txt")),
                 name: format!("f{i}.txt"),
                 is_dir: false,
                 depth: 1,
                 is_expanded: false,
-            })
-            .collect();
-        editor.explorer.selected = 39;
+            }));
+        editor.explorer.selected = 40;
         editor.explorer.start_rename();
 
         let prompt = super::explorer_prompt::prompt_box(&editor).expect("prompt");
@@ -11698,14 +11744,23 @@ mod tests {
         editor.mode = Mode::Explorer;
         editor.explorer.visible = true;
         editor.explorer.root = Some(tmp.clone());
-        editor.explorer.flat_view = vec![crate::explorer::FlatNode {
-            path: file.clone(),
-            name: "notes.txt".to_string(),
-            is_dir: false,
-            depth: 1,
-            is_expanded: false,
-        }];
-        editor.explorer.selected = 0;
+        editor.explorer.flat_view = vec![
+            crate::explorer::FlatNode {
+                path: tmp.clone(),
+                name: "tmp".to_string(),
+                is_dir: true,
+                depth: 0,
+                is_expanded: true,
+            },
+            crate::explorer::FlatNode {
+                path: file.clone(),
+                name: "notes.txt".to_string(),
+                is_dir: false,
+                depth: 1,
+                is_expanded: false,
+            },
+        ];
+        editor.explorer.selected = 1;
 
         editor.explorer.start_delete();
         let (rendered, _) = render_explorer_with_cursor(&editor);
@@ -11739,7 +11794,7 @@ mod tests {
         let prompt = super::explorer_prompt::prompt_box(&editor).expect("prompt");
         assert_eq!(prompt.body, Some("has unsaved changes"));
 
-        editor.explorer.selected = 0;
+        editor.explorer.selected = 1;
         editor.explorer.start_delete();
         let prompt = super::explorer_prompt::prompt_box(&editor).expect("prompt");
         assert_eq!(prompt.title, "Delete src?");
@@ -12038,6 +12093,13 @@ mod tests {
         editor.set_size(120, 30);
         editor.explorer.flat_view = vec![
             crate::explorer::FlatNode {
+                path: PathBuf::from("/proj"),
+                name: "proj".to_string(),
+                is_dir: true,
+                depth: 0,
+                is_expanded: true,
+            },
+            crate::explorer::FlatNode {
                 path: PathBuf::from("/proj/src"),
                 name: "src".to_string(),
                 is_dir: true,
@@ -12052,7 +12114,7 @@ mod tests {
                 is_expanded: false,
             },
         ];
-        editor.explorer.selected = 1;
+        editor.explorer.selected = 2;
         // rebuild_git_statuses_from clears everything when no root is set
         editor.explorer.root = Some(PathBuf::from("/proj"));
         let mut statuses = std::collections::HashMap::new();
@@ -12062,6 +12124,36 @@ mod tests {
         );
         editor.explorer.rebuild_git_statuses_from(statuses);
         editor
+    }
+
+    #[test]
+    fn explorer_shows_the_root_once_in_the_header_with_its_branch() {
+        let mut editor = explorer_test_editor();
+        editor.git_branch = Some("main".to_string());
+        let rendered = render_explorer_to_string(&editor);
+        let rows: Vec<String> = (0..6).map(|r| screen_row_text(&rendered, r)).collect();
+        assert!(
+            rows[0].contains("proj") && rows[0].contains("main"),
+            "{rows:?}"
+        );
+        // The list starts at the root's first child; the root is not a row again.
+        assert!(rows[1].contains("src"), "{rows:?}");
+        assert_eq!(rows.iter().filter(|row| row.contains("proj")).count(), 1);
+
+        // gg lands on the root: the header takes the selection bar.
+        editor.explorer.selected = 0;
+        let rendered = render_explorer_to_string(&editor);
+        assert!(screen_row_text(&rendered, 0).starts_with('▌'));
+        assert!(screen_row_text(&rendered, 1).contains("1"));
+
+        // A long branch is cut to the sidebar, never past it.
+        editor.git_branch = Some("feature/a-very-long-branch-name-here".to_string());
+        let rendered = render_explorer_to_string(&editor);
+        let row = screen_row_text(&rendered, 0);
+        let header = row.split('│').next().unwrap_or_default();
+        assert!(header.ends_with('…'), "{row:?}");
+        let cols = unicode_width::UnicodeWidthStr::width(header);
+        assert!(cols <= editor.explorer.width as usize, "{header:?}");
     }
 
     #[test]
@@ -16194,25 +16286,49 @@ mod tests {
     }
 
     #[test]
-    fn explorer_question_opens_keymaps_filtered_to_explorer() {
-        let mut editor = editor_with_explorer_rows(5);
+    fn explorer_question_shows_a_key_card_that_the_next_key_closes() {
+        // A remapped key shows on the card as it is bound.
+        let mut settings = Settings::default();
+        settings.keymap.explorer.retain(|m| m.action != "create");
+        settings
+            .keymap
+            .explorer
+            .push(crate::config::ExplorerModeMapping {
+                key: "o".to_string(),
+                action: "create".to_string(),
+                desc: None,
+            });
+        let mut editor = Editor::new(settings);
+        editor.set_size(100, 24);
+        editor.mode = Mode::Explorer;
+        editor.explorer.visible = true;
+        editor.explorer.flat_view = editor_with_explorer_rows(5).explorer.flat_view;
 
         handle_key(&mut editor, key('?'));
-
-        assert_eq!(editor.mode, Mode::Finder);
-        assert_eq!(editor.finder.mode, FinderMode::Keymaps);
-        assert_eq!(editor.finder.query, "expl");
+        assert_eq!(editor.mode, Mode::Explorer);
+        let rendered = render_editor_to_string(&editor);
+        let screen: Vec<String> = (0..24).map(|r| screen_row_text(&rendered, r)).collect();
+        let card = screen.join("\n");
+        assert!(card.contains("Explorer keys"), "{card}");
+        assert!(card.contains(":Keymaps for everything"), "{card}");
+        // A plain key wins over <Esc>; four columns fit in 100.
         assert!(
-            editor.finder.filtered.iter().any(|idx| {
-                editor
-                    .finder
-                    .items
-                    .get(*idx)
-                    .map(|item| item.display.contains("gg") && item.display.contains("top"))
-                    .unwrap_or(false)
-            }),
-            "filtered keymaps should include explorer mappings"
+            screen.iter().any(|row| row.contains("o new")
+                && row.contains("r rename")
+                && row.contains("d delete")
+                && row.contains("c copy")),
+            "{card}"
         );
+        assert!(card.contains("q close"), "{card}");
+        assert!(!card.contains("a new"), "{card}");
+
+        // The next key only closes the card.
+        editor.explorer.selected = 2;
+        handle_key(&mut editor, key('j'));
+        assert!(!editor.explorer.show_keys);
+        assert_eq!(editor.explorer.selected, 2);
+        let rendered = render_editor_to_string(&editor);
+        assert!(!rendered.contains("Explorer keys"));
     }
 
     #[test]

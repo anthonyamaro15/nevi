@@ -28,6 +28,12 @@ pub fn pane_at(editor: &Editor, col: u16, row: u16) -> Option<usize> {
 /// handled and the frame must repaint. Wheel events scroll the pane under
 /// the pointer (nvim behavior), not the focused pane.
 pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> bool {
+    // Like a key, a click or wheel only closes the explorer key card.
+    if editor.explorer.show_keys && event.kind != MouseEventKind::Moved {
+        editor.explorer.show_keys = false;
+        editor.render_damage.mark_full();
+        return true;
+    }
     let handled = route_event(editor, event);
     if handled {
         // Mouse events bypass handle_key, which is where damage is normally
@@ -385,22 +391,26 @@ mod tests {
         editor.explorer.show();
         editor.update_pane_rects();
 
-        // Row 0 is the header; row 2 is the second visible entry.
+        // Row 0 is the header, which is the root (entry 0); row 2 shows b.txt.
         handle_mouse_event(
             &mut editor,
             mouse(MouseEventKind::Down(MouseButton::Left), 1, 2),
         );
-        assert_eq!(editor.explorer.selected, 1);
+        assert_eq!(editor.explorer.selected, 2);
+        handle_mouse_event(
+            &mut editor,
+            mouse(MouseEventKind::Down(MouseButton::Left), 1, 0),
+        );
+        assert_eq!(editor.explorer.selected, 0);
 
         editor.settings.editor.bufferline = true;
         editor.update_pane_rects();
-        editor.explorer.selected = 0;
-        // The bufferline shifts the header to row 1 and the second entry to row 3.
+        // The bufferline shifts the header to row 1 and b.txt to row 3.
         handle_mouse_event(
             &mut editor,
             mouse(MouseEventKind::Down(MouseButton::Left), 1, 3),
         );
-        assert_eq!(editor.explorer.selected, 1);
+        assert_eq!(editor.explorer.selected, 2);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
