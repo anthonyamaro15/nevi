@@ -19,8 +19,17 @@ pub(crate) fn text_width(text: &str) -> usize {
     text.chars().map(cell_width).sum()
 }
 
+/// What a cell of a live grep row shows, which sets its color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GrepCell {
+    /// `path:line:` and the `…` cut markers, drawn quieter than the code.
+    Location,
+    Text,
+    Match,
+}
+
 /// A live grep hit laid out in `width` cells: its path, `:<line>: `, then
-/// the line's text, each char paired with whether it's part of a match.
+/// the line's text. A line cut at the right edge ends with "…".
 /// `match_indices` are sorted char indices into `text`.
 pub(crate) fn grep_row(
     path: &str,
@@ -28,23 +37,52 @@ pub(crate) fn grep_row(
     text: &str,
     match_indices: &[usize],
     width: usize,
-) -> Vec<(char, bool)> {
+) -> Vec<(char, GrepCell)> {
     let tag = format!(":{line}: ");
-    let (path, text_start) = fit_grep_row(path, &tag, text, first_run(match_indices), width);
-    let mut cells: Vec<(char, bool)> = path
+    let (cells, cut) = layout_grep_row(path, &tag, text, match_indices, width);
+    if !cut || width == 0 {
+        return cells;
+    }
+    // The right edge cuts the text: lay out again one cell short so the
+    // "…" marking the cut has room. The match comes first, though: if that
+    // cell would cost it a char (narrow rows keep the text to a third), the
+    // row stays as it was, without the marker.
+    let (mut short, _) = layout_grep_row(path, &tag, text, match_indices, width.saturating_sub(1));
+    let matched =
+        |cells: &[(char, GrepCell)]| cells.iter().filter(|c| c.1 == GrepCell::Match).count();
+    if matched(&short) < matched(&cells) {
+        return cells;
+    }
+    short.push(('…', GrepCell::Location));
+    short
+}
+
+/// One layout pass at `width`, cut at the right edge without a marker;
+/// also says whether anything was cut there.
+fn layout_grep_row(
+    path: &str,
+    tag: &str,
+    text: &str,
+    match_indices: &[usize],
+    width: usize,
+) -> (Vec<(char, GrepCell)>, bool) {
+    let (path, text_start) = fit_grep_row(path, tag, text, first_run(match_indices), width);
+    let mut cells: Vec<(char, GrepCell)> = path
         .chars()
         .chain(tag.chars())
-        .map(|ch| (ch, false))
+        .map(|ch| (ch, GrepCell::Location))
         .collect();
     if text_start > 0 {
-        cells.push(('…', false));
+        cells.push(('…', GrepCell::Location));
     }
-    cells.extend(
-        text.chars()
-            .enumerate()
-            .skip(text_start)
-            .map(|(idx, ch)| (ch, match_indices.binary_search(&idx).is_ok())),
-    );
+    cells.extend(text.chars().enumerate().skip(text_start).map(|(idx, ch)| {
+        let kind = if match_indices.binary_search(&idx).is_ok() {
+            GrepCell::Match
+        } else {
+            GrepCell::Text
+        };
+        (ch, kind)
+    }));
 
     let mut used = 0;
     let mut fits = 0;
@@ -55,8 +93,9 @@ pub(crate) fn grep_row(
         }
         fits += 1;
     }
+    let cut = fits < cells.len();
     cells.truncate(fits);
-    cells
+    (cells, cut)
 }
 
 /// Decides where a row gives way when it doesn't fit, in this order:
@@ -212,7 +251,7 @@ mod tests {
     fn folders_give_way_from_the_left_until_the_match_fits() {
         assert_eq!(
             row(DEEP_PATH, TEXT, 22..37, 100),
-            r#"d/C/A/S/R/Localization/en.lproj/Localizable.strings:135: "account_registration_paragraph_termsOfUse""#
+            r#"d/C/A/S/R/Localization/en.lproj/Localizable.strings:135: "account_registration_paragraph_termsOfUse…"#
         );
     }
 
@@ -220,7 +259,7 @@ mod tests {
     fn the_text_before_the_match_goes_once_every_folder_is_a_letter() {
         assert_eq!(
             row(DEEP_PATH, TEXT, 22..37, 60),
-            "d/C/A/S/R/L/e/Localizable.strings:135: …tion_paragraph_terms"
+            "d/C/A/S/R/L/e/Localizable.strings:135: …ion_paragraph_terms…"
         );
     }
 
@@ -228,7 +267,7 @@ mod tests {
     fn the_text_keeps_a_third_of_a_narrow_row() {
         assert_eq!(
             row(DEEP_PATH, TEXT, 22..37, 40),
-            "…/Localizable.strings:135: …paragraph_te"
+            "…Localizable.strings:135: …paragraph_te…"
         );
     }
 
@@ -252,17 +291,50 @@ mod tests {
         let cells = grep_row(DEEP_PATH, 135, TEXT, &(22..37).collect::<Vec<_>>(), 60);
         let highlighted: String = cells
             .iter()
-            .filter(|cell| cell.1)
+            .filter(|cell| cell.1 == super::GrepCell::Match)
             .map(|cell| cell.0)
             .collect();
         assert_eq!(highlighted, "paragraph_terms");
     }
 
     #[test]
+    fn only_a_row_cut_at_the_right_edge_ends_with_an_ellipsis() {
+        use super::GrepCell;
+        let cells = grep_row("src/main.rs", 7, "fn main() {}", &[3, 4, 5, 6], 80);
+        assert_ne!(cells.last().map(|c| c.0), Some('…'), "fits: no marker");
+        assert!(
+            cells[..15].iter().all(|c| c.1 == GrepCell::Location),
+            "src/main.rs:7: "
+        );
+        assert_eq!(cells[15], ('f', GrepCell::Text));
+        assert_eq!(cells[18], ('m', GrepCell::Match));
+
+        for width in 1..=130 {
+            let cells = grep_row(DEEP_PATH, 135, TEXT, &(22..37).collect::<Vec<_>>(), width);
+            let shown: String = cells.iter().map(|c| c.0).collect();
+            assert!(text_width(&shown) <= width, "width {width}: {shown:?}");
+            // The line is always cut. The marker shows unless it would cost
+            // the match a char; the match is whole from width 55 on.
+            if width >= 55 {
+                assert!(
+                    shown.contains("paragraph_terms"),
+                    "width {width}: {shown:?}"
+                );
+            }
+            let marked = cells.last() == Some(&('…', GrepCell::Location));
+            let match_cells = cells.iter().filter(|c| c.1 == GrepCell::Match).count();
+            assert!(
+                marked || match_cells > 0,
+                "width {width}: an unmarked cut must be protecting the match: {shown:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_row_without_a_match_only_shrinks_to_fit() {
         assert_eq!(
             row(DEEP_PATH, "plain text", 0..0, 80),
-            "d/C/A/Sources/Resources/Localization/en.lproj/Localizable.strings:135: plain tex"
+            "d/C/A/Sources/Resources/Localization/en.lproj/Localizable.strings:135: plain te…"
         );
     }
 

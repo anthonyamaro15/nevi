@@ -265,6 +265,31 @@ fn live_grep_rows_keep_the_match_visible_with_deep_paths() {
 }
 
 #[test]
+fn live_grep_rows_draw_the_location_quieter_than_the_code() {
+    let editor = grep_rows_editor("src/main.rs", 12, "fn main() {}", "main");
+    let screen = screen_after_frame(&editor);
+    let row = (0..40)
+        .find(|&row| screen_row(&screen, row).contains("src/main.rs:12: fn main"))
+        .expect("a row shows the hit");
+    let text = screen_row(&screen, row);
+    let col_of = |needle: &str| text.find(needle).map(|byte| text[..byte].chars().count());
+    let fg = |col: usize| match screen.grid()[Line(row as i32)][Column(col)].fg {
+        alacritty_terminal::vte::ansi::Color::Spec(rgb) => crossterm::style::Color::Rgb {
+            r: rgb.r,
+            g: rgb.g,
+            b: rgb.b,
+        },
+        other => panic!("expected an RGB color, got {other:?}"),
+    };
+    let theme = editor.theme();
+    let path_col = col_of("src/main.rs").unwrap();
+    let code_col = col_of("fn main").unwrap();
+    assert_eq!(fg(path_col), theme.ui.line_number, "path");
+    assert_eq!(fg(code_col), theme.ui.foreground, "code");
+    assert_eq!(fg(code_col + 3), theme.ui.finder_match, "match");
+}
+
+#[test]
 fn live_grep_shows_the_selected_path_above_the_query() {
     let win = FloatingWindow::centered_with_preview(120, 40, false);
     let separator_row = win.y + win.height - 3;

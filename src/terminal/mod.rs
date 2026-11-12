@@ -5945,6 +5945,8 @@ impl Terminal {
         let finder_bg = theme.ui.finder_bg;
         let finder_fg = theme.ui.foreground;
         let match_color = theme.ui.finder_match;
+        // Live grep's `path:line:` sits back so the code leads.
+        let location_color = theme.ui.line_number;
         let mode_color = if editor.finder.is_normal_mode() {
             theme.ui.statusline_mode_normal // Use normal mode color
         } else {
@@ -6169,9 +6171,14 @@ impl Terminal {
                         &item.match_indices,
                         max_len,
                     );
-                    let colored = cells
-                        .into_iter()
-                        .map(|(ch, hit)| (ch, if hit { match_color } else { finder_fg }));
+                    let colored = cells.into_iter().map(|(ch, kind)| {
+                        let color = match kind {
+                            crate::finder::row::GrepCell::Location => location_color,
+                            crate::finder::row::GrepCell::Text => finder_fg,
+                            crate::finder::row::GrepCell::Match => match_color,
+                        };
+                        (ch, color)
+                    });
                     self.write_finder_row(colored, max_len)?;
                 } else {
                     // Diagnostics color their "[E]"-style severity prefix.
