@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
 
+mod explorer_prompt;
 mod save_commands;
 mod session;
 pub use session::SuspendOutcome;
@@ -3050,47 +3051,8 @@ impl Terminal {
             }
         }
 
-        // Render input prompt if there's a pending action
-        if editor.explorer.has_pending_action() {
-            let prompt_bg = explorer_bg;
-            let prompt_y = height.saturating_sub(1) as u16 + bufferline_offset;
-
-            execute!(self.stdout, cursor::MoveTo(0, prompt_y))?;
-            execute!(self.stdout, SetBackgroundColor(prompt_bg))?;
-
-            // Prompt text
-            let prompt = editor.explorer.action_prompt();
-            execute!(self.stdout, SetForegroundColor(theme.ui.finder_prompt))?;
-            terminal_print!(self, "{}", prompt);
-
-            // Input buffer
-            execute!(self.stdout, SetForegroundColor(explorer_fg))?;
-            let input = &editor.explorer.input_buffer;
-
-            let available = width.saturating_sub(prompt.len());
-            if available > 0 {
-                let (visible, _) =
-                    explorer_action_input_view(input, editor.explorer.input_cursor, available);
-                terminal_print!(self, "{}", visible);
-                let remaining = available.saturating_sub(visible.chars().count());
-                terminal_print!(self, "{:remaining$}", "", remaining = remaining);
-            }
-
-            // Show help text if available
-            let help = editor.explorer.action_help();
-            if !help.is_empty() && height > 2 {
-                let help_y = height.saturating_sub(2) as u16 + bufferline_offset;
-                execute!(self.stdout, cursor::MoveTo(0, help_y))?;
-                execute!(self.stdout, SetBackgroundColor(prompt_bg))?;
-                execute!(self.stdout, SetForegroundColor(line_num_color))?;
-                let help_display = if help.len() > width {
-                    format!("{}…", &help[..width.saturating_sub(1)])
-                } else {
-                    format!("{:width$}", help, width = width)
-                };
-                terminal_print!(self, "{}", help_display);
-            }
-        }
+        // Add / rename / delete ask in a box under the selected row.
+        self.render_explorer_prompt(editor)?;
 
         // Render search input if in search mode
         if editor.explorer.is_searching {
@@ -3375,24 +3337,16 @@ impl Terminal {
             Mode::Explorer => {
                 // Show cursor in input/search modes, hide otherwise
                 if editor.explorer.has_pending_action() {
-                    let prompt = editor.explorer.action_prompt();
-                    let explorer_width = editor.explorer.width as usize;
-                    let available = explorer_width.saturating_sub(prompt.len());
-                    let (_, input_cursor_x) = explorer_action_input_view(
-                        &editor.explorer.input_buffer,
-                        editor.explorer.input_cursor,
-                        available,
-                    );
-                    let cursor_x =
-                        (prompt.len() + input_cursor_x).min(explorer_width.saturating_sub(1));
-                    let cursor_y = editor.text_rows().saturating_sub(1) as u16
-                        + editor.settings.editor.bufferline as u16;
-                    execute!(
-                        self.stdout,
-                        cursor::MoveTo(cursor_x as u16, cursor_y),
-                        cursor::Show,
-                        cursor::SetCursorStyle::BlinkingBar
-                    )?;
+                    // Delete takes a single key, so it has no text cursor.
+                    match explorer_prompt::prompt_cursor(editor) {
+                        Some((x, y)) => execute!(
+                            self.stdout,
+                            cursor::MoveTo(x, y),
+                            cursor::Show,
+                            cursor::SetCursorStyle::BlinkingBar
+                        )?,
+                        None => execute!(self.stdout, cursor::Hide)?,
+                    }
                 } else if editor.explorer.is_searching {
                     let cursor_x = 1 + editor.explorer.search_cursor; // +1 for '/'
                     let cursor_y = editor.text_rows().saturating_sub(1) as u16
@@ -10087,7 +10041,24 @@ fn handle_explorer_mode(editor: &mut Editor, key: KeyEvent) {
         return;
     }
 
-    // Handle input mode for add/rename/delete
+    // Delete asks in a red box and takes one key: y deletes, n or Esc keeps.
+    if editor.explorer.pending_action == Some(crate::explorer::ExplorerAction::Delete) {
+        match (key.modifiers, key.code) {
+            (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char('y' | 'Y')) => {
+                editor.explorer.input_buffer = "y".to_string();
+                execute_explorer_action(editor);
+            }
+            (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char('n' | 'N'))
+            | (KeyModifiers::NONE, KeyCode::Esc)
+            | (KeyModifiers::CONTROL, KeyCode::Char('[' | 'c')) => {
+                editor.explorer.cancel_action();
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // Handle input mode for add/rename
     if editor.explorer.has_pending_action() {
         match (key.modifiers, key.code) {
             // Cancel action
@@ -11631,13 +11602,13 @@ mod tests {
                 editor.settings.editor.bufferline = bufferline;
                 editor.set_size(80, 24);
                 editor.mode = Mode::Explorer;
-                if search {
-                    editor.explorer.start_search();
-                    editor.explorer.search_buffer = "a".to_string();
-                    editor.explorer.search_cursor = 1;
-                } else {
-                    editor.explorer.start_rename();
+                if !search {
+                    // Add / rename moved into a box: see the explorer_prompt tests.
+                    continue;
                 }
+                editor.explorer.start_search();
+                editor.explorer.search_buffer = "a".to_string();
+                editor.explorer.search_cursor = 1;
 
                 let output = SharedOutput::default();
                 let mut terminal = Terminal::new_for_test(Box::new(output.clone()));
@@ -11645,21 +11616,134 @@ mod tests {
                 terminal.position_cursor(&editor).expect("position cursor");
                 let rendered = output.into_string();
                 let (row, col) = final_cursor_cell(&rendered);
-                let prompt = if search {
-                    "/a"
-                } else {
-                    editor.explorer.action_prompt()
-                };
-                assert!(screen_row_text(&rendered, row).starts_with(prompt));
+                assert!(screen_row_text(&rendered, row).starts_with("/a"));
                 assert_eq!(row, editor.text_rows() - 1 + usize::from(bufferline));
-                let expected_col = if search {
-                    2
-                } else {
-                    prompt.len() + editor.explorer.input_cursor
-                };
-                assert_eq!(col, expected_col);
+                assert_eq!(col, 2);
             }
         }
+    }
+
+    /// The explorer and the cursor, as one frame shows them.
+    fn render_explorer_with_cursor(editor: &Editor) -> (String, (usize, usize)) {
+        let output = SharedOutput::default();
+        let mut terminal = Terminal::new_for_test(Box::new(output.clone()));
+        terminal.render_explorer(editor).expect("render explorer");
+        terminal.position_cursor(editor).expect("position cursor");
+        let rendered = output.into_string();
+        let cursor = final_cursor_cell(&rendered);
+        (rendered, cursor)
+    }
+
+    #[test]
+    fn explorer_add_asks_under_the_selected_row_with_its_folder() {
+        for bufferline in [false, true] {
+            let mut editor = explorer_test_editor();
+            editor.settings.editor.bufferline = bufferline;
+            editor.mode = Mode::Explorer;
+            editor.explorer.start_add();
+            editor.explorer.input_insert('x');
+
+            // Header, then src, then main.rs (selected): the box starts below it.
+            let selected_row = 2 + usize::from(bufferline);
+            let (rendered, cursor) = render_explorer_with_cursor(&editor);
+            let row = |r: usize| screen_row_text(&rendered, r);
+            assert!(
+                row(selected_row + 1).contains("New file"),
+                "{:?}",
+                row(selected_row + 1)
+            );
+            assert!(
+                row(selected_row + 2).starts_with("  │ src/x"),
+                "{:?}",
+                row(selected_row + 2)
+            );
+            assert!(row(selected_row + 3).contains("end with / for a folder"));
+            // After "  │ src/x".
+            assert_eq!(cursor, (selected_row + 2, 9));
+        }
+    }
+
+    #[test]
+    fn explorer_prompt_opens_above_a_row_at_the_bottom() {
+        let mut editor = explorer_test_editor();
+        editor.explorer.flat_view = (0..40)
+            .map(|i| crate::explorer::FlatNode {
+                path: PathBuf::from(format!("/proj/f{i}.txt")),
+                name: format!("f{i}.txt"),
+                is_dir: false,
+                depth: 1,
+                is_expanded: false,
+            })
+            .collect();
+        editor.explorer.selected = 39;
+        editor.explorer.start_rename();
+
+        let prompt = super::explorer_prompt::prompt_box(&editor).expect("prompt");
+        // The last list row is the selection; the box ends right above it.
+        let selected_row = editor.text_rows() as u16 - 1;
+        assert_eq!(prompt.y + 3, selected_row);
+        assert_eq!(prompt.title, "Rename");
+        assert_eq!(prompt.prefix, "", "files at the root have no folder");
+    }
+
+    #[test]
+    fn explorer_delete_is_red_names_the_file_and_takes_one_key() {
+        let tmp = unique_temp_dir("nevi_explorer_delete");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let file = tmp.join("notes.txt");
+        std::fs::write(&file, "x").expect("write file");
+
+        let mut editor = Editor::default();
+        editor.set_size(120, 30);
+        editor.mode = Mode::Explorer;
+        editor.explorer.visible = true;
+        editor.explorer.root = Some(tmp.clone());
+        editor.explorer.flat_view = vec![crate::explorer::FlatNode {
+            path: file.clone(),
+            name: "notes.txt".to_string(),
+            is_dir: false,
+            depth: 1,
+            is_expanded: false,
+        }];
+        editor.explorer.selected = 0;
+
+        editor.explorer.start_delete();
+        let (rendered, _) = render_explorer_with_cursor(&editor);
+        let error = foreground_sequence(editor.theme().diagnostic.error);
+        assert!(rendered.contains("Delete notes.txt?"));
+        assert!(rendered.contains("can't be undone"));
+        assert!(rendered.contains(&format!("{error}\x1b[1mDelete notes.txt?")));
+
+        // Anything but y or n is ignored; n keeps the file.
+        handle_key(&mut editor, key('x'));
+        assert!(editor.explorer.has_pending_action());
+        handle_key(&mut editor, key('n'));
+        assert!(!editor.explorer.has_pending_action());
+        assert!(file.exists());
+
+        // y deletes at once, no Enter.
+        editor.explorer.start_delete();
+        handle_key(&mut editor, key('y'));
+        assert!(!editor.explorer.has_pending_action());
+        assert!(!file.exists());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn explorer_delete_warns_about_unsaved_changes() {
+        let mut editor = explorer_test_editor();
+        editor.buffer_mut().path = Some(PathBuf::from("/proj/src/main.rs"));
+        editor.buffer_mut().dirty = true;
+        editor.explorer.start_delete();
+        let prompt = super::explorer_prompt::prompt_box(&editor).expect("prompt");
+        assert_eq!(prompt.body, Some("has unsaved changes"));
+
+        editor.explorer.selected = 0;
+        editor.explorer.start_delete();
+        let prompt = super::explorer_prompt::prompt_box(&editor).expect("prompt");
+        assert_eq!(prompt.title, "Delete src?");
+        assert_eq!(prompt.body, Some("folder, files with unsaved changes"));
     }
 
     #[test]
