@@ -54,7 +54,7 @@ impl Editor {
         let was_dirty = self.buffers[buffer_idx].dirty;
         self.buffers[buffer_idx].save()?;
         self.mark_bufferline_if_dirty_changed(buffer_idx, was_dirty);
-        self.status_message = Some(format!(
+        self.set_status(format!(
             "\"{}\" written",
             self.buffers[buffer_idx].display_name()
         ));
@@ -78,7 +78,7 @@ impl Editor {
             && self.buffers[buffer_idx].has_external_changes()
         {
             let message = "Write blocked: file changed on disk; use :w! to overwrite".to_string();
-            self.set_status(message.clone());
+            self.set_error(message.clone());
             anyhow::bail!(message);
         }
         Ok(())

@@ -85,6 +85,16 @@ pub enum Mode {
 }
 
 /// Where the expression-register result should be applied.
+/// How the command line draws `status_message`. Info stays plain and
+/// Vim-shaped; warnings and errors take the theme's diagnostic colors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MessageLevel {
+    #[default]
+    Info,
+    Warning,
+    Error,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpressionRegisterTarget {
     /// Normal mode: keep the result in the expression register for the next operation.
@@ -1120,6 +1130,9 @@ pub struct Editor {
     pub should_quit: bool,
     /// Status message
     pub status_message: Option<String>,
+    /// Level of `status_message`; set together with it by `set_status`,
+    /// `set_warning` and `set_error`.
+    pub status_level: MessageLevel,
     /// Registers for yank/paste
     pub registers: Registers,
     /// Input state machine
@@ -1712,6 +1725,7 @@ impl Editor {
             term_width: 80,
             should_quit: false,
             status_message: None,
+            status_level: MessageLevel::Info,
             registers: Registers::new(),
             input_state: InputState::new(),
             command_line: CommandLine::new(),
@@ -3601,8 +3615,9 @@ impl Editor {
             }
             Some(_) => self.set_status("No alternate file"),
             None => {
+                let shown = path.display().to_string();
                 if let Err(err) = self.open_file(path) {
-                    self.set_status(format!("Error: {}", err));
+                    self.set_error(format!("Couldn't open {}: {}", shown, err));
                 }
             }
         }
@@ -5942,7 +5957,7 @@ impl Editor {
             Ok(result) => result,
             Err(err) => {
                 self.input_state.selected_register = None;
-                self.set_status(format!("Expression error: {}", err));
+                self.set_error(format!("Expression error: {}", err));
                 return false;
             }
         };
@@ -6725,7 +6740,23 @@ impl Editor {
 
     /// Set a status message
     pub fn set_status(&mut self, msg: impl Into<String>) {
+        self.set_message(MessageLevel::Info, msg);
+    }
+
+    /// Something worked only partly, e.g. a theme applied but not saved.
+    pub fn set_warning(&mut self, msg: impl Into<String>) {
+        self.set_message(MessageLevel::Warning, msg);
+    }
+
+    /// Something failed. Lead with what failed in plain words ("Couldn't
+    /// open ..."); the command line adds the error color and glyph.
+    pub fn set_error(&mut self, msg: impl Into<String>) {
+        self.set_message(MessageLevel::Error, msg);
+    }
+
+    fn set_message(&mut self, level: MessageLevel, msg: impl Into<String>) {
         self.status_message = Some(msg.into());
+        self.status_level = level;
         self.render_damage.mark_command_line();
     }
 
@@ -10841,7 +10872,7 @@ impl Editor {
 
                         // Try to open the file (will be handled by main loop if needed)
                         if let Err(e) = self.open_file(path_clone) {
-                            self.set_status(format!("Cannot open file for mark: {}", e));
+                            self.set_error(format!("Couldn't open the file for that mark: {}", e));
                             return;
                         }
 
@@ -10903,7 +10934,7 @@ impl Editor {
 
                         // Try to open the file
                         if let Err(e) = self.open_file(path_clone) {
-                            self.set_status(format!("Cannot open file for mark: {}", e));
+                            self.set_error(format!("Couldn't open the file for that mark: {}", e));
                             return;
                         }
 
