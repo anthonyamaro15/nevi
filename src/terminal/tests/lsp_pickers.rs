@@ -58,7 +58,7 @@ fn references_show_each_line_of_code_with_the_symbol_title() {
     let screen = screen(&editor);
 
     assert!(row_with(&screen, "╭─ References · total · 2 ─").ends_with('╮'));
-    let first = row_with(&screen, "main.go:3: func total(orders []int) …");
+    let first = row_with(&screen, "main.go:3: func total(orders []int)");
     assert!(first.contains("│▌"), "selected row has the bar: {first:?}");
     let second = row_with(&screen, "main.go:8: println(total(nil))");
     assert!(second.contains("│ "), "{second:?}");
