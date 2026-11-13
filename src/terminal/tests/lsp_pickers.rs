@@ -18,7 +18,6 @@ fn temp_file(name: &str, text: &str) -> PathBuf {
 fn editor_on(path: &PathBuf) -> Editor {
     let mut editor = Editor::default();
     editor.set_size(100, 30);
-    editor.registers.use_in_memory_clipboard_for_tests();
     editor.open_file(path.clone()).unwrap();
     editor
 }

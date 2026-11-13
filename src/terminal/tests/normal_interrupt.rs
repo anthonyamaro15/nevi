@@ -134,7 +134,6 @@ fn insert_ctrl_o_ctrl_c_stays_in_normal_mode() {
     // and shows no quit guidance there, whether or not a command was pending.
     for pending in ["", "d", "2"] {
         let mut editor = Editor::default();
-        editor.registers.use_in_memory_clipboard_for_tests();
         editor.replace_buffer_content("abc def\n");
         feed(&mut editor, "i<C-o>");
         feed(&mut editor, pending);
@@ -186,7 +185,6 @@ fn ctrl_c_cancels_the_expression_register_prompt() {
         ("i<C-r>=", "xabc def\n", Mode::Insert),
     ] {
         let mut editor = Editor::default();
-        editor.registers.use_in_memory_clipboard_for_tests();
         editor.replace_buffer_content("abc def\n");
         feed(&mut editor, open);
         feed(&mut editor, "<C-c>x");
