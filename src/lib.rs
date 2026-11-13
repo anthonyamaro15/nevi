@@ -17,6 +17,7 @@ mod fuzz;
 pub mod git;
 pub mod harpoon;
 pub mod health;
+pub mod hover;
 pub mod indent;
 pub mod input;
 #[cfg(test)]

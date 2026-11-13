@@ -876,8 +876,22 @@ fn main() -> anyhow::Result<()> {
                         EditorEvent::Key(k) => k,
                     };
 
-                    // Dismiss hover popup on any key press
-                    editor.hover_content = None;
+                    // Ctrl-d / Ctrl-u page a hover that doesn't fit; any
+                    // other key closes it.
+                    if nevi::terminal::scroll_hover(&mut editor, key) {
+                        last_input_at = Some(Instant::now());
+                        needs_redraw = true;
+                        redraw_from_input = true;
+                        if !finish_input_batch_event(
+                            &terminal,
+                            &mut events_processed,
+                            max_key_events_per_frame,
+                        )? {
+                            break;
+                        }
+                        continue;
+                    }
+                    editor.hover = None;
                     // Dismiss diagnostic float on any key press (it can be reopened with gl)
                     editor.show_diagnostic_float = false;
 
@@ -1777,14 +1791,10 @@ fn main() -> anyhow::Result<()> {
                             }
 
                             // Handle hover - show popup with full content
-                            match contents {
-                                Some(text) => {
-                                    editor.hover_content = Some(text);
-                                }
-                                None => {
-                                    editor.set_status("No hover info");
-                                    editor.hover_content = None;
-                                }
+                            editor.hover = contents
+                                .and_then(|text| nevi::hover::Hover::for_editor(&editor, &text));
+                            if editor.hover.is_none() {
+                                editor.set_status("No hover info");
                             }
                             needs_redraw = true;
                         }

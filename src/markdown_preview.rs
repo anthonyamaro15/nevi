@@ -26,7 +26,7 @@ pub struct PreviewSpan {
 }
 
 impl PreviewSpan {
-    fn plain(text: impl Into<String>) -> Self {
+    pub(crate) fn plain(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
             style: PreviewSpanStyle::Plain,
@@ -41,6 +41,10 @@ pub struct PreviewLine {
 }
 
 impl PreviewLine {
+    pub(crate) fn blank() -> Self {
+        Self::from_text(PreviewLineKind::Blank, "")
+    }
+
     fn from_text(kind: PreviewLineKind, text: impl Into<String>) -> Self {
         Self {
             kind,
@@ -290,28 +294,57 @@ fn parse_inline(text: &str) -> Vec<PreviewSpan> {
                     style: PreviewSpanStyle::Emphasis,
                 });
             }
+            // gopls escapes its doc links (`\[Println]`); let the `[` below
+            // decide, so they read like the unescaped ones.
+            '\\' if chars.peek() == Some(&'[') => {}
+            '\\' if chars.peek().is_some_and(char::is_ascii_punctuation) => {
+                plain.extend(chars.next());
+            }
             '[' => {
-                flush_plain(&mut spans, &mut plain);
+                let after_word = plain
+                    .chars()
+                    .last()
+                    .or_else(|| spans.last().and_then(|span| span.text.chars().last()))
+                    .is_some_and(|prev| prev.is_alphanumeric() || prev == '_');
                 let mut label = String::new();
-                while let Some(next) = chars.next() {
+                let mut closed = false;
+                for next in chars.by_ref() {
                     if next == ']' {
+                        closed = true;
                         break;
                     }
                     label.push(next);
                 }
-                if chars.next() == Some('(') {
-                    while let Some(next) = chars.next() {
-                        if next == ')' {
-                            break;
-                        }
+                // `[label](url)` and `[label][ref]` show the label. A bare
+                // `[Name]` is a doc link the way gopls writes them (`[os.Stdout]`),
+                // but not after a word (`a[i]`) and not with spaces inside.
+                let is_link = match chars.peek().copied() {
+                    Some(open @ ('(' | '[')) if closed => {
+                        chars.next();
+                        let close = if open == '(' { ')' } else { ']' };
+                        chars.by_ref().find(|next| *next == close);
+                        true
                     }
+                    _ => {
+                        closed
+                            && !after_word
+                            && !label.is_empty()
+                            && !label.contains(char::is_whitespace)
+                    }
+                };
+                if is_link {
+                    flush_plain(&mut spans, &mut plain);
                     spans.push(PreviewSpan {
-                        text: label,
+                        // gopls labels its pkg.go.dev link "`fmt.Println` on ...".
+                        text: label.replace('`', ""),
                         style: PreviewSpanStyle::Link,
                     });
                 } else {
                     plain.push('[');
                     plain.push_str(&label);
+                    if closed {
+                        plain.push(']');
+                    }
                 }
             }
             _ => plain.push(ch),
@@ -521,6 +554,33 @@ mod tests {
             spans
                 .iter()
                 .any(|span| span.text == "docs" && span.style == PreviewSpanStyle::Link)
+        );
+    }
+
+    #[test]
+    fn doc_links_show_their_label_and_brackets_after_a_word_stay() {
+        let line = |source: &str| render_markdown(source).lines[0].plain_text();
+
+        assert_eq!(
+            line("[Print], [Println] and [Printf] write to [os.Stdout];"),
+            "Print, Println and Printf write to os.Stdout;"
+        );
+        assert_eq!(line("see [the docs][ref] now"), "see the docs now");
+        assert_eq!(
+            line("index a[i] or [two words]"),
+            "index a[i] or [two words]"
+        );
+        assert_eq!(line("unclosed [bracket"), "unclosed [bracket");
+        assert_eq!(line(r"not \*emphasis\* and a\_b"), "not *emphasis* and a_b");
+        assert_eq!(
+            line(
+                r"gopls: \[Print] and \[Println] write to [os.Stdout](https://pkg.go.dev/os#Stdout); a\[i]"
+            ),
+            "gopls: Print and Println write to os.Stdout; a[i]"
+        );
+        assert_eq!(
+            line("[`fmt.Println` on pkg.go.dev](https://pkg.go.dev/fmt#Println)"),
+            "fmt.Println on pkg.go.dev"
         );
     }
 
