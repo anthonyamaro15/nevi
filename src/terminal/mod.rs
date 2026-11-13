@@ -79,7 +79,7 @@ use crate::editor::{
 use crate::input::{
     InsertPosition, KeyAction, Operator, TextObject, TextObjectModifier, TextObjectType,
 };
-use crate::lsp::types::{CompletionKind, Diagnostic, DiagnosticSeverity};
+use crate::lsp::types::{CompletionKind, Diagnostic, DiagnosticSeverity, DiagnosticTags};
 use crate::replay::{play_macro, repeat_last_change};
 use crate::syntax::{HighlightSpan, SyntaxStyle};
 
@@ -211,6 +211,7 @@ struct RenderLineColors {
     jump_label_bg: Color,
     jump_label_fg: Color,
     diagnostic_error_color: Color,
+    diagnostic_warning_color: Color,
     diagnostic_hint_color: Color,
 }
 
@@ -229,6 +230,7 @@ impl RenderLineColors {
             jump_label_bg: theme.ui.finder_match,
             jump_label_fg: Color::Black,
             diagnostic_error_color: theme.diagnostic.error,
+            diagnostic_warning_color: theme.diagnostic.warning,
             diagnostic_hint_color: theme.ui.line_number,
         }
     }
@@ -240,7 +242,10 @@ struct RenderLineCellStyle {
     bg: Color,
     bold: bool,
     italic: bool,
+    strikeout: bool,
     underline_color: Option<Color>,
+    /// A plain underline instead of the error undercurl.
+    underline_straight: bool,
     jump_label: Option<char>,
 }
 
@@ -368,9 +373,10 @@ impl RenderLineContext<'_> {
                 line == self.line_idx && (start..end).contains(&source_col)
             });
         let jump_label = self.jump_label_at(source_col);
-        let diag_at_col = diagnostic_at_col(self.diagnostics, self.line_idx, source_col);
-        let is_hint_diagnostic =
-            diag_at_col.map_or(false, |d| d.severity == DiagnosticSeverity::Hint);
+        let (diag_at_col, tags) = diagnostic_at_col(self.diagnostics, self.line_idx, source_col);
+        // Tagged text keeps its syntax color; the fade or strike marks it.
+        let is_hint_diagnostic = !(tags.unnecessary || tags.deprecated)
+            && diag_at_col.map_or(false, |d| d.severity == DiagnosticSeverity::Hint);
 
         let (bg, fg) = if jump_label.is_some() {
             (self.colors.jump_label_bg, self.colors.jump_label_fg)
@@ -385,6 +391,9 @@ impl RenderLineContext<'_> {
             (self.colors.search_match_bg, self.colors.search_match_fg)
         } else if is_hint_diagnostic {
             (base_bg, self.colors.diagnostic_hint_color)
+        } else if tags.unnecessary {
+            let fg = syntax_color.unwrap_or(self.colors.editor_fg);
+            (base_bg, fade_toward(fg, base_bg, UNNECESSARY_TEXT_KEEP))
         } else {
             (base_bg, syntax_color.unwrap_or(self.colors.editor_fg))
         };
@@ -394,13 +403,21 @@ impl RenderLineContext<'_> {
             } else {
                 None
             };
-        let underline_color = if jump_label.is_some() || in_visual || is_search {
-            None
-        } else {
+        let decorated = jump_label.is_none() && !in_visual && !is_search;
+        let error_underline = if decorated {
             diag_at_col.and_then(|diag| {
                 diagnostic_underline_color(diag, self.colors.diagnostic_error_color)
             })
+        } else {
+            None
         };
+        let strikeout = decorated && tags.deprecated;
+        // The terminal draws the strike in the text color at its own
+        // thickness, which is easy to miss, so deprecated text also gets a
+        // plain underline in the warning color. An error's undercurl wins.
+        let underline_straight = strikeout && error_underline.is_none();
+        let underline_color =
+            error_underline.or(underline_straight.then_some(self.colors.diagnostic_warning_color));
 
         RenderLineCellStyle {
             fg,
@@ -409,7 +426,9 @@ impl RenderLineContext<'_> {
                 || (is_current_search && !in_visual)
                 || desired_style.map_or(false, |style| style.bold),
             italic: desired_style.map_or(false, |style| style.italic),
+            strikeout,
             underline_color,
+            underline_straight,
             jump_label,
         }
     }
@@ -589,29 +608,41 @@ fn diagnostic_severity_priority(severity: DiagnosticSeverity) -> u8 {
     }
 }
 
+/// The most severe diagnostic covering `col`, plus the tags of every
+/// diagnostic covering it: an error and an "unused" hint can overlap, and the
+/// fade must survive the error winning. One pass, no allocation (per cell).
 fn diagnostic_at_col<'a>(
     diagnostics: &[&'a Diagnostic],
     line_num: usize,
     col: usize,
-) -> Option<&'a Diagnostic> {
-    diagnostics
-        .iter()
-        .copied()
-        .filter(|d| {
-            if line_num < d.line || line_num > d.end_line {
-                return false;
-            }
-            if d.line == d.end_line {
-                col >= d.col_start && col < d.col_end
-            } else if line_num == d.line {
-                col >= d.col_start
-            } else if line_num == d.end_line {
-                col < d.col_end
-            } else {
-                true
-            }
-        })
-        .min_by_key(|d| diagnostic_severity_priority(d.severity))
+) -> (Option<&'a Diagnostic>, DiagnosticTags) {
+    let mut most_severe: Option<&'a Diagnostic> = None;
+    let mut tags = DiagnosticTags::default();
+    for &d in diagnostics {
+        let covers = if line_num < d.line || line_num > d.end_line {
+            false
+        } else if d.line == d.end_line {
+            col >= d.col_start && col < d.col_end
+        } else if line_num == d.line {
+            col >= d.col_start
+        } else if line_num == d.end_line {
+            col < d.col_end
+        } else {
+            true
+        };
+        if !covers {
+            continue;
+        }
+        tags.unnecessary |= d.tags.unnecessary;
+        tags.deprecated |= d.tags.deprecated;
+        // Strict `<` keeps the first of equally severe ones.
+        if most_severe.is_none_or(|m| {
+            diagnostic_severity_priority(d.severity) < diagnostic_severity_priority(m.severity)
+        }) {
+            most_severe = Some(d);
+        }
+    }
+    (most_severe, tags)
 }
 
 fn diagnostic_underline_color(
@@ -658,12 +689,17 @@ fn write_ansi_underline_color<W: Write>(writer: &mut W, color: Color) -> io::Res
 fn apply_diagnostic_underline<W: Write>(
     writer: &mut W,
     underline_color: Option<Color>,
+    straight: bool,
     token_fg: Color,
 ) -> io::Result<()> {
     if let Some(color) = underline_color {
         execute!(
             writer,
-            SetAttribute(Attribute::Undercurled),
+            SetAttribute(if straight {
+                Attribute::Underlined
+            } else {
+                Attribute::Undercurled
+            }),
             SetForegroundColor(token_fg)
         )?;
         write_ansi_underline_color(writer, color)
@@ -875,6 +911,10 @@ fn dim_color(color: Color) -> Color {
 /// How much of the text color an unfocused split keeps; the rest is the
 /// theme background, so the fade reads the same on dark and light themes.
 const INACTIVE_PANE_TEXT_KEEP: f32 = 0.55;
+
+/// How much of its color text keeps under an LSP "unnecessary" tag (unused
+/// code, inactive `#[cfg]` blocks).
+const UNNECESSARY_TEXT_KEEP: f32 = 0.55;
 
 /// Mix `color` toward `bg`, keeping `keep` of the original (1.0 = unchanged).
 /// Unlike `dim_color`, which darkens toward black, this lowers contrast on
@@ -1108,7 +1148,8 @@ fn render_line_text_with_context<W: Write>(
     let mut current_bg: Option<Color> = None;
     let mut current_bold = false;
     let mut current_italic = false;
-    let mut current_underline_color: Option<Color> = None;
+    let mut current_strikeout = false;
+    let mut current_underline: (Option<Color>, bool) = (None, false);
     let mut rendered_cols = 0;
 
     for (visual_idx, ch) in chars.iter().enumerate() {
@@ -1122,7 +1163,9 @@ fn render_line_text_with_context<W: Write>(
                 bg: base_bg,
                 bold: false,
                 italic: false,
+                strikeout: false,
                 underline_color: None,
+                underline_straight: false,
                 jump_label: None,
             }
         };
@@ -1139,7 +1182,8 @@ fn render_line_text_with_context<W: Write>(
             current_bg = Some(base_bg);
             current_bold = false;
             current_italic = false;
-            current_underline_color = None;
+            current_strikeout = false;
+            current_underline = (None, false);
             continue;
         }
 
@@ -1175,9 +1219,21 @@ fn render_line_text_with_context<W: Write>(
             )?;
             current_italic = cell_style.italic;
         }
-        if cell_style.underline_color != current_underline_color {
-            apply_diagnostic_underline(writer, cell_style.underline_color, cell_style.fg)?;
-            current_underline_color = cell_style.underline_color;
+        if cell_style.strikeout != current_strikeout {
+            execute!(
+                writer,
+                SetAttribute(if cell_style.strikeout {
+                    Attribute::CrossedOut
+                } else {
+                    Attribute::NotCrossedOut
+                })
+            )?;
+            current_strikeout = cell_style.strikeout;
+        }
+        let underline = (cell_style.underline_color, cell_style.underline_straight);
+        if underline != current_underline {
+            apply_diagnostic_underline(writer, underline.0, underline.1, cell_style.fg)?;
+            current_underline = underline;
         }
 
         rendered_cols += write_editor_char(writer, *ch, context.tab_width)?;
@@ -2185,7 +2241,7 @@ impl Terminal {
                         DiagnosticSeverity::Error => e = true,
                         DiagnosticSeverity::Warning => w = true,
                         DiagnosticSeverity::Information => i = true,
-                        DiagnosticSeverity::Hint => h = true,
+                        DiagnosticSeverity::Hint => h |= !d.drawn_by_tags_alone(),
                     }
                 }
                 (e, w, i, h)
@@ -2313,7 +2369,7 @@ impl Terminal {
 
                 // Render inline diagnostic on first segment only
                 if segment.is_first && is_active {
-                    if let Some(diag) = line_diagnostics.first() {
+                    if let Some(diag) = line_diagnostics.iter().find(|d| !d.drawn_by_tags_alone()) {
                         let remaining = pane_width.saturating_sub(chars_printed + 3);
                         if remaining > 5 {
                             let (color, icon) = match diag.severity {
@@ -2478,7 +2534,7 @@ impl Terminal {
                             DiagnosticSeverity::Error => e = true,
                             DiagnosticSeverity::Warning => w = true,
                             DiagnosticSeverity::Information => i = true,
-                            DiagnosticSeverity::Hint => h = true,
+                            DiagnosticSeverity::Hint => h |= !d.drawn_by_tags_alone(),
                         }
                     }
                     (e, w, i, h)
@@ -2670,7 +2726,9 @@ impl Terminal {
                     // Render inline diagnostic (virtual text) for this line
                     // Reuse line_diagnostics from earlier instead of calling diagnostics_for_line again
                     if is_active {
-                        if let Some(diag) = line_diagnostics.first() {
+                        if let Some(diag) =
+                            line_diagnostics.iter().find(|d| !d.drawn_by_tags_alone())
+                        {
                             // Calculate remaining space for diagnostic
                             let remaining = pane_width.saturating_sub(chars_printed + 3); // 3 for " ● "
                             if remaining > 5 {
@@ -11361,9 +11419,9 @@ mod tests {
     use super::{
         INACTIVE_PANE_TEXT_KEEP, PartialRenderKind, RenderLineColors, RenderLineContext,
         RenderLineContextFactory, RenderLineTextScope, RenderTextOptions, Terminal,
-        apply_diagnostic_underline, apply_labeled_jump_style, diagnostic_at_col,
-        diagnostic_underline_color, execute_command, execute_leader_action, fade_toward,
-        finder_preview_match_ranges, fit_message, handle_insert_mode, handle_key,
+        UNNECESSARY_TEXT_KEEP, apply_diagnostic_underline, apply_labeled_jump_style,
+        diagnostic_at_col, diagnostic_underline_color, execute_command, execute_leader_action,
+        fade_toward, finder_preview_match_ranges, fit_message, handle_insert_mode, handle_key,
         has_vim_error_prefix, render_line_text_with_context, replace_completion_text,
         restore_after_labeled_jump, should_show_floating_terminal_cursor,
     };
@@ -11374,7 +11432,9 @@ mod tests {
     use crate::finder::FinderMode;
     use crate::floating_terminal::TerminalCursorShape;
     use crate::input::Motion;
-    use crate::lsp::types::{CompletionItem, CompletionKind, Diagnostic, DiagnosticSeverity};
+    use crate::lsp::types::{
+        CompletionItem, CompletionKind, Diagnostic, DiagnosticSeverity, DiagnosticTags,
+    };
     use crate::syntax::{HighlightSpan, SyntaxStyle};
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::grid::Dimensions;
@@ -12211,6 +12271,7 @@ mod tests {
                 message: "boom".to_string(),
                 source: None,
                 code: None,
+                tags: Default::default(),
             }],
         );
         let rendered = render_explorer_to_string(&editor);
@@ -12310,6 +12371,7 @@ mod tests {
                 message: "undefined: fmt.Pr".to_string(),
                 source: None,
                 code: None,
+                tags: Default::default(),
             }],
         );
         let cmd_row = |editor: &Editor| screen_row_text(&render_editor_to_string(editor), 5);
@@ -12347,6 +12409,7 @@ mod tests {
                 message: "ñ".repeat(100),
                 source: None,
                 code: None,
+                tags: Default::default(),
             }],
         );
         let row = screen_row_text(&render_editor_to_string(&editor), 5);
@@ -12459,6 +12522,7 @@ mod tests {
                 message: "boom".to_string(),
                 source: None,
                 code: None,
+                tags: Default::default(),
             }],
         );
         // The row continues with the inline diagnostic text, so check the prefix.
@@ -12740,6 +12804,7 @@ mod tests {
                 message: "problem".to_string(),
                 source: None,
                 code: None,
+                tags: Default::default(),
             }],
         );
 
@@ -16623,6 +16688,7 @@ mod tests {
             severity,
             source: None,
             code: None,
+            tags: Default::default(),
         }
     }
 
@@ -16634,11 +16700,300 @@ mod tests {
 
         assert_eq!(
             diagnostic_at_col(&diagnostics, 0, 6)
+                .0
                 .and_then(|diag| diagnostic_underline_color(diag, underline_color)),
             Some(underline_color)
         );
-        assert!(diagnostic_at_col(&diagnostics, 0, 3).is_none());
-        assert!(diagnostic_at_col(&diagnostics, 0, 10).is_none());
+        assert!(diagnostic_at_col(&diagnostics, 0, 3).0.is_none());
+        assert!(diagnostic_at_col(&diagnostics, 0, 10).0.is_none());
+    }
+
+    const UNUSED: DiagnosticTags = DiagnosticTags {
+        unnecessary: true,
+        deprecated: false,
+    };
+    const DEPRECATED: DiagnosticTags = DiagnosticTags {
+        unnecessary: false,
+        deprecated: true,
+    };
+
+    fn tagged(mut diag: Diagnostic, tags: DiagnosticTags) -> Diagnostic {
+        diag.tags = tags;
+        diag
+    }
+
+    const TAG_TEST_BG: Color = Color::Rgb { r: 0, g: 0, b: 0 };
+    const TAG_TEST_SYNTAX: Color = Color::Rgb {
+        r: 200,
+        g: 100,
+        b: 40,
+    };
+
+    /// Columns 0..8 carry a bold italic syntax span on line 0.
+    fn tag_test_highlights() -> Vec<HighlightSpan> {
+        vec![HighlightSpan {
+            start_col: 0,
+            end_col: 8,
+            fg: TAG_TEST_SYNTAX,
+            style: SyntaxStyle {
+                fg: TAG_TEST_SYNTAX,
+                bold: true,
+                italic: true,
+            },
+        }]
+    }
+
+    fn tag_test_context<'a>(
+        highlights: &'a [HighlightSpan],
+        diagnostics: &'a [&'a Diagnostic],
+        search_matches: &'a [(usize, usize, usize)],
+        visual_range: Option<(usize, usize, usize, usize)>,
+        mode: &'a Mode,
+    ) -> RenderLineContext<'a> {
+        RenderLineContext {
+            line_idx: 0,
+            col_offset: 0,
+            virtual_prefix_chars: 0,
+            highlights,
+            visual_range,
+            mode,
+            is_cursor_line: false,
+            search_matches,
+            current_search_match: None,
+            jump_labels: &[],
+            diagnostics,
+            colors: RenderLineColors {
+                editor_bg: TAG_TEST_BG,
+                editor_fg: Color::White,
+                cursor_line_bg: Color::DarkGrey,
+                selection_bg: Color::DarkBlue,
+                search_match_bg: Color::Yellow,
+                search_match_fg: Color::Black,
+                search_current_bg: Color::DarkYellow,
+                search_current_fg: Color::Black,
+                jump_label_bg: Color::Green,
+                jump_label_fg: Color::Black,
+                diagnostic_error_color: Color::Red,
+                diagnostic_warning_color: Color::Magenta,
+                diagnostic_hint_color: Color::DarkGrey,
+            },
+            tab_width: 4,
+        }
+    }
+
+    #[test]
+    fn unnecessary_tag_fades_syntax_color_and_keeps_bold_italic() {
+        let highlights = tag_test_highlights();
+        let unused = tagged(diagnostic(0, 2, 5, DiagnosticSeverity::Hint), UNUSED);
+        let diagnostics = vec![&unused];
+        let context = tag_test_context(&highlights, &diagnostics, &[], None, &Mode::Normal);
+
+        let cell = context.style_for_source_col(3);
+        assert_eq!(
+            cell.fg,
+            fade_toward(TAG_TEST_SYNTAX, TAG_TEST_BG, UNNECESSARY_TEXT_KEEP)
+        );
+        assert_ne!(cell.fg, TAG_TEST_SYNTAX);
+        assert!(cell.bold && cell.italic, "syntax style survives the fade");
+        assert!(!cell.strikeout);
+        assert_eq!(context.style_for_source_col(5).fg, TAG_TEST_SYNTAX);
+
+        // An untagged hint keeps today's hint recolor.
+        let hint = diagnostic(0, 2, 5, DiagnosticSeverity::Hint);
+        let diagnostics = vec![&hint];
+        let context = tag_test_context(&highlights, &diagnostics, &[], None, &Mode::Normal);
+        assert_eq!(context.style_for_source_col(3).fg, Color::DarkGrey);
+    }
+
+    #[test]
+    fn deprecated_tag_strikes_through_in_syntax_color() {
+        let highlights = tag_test_highlights();
+        let old = tagged(diagnostic(0, 2, 5, DiagnosticSeverity::Warning), DEPRECATED);
+        let diagnostics = vec![&old];
+        let context = tag_test_context(&highlights, &diagnostics, &[], None, &Mode::Normal);
+
+        let cell = context.style_for_source_col(2);
+        assert!(cell.strikeout);
+        assert_eq!(cell.fg, TAG_TEST_SYNTAX);
+        assert!(cell.bold && cell.italic);
+        assert_eq!(
+            (cell.underline_color, cell.underline_straight),
+            (Some(Color::Magenta), true),
+            "a plain warning-colored underline backs up the strike"
+        );
+        for outside in [1, 5] {
+            let cell = context.style_for_source_col(outside);
+            assert!(!cell.strikeout);
+            assert_eq!(cell.underline_color, None);
+        }
+    }
+
+    #[test]
+    fn error_over_deprecated_keeps_the_error_undercurl() {
+        let highlights = tag_test_highlights();
+        let error = diagnostic(0, 0, 8, DiagnosticSeverity::Error);
+        let old = tagged(diagnostic(0, 2, 5, DiagnosticSeverity::Hint), DEPRECATED);
+        let diagnostics = vec![&error, &old];
+        let context = tag_test_context(&highlights, &diagnostics, &[], None, &Mode::Normal);
+
+        let cell = context.style_for_source_col(3);
+        assert!(cell.strikeout);
+        assert_eq!(
+            (cell.underline_color, cell.underline_straight),
+            (Some(Color::Red), false)
+        );
+    }
+
+    #[test]
+    fn error_over_unused_hint_keeps_underline_and_fade() {
+        let highlights = tag_test_highlights();
+        let error = diagnostic(0, 0, 8, DiagnosticSeverity::Error);
+        let unused = tagged(diagnostic(0, 2, 5, DiagnosticSeverity::Hint), UNUSED);
+        let diagnostics = vec![&error, &unused];
+        let context = tag_test_context(&highlights, &diagnostics, &[], None, &Mode::Normal);
+
+        let cell = context.style_for_source_col(3);
+        assert_eq!(cell.underline_color, Some(Color::Red));
+        assert_eq!(
+            cell.fg,
+            fade_toward(TAG_TEST_SYNTAX, TAG_TEST_BG, UNNECESSARY_TEXT_KEEP)
+        );
+        let outside = context.style_for_source_col(6);
+        assert_eq!(outside.underline_color, Some(Color::Red));
+        assert_eq!(outside.fg, TAG_TEST_SYNTAX);
+    }
+
+    #[test]
+    fn visual_selection_and_search_override_unnecessary_fade() {
+        let highlights = tag_test_highlights();
+        let unused = tagged(
+            diagnostic(0, 0, 8, DiagnosticSeverity::Hint),
+            DiagnosticTags {
+                unnecessary: true,
+                deprecated: true,
+            },
+        );
+        let diagnostics = vec![&unused];
+
+        let visual = tag_test_context(
+            &highlights,
+            &diagnostics,
+            &[],
+            Some((0, 0, 0, 2)),
+            &Mode::Visual,
+        );
+        let cell = visual.style_for_source_col(1);
+        assert_eq!(cell.bg, Color::DarkBlue);
+        assert_eq!(
+            cell.fg, TAG_TEST_SYNTAX,
+            "selection shows the unfaded color"
+        );
+        assert!(!cell.strikeout);
+        assert_eq!(cell.underline_color, None);
+
+        let search_matches = vec![(0, 0, 3)];
+        let search = tag_test_context(
+            &highlights,
+            &diagnostics,
+            &search_matches,
+            None,
+            &Mode::Normal,
+        );
+        let cell = search.style_for_source_col(1);
+        assert_eq!((cell.bg, cell.fg), (Color::Yellow, Color::Black));
+        assert!(!cell.strikeout);
+        assert_eq!(cell.underline_color, None);
+    }
+
+    /// One file line with a single diagnostic, rendered with and without wrap.
+    /// `name` keeps the temp dir apart from other tests running in parallel:
+    /// `unique_temp_dir` only differs by clock time within one process.
+    fn render_with_diagnostic(
+        name: &str,
+        text: &str,
+        diag: Diagnostic,
+        wrap: bool,
+    ) -> (Editor, String) {
+        let tmp = unique_temp_dir(&format!("nevi_diag_tags_{name}"));
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("notes.txt");
+        std::fs::write(&path, text).expect("write file");
+
+        let mut editor = Editor::default();
+        editor.set_size(60, 6);
+        editor.settings.editor.wrap = wrap;
+        editor.open_file(path.clone()).expect("open file");
+        editor.set_diagnostics(crate::lsp::path_to_uri(&path), vec![diag]);
+        let rendered = render_editor_to_string(&editor);
+        let _ = std::fs::remove_dir_all(&tmp);
+        (editor, rendered)
+    }
+
+    #[test]
+    fn deprecated_range_is_struck_through_and_reset_right_after() {
+        for wrap in [false, true] {
+            let old = tagged(diagnostic(0, 4, 7, DiagnosticSeverity::Warning), DEPRECATED);
+            let (_, rendered) = render_with_diagnostic("strike", "let old = 1;\n\n", old, wrap);
+
+            // Strike on, then a plain underline (SGR 4, not the 4:3 curl) with
+            // its color; both are off again before the next character.
+            let start = rendered
+                .find("let \x1b[9m\x1b[4m")
+                .expect("strike starts at the range");
+            let range = &rendered[start..];
+            let text = range
+                .find("mold\x1b[29m\x1b[24m")
+                .unwrap_or_else(|| panic!("wrap={wrap}: both end right after it; got {range:?}"));
+            assert!(
+                range[..text].contains("\x1b[58:"),
+                "wrap={wrap}: underline color is set; output={rendered:?}"
+            );
+            assert!(
+                !range[..text].contains("old"),
+                "wrap={wrap}: nothing but style codes before the range text"
+            );
+            assert_eq!(rendered.matches("\x1b[9m").count(), 1, "wrap={wrap}");
+            assert_eq!(rendered.matches("\x1b[4m").count(), 1, "wrap={wrap}");
+        }
+    }
+
+    #[test]
+    fn tagged_hint_has_no_sign_or_end_of_line_message() {
+        for wrap in [false, true] {
+            let unused = Diagnostic {
+                message: "unused variable".to_string(),
+                ..tagged(diagnostic(0, 4, 10, DiagnosticSeverity::Hint), UNUSED)
+            };
+            let (editor, rendered) =
+                render_with_diagnostic("hint", "let unused = 1;\n\n", unused, wrap);
+            let row = screen_row_text(&rendered, 0);
+
+            assert!(
+                !row.contains(editor.ui_glyphs().gutter_hint),
+                "wrap={wrap}: {row}"
+            );
+            assert!(!row.contains("unused variable"), "wrap={wrap}: {row}");
+            assert!(row.contains("let unused = 1;"), "wrap={wrap}: {row}");
+        }
+    }
+
+    #[test]
+    fn tagged_warning_keeps_sign_and_end_of_line_message() {
+        for wrap in [false, true] {
+            let unused = Diagnostic {
+                message: "unused variable".to_string(),
+                ..tagged(diagnostic(0, 4, 10, DiagnosticSeverity::Warning), UNUSED)
+            };
+            let (editor, rendered) =
+                render_with_diagnostic("warning", "let unused = 1;\n\n", unused, wrap);
+            let row = screen_row_text(&rendered, 0);
+
+            assert!(
+                row.contains(editor.ui_glyphs().gutter_warn),
+                "wrap={wrap}: {row}"
+            );
+            assert!(row.contains("unused variable"), "wrap={wrap}: {row}");
+        }
     }
 
     #[test]
@@ -16678,6 +17033,7 @@ mod tests {
             jump_label_bg: Color::Green,
             jump_label_fg: Color::Black,
             diagnostic_error_color: Color::Red,
+            diagnostic_warning_color: Color::Magenta,
             diagnostic_hint_color: Color::DarkGrey,
         };
         let context = RenderLineContext {
@@ -16722,6 +17078,7 @@ mod tests {
             jump_label_bg: Color::Green,
             jump_label_fg: Color::Black,
             diagnostic_error_color: Color::Red,
+            diagnostic_warning_color: Color::Magenta,
             diagnostic_hint_color: Color::DarkGrey,
         };
         let context = RenderLineContext {
@@ -16809,6 +17166,7 @@ mod tests {
             jump_label_bg: Color::Green,
             jump_label_fg: Color::Black,
             diagnostic_error_color: Color::Red,
+            diagnostic_warning_color: Color::Magenta,
             diagnostic_hint_color: Color::DarkGrey,
         };
         let context = RenderLineContext {
@@ -16863,6 +17221,7 @@ mod tests {
             jump_label_bg: Color::Green,
             jump_label_fg: Color::Black,
             diagnostic_error_color: Color::Red,
+            diagnostic_warning_color: Color::Magenta,
             diagnostic_hint_color: Color::DarkGrey,
         };
         let context = RenderLineContext {
@@ -16919,6 +17278,7 @@ mod tests {
         apply_diagnostic_underline(
             &mut output,
             Some(Color::Rgb { r: 255, g: 0, b: 0 }),
+            false,
             token_fg,
         )
         .expect("apply underline");
@@ -16939,7 +17299,7 @@ mod tests {
             b: 221,
         };
 
-        apply_diagnostic_underline(&mut output, None, token_fg).expect("clear underline");
+        apply_diagnostic_underline(&mut output, None, false, token_fg).expect("clear underline");
 
         let rendered = String::from_utf8(output).expect("utf8");
         assert!(rendered.contains("\x1b[24m"));
