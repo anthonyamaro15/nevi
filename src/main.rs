@@ -3206,6 +3206,7 @@ mod tests {
                 message: "problem".to_string(),
                 source: None,
                 code: None,
+                tags: Default::default(),
             },
         );
 

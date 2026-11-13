@@ -166,6 +166,13 @@ fn client_capabilities() -> ClientCapabilities {
             }),
             publish_diagnostics: Some(lsp_types::PublishDiagnosticsClientCapabilities {
                 related_information: Some(true),
+                // Without this, some servers never send `tags`.
+                tag_support: Some(lsp_types::TagSupport {
+                    value_set: vec![
+                        lsp_types::DiagnosticTag::UNNECESSARY,
+                        lsp_types::DiagnosticTag::DEPRECATED,
+                    ],
+                }),
                 ..Default::default()
             }),
             code_action: Some(lsp_types::CodeActionClientCapabilities {
@@ -800,8 +807,37 @@ fn diagnostic_to_lsp_diagnostic(diagnostic: &Diagnostic) -> lsp_types::Diagnosti
         }),
         message: diagnostic.message.clone(),
         source: diagnostic.source.clone(),
+        tags: lsp_diagnostic_tags(diagnostic.tags),
         ..Default::default()
     }
+}
+
+fn lsp_diagnostic_tags(
+    tags: super::types::DiagnosticTags,
+) -> Option<Vec<lsp_types::DiagnosticTag>> {
+    let list: Vec<_> = [
+        (tags.unnecessary, lsp_types::DiagnosticTag::UNNECESSARY),
+        (tags.deprecated, lsp_types::DiagnosticTag::DEPRECATED),
+    ]
+    .into_iter()
+    .filter_map(|(set, tag)| set.then_some(tag))
+    .collect();
+    (!list.is_empty()).then_some(list)
+}
+
+/// Read a diagnostic's `tags` array; numbers other than 1 and 2 are ignored,
+/// as the spec asks of clients.
+fn parse_diagnostic_tags(diagnostic: &Value) -> super::types::DiagnosticTags {
+    let mut tags = super::types::DiagnosticTags::default();
+    let numbers = diagnostic.get("tags").and_then(Value::as_array);
+    for tag in numbers.into_iter().flatten().filter_map(Value::as_u64) {
+        match tag {
+            1 => tags.unnecessary = true,
+            2 => tags.deprecated = true,
+            _ => {}
+        }
+    }
+    tags
 }
 
 impl Drop for LspClient {
@@ -1481,6 +1517,7 @@ fn handle_notification(method: &str, params: Option<Value>) -> Option<LspNotific
                             .and_then(|s| s.as_str())
                             .map(|s| s.to_string()),
                         code: diagnostic_code,
+                        tags: parse_diagnostic_tags(d),
                     })
                 })
                 .collect();
@@ -2177,7 +2214,7 @@ fn handle_completion_resolve_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lsp::types::{DiagnosticCode, DiagnosticSeverity};
+    use crate::lsp::types::{DiagnosticCode, DiagnosticSeverity, DiagnosticTags};
     use lsp_types::Url;
     use std::path::Path;
     use std::thread;
@@ -2261,6 +2298,7 @@ mod tests {
             message: "multi-line problem".to_string(),
             source: Some("test".to_string()),
             code: Some(DiagnosticCode::Number(123)),
+            tags: Default::default(),
         };
 
         let converted = diagnostic_to_lsp_diagnostic(&diagnostic);
@@ -2688,6 +2726,87 @@ mod tests {
                 .and_then(|sync| sync.did_save),
             Some(true)
         );
+    }
+
+    #[test]
+    fn client_capabilities_advertise_diagnostic_tags() {
+        let tags = client_capabilities()
+            .text_document
+            .and_then(|text_document| text_document.publish_diagnostics)
+            .and_then(|diagnostics| diagnostics.tag_support)
+            .map(|support| support.value_set);
+
+        assert_eq!(
+            tags,
+            Some(vec![
+                lsp_types::DiagnosticTag::UNNECESSARY,
+                lsp_types::DiagnosticTag::DEPRECATED,
+            ])
+        );
+    }
+
+    #[test]
+    fn publish_diagnostics_reads_tags_and_ignores_unknown_ones() {
+        let range = json!({
+            "start": { "line": 0, "character": 0 },
+            "end": { "line": 0, "character": 3 }
+        });
+        let notification = handle_notification(
+            "textDocument/publishDiagnostics",
+            Some(json!({
+                "uri": "file:///tmp/main.rs",
+                "diagnostics": [
+                    { "range": range, "severity": 4, "message": "both", "tags": [1, 2] },
+                    { "range": range, "severity": 2, "message": "unknown", "tags": [7] },
+                    { "range": range, "severity": 2, "message": "none" }
+                ]
+            })),
+        )
+        .expect("diagnostics notification");
+
+        let LspNotification::Diagnostics { diagnostics, .. } = notification else {
+            panic!("expected diagnostics, got {notification:?}");
+        };
+        let tags: Vec<_> = diagnostics.iter().map(|d| d.tags).collect();
+        assert_eq!(
+            tags,
+            vec![
+                DiagnosticTags {
+                    unnecessary: true,
+                    deprecated: true,
+                },
+                DiagnosticTags::default(),
+                DiagnosticTags::default(),
+            ]
+        );
+    }
+
+    #[test]
+    fn code_action_diagnostic_conversion_round_trips_tags() {
+        let mut diagnostic = Diagnostic {
+            line: 0,
+            end_line: 0,
+            col_start: 0,
+            col_end: 3,
+            severity: DiagnosticSeverity::Hint,
+            message: "unused".to_string(),
+            source: None,
+            code: None,
+            tags: DiagnosticTags {
+                unnecessary: true,
+                deprecated: true,
+            },
+        };
+        assert_eq!(
+            diagnostic_to_lsp_diagnostic(&diagnostic).tags,
+            Some(vec![
+                lsp_types::DiagnosticTag::UNNECESSARY,
+                lsp_types::DiagnosticTag::DEPRECATED,
+            ])
+        );
+
+        diagnostic.tags = DiagnosticTags::default();
+        assert_eq!(diagnostic_to_lsp_diagnostic(&diagnostic).tags, None);
     }
 
     #[test]

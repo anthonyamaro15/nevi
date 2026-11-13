@@ -448,6 +448,24 @@ pub struct Diagnostic {
     pub source: Option<String>,
     /// The diagnostic code (e.g., TypeScript error number) - needed for code actions
     pub code: Option<DiagnosticCode>,
+    pub tags: DiagnosticTags,
+}
+
+impl Diagnostic {
+    /// A tagged hint (rust-analyzer's inactive `#[cfg]` code, TypeScript's
+    /// unused import) is shown by the fade or strike on its text alone, so it
+    /// gets no gutter sign, line number tint or end-of-line message.
+    pub fn drawn_by_tags_alone(&self) -> bool {
+        self.severity == DiagnosticSeverity::Hint && (self.tags.unnecessary || self.tags.deprecated)
+    }
+}
+
+/// LSP `DiagnosticTag`s: 1 = Unnecessary (drawn faded), 2 = Deprecated
+/// (drawn struck through).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DiagnosticTags {
+    pub unnecessary: bool,
+    pub deprecated: bool,
 }
 
 /// Diagnostic code can be either an integer or a string

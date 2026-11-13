@@ -13295,6 +13295,7 @@ mod tests {
                 message: "w".to_string(),
                 source: None,
                 code: None,
+                tags: Default::default(),
             }],
         );
         assert_eq!(editor.sign_column_width(0), 2, "auto with a diagnostic");
@@ -13330,6 +13331,7 @@ mod tests {
             message: "w".to_string(),
             source: None,
             code: None,
+            tags: Default::default(),
         };
 
         // Default `yes`: width is fixed, so only the diagnostic's row is dirty.
@@ -13403,6 +13405,7 @@ mod tests {
                 message: "e".to_string(),
                 source: None,
                 code: None,
+                tags: Default::default(),
             }],
         );
 
@@ -15336,6 +15339,7 @@ mod tests {
                     message: "e".to_string(),
                     source: None,
                     code: None,
+                    tags: Default::default(),
                 },
                 Diagnostic {
                     line: 1,
@@ -15346,6 +15350,7 @@ mod tests {
                     message: "w".to_string(),
                     source: None,
                     code: None,
+                    tags: Default::default(),
                 },
             ],
         );
@@ -15418,6 +15423,7 @@ mod tests {
                     message: "e".to_string(),
                     source: None,
                     code: None,
+                    tags: Default::default(),
                 },
                 Diagnostic {
                     line: 1,
@@ -15428,6 +15434,7 @@ mod tests {
                     message: "w".to_string(),
                     source: None,
                     code: None,
+                    tags: Default::default(),
                 },
             ],
         );
@@ -15461,6 +15468,7 @@ mod tests {
                 message: "problem".to_string(),
                 source: None,
                 code: None,
+                tags: Default::default(),
             }],
         );
 
@@ -15492,6 +15500,7 @@ mod tests {
                 message: "problem".to_string(),
                 source: None,
                 code: None,
+                tags: Default::default(),
             }],
         );
         editor.cursor.line = 0;
