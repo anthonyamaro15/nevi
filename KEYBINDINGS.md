@@ -579,7 +579,7 @@ Language Server Protocol features for code intelligence.
 **Via Leader:**
 | Key | Action |
 |-----|--------|
-| `<leader>ca` | Code actions |
+| `<leader>ca` | Code actions (`1`-`9` apply that one) |
 | `<leader>rn` | Rename symbol |
 | `<leader>d` | Search all diagnostics |
 | `<leader>D` | Show line diagnostic |
@@ -720,7 +720,7 @@ the popup, or press `Esc` or `Ctrl+c` to cancel.
 
 | Key | Action |
 |-----|--------|
-| `<leader>ca` | Code actions |
+| `<leader>ca` | Code actions (`1`-`9` apply that one) |
 | `<leader>rn` | Rename symbol |
 | `<leader>d` | Search diagnostics |
 | `<leader>D` | Show line diagnostic |

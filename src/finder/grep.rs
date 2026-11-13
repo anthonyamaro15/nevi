@@ -434,7 +434,7 @@ pub(crate) fn case_insensitive_match_ranges(text: &str, pattern: &str) -> Vec<(u
 /// trimmed and, on a long line, only ROW_CONTEXT_CHARS on each side of the
 /// first match, with "…" where the start was cut. Returns it with the char
 /// indices of every match inside it; `matches` are char ranges in `line`.
-fn row_text(line: &str, matches: &[(usize, usize)]) -> (String, Vec<usize>) {
+pub(crate) fn row_text(line: &str, matches: &[(usize, usize)]) -> (String, Vec<usize>) {
     let first = line.chars().take_while(|ch| ch.is_whitespace()).count();
     let end = first + line.trim().chars().count();
     let (from, to) = match matches.first() {

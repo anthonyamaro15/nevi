@@ -16,6 +16,7 @@ use unicode_width::UnicodeWidthChar;
 mod explorer_keys;
 mod explorer_prompt;
 mod hover;
+mod lsp_pickers;
 mod save_commands;
 mod session;
 pub use hover::scroll_hover;
@@ -4802,346 +4803,6 @@ impl Terminal {
         Ok(())
     }
 
-    /// Render the references picker as a floating popup
-    fn render_references_picker(&mut self, editor: &Editor) -> anyhow::Result<()> {
-        let picker = match &editor.references_picker {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-
-        if picker.items.is_empty() {
-            return Ok(());
-        }
-
-        // Calculate popup dimensions
-        let max_width = 80u16;
-        let max_height = 15u16;
-        let popup_width = max_width.min(editor.term_width.saturating_sub(4));
-        let popup_height = (picker.items.len() as u16 + 2).min(max_height);
-
-        // Center the popup
-        let popup_x = (editor.term_width.saturating_sub(popup_width)) / 2;
-        let popup_y = (editor.term_height.saturating_sub(popup_height)) / 2;
-
-        // Colors
-        let border_color = Color::Rgb {
-            r: 100,
-            g: 140,
-            b: 180,
-        };
-        let bg_color = Color::Rgb {
-            r: 25,
-            g: 25,
-            b: 30,
-        };
-        let selected_bg = Color::Rgb {
-            r: 50,
-            g: 70,
-            b: 100,
-        };
-        let text_color = Color::Rgb {
-            r: 200,
-            g: 200,
-            b: 210,
-        };
-        let file_color = Color::Rgb {
-            r: 130,
-            g: 180,
-            b: 250,
-        };
-        let _line_num_color = Color::Rgb {
-            r: 180,
-            g: 180,
-            b: 100,
-        };
-
-        // Draw top border
-        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
-        execute!(
-            self.stdout,
-            SetForegroundColor(border_color),
-            SetBackgroundColor(bg_color)
-        )?;
-        let title = " References ";
-        let title_start = (popup_width as usize - title.len()) / 2;
-        terminal_print!(self, "╭");
-        for i in 1..(popup_width - 1) {
-            if i as usize == title_start {
-                terminal_print!(self, "{}", title);
-            } else if i as usize > title_start && i as usize <= title_start + title.len() {
-                // Skip - part of title
-            } else {
-                terminal_print!(self, "─");
-            }
-        }
-        terminal_print!(self, "╮");
-
-        // Calculate visible items
-        let visible_count = (popup_height - 2) as usize;
-        let scroll_offset = if picker.selected >= visible_count {
-            picker.selected - visible_count + 1
-        } else {
-            0
-        };
-
-        // Draw items
-        for (i, idx) in (scroll_offset..(scroll_offset + visible_count)).enumerate() {
-            execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 1 + i as u16))?;
-
-            if idx >= picker.items.len() {
-                // Empty line
-                execute!(
-                    self.stdout,
-                    SetForegroundColor(border_color),
-                    SetBackgroundColor(bg_color)
-                )?;
-                terminal_print!(self, "│{:width$}│", "", width = (popup_width - 2) as usize);
-                continue;
-            }
-
-            let loc = &picker.items[idx];
-            let is_selected = idx == picker.selected;
-
-            let current_bg = if is_selected { selected_bg } else { bg_color };
-
-            // Border
-            execute!(
-                self.stdout,
-                SetForegroundColor(border_color),
-                SetBackgroundColor(bg_color)
-            )?;
-            terminal_print!(self, "│");
-
-            // Item content
-            execute!(self.stdout, SetBackgroundColor(current_bg))?;
-
-            // Format: filename:line:col
-            let path_str = crate::lsp::uri_to_path(&loc.uri)
-                .map(|p| {
-                    p.file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string()
-                })
-                .unwrap_or_else(|| loc.uri.clone());
-
-            let content = format!("{}:{}:{}", path_str, loc.line + 1, loc.col + 1);
-            let content_width = (popup_width - 4) as usize;
-
-            // Print with colors
-            execute!(self.stdout, SetForegroundColor(file_color))?;
-            let truncated: String = content.chars().take(content_width).collect();
-            terminal_print!(self, " {}", truncated);
-
-            // Pad
-            let printed = truncated.len() + 1;
-            if printed < content_width + 1 {
-                execute!(self.stdout, SetForegroundColor(text_color))?;
-                terminal_print!(self, "{:width$}", "", width = content_width + 1 - printed);
-            }
-
-            // Closing border
-            execute!(
-                self.stdout,
-                SetForegroundColor(border_color),
-                SetBackgroundColor(bg_color)
-            )?;
-            terminal_print!(self, "│");
-        }
-
-        // Draw bottom border
-        execute!(
-            self.stdout,
-            cursor::MoveTo(popup_x, popup_y + popup_height - 1)
-        )?;
-        execute!(
-            self.stdout,
-            SetForegroundColor(border_color),
-            SetBackgroundColor(bg_color)
-        )?;
-        terminal_print!(self, "╰");
-        for _ in 1..(popup_width - 1) {
-            terminal_print!(self, "─");
-        }
-        terminal_print!(self, "╯");
-
-        execute!(self.stdout, ResetColor)?;
-        Ok(())
-    }
-
-    /// Render the code actions picker as a floating popup
-    fn render_code_actions_picker(&mut self, editor: &Editor) -> anyhow::Result<()> {
-        let picker = match &editor.code_actions_picker {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-
-        if picker.items.is_empty() {
-            return Ok(());
-        }
-
-        // Calculate popup dimensions based on content
-        let max_title_len = picker
-            .items
-            .iter()
-            .map(|a| a.title.len())
-            .max()
-            .unwrap_or(20);
-
-        let max_width = 80u16;
-        let max_height = 12u16;
-        let popup_width = (max_title_len as u16 + 4)
-            .min(max_width)
-            .min(editor.term_width.saturating_sub(4));
-        let popup_height = (picker.items.len() as u16 + 2).min(max_height);
-
-        // Position near cursor
-        let (cursor_screen_col, cursor_screen_row) = Self::cursor_screen_cell(editor);
-
-        let popup_x = cursor_screen_col.min(editor.term_width.saturating_sub(popup_width + 2));
-        let popup_y = if cursor_screen_row + popup_height + 1 < editor.term_height {
-            cursor_screen_row + 1
-        } else {
-            cursor_screen_row.saturating_sub(popup_height)
-        };
-
-        // Colors
-        let border_color = Color::Rgb {
-            r: 140,
-            g: 100,
-            b: 180,
-        };
-        let bg_color = Color::Rgb {
-            r: 25,
-            g: 25,
-            b: 30,
-        };
-        let selected_bg = Color::Rgb {
-            r: 70,
-            g: 50,
-            b: 100,
-        };
-        let text_color = Color::Rgb {
-            r: 200,
-            g: 200,
-            b: 210,
-        };
-        let _kind_color = Color::Rgb {
-            r: 130,
-            g: 180,
-            b: 130,
-        };
-        let preferred_color = Color::Rgb {
-            r: 255,
-            g: 200,
-            b: 100,
-        };
-
-        // Draw top border
-        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
-        execute!(
-            self.stdout,
-            SetForegroundColor(border_color),
-            SetBackgroundColor(bg_color)
-        )?;
-        let title = " Code Actions ";
-        let title_start = (popup_width as usize - title.len()) / 2;
-        terminal_print!(self, "╭");
-        for i in 1..(popup_width - 1) {
-            if i as usize == title_start {
-                terminal_print!(self, "{}", title);
-            } else if i as usize > title_start && (i as usize) < title_start + title.len() {
-                // Skip (title already printed)
-            } else {
-                terminal_print!(self, "─");
-            }
-        }
-        terminal_print!(self, "╮");
-
-        // Calculate visible items
-        let visible_count = (popup_height - 2) as usize;
-        let scroll_offset = if picker.selected >= visible_count {
-            picker.selected - visible_count + 1
-        } else {
-            0
-        };
-
-        // Draw items
-        for (i, idx) in (scroll_offset..(scroll_offset + visible_count)).enumerate() {
-            execute!(self.stdout, cursor::MoveTo(popup_x, popup_y + 1 + i as u16))?;
-
-            if idx >= picker.items.len() {
-                execute!(
-                    self.stdout,
-                    SetForegroundColor(border_color),
-                    SetBackgroundColor(bg_color)
-                )?;
-                terminal_print!(self, "│{:width$}│", "", width = (popup_width - 2) as usize);
-                continue;
-            }
-
-            let action = &picker.items[idx];
-            let is_selected = idx == picker.selected;
-
-            let current_bg = if is_selected { selected_bg } else { bg_color };
-
-            // Border
-            execute!(
-                self.stdout,
-                SetForegroundColor(border_color),
-                SetBackgroundColor(bg_color)
-            )?;
-            terminal_print!(self, "│");
-
-            // Item content
-            execute!(self.stdout, SetBackgroundColor(current_bg))?;
-
-            let content_width = (popup_width - 2) as usize;
-
-            // Title (highlight preferred items with different color)
-            if action.is_preferred {
-                execute!(self.stdout, SetForegroundColor(preferred_color))?;
-            } else {
-                execute!(self.stdout, SetForegroundColor(text_color))?;
-            }
-            let title_display: String = action.title.chars().take(content_width).collect();
-            terminal_print!(self, "{}", title_display);
-
-            // Pad
-            let printed = title_display.len();
-            if printed < content_width {
-                terminal_print!(self, "{:width$}", "", width = content_width - printed);
-            }
-
-            // Closing border
-            execute!(
-                self.stdout,
-                SetForegroundColor(border_color),
-                SetBackgroundColor(bg_color)
-            )?;
-            terminal_print!(self, "│");
-        }
-
-        // Draw bottom border
-        execute!(
-            self.stdout,
-            cursor::MoveTo(popup_x, popup_y + popup_height - 1)
-        )?;
-        execute!(
-            self.stdout,
-            SetForegroundColor(border_color),
-            SetBackgroundColor(bg_color)
-        )?;
-        terminal_print!(self, "╰");
-        for _ in 1..(popup_width - 1) {
-            terminal_print!(self, "─");
-        }
-        terminal_print!(self, "╯");
-
-        execute!(self.stdout, ResetColor)?;
-        Ok(())
-    }
-
     /// Render the theme picker floating window
     fn render_theme_picker(&mut self, editor: &Editor) -> anyhow::Result<()> {
         let picker = match &editor.theme_picker {
@@ -6459,6 +6120,23 @@ fn handle_code_actions_picker_key(editor: &mut Editor, key: KeyEvent) {
         (KeyModifiers::NONE, KeyCode::Enter) => {
             if let Some(msg) = editor.apply_selected_code_action() {
                 editor.set_status(msg);
+            }
+        }
+
+        // 1-9 apply the action with that number
+        (KeyModifiers::NONE, KeyCode::Char(digit @ '1'..='9')) => {
+            let index = digit as usize - '1' as usize;
+            let exists = editor
+                .code_actions_picker
+                .as_ref()
+                .is_some_and(|picker| index < picker.items.len());
+            if exists {
+                if let Some(picker) = editor.code_actions_picker.as_mut() {
+                    picker.selected = index;
+                }
+                if let Some(msg) = editor.apply_selected_code_action() {
+                    editor.set_status(msg);
+                }
             }
         }
 
@@ -11067,6 +10745,7 @@ mod tests {
     mod final_newline;
     mod finder;
     mod hover;
+    mod lsp_pickers;
     mod normal_interrupt;
     mod replay;
     mod suspend;
