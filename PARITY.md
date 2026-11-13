@@ -336,7 +336,7 @@ rows may already be covered compositionally.)
 | `gf` | Open file under cursor |
 | `gx` | Open URL under cursor |
 | `gr` | Find references |
-| `K` | Show hover documentation |
+| `K` | Show hover documentation (`Ctrl+d` / `Ctrl+u` page through a long one) |
 | `gl` | Show diagnostic in floating window |
 | `]d` | Go to next diagnostic |
 | `[d` | Go to previous diagnostic |

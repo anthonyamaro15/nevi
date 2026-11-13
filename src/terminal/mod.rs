@@ -15,8 +15,10 @@ use unicode_width::UnicodeWidthChar;
 
 mod explorer_keys;
 mod explorer_prompt;
+mod hover;
 mod save_commands;
 mod session;
+pub use hover::scroll_hover;
 pub use session::SuspendOutcome;
 
 macro_rules! terminal_print {
@@ -95,24 +97,6 @@ pub enum EditorEvent {
     FocusGained,
     /// Terminal was resized
     Resize(u16, u16),
-}
-
-/// Section types for hover content parsing
-enum HoverSection {
-    #[allow(dead_code)]
-    Code {
-        language: String,
-        lines: Vec<String>,
-    },
-    Text(String),
-}
-
-/// Line type for hover rendering
-#[derive(Clone, Copy)]
-enum HoverLineType {
-    Code,
-    Text,
-    Separator,
 }
 
 fn completion_kind_color(kind: CompletionKind, theme: &crate::theme::Theme) -> Color {
@@ -1470,7 +1454,7 @@ impl Terminal {
         }
 
         // Render hover popup if active
-        if editor.hover_content.is_some() {
+        if editor.hover.is_some() {
             self.render_hover(editor)?;
         }
 
@@ -1664,7 +1648,7 @@ impl Terminal {
             || editor.mode == Mode::Finder
             || editor.floating_terminal.is_visible()
             || editor.completion.active
-            || editor.hover_content.is_some()
+            || editor.hover.is_some()
             || editor.signature_help.is_some()
             || editor.show_diagnostic_float
             || editor.references_picker.is_some()
@@ -4305,326 +4289,6 @@ impl Terminal {
         Ok(())
     }
 
-    /// Parse hover content into structured sections (code blocks and text)
-    fn parse_hover_content(content: &str) -> Vec<HoverSection> {
-        let mut sections = Vec::new();
-        let mut current_text = String::new();
-        let mut in_code_block = false;
-        let mut code_block_lang = String::new();
-        let mut code_lines = Vec::new();
-
-        for line in content.lines() {
-            if line.starts_with("```") {
-                if in_code_block {
-                    // End of code block
-                    if !code_lines.is_empty() {
-                        sections.push(HoverSection::Code {
-                            language: code_block_lang.clone(),
-                            lines: code_lines.clone(),
-                        });
-                    }
-                    code_lines.clear();
-                    code_block_lang.clear();
-                    in_code_block = false;
-                } else {
-                    // Start of code block - save any pending text
-                    let trimmed = current_text.trim();
-                    if !trimmed.is_empty() {
-                        sections.push(HoverSection::Text(trimmed.to_string()));
-                    }
-                    current_text.clear();
-                    code_block_lang = line.trim_start_matches('`').to_string();
-                    in_code_block = true;
-                }
-            } else if in_code_block {
-                code_lines.push(line.to_string());
-            } else {
-                if !current_text.is_empty() {
-                    current_text.push('\n');
-                }
-                current_text.push_str(line);
-            }
-        }
-
-        // Handle any remaining content
-        if in_code_block && !code_lines.is_empty() {
-            sections.push(HoverSection::Code {
-                language: code_block_lang,
-                lines: code_lines,
-            });
-        } else {
-            let trimmed = current_text.trim();
-            if !trimmed.is_empty() {
-                sections.push(HoverSection::Text(trimmed.to_string()));
-            }
-        }
-
-        sections
-    }
-
-    /// Render the hover documentation popup (Neovim-style)
-    fn render_hover(&mut self, editor: &Editor) -> anyhow::Result<()> {
-        let content = match &editor.hover_content {
-            Some(c) => c,
-            None => return Ok(()),
-        };
-        let theme = editor.theme();
-
-        // Parse content into sections
-        let sections = Self::parse_hover_content(content);
-        if sections.is_empty() {
-            return Ok(());
-        }
-
-        // Build display lines with their types
-        let mut display_lines: Vec<(String, HoverLineType)> = Vec::new();
-
-        for (section_idx, section) in sections.iter().enumerate() {
-            // Add separator between sections (except before first)
-            if section_idx > 0 && !display_lines.is_empty() {
-                display_lines.push(("".to_string(), HoverLineType::Separator));
-            }
-
-            match section {
-                HoverSection::Code { lines, .. } => {
-                    for line in lines {
-                        display_lines.push((line.clone(), HoverLineType::Code));
-                    }
-                }
-                HoverSection::Text(text) => {
-                    for line in text.lines() {
-                        display_lines.push((line.to_string(), HoverLineType::Text));
-                    }
-                }
-            }
-        }
-
-        // Calculate dimensions
-        let max_line_len = display_lines
-            .iter()
-            .map(|(l, _)| l.chars().count())
-            .max()
-            .unwrap_or(20);
-        let popup_width = (max_line_len + 4).min(80).max(40) as u16;
-        let popup_height = (display_lines.len() + 2).min(20) as u16;
-
-        // Calculate popup position (above cursor if possible)
-        // Account for active pane's position on screen
-        let (cursor_screen_col, cursor_screen_row) = Self::cursor_screen_cell(editor);
-
-        let popup_y = if cursor_screen_row >= popup_height + 1 {
-            cursor_screen_row - popup_height
-        } else {
-            (cursor_screen_row + 1).min(editor.term_height.saturating_sub(popup_height + 1))
-        };
-        let popup_x = cursor_screen_col
-            .saturating_sub(2)
-            .min(editor.term_width.saturating_sub(popup_width + 1));
-
-        let border_color = theme.ui.popup_border;
-        let bg_color = theme.ui.popup_bg;
-        let code_bg = theme.ui.popup_bg;
-        let text_color = theme.ui.foreground;
-        let code_color = theme.syntax.function.fg;
-        let keyword_color = theme.syntax.keyword.fg;
-        let type_color = theme.syntax.type_.fg;
-        let separator_color = theme.ui.popup_border;
-
-        // Draw top border (rounded corners)
-        execute!(self.stdout, cursor::MoveTo(popup_x, popup_y))?;
-        execute!(
-            self.stdout,
-            SetForegroundColor(border_color),
-            SetBackgroundColor(bg_color)
-        )?;
-        terminal_print!(self, "╭");
-        for _ in 1..(popup_width - 1) {
-            terminal_print!(self, "─");
-        }
-        terminal_print!(self, "╮");
-
-        // Draw content lines
-        let content_width = (popup_width - 4) as usize;
-        let max_lines = (popup_height - 2) as usize;
-
-        for (i, (line, line_type)) in display_lines.iter().take(max_lines).enumerate() {
-            let row = popup_y + 1 + i as u16;
-            execute!(self.stdout, cursor::MoveTo(popup_x, row))?;
-
-            match line_type {
-                HoverLineType::Code => {
-                    execute!(
-                        self.stdout,
-                        SetForegroundColor(border_color),
-                        SetBackgroundColor(code_bg)
-                    )?;
-                    terminal_print!(self, "│ ");
-                    // Simple syntax highlighting for Rust
-                    self.render_hover_code_line(
-                        line,
-                        content_width,
-                        code_color,
-                        keyword_color,
-                        type_color,
-                        code_bg,
-                    )?;
-                    execute!(
-                        self.stdout,
-                        SetForegroundColor(border_color),
-                        SetBackgroundColor(code_bg)
-                    )?;
-                    terminal_print!(self, " │");
-                }
-                HoverLineType::Text => {
-                    execute!(
-                        self.stdout,
-                        SetForegroundColor(border_color),
-                        SetBackgroundColor(bg_color)
-                    )?;
-                    terminal_print!(self, "│ ");
-                    execute!(self.stdout, SetForegroundColor(text_color))?;
-                    let display = if line.chars().count() > content_width {
-                        format!(
-                            "{}…",
-                            line.chars()
-                                .take(content_width.saturating_sub(1))
-                                .collect::<String>()
-                        )
-                    } else {
-                        format!("{:width$}", line, width = content_width)
-                    };
-                    terminal_print!(self, "{}", display);
-                    execute!(self.stdout, SetForegroundColor(border_color))?;
-                    terminal_print!(self, " │");
-                }
-                HoverLineType::Separator => {
-                    execute!(
-                        self.stdout,
-                        SetForegroundColor(separator_color),
-                        SetBackgroundColor(bg_color)
-                    )?;
-                    terminal_print!(self, "├");
-                    for _ in 1..(popup_width - 1) {
-                        terminal_print!(self, "─");
-                    }
-                    terminal_print!(self, "┤");
-                }
-            }
-        }
-
-        // Fill remaining rows if content is shorter
-        for i in display_lines.len()..max_lines {
-            let row = popup_y + 1 + i as u16;
-            execute!(self.stdout, cursor::MoveTo(popup_x, row))?;
-            execute!(
-                self.stdout,
-                SetForegroundColor(border_color),
-                SetBackgroundColor(bg_color)
-            )?;
-            terminal_print!(self, "│ {:width$} │", "", width = content_width);
-        }
-
-        // Draw bottom border (rounded corners)
-        let bottom_row = popup_y + popup_height - 1;
-        execute!(self.stdout, cursor::MoveTo(popup_x, bottom_row))?;
-        execute!(
-            self.stdout,
-            SetForegroundColor(border_color),
-            SetBackgroundColor(bg_color)
-        )?;
-        terminal_print!(self, "╰");
-        for _ in 1..(popup_width - 1) {
-            terminal_print!(self, "─");
-        }
-        terminal_print!(self, "╯");
-
-        execute!(self.stdout, ResetColor)?;
-        Ok(())
-    }
-
-    /// Render a code line with simple syntax highlighting
-    fn render_hover_code_line(
-        &mut self,
-        line: &str,
-        width: usize,
-        default_color: Color,
-        keyword_color: Color,
-        type_color: Color,
-        bg_color: Color,
-    ) -> anyhow::Result<()> {
-        let rust_keywords = [
-            "fn", "pub", "let", "mut", "const", "static", "struct", "enum", "impl", "trait",
-            "where", "for", "loop", "while", "if", "else", "match", "return", "async", "await",
-            "unsafe", "mod", "use", "crate", "self", "Self", "super", "dyn", "ref", "move", "type",
-            "as", "in",
-        ];
-
-        let mut chars_printed = 0;
-        let mut i = 0;
-        let chars: Vec<char> = line.chars().collect();
-
-        while i < chars.len() && chars_printed < width {
-            // Try to match a word
-            if chars[i].is_alphabetic() || chars[i] == '_' {
-                let start = i;
-                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
-                    i += 1;
-                }
-                let word: String = chars[start..i].iter().collect();
-
-                // Determine color based on word type
-                let color = if rust_keywords.contains(&word.as_str()) {
-                    keyword_color
-                } else if word
-                    .chars()
-                    .next()
-                    .map(|c| c.is_uppercase())
-                    .unwrap_or(false)
-                {
-                    type_color // Types typically start with uppercase
-                } else {
-                    default_color
-                };
-
-                execute!(
-                    self.stdout,
-                    SetForegroundColor(color),
-                    SetBackgroundColor(bg_color)
-                )?;
-                let remaining = width - chars_printed;
-                if word.len() <= remaining {
-                    terminal_print!(self, "{}", word);
-                    chars_printed += word.len();
-                } else {
-                    terminal_print!(self, "{}", &word[..remaining]);
-                    chars_printed = width;
-                }
-            } else {
-                // Print punctuation/symbols in default color
-                execute!(
-                    self.stdout,
-                    SetForegroundColor(default_color),
-                    SetBackgroundColor(bg_color)
-                )?;
-                terminal_print!(self, "{}", chars[i]);
-                chars_printed += 1;
-                i += 1;
-            }
-        }
-
-        // Pad remaining space
-        if chars_printed < width {
-            execute!(
-                self.stdout,
-                SetForegroundColor(default_color),
-                SetBackgroundColor(bg_color)
-            )?;
-            terminal_print!(self, "{:width$}", "", width = width - chars_printed);
-        }
-
-        Ok(())
-    }
-
     /// Render the signature help popup above the cursor
     fn render_signature_help(&mut self, editor: &Editor) -> anyhow::Result<()> {
         let help = match &editor.signature_help {
@@ -5081,10 +4745,18 @@ impl Terminal {
             if remaining == 0 {
                 break;
             }
-            let display: String = span.text.chars().take(remaining).collect();
-            let char_count = display.chars().count();
+            let mut display = String::new();
+            let mut display_width = 0;
+            for ch in span.text.chars() {
+                let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if display_width + ch_width > remaining {
+                    break;
+                }
+                display.push(ch);
+                display_width += ch_width;
+            }
 
-            match span.style {
+            let (fg, attribute) = match span.style {
                 PreviewSpanStyle::Plain => {
                     let fg = match line.kind {
                         PreviewLineKind::Heading(_) => theme.syntax.function.fg,
@@ -5093,49 +4765,32 @@ impl Terminal {
                         PreviewLineKind::Placeholder => theme.ui.line_number,
                         _ => theme.ui.foreground,
                     };
-                    execute!(
-                        output,
-                        SetForegroundColor(fg),
-                        SetAttribute(Attribute::Reset)
-                    )?;
+                    (fg, None)
                 }
-                PreviewSpanStyle::Emphasis => {
-                    execute!(
-                        output,
-                        SetForegroundColor(theme.ui.foreground),
-                        SetAttribute(Attribute::Italic)
-                    )?;
-                }
-                PreviewSpanStyle::Strong => {
-                    execute!(
-                        output,
-                        SetForegroundColor(theme.ui.foreground),
-                        SetAttribute(Attribute::Bold)
-                    )?;
-                }
-                PreviewSpanStyle::InlineCode => {
-                    execute!(
-                        output,
-                        SetForegroundColor(theme.syntax.string.fg),
-                        SetAttribute(Attribute::Reset)
-                    )?;
-                }
-                PreviewSpanStyle::Link => {
-                    execute!(
-                        output,
-                        SetForegroundColor(theme.syntax.function.fg),
-                        SetAttribute(Attribute::Underlined)
-                    )?;
-                }
+                PreviewSpanStyle::Emphasis => (theme.ui.foreground, Some(Attribute::Italic)),
+                PreviewSpanStyle::Strong => (theme.ui.foreground, Some(Attribute::Bold)),
+                PreviewSpanStyle::InlineCode => (theme.syntax.string.fg, None),
+                PreviewSpanStyle::Link => (theme.syntax.function.fg, Some(Attribute::Underlined)),
+            };
+            // Reset is SGR 0, which also drops the popup background.
+            queue!(
+                output,
+                SetAttribute(Attribute::Reset),
+                SetBackgroundColor(theme.ui.popup_bg),
+                SetForegroundColor(fg)
+            )?;
+            if let Some(attribute) = attribute {
+                queue!(output, SetAttribute(attribute))?;
             }
 
             write!(output, "{display}")?;
-            written += char_count;
+            written += display_width;
         }
 
-        execute!(
+        queue!(
             output,
             SetAttribute(Attribute::Reset),
+            SetBackgroundColor(theme.ui.popup_bg),
             SetForegroundColor(theme.ui.foreground)
         )?;
         write!(
@@ -11411,6 +11066,7 @@ pub fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
 mod tests {
     mod final_newline;
     mod finder;
+    mod hover;
     mod normal_interrupt;
     mod replay;
     mod suspend;
@@ -13134,10 +12790,11 @@ mod tests {
         let mut editor = Editor::default();
         editor.set_size(120, 30);
         editor.replace_buffer_content("demo\n");
-        editor.hover_content = Some(
-            "```rust\npub fn demo(value: ExampleType)\n```\nReturns an example value.".to_string(),
-        );
         assert!(editor.set_theme("github-light"));
+        editor.hover = crate::hover::Hover::for_editor(
+            &editor,
+            "```rust\npub fn demo(value: ExampleType) {}\n```\nReturns an example value.",
+        );
 
         let light_theme = editor.theme().clone();
         let light_render = render_hover_to_string(&editor);
@@ -18526,7 +18183,7 @@ mod tests {
     #[test]
     fn hover_popup_anchors_to_the_wrapped_cursor_row() {
         let mut editor = wrapped_popup_editor();
-        editor.hover_content = Some("doc".to_string());
+        editor.hover = crate::hover::Hover::for_editor(&editor, "doc");
 
         let rendered = render_editor_to_string(&editor);
 

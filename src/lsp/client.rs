@@ -139,7 +139,12 @@ fn client_capabilities() -> ClientCapabilities {
                 ..Default::default()
             }),
             hover: Some(lsp_types::HoverClientCapabilities {
-                content_format: Some(vec![lsp_types::MarkupKind::PlainText]),
+                // The hover popup renders markdown: fenced code becomes the
+                // title and gets highlighted, and links show their label.
+                content_format: Some(vec![
+                    lsp_types::MarkupKind::Markdown,
+                    lsp_types::MarkupKind::PlainText,
+                ]),
                 ..Default::default()
             }),
             signature_help: Some(lsp_types::SignatureHelpClientCapabilities {

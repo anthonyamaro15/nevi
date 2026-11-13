@@ -1195,8 +1195,8 @@ pub struct Editor {
     pub jump_list: JumpList,
     /// Change list for g;/g, navigation (positions where edits occurred)
     pub change_list: ChangeList,
-    /// Hover popup content (shown with K command)
-    pub hover_content: Option<String>,
+    /// The `K` hover popup, formatted when the reply arrived
+    pub hover: Option<crate::hover::Hover>,
     /// Flag to signal that completion needs to be re-requested (for isIncomplete)
     pub needs_completion_refresh: bool,
     /// Frecency database for completion ranking
@@ -1757,7 +1757,7 @@ impl Editor {
             pending_lsp_action: None,
             jump_list: JumpList::default(),
             change_list: ChangeList::default(),
-            hover_content: None,
+            hover: None,
             needs_completion_refresh: false,
             frecency: FrecencyDb::load(),
             recent_files: crate::recent_files::RecentFiles::load(),
@@ -4328,6 +4328,11 @@ impl Editor {
         }
         if let Some(preview) = &mut self.markdown_preview {
             preview.reflow(crate::markdown_preview::preview_content_width(width));
+        }
+        if let Some(hover) = &mut self.hover {
+            if size_changed {
+                hover.relayout(width);
+            }
         }
         self.update_pane_rects();
         self.sync_floating_terminal_size();
