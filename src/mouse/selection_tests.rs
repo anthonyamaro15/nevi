@@ -6,7 +6,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 
 fn editor(text: &str) -> Editor {
     let mut editor = Editor::default();
-    editor.registers.use_in_memory_clipboard_for_tests();
     editor.replace_buffer_content(text);
     editor.settings.editor.line_numbers = false;
     editor.settings.editor.sign_column = SignColumn::No;

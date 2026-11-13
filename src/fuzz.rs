@@ -216,7 +216,6 @@ fn run_sequence(seed: u64) -> Result<(), String> {
         let mut editor = Editor::default();
         // `p` would otherwise read the machine's real clipboard, so a seed
         // could pass or fail depending on what was last copied.
-        editor.registers.use_in_memory_clipboard_for_tests();
         editor.set_size(80, 24);
         editor.replace_buffer_content(text);
         for key in &keys {
@@ -268,7 +267,6 @@ fn run_seeds(range: std::ops::Range<u64>) {
 fn run_keys(text: &str, keys: &[FuzzKey]) -> Result<(), String> {
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         let mut editor = Editor::default();
-        editor.registers.use_in_memory_clipboard_for_tests();
         editor.set_size(80, 24);
         editor.replace_buffer_content(text);
         for key in keys {

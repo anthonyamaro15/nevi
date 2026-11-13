@@ -1,4 +1,3 @@
-use arboard::Clipboard;
 use std::collections::HashMap;
 
 /// Type of register content
@@ -66,12 +65,6 @@ fn register_content_from_clipboard_text(text: String) -> Option<RegisterContent>
     }
 }
 
-#[cfg(test)]
-#[derive(Debug, Clone, Default)]
-struct InMemoryClipboard {
-    text: Option<String>,
-}
-
 /// Vim-style register system
 #[derive(Debug, Clone, Default)]
 pub struct Registers {
@@ -85,18 +78,14 @@ pub struct Registers {
     numbered: [Option<RegisterContent>; 9],
     /// Last clipboard error (for display to user)
     clipboard_error: Option<String>,
+    /// Test builds never touch the real clipboard; see `read_clipboard`.
     #[cfg(test)]
-    in_memory_clipboard: Option<InMemoryClipboard>,
+    test_clipboard: Option<String>,
 }
 
 impl Registers {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn use_in_memory_clipboard_for_tests(&mut self) {
-        self.in_memory_clipboard = Some(InMemoryClipboard::default());
     }
 
     /// Get the content of a register
@@ -130,28 +119,13 @@ impl Registers {
 
     /// Get content from the system clipboard
     pub fn get_clipboard(&mut self) -> Option<RegisterContent> {
-        #[cfg(test)]
-        if let Some(clipboard) = &self.in_memory_clipboard {
-            self.clipboard_error = None;
-            return clipboard
-                .text
-                .clone()
-                .and_then(register_content_from_clipboard_text);
-        }
-
-        match Clipboard::new() {
-            Ok(mut clipboard) => match clipboard.get_text() {
-                Ok(text) => {
-                    self.clipboard_error = None;
-                    register_content_from_clipboard_text(text)
-                }
-                Err(e) => {
-                    self.clipboard_error = Some(format!("Clipboard read failed: {}", e));
-                    None
-                }
-            },
+        match self.read_clipboard() {
+            Ok(text) => {
+                self.clipboard_error = None;
+                text.and_then(register_content_from_clipboard_text)
+            }
             Err(e) => {
-                self.clipboard_error = Some(format!("Clipboard unavailable: {}", e));
+                self.clipboard_error = Some(e);
                 None
             }
         }
@@ -160,25 +134,40 @@ impl Registers {
     /// Set content to the system clipboard
     pub fn set_clipboard(&mut self, content: &RegisterContent) {
         let text = clipboard_text_for_content(content);
-        #[cfg(test)]
-        if let Some(clipboard) = &mut self.in_memory_clipboard {
-            clipboard.text = Some(text);
-            self.clipboard_error = None;
-            return;
-        }
+        self.clipboard_error = self.write_clipboard(text).err();
+    }
 
-        match Clipboard::new() {
-            Ok(mut clipboard) => {
-                if let Err(e) = clipboard.set_text(text) {
-                    self.clipboard_error = Some(format!("Clipboard write failed: {}", e));
-                } else {
-                    self.clipboard_error = None;
-                }
-            }
-            Err(e) => {
-                self.clipboard_error = Some(format!("Clipboard unavailable: {}", e));
-            }
-        }
+    #[cfg(not(test))]
+    fn read_clipboard(&mut self) -> Result<Option<String>, String> {
+        let mut clipboard =
+            arboard::Clipboard::new().map_err(|e| format!("Clipboard unavailable: {e}"))?;
+        let text = clipboard
+            .get_text()
+            .map_err(|e| format!("Clipboard read failed: {e}"))?;
+        Ok(Some(text))
+    }
+
+    #[cfg(not(test))]
+    fn write_clipboard(&mut self, text: String) -> Result<(), String> {
+        let mut clipboard =
+            arboard::Clipboard::new().map_err(|e| format!("Clipboard unavailable: {e}"))?;
+        clipboard
+            .set_text(text)
+            .map_err(|e| format!("Clipboard write failed: {e}"))
+    }
+
+    /// Tests run in parallel, and parallel access to the real macOS
+    /// pasteboard crashes the test binary (SIGSEGV in arboard). It would
+    /// also overwrite whatever the developer had copied.
+    #[cfg(test)]
+    fn read_clipboard(&mut self) -> Result<Option<String>, String> {
+        Ok(self.test_clipboard.clone())
+    }
+
+    #[cfg(test)]
+    fn write_clipboard(&mut self, text: String) -> Result<(), String> {
+        self.test_clipboard = Some(text);
+        Ok(())
     }
 
     /// Take any clipboard error (clears it after returning)

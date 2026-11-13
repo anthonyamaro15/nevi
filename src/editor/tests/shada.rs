@@ -5,7 +5,6 @@ use std::path::PathBuf;
 
 fn populated_editor() -> Editor {
     let mut editor = Editor::default();
-    editor.registers.use_in_memory_clipboard_for_tests();
     editor
         .macros
         .set_macro('a', parse_key_sequence("0f,ci\"hi<Esc>").unwrap());

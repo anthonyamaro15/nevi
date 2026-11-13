@@ -36,7 +36,6 @@ fn reported_new_file_yypp_zz_workflow_saves_three_terminated_lines() {
     let path = temp_dir.join("new.txt");
 
     let mut editor = Editor::default();
-    editor.registers.use_in_memory_clipboard_for_tests();
     editor.open_file(path.clone()).expect("open new file path");
 
     for key in [

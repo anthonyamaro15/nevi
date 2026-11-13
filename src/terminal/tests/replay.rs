@@ -11,7 +11,6 @@ fn feed(editor: &mut Editor, keys: &str) {
 fn editor_with(text: &str) -> Editor {
     let mut editor = Editor::default();
     editor.set_size(80, 24);
-    editor.registers.use_in_memory_clipboard_for_tests();
     editor.replace_buffer_content(text);
     editor
 }
