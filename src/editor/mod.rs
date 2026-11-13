@@ -8,6 +8,7 @@ mod increment;
 mod macros;
 mod marks;
 mod mouse;
+mod reference_rows;
 mod register;
 mod replace;
 #[cfg(test)]
@@ -20,6 +21,7 @@ pub use buffer::{Buffer, BufferEdit};
 pub use cursor::{Cursor, DesiredCol};
 pub use macros::MacroState;
 pub use marks::{Mark, Marks};
+pub use reference_rows::ReferenceRow;
 pub use register::{RegisterContent, Registers};
 pub use undo::{Change, UndoEntry, UndoStack};
 
@@ -1351,13 +1353,28 @@ pub enum CopilotAction {
 pub struct ReferencesPicker {
     /// List of reference locations
     pub items: Vec<Location>,
+    /// What each location shows, same order as `items`
+    pub rows: Vec<ReferenceRow>,
     /// Currently selected index
     pub selected: usize,
 }
 
 impl ReferencesPicker {
-    pub fn new(items: Vec<Location>) -> Self {
-        Self { items, selected: 0 }
+    pub fn new(items: Vec<Location>, rows: Vec<ReferenceRow>) -> Self {
+        Self {
+            items,
+            rows,
+            selected: 0,
+        }
+    }
+
+    /// The symbol's name, read off the first row that found it.
+    pub fn symbol(&self) -> String {
+        self.rows
+            .iter()
+            .map(ReferenceRow::symbol)
+            .find(|symbol| !symbol.is_empty())
+            .unwrap_or_default()
     }
 
     pub fn move_up(&mut self) {
@@ -12658,12 +12675,8 @@ impl Editor {
 
     /// Show the references picker with the given locations
     pub fn show_references_picker(&mut self, locations: Vec<Location>) {
-        let count = locations.len();
-        self.references_picker = Some(ReferencesPicker::new(locations));
-        self.set_status(format!(
-            "{} references - j/k to navigate, Enter to go, Esc to close",
-            count
-        ));
+        let rows = self.reference_rows(&locations);
+        self.references_picker = Some(ReferencesPicker::new(locations, rows));
     }
 
     /// Hide the references picker
@@ -12673,12 +12686,7 @@ impl Editor {
 
     /// Show the code actions picker with the given actions
     pub fn show_code_actions_picker(&mut self, actions: Vec<CodeActionItem>) {
-        let count = actions.len();
         self.code_actions_picker = Some(CodeActionsPicker::new(actions));
-        self.set_status(format!(
-            "{} code actions - j/k to navigate, Enter to apply, Esc to close",
-            count
-        ));
     }
 
     /// Hide the code actions picker

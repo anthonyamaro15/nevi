@@ -1,5 +1,5 @@
 mod file_picker;
-mod grep;
+pub(crate) mod grep;
 #[cfg(test)]
 mod grep_bench;
 mod keybinds;

@@ -340,7 +340,7 @@ rows may already be covered compositionally.)
 | `gl` | Show diagnostic in floating window |
 | `]d` | Go to next diagnostic |
 | `[d` | Go to previous diagnostic |
-| `<leader>ca` | Code actions |
+| `<leader>ca` | Code actions (`1`-`9` apply that one) |
 | `<leader>rn` | Rename symbol |
 | `<leader>d` | Search all diagnostics |
 | `<leader>D` | Show line diagnostic |
@@ -400,7 +400,7 @@ rows may already be covered compositionally.)
 | `Ctrl+Shift+W` | Close current terminal session |
 | `Ctrl+Shift+C` | Copy the current terminal selection |
 | `Cmd+C` | Copy the current terminal selection when the outer terminal forwards the key to Nevi |
-| `<leader>ca` | Code actions |
+| `<leader>ca` | Code actions (`1`-`9` apply that one) |
 | `<leader>rn` | Rename symbol |
 | `<leader>d` | Search diagnostics |
 | `<leader>D` | Show line diagnostic |
