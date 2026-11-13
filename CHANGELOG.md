@@ -1,6 +1,31 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-11-13
+
+Nevi 0.4.0 makes the slow parts fast, closes another long list of Vim gaps,
+and reworks most of the popups. On a large project, live grep now shows its
+first hit in about 30 ms instead of 5 seconds, the file picker opens without
+freezing the editor, and syntax highlighting reparses only what an edit
+touched. On the Vim side it adds dot repeat, `Ctrl+a` and `Ctrl+x`, `]p`, `&`,
+`g*`, the rest of the `z` scroll family, and macros, registers, and marks that
+survive a restart, all checked against real Neovim. Hover, references, code
+actions, completion, signature help, and the explorer prompts were redone, and
+Swift and Typst join the supported languages.
+
+Existing config files keep working. A few defaults changed:
+
+- The mouse is on by default, so the wheel scrolls the file and a click moves
+  the cursor. To select text with the terminal instead, hold its bypass key
+  (Option in iTerm2, Shift in most others), or set `mouse = false` under
+  `[editor]`.
+- Macros, registers, marks, and search history are saved in
+  `~/.local/state/nevi/`. The finder's recent-file ranking and the command
+  history move there on their next save.
+- Opening a file inside a git repository makes the repository root the
+  project, for the explorer, harpoon, and the floating terminal.
+- Deleting in the explorer takes a single `y`, with no Enter.
+
+PERF.md has the numbers next to 0.3.0.
 
 ### Performance
 
@@ -23,7 +48,6 @@
 - `Ctrl+z` now suspends Nevi to the shell in Normal and Visual mode, and `fg` brings it back, like Vim. `:suspend` and `:stop` (`:sus`, `:st`, with or without `!`) do the same. Visual mode is left first, and a pending operator or count is dropped. The terminal is handed back in the state the shell expects, and on return the screen is redrawn at the current window size and files changed on disk are picked up, as after lazygit. Language servers pause along with the editor. Where the shell ignores the stop, as inside a bash `$(...)`, Nevi shows a message instead. (#353) Verified against real Neovim where the snapshot can see it; the suspend itself is pinned by native tests.
 - Fixed Normal-mode `Ctrl+c` exiting and discarding unsaved changes. It now cancels pending input or shows quit guidance, matching Neovim. It also closes the `"=` expression prompt, and after `Ctrl+o` in Insert mode it leaves you in Normal mode, like Vim. Ctrl keys now cancel a leader sequence instead of completing a mapping with their letter, in the file explorer too, so `Space` then `Ctrl+c` can't run a `<leader>c` mapping. (#346) Verified against real Neovim.
 - Left-click dragging now selects text in characterwise Visual mode. Releasing the mouse keeps the selection for Visual operators, and selections started in Insert mode return to Insert after an operator or Escape. Selection follows wrapped/scrolled text and stays in the pane where the drag began. (#345)
-
 - Macros, named and unnamed registers, global marks, and search history now survive restarts, like Vim's shada. State is stored in `~/.local/state/nevi/state.json`, following nvim's `stdpath('state')` convention, and `$XDG_STATE_HOME` is respected. Macros are saved as readable key notation, so the file can be inspected or hand-edited, and a corrupt file never blocks startup. The frecency database and command history moved to the same directory; data in the old location is found automatically and migrates on its next save.
 - Added `&` to repeat the last `:s` on the current line, with a count for that many lines, and `g&` to repeat it on every line. Both keep the flags of the original `:s`, matching Neovim, whose default `&` is `:&&`. Neither is picked up by `.`, same as any `:` command. Along the way, `:s` and `:%s` now leave the cursor on the first non-blank of the last line they changed, as Vim does, instead of where it was. Verified against real Neovim.
 - Operators with `j`, `k`, `G`, `gg`, `{n}G`, `H`, `M`, and `L` now work on whole lines like Vim. `dj` deletes the current and next line, `cj` changes them into one line that keeps the first line's indent, and `yj` yanks them linewise; before, these ran characterwise and `dj` left an empty line behind. `dj` on the last line and `dk` on the first do nothing, while `dG` and `dgg` still delete the line they are on. `H`, `M`, and `L` under an operator now count from the lines on screen rather than from the top of the buffer, and reach the true top and bottom lines regardless of scrolloff. `M` on a buffer shorter than the window goes to the middle of the lines shown instead of the last line. Verified against real Neovim.
@@ -45,6 +69,7 @@
 - Search now anchors at the position where `/` or `?` was pressed, like Vim. Every keystroke evaluates the whole pattern from that origin instead of chasing the cursor around, so editing the pattern with backspace cannot land on an earlier match than Vim would. Escape cancels back to the original cursor and view, and a pattern with no match leaves the cursor where the search started.
 - Repeating a search with an empty prompt (`/` or `?` then Enter) now moves off a match under the cursor instead of standing still, and it updates the direction that `n` and `N` follow, so `n` after `?` and Enter keeps searching backward.
 - `n` and `N` now take a count, so `3n` jumps three matches ahead.
+- `O` in Visual-block mode now swaps corners the way Vim does. On a block that covers a short or empty line, the cursor could end up past the end of that line. (#399) Verified against real Neovim.
 - `gN` now leaves the cursor on the start of the selected match like Vim. It used to sit on the end, same as `gn`.
 - Extended Vim oracle coverage to the search family: `/`, `?`, `n`, `N`, `*`, `#`, `gn`, `gN`, and the search prompt editing keys (`Backspace`, `Ctrl+w`, `Ctrl+u`, `Ctrl+b`, `Ctrl+e`, `Ctrl+r`, history recall with `Up`), all verified against real Neovim and tracked in `PARITY.md`.
 - Fixed the quote text objects (`i"`, `a"`, `i'`, `a'`, `` i` ``, `` a` ``) doing nothing when the cursor sits before the first quote. They now seek forward on the line, as in Vim, so `ci"` works from the start of the line.
@@ -64,7 +89,6 @@
 - Fixed `gi` resuming insert one column left of where the last insert session stopped. It now continues exactly where typing ended, including after `A` at the end of a line.
 - Fixed `~` to advance the cursor past the last toggled character, as in Vim.
 - Extended Vim oracle coverage to the editing core: the case operators (`gu`, `gU`, `g~` and their line forms), `~`, `X`, `s`, `S`, `gp`, `gP`, `J`, and `gJ` are now verified against real Neovim and individually tracked in `PARITY.md`.
-- Corrected the docs: `.` (repeat last change) was listed as implemented but only shows a status note today. It moved to the roadmap.
 
 ### Interface
 
@@ -88,13 +112,12 @@
 - Completion, hover, signature help, code action, and diagnostic popups now open next to the cursor's real screen row when soft wrap is on. They used to count buffer lines instead of screen rows, so in a narrow split with wrapped lines above the cursor the completion menu could open on top of the line being typed. The cursor and every popup now share one screen position calculation. (#333)
 - `:rename` and `:mv` now refuse a destination that already exists instead of silently replacing it. A case-only rename such as `Notes.txt` to `notes.txt` still works on case-insensitive filesystems.
 - The `:Keymaps` cheatsheet caught up with the editor. It had quietly stopped being updated in June and was missing everything added since: the method motions, section and unmatched-bracket motions, `gm`, `go`, `s`, several window and terminal session keys, and more. A new test now fails whenever a key documented in KEYBINDINGS.md is missing from the cheatsheet, so it cannot drift again.
-
 - Rich mode no longer draws the `~` column on rows past the end of the buffer, like Vim's `fillchars=eob:' '`. Minimal mode keeps the tildes.
 - The statusline now shows a `[3/12]` match counter on the right side after a search (`/`, `?`, `n`, `N`, `*`, `#`), in both rich and minimal layouts. It clears together with the search highlights when the cursor moves.
 - Unified the remaining floating windows under the rich chrome. The leader/which-key popup and the command suggestions/history popup are now rounded-corner boxes with icon border titles and right-aligned key hints, and the command popup marks the selected row with the finder's accent bar instead of `>`. The floating terminal's corners now come from the shared glyph table (square in minimal mode, matching the finder) and its title carries a terminal icon. Minimal mode keeps the previous flat headers throughout.
-- Added a start screen. Launching `nevi` with nothing to edit now shows recent files with their project names, harpoon pins, startup time, and key hints; `1`–`9` opens the numbered recent file and `h` + `1`–`9` jumps to that harpoon slot. Recently opened files persist to `~/.local/state/nevi/recent_files.json`, alongside the other shada-lite state. The screen is a pure render condition — it disappears as soon as any real buffer, edit, or mode change happens, and costs nothing afterward.
+- Added a start screen. Launching `nevi` with nothing to edit now shows recent files with their project names, harpoon pins, startup time, and key hints; `1`–`9` opens the numbered recent file and `h` + `1`–`9` jumps to that harpoon slot. Recently opened files persist to `~/.local/state/nevi/recent_files.json`, alongside the other shada-lite state. The screen goes away as soon as a real buffer, an edit, or a mode change happens, and costs nothing after that.
 - Opening a file now scopes the project to its repository root (nearest ancestor with `.git`) instead of the file's own directory. Harpoon pins land in one `.nevi/harpoon.json` at the repo root regardless of which file you opened, and the explorer and floating terminal start at the repo root too. Outside a repository the old parent-directory behavior is unchanged.
-- Added an optional bufferline. With `bufferline = true` under `[editor]` (default off), a tab strip on the top row lists every open buffer by file name, highlights the buffer shown in the active pane, and marks unsaved buffers with the same modified glyph the statusline uses. The strip is derived from the buffer list, so opening, closing, and `:bd` update it immediately, and navigation stays on the existing `]b`/`[b` and `:bn`/`:bp`. When enabled, buffer text starts one row lower to make room, in both split orientations.
+- Added an optional bufferline. With `bufferline = true` under `[editor]` (default off), a tab strip on the top row lists every open buffer by file name (with as many parent folders as it takes to tell apart two files with the same name, such as `editor/mod.rs` and `terminal/mod.rs`), highlights the buffer shown in the active pane, and marks unsaved buffers with the same modified glyph the statusline uses. The strip is derived from the buffer list, so opening, closing, and `:bd` update it immediately, and navigation stays on the existing `]b`/`[b` and `:bn`/`:bp`. When enabled, buffer text starts one row lower to make room, in both split orientations.
 - Code a language server marks as unnecessary, such as an unused variable or import or a block switched off by `#[cfg]`, is now drawn faded, and deprecated code is drawn struck through with an underline in the warning color. Both keep their syntax colors. A hint that only flags unused or deprecated code no longer adds a gutter sign or an end-of-line message, since the fade or strike already shows it; warnings and errors keep theirs.
 
 ### Configuration
@@ -104,8 +127,8 @@
 
 ### Languages And Tooling
 
-- Added Swift support.
-- Added Typst support.
+- Added Swift support: tree-sitter highlighting, and `sourcekit-lsp` as the language server.
+- Added Typst support: highlighting, and `tinymist` as the language server. Code blocks inside a document are not highlighted yet.
 
 ### Fixed
 
@@ -120,11 +143,24 @@
 ### Documentation
 
 - Reorganized the docs on GitHub. The README is now a short front door with a table of contents, one install section, a six-command quick start, a table of every file Nevi reads or writes, and a troubleshooting section. New `CONFIGURATION.md` documents every config option, keymap action, and formatter setting in one place (#207), and new `CONTRIBUTING.md` walks through adding a keybind: the oracle case, the coverage entry, the docs that tests check, and the PR checklist. Keybind customization moved from `KEYBINDINGS.md` to `CONFIGURATION.md`, and the command tables gained the ex commands they were missing. A Vim parity issue template asks for exactly the fields an oracle case needs.
+- Added `PERF.md`, a table of how fast Nevi is release to release. Every row comes from a benchmark in the repository, with the command to run them yourself.
 
 ### Install And Upgrade
 
 - Added a Nix flake. `nix run github:anthonyamaro15/nevi` runs the editor without installing it, and `nix develop` opens a dev shell with the Rust toolchain and the libraries Nevi links against.
 
+Homebrew users can upgrade after this release with:
+
+```bash
+brew update
+brew upgrade nevi
+```
+
+### Contributors
+
+Thanks to @beatrupp for Swift and Typst support and for cleaning up the
+duplicated command names, @francesco-gaglione for the bufferline and its
+labels for files with the same name, and @frisoft for the Nix flake.
 
 ## 0.3.0 - 2026-08-25
 
