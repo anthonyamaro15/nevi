@@ -129,4 +129,31 @@ pub(super) const VISUAL_CASES: &[OracleCase] = &[
         initial_text: "one\ntwo\nthree\n",
         keys: "VjjJu",
     },
+    // Block `O` and `o` keep the cursor on its line. Vim moves both corners
+    // with coladvance, so a corner never lands past the end of a short line.
+    OracleCase {
+        name: "visual block O onto an empty line",
+        initial_text: "hello world\n\n",
+        keys: "w<C-v>jO",
+    },
+    OracleCase {
+        name: "visual block O then o from an empty line",
+        initial_text: "h\u{e9}llo w\u{f6}rld\n\n",
+        keys: "wVj<C-v>oOo",
+    },
+    OracleCase {
+        name: "visual block O then o onto a short line",
+        initial_text: "ab\nabcdefgh\n",
+        keys: "<C-v>jllllllOo",
+    },
+    OracleCase {
+        name: "visual block O keeps the block width",
+        initial_text: "hello world\n\nhello world\n",
+        keys: "w<C-v>jjOd",
+    },
+    OracleCase {
+        name: "visual block O twice returns to the start",
+        initial_text: "abcdef\nabcdef\n",
+        keys: "l<C-v>jllOO",
+    },
 ];
