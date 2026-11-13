@@ -9567,9 +9567,24 @@ fn handle_visual_mode(editor: &mut Editor, key: KeyEvent) {
             editor.scroll_to_cursor();
         }
         (KeyModifiers::SHIFT, KeyCode::Char('O')) if editor.mode == Mode::VisualBlock => {
-            let old_anchor_col = editor.visual.anchor_col;
-            editor.visual.anchor_col = editor.cursor.col;
-            editor.cursor.col = old_anchor_col;
+            // Vim's v_swap_corners: the cursor goes to the block's right
+            // edge (or its left edge when it is already there) and the
+            // anchor takes the other edge. Each corner is clamped to its own
+            // line, one past the end at most, so a short line never holds a
+            // column it doesn't have.
+            let buffer = editor.buffer();
+            let anchor_max = buffer.line_len(editor.visual.anchor_line);
+            let cursor_max = buffer.line_len(editor.cursor.line);
+            let old_col = editor.cursor.col;
+            let left = old_col.min(editor.visual.anchor_col);
+            let right = old_col.max(editor.visual.anchor_col);
+            let (anchor_col, cursor_col) = if right.min(cursor_max) == old_col {
+                (right, left)
+            } else {
+                (left, right)
+            };
+            editor.visual.anchor_col = anchor_col.min(anchor_max);
+            editor.cursor.col = cursor_col.min(cursor_max);
             editor.scroll_to_cursor();
         }
 
