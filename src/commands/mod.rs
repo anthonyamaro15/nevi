@@ -39,8 +39,8 @@ pub enum Command {
     Prev,
     /// :bd or :bdelete - Close the current buffer
     BufferDelete(bool),
-    /// :set option[=value] - Set an option
-    Set(String, Option<String>),
+    /// :set with its arguments (`nu`, `nonu`, `ts=4 so=3`, `wrap?`)
+    Set(String),
     /// :[number] - Go to line number
     GotoLine(usize),
     /// :LazyGit - Open lazygit
@@ -1019,16 +1019,10 @@ pub fn parse_command(input: &str) -> Command {
         "bd!" | "bdelete!" => Command::BufferDelete(true),
 
         // Set options
-        "set" => {
-            if let Some(arg) = args {
-                let mut parts = arg.splitn(2, '=');
-                let option = parts.next().unwrap_or("").to_string();
-                let value = parts.next().map(|s| s.to_string());
-                Command::Set(option, value)
-            } else {
-                Command::Unknown("set: missing option".to_string())
-            }
-        }
+        "set" => match args {
+            Some(arg) => Command::Set(arg.to_string()),
+            None => Command::Unknown("set: missing option".to_string()),
+        },
 
         // External tools
         "LazyGit" | "lazygit" | "lg" => Command::LazyGit,

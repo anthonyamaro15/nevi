@@ -108,6 +108,15 @@ impl SignColumn {
             _ => None,
         }
     }
+
+    /// The value as `:set signcolumn=<value>` takes it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Yes => "yes",
+            Self::No => "no",
+        }
+    }
 }
 
 /// Autosave mode configuration
@@ -144,7 +153,7 @@ pub struct EditorSettings {
     pub sign_column: SignColumn,
     /// Highlight current line (default: false)
     pub cursor_line: bool,
-    /// Lines to keep visible above/below cursor (default: 0)
+    /// Lines to keep visible above/below cursor (default: 8)
     pub scroll_off: usize,
     /// Enable smart auto-indentation (default: true)
     pub auto_indent: bool,

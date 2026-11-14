@@ -14,6 +14,7 @@ mod replace;
 #[cfg(test)]
 pub(crate) mod save_test_support;
 mod search_pattern;
+pub(crate) mod set_options;
 mod topline;
 mod undo;
 

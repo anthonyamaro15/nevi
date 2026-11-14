@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Vim Compatibility
+
+- `:set` now understands `number`, `relativenumber`, `wrap`, `cursorline`, `tabstop`, and `scrolloff`, with Vim's short names (`nu`, `rnu`, `cul`, `ts`, `so`) and forms: `:set nu`, `:set nonu`, `:set nu!`, `:set invnu`, `:set ts=2`, and `:set so?` to show a value. Several options can follow one `:set`, like `:set nu rnu so=3`. Until now it only knew `mouse` and `signcolumn`. The changes last until you quit. (#409)
+
 ### Fixed
 
 - Nevi no longer writes to `/tmp/nevi_debug.log`. Key presses that took longer than usual to handle were logged there along with the key typed, in a file other users on the machine could read. The same timings are still available in memory through `:WhySlow`. (#405)
