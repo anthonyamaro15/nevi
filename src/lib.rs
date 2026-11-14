@@ -35,6 +35,7 @@ mod parity_report;
 pub mod perf;
 pub mod project_replace;
 pub mod recent_files;
+mod remap;
 pub mod render_damage;
 mod replay;
 pub mod shada;

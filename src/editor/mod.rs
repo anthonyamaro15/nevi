@@ -1276,6 +1276,8 @@ pub struct Editor {
     pub dot_repeat: crate::dot_repeat::DotRepeat,
     /// Nesting of macro and dot-repeat playback, shared by both.
     pub(crate) replay: crate::replay::ReplayState,
+    /// Nesting of user mappings whose keys are being replayed.
+    pub(crate) remap: crate::remap::RemapState,
     /// Last insert position for `gi` command (line, col)
     pub last_insert_position: Option<(usize, usize)>,
     /// Where the active insert session began, the `'[` mark once it ends.
@@ -1812,6 +1814,7 @@ impl Editor {
             macros: MacroState::new(),
             dot_repeat: crate::dot_repeat::DotRepeat::default(),
             replay: crate::replay::ReplayState::default(),
+            remap: crate::remap::RemapState::default(),
             last_insert_position: None,
             insert_session_start: (0, 0),
             last_inserted_text: None,

@@ -98,6 +98,9 @@ show_leader_popup = true     # show available continuations after pressing the l
 **Remap a normal-mode or visual-mode key.** `from` is the key you press, `to`
 is the key sequence Nevi runs instead, so anything that works when typed works
 here, including ex commands.
+The keys in `to` are the built-in ones: other `[[keymap.normal]]` and
+`[[keymap.visual]]` mappings are not applied to them, like Vim's `noremap`. So
+`from = "n"`, `to = "nzz"` is safe. Leader shortcuts still work inside `to`.
 
 ```toml
 [[keymap.normal]]
