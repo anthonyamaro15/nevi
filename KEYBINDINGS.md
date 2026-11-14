@@ -871,7 +871,7 @@ While typing an Ex command after `:`.
 | `Ctrl+a` | Insert all matching command completions |
 | `Ctrl+f` | Open command-line window |
 | `Alt+r` | Toggle command history window |
-| `Tab` | Accept selected command completion |
+| `Tab` | Accept the selected completion: a command name, or an option name after `:set` |
 | `Shift+Tab` | Accept previous completion |
 | `Ctrl+n` / `Ctrl+p` | Select next / previous popup item |
 

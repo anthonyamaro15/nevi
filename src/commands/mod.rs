@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::editor::set_options::SetOption;
+
 /// Parsed command from command line
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -220,6 +222,9 @@ pub struct CommandSuggestion {
     pub matched_alias: &'static str,
     /// Whether this command usually expects arguments
     pub takes_args: bool,
+    /// Set when this is a `:set` option, not a command. `command` is then
+    /// the option's name and `matched_alias` its short name if that matched.
+    pub option: Option<SetOption>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -729,10 +734,65 @@ const MAX_COMMAND_SUGGESTIONS: usize = 12;
 const MAX_HISTORY_ITEMS: usize = 20;
 const MAX_HISTORY_ENTRIES: usize = 500;
 
-/// Build fuzzy command suggestions for the current command-line input.
+/// What the completion popup is completing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletionKind {
+    /// The command name, the first word of the input.
+    Command,
+    /// An option name after `:set`.
+    SetOption,
+}
+
+/// Build fuzzy suggestions for the current command-line input: command names,
+/// or option names once the command is `:set`.
 pub fn command_suggestions(input: &str, limit: usize) -> Vec<CommandSuggestion> {
-    let (_, token, _) = split_input_segments(input);
-    command_suggestions_for_token(token, limit)
+    let (kind, _, token, _) = completion_segments(input);
+    suggestions_for(kind, token, limit)
+}
+
+fn suggestions_for(kind: CompletionKind, token: &str, limit: usize) -> Vec<CommandSuggestion> {
+    match kind {
+        CompletionKind::Command => command_suggestions_for_token(token, limit),
+        CompletionKind::SetOption => option_suggestions(token, limit),
+    }
+}
+
+/// `:set` options matching `name`, best match first. An empty name lists
+/// them all in their usual order.
+fn option_suggestions(name: &str, limit: usize) -> Vec<CommandSuggestion> {
+    let query = name.to_lowercase();
+    let mut scored: Vec<(i32, CommandSuggestion)> = Vec::new();
+
+    for option in SetOption::ALL {
+        let mut best = None::<(i32, &'static str)>;
+        for alias in std::iter::once(option.name()).chain(option.short_name()) {
+            if let Some(score) = alias_match_score(&query, alias) {
+                if best.is_none_or(|(best_score, _)| score > best_score) {
+                    best = Some((score, alias));
+                }
+            }
+        }
+        if let Some((score, alias)) = best {
+            scored.push((
+                score,
+                CommandSuggestion {
+                    command: option.name(),
+                    description: "",
+                    matched_alias: alias,
+                    takes_args: option.takes_value(),
+                    option: Some(option),
+                },
+            ));
+        }
+    }
+
+    // Stable, so equal scores keep the options' usual order.
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored
+        .into_iter()
+        .take(limit.max(1))
+        .map(|(_, suggestion)| suggestion)
+        .collect()
 }
 
 fn command_suggestions_for_token(token: &str, limit: usize) -> Vec<CommandSuggestion> {
@@ -748,6 +808,7 @@ fn command_suggestions_for_token(token: &str, limit: usize) -> Vec<CommandSugges
                 description: spec.description,
                 matched_alias: spec.command,
                 takes_args: spec.takes_args,
+                option: None,
             })
             .collect();
     }
@@ -781,6 +842,7 @@ fn command_suggestions_for_token(token: &str, limit: usize) -> Vec<CommandSugges
                     description: spec.description,
                     matched_alias: best_alias,
                     takes_args: spec.takes_args,
+                    option: None,
                 },
             ));
         }
@@ -882,6 +944,42 @@ fn split_input_segments(input: &str) -> (&str, &str, &str) {
     }
 
     (&input[..start], &input[start..end], &input[end..])
+}
+
+/// Split the input around the word being completed: what comes before it,
+/// the word, and what follows.
+///
+/// Normally that word is the command name. After `:set` it is the option
+/// name in the last argument, without a `no`/`inv` prefix or a `=value`, `?`
+/// or `!` tail, so accepting a completion keeps those.
+fn completion_segments(input: &str) -> (CompletionKind, &str, &str, &str) {
+    let (prefix, token, suffix) = split_input_segments(input);
+    if token != "set" || !suffix.starts_with(char::is_whitespace) {
+        return (CompletionKind::Command, prefix, token, suffix);
+    }
+
+    // The last argument. It is empty when the input ends in a space.
+    let word_start = input
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| ch.is_whitespace())
+        .map_or(0, |(idx, ch)| idx + ch.len_utf8());
+    let word = &input[word_start..];
+    // No option name starts with `no` or `inv`, so these are always prefixes.
+    let name_start = word_start
+        + ["inv", "no"]
+            .iter()
+            .find(|prefix| word.starts_with(**prefix))
+            .map_or(0, |prefix| prefix.len());
+    let rest = &input[name_start..];
+    let name_end = name_start + rest.find(['=', '?', '!']).unwrap_or(rest.len());
+
+    (
+        CompletionKind::SetOption,
+        &input[..name_start],
+        &input[name_start..name_end],
+        &input[name_end..],
+    )
 }
 
 fn common_prefix_preserving_left_case(left: &str, right: &str) -> String {
@@ -1612,12 +1710,12 @@ impl CommandLine {
         }
 
         self.popup_mode = CommandPopupMode::Completion;
-        let (prefix, token, suffix) = split_input_segments(&self.input);
+        let (kind, prefix, token, suffix) = completion_segments(&self.input);
         if token.is_empty() {
             return false;
         }
 
-        let matches = command_suggestions_for_token(token, COMMAND_SPECS.len());
+        let matches = suggestions_for(kind, token, COMMAND_SPECS.len());
         let common_prefix = longest_common_command_prefix(&matches);
         if common_prefix.is_empty() || common_prefix == token {
             return false;
@@ -1641,8 +1739,8 @@ impl CommandLine {
         self.history_popup_items.clear();
         self.history_popup_index = 0;
 
-        let (prefix, token, suffix) = split_input_segments(&self.input);
-        let matches = command_suggestions_for_token(token, COMMAND_SPECS.len());
+        let (kind, prefix, token, suffix) = completion_segments(&self.input);
+        let matches = suggestions_for(kind, token, COMMAND_SPECS.len());
         if matches.is_empty() {
             self.suggestions.clear();
             self.popup_mode = CommandPopupMode::None;
@@ -1730,7 +1828,7 @@ impl CommandLine {
             return false;
         };
 
-        let (prefix, _token, suffix) = split_input_segments(&self.input);
+        let (kind, prefix, _token, suffix) = completion_segments(&self.input);
         let prefix = prefix.to_string();
         let suffix = suffix.to_string();
 
@@ -1738,7 +1836,12 @@ impl CommandLine {
         new_input.push_str(&prefix);
         new_input.push_str(suggestion.command);
         if suffix.trim().is_empty() && suggestion.takes_args {
-            new_input.push(' ');
+            // Ready for what comes next: a command's arguments, or the
+            // value of a `:set` option.
+            new_input.push(match kind {
+                CompletionKind::Command => ' ',
+                CompletionKind::SetOption => '=',
+            });
         } else {
             new_input.push_str(&suffix);
         }
@@ -2362,5 +2465,114 @@ mod tests {
                 .any(|item| item == "FindBuffers")
         );
         assert!(!line.history_popup_items.iter().any(|item| item == "Format"));
+    }
+
+    fn line_with(input: &str) -> CommandLine {
+        let mut line = CommandLine::default();
+        line.input = input.to_string();
+        line.cursor = line.input.chars().count();
+        line.refresh_command_suggestions();
+        line
+    }
+
+    fn suggested(input: &str) -> Vec<&'static str> {
+        command_suggestions(input, MAX_COMMAND_SUGGESTIONS)
+            .iter()
+            .map(|suggestion| suggestion.command)
+            .collect()
+    }
+
+    #[test]
+    fn set_arguments_complete_option_names_not_commands() {
+        // Every option, in its usual order, once the command is `:set`.
+        assert_eq!(
+            suggested("set "),
+            SetOption::ALL.map(SetOption::name).to_vec()
+        );
+        assert!(
+            command_suggestions("set ", MAX_COMMAND_SUGGESTIONS)
+                .iter()
+                .all(|suggestion| suggestion.option.is_some())
+        );
+
+        // Still the command name until the space is typed.
+        assert_eq!(suggested("set").first(), Some(&"set"));
+        assert!(
+            command_suggestions("set", MAX_COMMAND_SUGGESTIONS)
+                .iter()
+                .all(|suggestion| suggestion.option.is_none())
+        );
+        // Other commands keep completing their own name.
+        assert_eq!(suggested("mk src").first(), Some(&"mkdir"));
+    }
+
+    #[test]
+    fn set_option_suggestions_follow_what_is_typed() {
+        assert_eq!(suggested("set rel").first(), Some(&"relativenumber"));
+        assert_eq!(suggested("set cur").first(), Some(&"cursorline"));
+        // The last argument is the one being completed.
+        assert_eq!(suggested("set nu wr").first(), Some(&"wrap"));
+        // `no` and `inv` are prefixes, not part of the name.
+        assert_eq!(suggested("set nowr").first(), Some(&"wrap"));
+        assert_eq!(suggested("set invcu").first(), Some(&"cursorline"));
+        assert_eq!(suggested("set no").len(), SetOption::ALL.len());
+        // A value, `?` or `!` after the name does not hide the option.
+        assert_eq!(suggested("set tabstop=8").first(), Some(&"tabstop"));
+        assert_eq!(suggested("set so?").first(), Some(&"scrolloff"));
+        assert!(suggested("set zzz").is_empty());
+
+        let short = command_suggestions("set nu", MAX_COMMAND_SUGGESTIONS);
+        assert_eq!(short[0].command, "number");
+        assert_eq!(short[0].matched_alias, "nu");
+    }
+
+    #[test]
+    fn accepting_a_set_option_keeps_its_prefix_and_tail() {
+        for (input, expected) in [
+            ("set rel", "set relativenumber"),
+            ("set norel", "set norelativenumber"),
+            ("set invcu", "set invcursorline"),
+            ("set nu wr", "set nu wrap"),
+            ("set cul!", "set cursorline!"),
+            ("set so?", "set scrolloff?"),
+            ("set ts=8", "set tabstop=8"),
+            // An option that takes a value is left ready for it.
+            ("set ts", "set tabstop="),
+            ("set sig", "set signcolumn="),
+        ] {
+            let mut line = line_with(input);
+            assert!(line.accept_completion_selection(), "{input}");
+            assert_eq!(line.input, expected, "{input}");
+            assert_eq!(line.cursor, expected.chars().count(), "{input}");
+        }
+    }
+
+    #[test]
+    fn accepting_the_set_command_moves_on_to_its_options() {
+        let mut line = line_with("se");
+        line.suggestion_index = line
+            .suggestions
+            .iter()
+            .position(|item| item.command == "set")
+            .unwrap();
+
+        assert!(line.accept_completion_selection());
+
+        assert_eq!(line.input, "set ");
+        assert_eq!(line.suggestions[0].command, "number");
+        assert!(line.suggestions[0].option.is_some());
+    }
+
+    #[test]
+    fn no_set_option_name_starts_with_a_negation_prefix() {
+        // Completion treats a leading `no` or `inv` as a prefix.
+        for option in SetOption::ALL {
+            for name in std::iter::once(option.name()).chain(option.short_name()) {
+                assert!(
+                    !name.starts_with("no") && !name.starts_with("inv"),
+                    "{name}"
+                );
+            }
+        }
     }
 }
