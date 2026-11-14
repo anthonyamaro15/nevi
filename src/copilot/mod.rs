@@ -140,6 +140,12 @@ impl GhostTextState {
     }
 }
 
+/// Node.js or the Copilot language server is missing from this machine, as
+/// opposed to being there and failing to start.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct NotInstalled(&'static str);
+
 /// Context for tracking completion requests (stale response detection)
 #[derive(Debug, Clone, PartialEq)]
 struct CompletionContext {
@@ -174,7 +180,33 @@ impl CopilotManager {
         }
 
         self.status = CopilotStatus::Starting;
+        let result = self.spawn_server();
+        if let Err(error) = &result {
+            self.note_start_failure(error);
+        }
+        result
+    }
 
+    /// Keep why the server didn't start, so `:CopilotStatus` can say it even
+    /// when startup stayed quiet.
+    fn note_start_failure(&mut self, error: &anyhow::Error) {
+        self.status = CopilotStatus::Error;
+        self.last_error = Some(error.to_string());
+    }
+
+    /// Whether a failed start belongs on the command line at startup. Copilot
+    /// is on by default, so on a machine without it the failure is the normal
+    /// case and says nothing new, unless the config asked for Copilot.
+    pub fn should_report_start_error(&self, error: &anyhow::Error) -> bool {
+        self.settings.requested_by_user() || !error.is::<NotInstalled>()
+    }
+
+    /// Whether the Copilot server process was started.
+    pub fn is_running(&self) -> bool {
+        self.client.is_some()
+    }
+
+    fn spawn_server(&mut self) -> Result<()> {
         // Find Node.js
         let node_path = self.find_node()?;
 
@@ -654,9 +686,10 @@ impl CopilotManager {
             }
         }
 
-        Err(anyhow!(
-            "Node.js not found. Install Node.js >= 22.0 or set copilot.node_path in config."
-        ))
+        Err(NotInstalled(
+            "Node.js not found. Install Node.js >= 22.0 or set copilot.node_path in config.",
+        )
+        .into())
     }
 
     /// Find Copilot language server
@@ -708,14 +741,60 @@ impl CopilotManager {
             }
         }
 
-        Err(anyhow!(
-            "Copilot server not found. Install copilot.lua/copilot.vim or set copilot.server_path in config."
-        ))
+        Err(NotInstalled(
+            "Copilot server not found. Install copilot.lua/copilot.vim or set copilot.server_path in config.",
+        )
+        .into())
     }
 }
 
 impl Drop for CopilotManager {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn not_installed() -> anyhow::Error {
+        NotInstalled("Copilot server not found.").into()
+    }
+
+    #[test]
+    fn missing_copilot_is_quiet_unless_the_config_asks_for_it() {
+        let by_default = CopilotManager::new(CopilotSettings::default());
+        assert!(!by_default.should_report_start_error(&not_installed()));
+
+        let enabled = CopilotManager::new(CopilotSettings {
+            enabled_in_config: true,
+            ..CopilotSettings::default()
+        });
+        assert!(enabled.should_report_start_error(&not_installed()));
+
+        let with_server_path = CopilotManager::new(CopilotSettings {
+            server_path: "/nowhere/language-server.js".to_string(),
+            ..CopilotSettings::default()
+        });
+        assert!(with_server_path.should_report_start_error(&not_installed()));
+    }
+
+    #[test]
+    fn a_server_that_fails_to_start_is_always_reported() {
+        let by_default = CopilotManager::new(CopilotSettings::default());
+        assert!(by_default.should_report_start_error(&anyhow!("Failed to get stdout")));
+    }
+
+    #[test]
+    fn status_gives_the_reason_after_a_failed_start() {
+        let mut manager = CopilotManager::new(CopilotSettings::default());
+        manager.note_start_failure(&not_installed());
+
+        assert!(!manager.is_running());
+        assert_eq!(
+            manager.status_string(),
+            "Copilot: Error - Copilot server not found."
+        );
     }
 }

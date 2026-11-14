@@ -217,6 +217,12 @@ disabled_languages = ["markdown"]
 Sign in with `:CopilotAuth`; `:CopilotStatus` and `:CopilotToggle` do what they
 say.
 
+Copilot is on by default and needs Node.js and the Copilot language server
+(from copilot.lua, copilot.vim, or the VS Code extension). When they aren't
+installed, Nevi starts without it and says nothing; `:CopilotStatus` shows
+what is missing. Setting `enabled = true`, `server_path`, or `node_path` here
+makes Nevi report a missing install at startup.
+
 ## languages.toml
 
 One section per language. `formatter` runs an external command with the buffer

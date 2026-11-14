@@ -692,8 +692,12 @@ fn main() -> anyhow::Result<()> {
                 // Started successfully, will get Initialized notification later
             }
             Err(e) => {
-                // Failed to start - show status but don't block the editor
-                editor.set_status(format!("Copilot: {}", e));
+                // Failed to start - don't block the editor. A machine that
+                // simply has no Copilot stays quiet; `:CopilotStatus` still
+                // gives the reason.
+                if mgr.should_report_start_error(&e) {
+                    editor.set_status(format!("Copilot: {}", e));
+                }
             }
         }
         copilot = Some(mgr);
@@ -1126,7 +1130,10 @@ fn main() -> anyhow::Result<()> {
                         if let Some(ref mut cop) = copilot {
                             match action {
                                 CopilotAction::Auth => {
-                                    if let Err(e) = cop.sign_in() {
+                                    if !cop.is_running() {
+                                        // Nothing to sign in to: say why.
+                                        editor.set_status(cop.status_string());
+                                    } else if let Err(e) = cop.sign_in() {
                                         editor.set_status(format!("Copilot auth error: {}", e));
                                     } else {
                                         editor.set_status("Copilot: Check for sign-in prompt...");
