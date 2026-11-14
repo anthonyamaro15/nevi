@@ -16,7 +16,7 @@ the test suite enforces, so it cannot drift from what is actually verified.
   - 1 covered as default-keymap plumbing with dedicated tests
 - **708 oracle cases**: motions (164), editing (232), increment (31), insert-entry (17), linewise-operators (44), marks (45), open-line (20), replace (27), search (51), text-objects (30), undo-redo (2), viewport (16), visual (29)
 - **0 tracked coverage gaps**
-- **259 of 468 documented keybind rows map to an inventoried keybind**; the rest work today but are not yet individually tracked ([full list below](#documented-but-not-yet-inventoried))
+- **259 of 475 documented keybind rows map to an inventoried keybind**; the rest work today but are not yet individually tracked ([full list below](#documented-but-not-yet-inventoried))
 
 ## How the Vim oracle works
 
@@ -294,7 +294,7 @@ like `dw` are tracked as single inventory entries, so their building-block
 rows may already be covered compositionally.)
 
 <details>
-<summary>209 untracked rows</summary>
+<summary>216 untracked rows</summary>
 
 | Keybind | Behavior |
 |---------|----------|
@@ -479,7 +479,14 @@ rows may already be covered compositionally.)
 | `:Keymaps` / `:keys` | Open the searchable keybinding cheatsheet |
 | `:MarkdownPreview` / `:mdp` | Open a rendered Markdown reader for the current `.md` file (`j`/`k`, `Ctrl+d`/`Ctrl+u`, `g`/`G`, `q`) |
 | `:set mouse` / `:set nomouse` / `:set mouse=` | Turn mouse capture on or off for the session |
-| `:set signcolumn={auto,yes,no}` | Show the git/diagnostic gutter always, only while a sign exists, or never |
+| `:set signcolumn={auto,yes,no}` / `:set scl=...` | Show the git/diagnostic gutter always, only while a sign exists, or never |
+| `:set number` / `:set nu` | Show line numbers. `:set nonumber` hides them, `:set number!` or `:set invnumber` flips the setting |
+| `:set relativenumber` / `:set rnu` | Relative line numbers, with the same `no`, `!`, and `inv` forms |
+| `:set wrap` | Soft wrap, with the same `no`, `!`, and `inv` forms |
+| `:set cursorline` / `:set cul` | Highlight the cursor row, with the same `no`, `!`, and `inv` forms |
+| `:set tabstop={n}` / `:set ts={n}` | Tab width |
+| `:set scrolloff={n}` / `:set so={n}` | Lines kept visible above and below the cursor |
+| `:set {option}?` | Show an option's current value. Several options can follow one `:set`, like `:set nu rnu so=3` |
 | `:Theme {name}` / `:theme {name}` / `:colorscheme {name}` | Set theme |
 | `:LazyGit` / `:lg` | Open lazygit |
 | `:checkhealth` / `:CheckHealth` / `:Health` | Open read-only `[health]` report with config, keymap, profiling, LSP, and external tools |

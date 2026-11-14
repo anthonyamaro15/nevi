@@ -56,6 +56,13 @@ until you set it. Every key below is optional.
 | `mouse` | `true` | Wheel scrolls the buffer and clicks move the cursor, like nvim's `mouse=nvi`. `:set mouse=` or `:set nomouse` turns it off for the session. |
 | `use_nerd_font_icons` | `true` | Setting this to `false` selects the minimal UI style automatically |
 
+`:set` changes some of these until you quit, with Vim's option names:
+`number` (`nu`), `relativenumber` (`rnu`), `wrap`, `cursorline` (`cul`),
+`tabstop` (`ts`), `scrolloff` (`so`), `signcolumn` (`scl`), and `mouse`. For
+example `:set nonu`, `:set wrap!`, `:set ts=2`, or `:set so?` to see a value.
+`:set tabstop` also changes the width `languages.toml` gives the current
+file's language.
+
 Formatter failure still saves the buffer. `!` only overrides the external disk-change check; it does not disable formatting or bypass read-only protection. A new write, `:Format`, or write-and-quit command finishes pending saves without waiting for LSP before running.
 
 ### [theme], [ui], [terminal], [finder], [explorer]

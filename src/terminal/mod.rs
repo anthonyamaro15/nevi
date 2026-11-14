@@ -10162,34 +10162,10 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
             }
         }
 
-        Command::Set(option, value) => match option.as_str() {
-            // Vim's 'mouse' is a string option: `:set mouse=` (empty) disables,
-            // any flag characters (`=a`, `=nvi`) enable. The bool-style
-            // `:set mouse` / `:set nomouse` forms work too. Capture is synced
-            // from this setting on the next render.
-            "mouse" => {
-                editor.settings.editor.mouse = value.as_deref().is_none_or(|v| !v.is_empty());
-                CommandResult::Ok
-            }
-            "nomouse" => {
-                editor.settings.editor.mouse = false;
-                CommandResult::Ok
-            }
-            // nvim's `:set signcolumn=auto|yes|no` (`scl` is its short name);
-            // the persistent form is `[editor] sign_column` in config.toml.
-            "signcolumn" | "scl" => {
-                match value.as_deref().and_then(crate::config::SignColumn::parse) {
-                    Some(mode) => {
-                        editor.settings.editor.sign_column = mode;
-                        editor.sign_column_width_changed();
-                        CommandResult::Ok
-                    }
-                    None => {
-                        CommandResult::Error("signcolumn: expected auto, yes, or no".to_string())
-                    }
-                }
-            }
-            _ => CommandResult::Error(format!("Unknown option: {}", option)),
+        Command::Set(args) => match editor.set_options(&args) {
+            Ok(Some(shown)) => CommandResult::Message(shown),
+            Ok(None) => CommandResult::Ok,
+            Err(error) => CommandResult::Error(error),
         },
 
         Command::LazyGit => CommandResult::RunExternal("lazygit".to_string()),
@@ -10709,6 +10685,7 @@ mod tests {
     mod normal_interrupt;
     mod remap;
     mod replay;
+    mod set_options;
     mod suspend;
     mod viewport_rendering;
 
@@ -11912,10 +11889,7 @@ mod tests {
             (0, 29)
         );
 
-        execute_command(
-            &mut editor,
-            Command::Set("signcolumn".to_string(), Some("yes".to_string())),
-        );
+        execute_command(&mut editor, Command::Set("signcolumn=yes".to_string()));
 
         assert_eq!(
             editor.h_offset, 13,
@@ -11945,10 +11919,7 @@ mod tests {
         assert_eq!(editor.viewport_offset, 0);
         assert_eq!(final_cursor_cell(&render_editor_to_string(&editor)), (3, 0));
 
-        execute_command(
-            &mut editor,
-            Command::Set("signcolumn".to_string(), Some("yes".to_string())),
-        );
+        execute_command(&mut editor, Command::Set("signcolumn=yes".to_string()));
 
         let (row, col) = final_cursor_cell(&render_editor_to_string(&editor));
         assert!(row < 4, "cursor row {row} must stay inside the 4 text rows");
@@ -12051,17 +12022,14 @@ mod tests {
             ("scl", "no", SignColumn::No),
             ("signcolumn", "yes", SignColumn::Yes),
         ] {
-            execute_command(
-                &mut editor,
-                Command::Set(option.to_string(), Some(value.to_string())),
-            );
+            execute_command(&mut editor, Command::Set(format!("{option}={value}")));
             assert_eq!(
                 editor.settings.editor.sign_column, expected,
                 ":set {option}={value}"
             );
         }
-        for bad in [Some("maybe".to_string()), None] {
-            execute_command(&mut editor, Command::Set("signcolumn".to_string(), bad));
+        for bad in ["signcolumn=maybe", "signcolumn="] {
+            execute_command(&mut editor, Command::Set(bad.to_string()));
             assert_eq!(
                 editor.settings.editor.sign_column,
                 SignColumn::Yes,
@@ -17563,10 +17531,11 @@ mod tests {
             ("mouse", Some("a"), true),
             ("mouse", Some("nvi"), true),
         ] {
-            execute_command(
-                &mut editor,
-                Command::Set(option.to_string(), value.map(str::to_string)),
-            );
+            let args = match value {
+                Some(value) => format!("{option}={value}"),
+                None => option.to_string(),
+            };
+            execute_command(&mut editor, Command::Set(args));
             assert_eq!(
                 editor.settings.editor.mouse, expect,
                 ":set {option}={value:?}"

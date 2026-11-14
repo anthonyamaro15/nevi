@@ -973,7 +973,14 @@ for example `:ProjectReplace#/api/v1#/api/v2#g`.
 | `:Keymaps` / `:keys` | Open the searchable keybinding cheatsheet |
 | `:MarkdownPreview` / `:mdp` | Open a rendered Markdown reader for the current `.md` file (`j`/`k`, `Ctrl+d`/`Ctrl+u`, `g`/`G`, `q`) |
 | `:set mouse` / `:set nomouse` / `:set mouse=` | Turn mouse capture on or off for the session |
-| `:set signcolumn={auto,yes,no}` | Show the git/diagnostic gutter always, only while a sign exists, or never |
+| `:set signcolumn={auto,yes,no}` / `:set scl=...` | Show the git/diagnostic gutter always, only while a sign exists, or never |
+| `:set number` / `:set nu` | Show line numbers. `:set nonumber` hides them, `:set number!` or `:set invnumber` flips the setting |
+| `:set relativenumber` / `:set rnu` | Relative line numbers, with the same `no`, `!`, and `inv` forms |
+| `:set wrap` | Soft wrap, with the same `no`, `!`, and `inv` forms |
+| `:set cursorline` / `:set cul` | Highlight the cursor row, with the same `no`, `!`, and `inv` forms |
+| `:set tabstop={n}` / `:set ts={n}` | Tab width |
+| `:set scrolloff={n}` / `:set so={n}` | Lines kept visible above and below the cursor |
+| `:set {option}?` | Show an option's current value. Several options can follow one `:set`, like `:set nu rnu so=3` |
 | `:Theme {name}` / `:theme {name}` / `:colorscheme {name}` | Set theme |
 | `:LazyGit` / `:lg` | Open lazygit |
 | `:checkhealth` / `:CheckHealth` / `:Health` | Open read-only `[health]` report with config, keymap, profiling, LSP, and external tools |
