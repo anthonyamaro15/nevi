@@ -1033,6 +1033,29 @@ pub struct CopilotSettings {
     pub hide_during_completion: bool,
     /// Languages where Copilot is disabled (default: empty)
     pub disabled_languages: Vec<String>,
+    /// The config file itself says `enabled = true`. Not a config key:
+    /// `load_config` fills it in, because `enabled` alone can't tell the
+    /// user's choice from the default.
+    #[serde(skip)]
+    pub enabled_in_config: bool,
+}
+
+impl CopilotSettings {
+    /// Whether the config asks for Copilot, as opposed to getting it from the
+    /// default. Copilot being absent from the machine is only worth an error
+    /// at startup when it does.
+    pub fn requested_by_user(&self) -> bool {
+        self.enabled_in_config || !self.server_path.is_empty() || !self.node_path.is_empty()
+    }
+}
+
+/// Whether the config text sets `enabled = true` under `[copilot]`.
+fn copilot_enabled_in_config(content: &str) -> bool {
+    content
+        .parse::<toml::Table>()
+        .ok()
+        .and_then(|config| config.get("copilot")?.get("enabled")?.as_bool())
+        .unwrap_or(false)
 }
 
 impl Default for CopilotSettings {
@@ -1045,6 +1068,7 @@ impl Default for CopilotSettings {
             auto_trigger: true,
             hide_during_completion: true,
             disabled_languages: Vec::new(),
+            enabled_in_config: false,
         }
     }
 }
@@ -1683,6 +1707,7 @@ pub fn load_config() -> Settings {
                 // Merge LSP server configs so partial per-server overrides keep defaults.
                 user_settings.lsp.servers =
                     merge_lsp_servers_with_defaults(user_settings.lsp.servers);
+                user_settings.copilot.enabled_in_config = copilot_enabled_in_config(&content);
                 user_settings
             }
             Err(e) => {
@@ -1852,6 +1877,23 @@ mod tests {
         }
         assert!(toml::from_str::<Settings>("[editor]\nsign_column = \"maybe\"\n").is_err());
         assert_eq!(SignColumn::parse("maybe"), None);
+    }
+
+    #[test]
+    fn copilot_counts_as_requested_only_when_the_config_asks_for_it() {
+        assert!(!copilot_enabled_in_config(""));
+        assert!(!copilot_enabled_in_config("[copilot]\ndebounce_ms = 100\n"));
+        assert!(!copilot_enabled_in_config("[copilot]\nenabled = false\n"));
+        assert!(!copilot_enabled_in_config("[copilot\nenabled = true\n"));
+        assert!(copilot_enabled_in_config("[copilot]\nenabled = true\n"));
+
+        // Parsing alone can't tell the default from the user's choice.
+        let parsed: Settings = toml::from_str("[copilot]\nenabled = true\n").expect("parse");
+        assert!(parsed.copilot.enabled && !parsed.copilot.requested_by_user());
+
+        let with_server: Settings =
+            toml::from_str("[copilot]\nserver_path = \"/x/language-server.js\"\n").expect("parse");
+        assert!(with_server.copilot.requested_by_user());
     }
 
     #[test]
