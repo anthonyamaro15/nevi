@@ -10,7 +10,7 @@ const MAX_TABSTOP: usize = 9999;
 
 /// An option `:set` understands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SetOption {
+pub enum SetOption {
     Number,
     RelativeNumber,
     Wrap,
@@ -47,7 +47,7 @@ impl SetOption {
     }
 
     /// Vim's short name, for the options that have one.
-    fn short_name(self) -> Option<&'static str> {
+    pub(crate) fn short_name(self) -> Option<&'static str> {
         match self {
             SetOption::Number => Some("nu"),
             SetOption::RelativeNumber => Some("rnu"),
@@ -77,6 +77,32 @@ impl SetOption {
             SetOption::CursorLine => Some(&mut settings.cursor_line),
             SetOption::Mouse => Some(&mut settings.mouse),
             SetOption::TabStop | SetOption::ScrollOff | SetOption::SignColumn => None,
+        }
+    }
+
+    /// Whether the option is set with `name=value`; the others are flags.
+    /// `mouse` takes both forms and counts as a flag.
+    pub(crate) fn takes_value(self) -> bool {
+        matches!(
+            self,
+            SetOption::TabStop | SetOption::ScrollOff | SetOption::SignColumn
+        )
+    }
+
+    /// The current value as the completion list shows it: `on`, `off`, `4`,
+    /// `yes`.
+    pub(crate) fn value(self, editor: &Editor) -> String {
+        let settings = &editor.settings.editor;
+        let on_off = |on: bool| if on { "on" } else { "off" }.to_string();
+        match self {
+            SetOption::Number => on_off(settings.line_numbers),
+            SetOption::RelativeNumber => on_off(settings.relative_numbers),
+            SetOption::Wrap => on_off(settings.wrap),
+            SetOption::CursorLine => on_off(settings.cursor_line),
+            SetOption::Mouse => on_off(settings.mouse),
+            SetOption::TabStop => editor.get_effective_tab_width().to_string(),
+            SetOption::ScrollOff => settings.scroll_off.to_string(),
+            SetOption::SignColumn => settings.sign_column.as_str().to_string(),
         }
     }
 

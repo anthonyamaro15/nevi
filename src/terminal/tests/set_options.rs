@@ -1,6 +1,6 @@
 //! `:set` typed on the command line, end to end.
 
-use super::handle_key;
+use super::{handle_key, render_editor_to_string, screen_row_text};
 use crate::commands::{Command, parse_command};
 use crate::editor::{Editor, Mode};
 use crate::input::key_notation::parse_key_sequence;
@@ -72,4 +72,56 @@ fn a_scroll_margin_larger_than_the_window_keeps_the_cursor_on_screen() {
     assert_eq!(editor.cursor.line, 10);
     assert!(editor.viewport_offset <= editor.cursor.line);
     assert!(editor.cursor.line < editor.viewport_offset + text_rows);
+}
+
+fn screen(editor: &Editor) -> Vec<String> {
+    let rendered = render_editor_to_string(editor);
+    (0..24).map(|row| screen_row_text(&rendered, row)).collect()
+}
+
+/// The text after `name` on the popup row that lists it.
+fn listed_value(screen: &[String], name: &str) -> Option<String> {
+    let row = screen.iter().find(|row| row.contains(name))?;
+    let after = &row[row.find(name)? + name.len()..];
+    Some(after.trim().trim_end_matches('\u{2502}').trim().to_string())
+}
+
+#[test]
+fn typing_set_lists_the_options_with_their_current_values() {
+    let mut editor = editor_with("one\ntwo\n");
+    editor.settings.editor.scroll_off = 5;
+
+    feed(&mut editor, ":set ");
+    let rows = screen(&editor);
+
+    assert!(rows.iter().any(|row| row.contains("Options")), "{rows:#?}");
+    assert!(
+        !rows.iter().any(|row| row.contains("TerminalSelect")),
+        "commands must not be offered as :set arguments: {rows:#?}"
+    );
+    assert_eq!(listed_value(&rows, " number").as_deref(), Some("on"));
+    assert_eq!(
+        listed_value(&rows, "relativenumber").as_deref(),
+        Some("off")
+    );
+    assert_eq!(listed_value(&rows, "tabstop").as_deref(), Some("4"));
+    assert_eq!(listed_value(&rows, "scrolloff").as_deref(), Some("5"));
+    assert_eq!(listed_value(&rows, "signcolumn").as_deref(), Some("yes"));
+}
+
+#[test]
+fn the_option_list_narrows_as_you_type_and_shows_new_values() {
+    let mut editor = editor_with("one\ntwo\n");
+    feed(&mut editor, ":set rnu<CR>");
+
+    feed(&mut editor, ":set rel");
+    let rows = screen(&editor);
+
+    assert_eq!(listed_value(&rows, "relativenumber").as_deref(), Some("on"));
+    assert!(!rows.iter().any(|row| row.contains("tabstop")), "{rows:#?}");
+
+    // Tab completes the name and Enter runs it.
+    feed(&mut editor, "<BS><BS><BS>norel<Tab><CR>");
+    assert_eq!(editor.mode, Mode::Normal);
+    assert!(!editor.settings.editor.relative_numbers);
 }

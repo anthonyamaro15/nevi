@@ -3601,6 +3601,11 @@ impl Terminal {
         }
 
         let command_line = &editor.command_line;
+        // After `:set` the list holds option names instead of commands.
+        let completing_options = command_line
+            .suggestions
+            .first()
+            .is_some_and(|suggestion| suggestion.option.is_some());
         let (total_items, selected) = match command_line.popup_mode {
             CommandPopupMode::Completion => (
                 command_line.suggestions.len(),
@@ -3669,6 +3674,9 @@ impl Terminal {
         )?;
         if minimal {
             let header_text = match command_line.popup_mode {
+                CommandPopupMode::Completion if completing_options => {
+                    "[OPTIONS] Tab:accept  Shift+Tab:prev  Alt+r:history"
+                }
                 CommandPopupMode::Completion => {
                     "[COMMANDS] Tab:accept  Shift+Tab:prev  Alt+r:history"
                 }
@@ -3688,6 +3696,9 @@ impl Terminal {
             terminal_print!(self, "{}", header_line);
         } else {
             let (title_text, hint) = match command_line.popup_mode {
+                CommandPopupMode::Completion if completing_options => {
+                    ("Options", " Tab:accept  Shift+Tab:prev  Alt+r:history ")
+                }
                 CommandPopupMode::Completion => {
                     ("Commands", " Tab:accept  Shift+Tab:prev  Alt+r:history ")
                 }
@@ -3747,15 +3758,25 @@ impl Terminal {
             let (left_raw, right_raw) = match command_line.popup_mode {
                 CommandPopupMode::Completion => {
                     let suggestion = &command_line.suggestions[item_idx];
+                    // An option is an argument, so it gets no colon, and its
+                    // current value stands where a command has a description.
+                    let sigil = if suggestion.option.is_some() { "" } else { ":" };
                     let left = if suggestion
                         .matched_alias
                         .eq_ignore_ascii_case(suggestion.command)
                     {
-                        format!(":{}", suggestion.command)
+                        format!("{sigil}{}", suggestion.command)
                     } else {
-                        format!(":{} [{}]", suggestion.command, suggestion.matched_alias)
+                        format!(
+                            "{sigil}{} [{}]",
+                            suggestion.command, suggestion.matched_alias
+                        )
                     };
-                    (left, suggestion.description.to_string())
+                    let right = match suggestion.option {
+                        Some(option) => option.value(editor),
+                        None => suggestion.description.to_string(),
+                    };
+                    (left, right)
                 }
                 CommandPopupMode::History => {
                     let history_item = &command_line.history_popup_items[item_idx];

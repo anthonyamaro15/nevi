@@ -6,6 +6,10 @@
 
 - `:set` now understands `number`, `relativenumber`, `wrap`, `cursorline`, `tabstop`, and `scrolloff`, with Vim's short names (`nu`, `rnu`, `cul`, `ts`, `so`) and forms: `:set nu`, `:set nonu`, `:set nu!`, `:set invnu`, `:set ts=2`, and `:set so?` to show a value. Several options can follow one `:set`, like `:set nu rnu so=3`. Until now it only knew `mouse` and `signcolumn`. The changes last until you quit. (#409)
 
+### Interface
+
+- After `:set `, the completion popup lists the options with their current values, like `tabstop 4` or `wrap off`, and narrows as you type. It used to offer command names such as `:TerminalSelect`. Tab completes the option name, keeps a `no` or `inv` prefix, and adds `=` for an option that takes a value. (#410)
+
 ### Fixed
 
 - Nevi no longer writes to `/tmp/nevi_debug.log`. Key presses that took longer than usual to handle were logged there along with the key typed, in a file other users on the machine could read. The same timings are still available in memory through `:WhySlow`. (#405)

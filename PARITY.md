@@ -428,7 +428,7 @@ rows may already be covered compositionally.)
 | `Ctrl+k {char1}{char2}` | Insert a Vim-compatible digraph, for example `a:` -> `ä` |
 | `Ctrl+l` | Complete longest common command prefix |
 | `Alt+r` | Toggle command history window |
-| `Tab` | Accept selected command completion |
+| `Tab` | Accept the selected completion: a command name, or an option name after `:set` |
 | `Shift+Tab` | Accept previous completion |
 | `Ctrl+n` / `Ctrl+p` | Select next / previous popup item |
 | `:w` / `:write` | Format if enabled, then save; refuse external disk changes |
