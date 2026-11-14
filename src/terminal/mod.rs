@@ -6919,8 +6919,12 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
     }
 
     // Check for normal mode custom mapping first
-    // But skip if we're in a partial sequence (like g; or g,) - let the input state handle it
-    if editor.input_state.partial_key.is_none() && !editor.input_state.pending_window_cmd {
+    // But skip if we're in a partial sequence (like g; or g,) - let the input state handle it.
+    // Keys that come from a mapping are not mapped again (Vim's noremap).
+    if !editor.remap.replaying()
+        && editor.input_state.partial_key.is_none()
+        && !editor.input_state.pending_window_cmd
+    {
         if let Some(mapping) = editor.keymap.get_normal_mapping(key) {
             let mapping = mapping.clone();
             execute_leader_action(editor, &mapping);
@@ -8746,9 +8750,12 @@ fn handle_visual_mode(editor: &mut Editor, key: KeyEvent) {
         return;
     }
 
-    if let Some(mapping) = editor.keymap.get_visual_mapping(key).cloned() {
-        execute_visual_keymap_action(editor, &mapping);
-        return;
+    // Keys that come from a mapping are not mapped again (Vim's noremap).
+    if !editor.remap.replaying() {
+        if let Some(mapping) = editor.keymap.get_visual_mapping(key).cloned() {
+            execute_visual_keymap_action(editor, &mapping);
+            return;
+        }
     }
 
     match (key.modifiers, key.code) {
@@ -8973,12 +8980,16 @@ fn execute_visual_keymap_action(editor: &mut Editor, action: &LeaderAction) {
             execute_command(editor, cmd);
         }
         LeaderAction::Keys(keys) => {
+            if !crate::remap::begin(editor) {
+                return;
+            }
             for key in keys {
-                if !editor.mode.is_visual() {
+                if !editor.mode.is_visual() || editor.remap.aborted() {
                     break;
                 }
                 handle_visual_mode(editor, *key);
             }
+            crate::remap::finish(editor);
         }
     }
 }
@@ -10674,9 +10685,16 @@ pub fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
         }
         LeaderAction::Keys(keys) => {
             // Execute each key in the sequence
+            if !crate::remap::begin(editor) {
+                return;
+            }
             for key in keys {
+                if editor.remap.aborted() {
+                    break;
+                }
                 handle_normal_mode(editor, *key);
             }
+            crate::remap::finish(editor);
         }
     }
 }
@@ -10689,6 +10707,7 @@ mod tests {
     mod key_log;
     mod lsp_pickers;
     mod normal_interrupt;
+    mod remap;
     mod replay;
     mod suspend;
     mod viewport_rendering;
