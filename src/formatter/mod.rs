@@ -109,9 +109,15 @@ impl ExternalFormatter {
 
         // Write content to stdin
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(content.as_bytes())
-                .map_err(FormatterError::StdinWriteFailed)?;
+            match stdin.write_all(content.as_bytes()) {
+                Ok(()) => {}
+                // The command stopped reading: it exited early or never
+                // wanted the input. That is not a failure by itself. Its exit
+                // status and output below say how it went, and a command that
+                // failed gets to report its own error instead of this one.
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+                Err(e) => return Err(FormatterError::StdinWriteFailed(e)),
+            }
             // stdin is dropped here, closing it so the formatter knows input is complete
         }
 
@@ -190,5 +196,36 @@ mod tests {
         let result = formatter.format("input", "/tmp/input.txt");
 
         assert!(matches!(result, Err(FormatterError::Timeout)));
+    }
+
+    /// More than a pipe holds, so writing it can only end when the command
+    /// reads it or goes away.
+    fn large_input() -> String {
+        "x".repeat(1024 * 1024)
+    }
+
+    fn shell(script: &str) -> ExternalFormatter {
+        ExternalFormatter::new("sh".to_string(), vec!["-c".to_string(), script.to_string()])
+    }
+
+    #[test]
+    fn command_that_exits_without_reading_its_input_still_formats() {
+        let result = shell("printf new").format(&large_input(), "/tmp/input.txt");
+
+        assert_eq!(result.ok().as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn command_that_fails_before_reading_its_input_reports_its_own_error() {
+        let result =
+            shell("echo 'bad config' >&2; exit 3").format(&large_input(), "/tmp/input.txt");
+
+        match result {
+            Err(FormatterError::CommandFailed { stderr, exit_code }) => {
+                assert_eq!(exit_code, Some(3));
+                assert!(stderr.contains("bad config"), "stderr was {stderr:?}");
+            }
+            other => panic!("expected the command's own failure, got {other:?}"),
+        }
     }
 }
