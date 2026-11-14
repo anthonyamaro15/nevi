@@ -319,8 +319,16 @@ mod tests {
         e.apply_format_edits(a, &[whole_document]).unwrap();
         assert_eq!(e.buffers[a].content(), "without final newline\n");
         f.formatter(&mut e, "sh", &["-c", "printf new"]);
-        e.format_buffer(a, super::FormatPolicy::ExternalOnly)
+        let outcome = e
+            .format_buffer(a, super::FormatPolicy::ExternalOnly)
             .unwrap();
+        assert!(
+            matches!(
+                outcome,
+                super::BufferFormatOutcome::Applied { changed: true, .. }
+            ),
+            "{outcome:?}"
+        );
         assert_eq!(e.buffers[a].content(), "new\n");
         assert_eq!(e.buffer().content(), "edited visible\n");
         assert_eq!(e.current_buffer_idx, active);
