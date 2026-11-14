@@ -6808,8 +6808,6 @@ fn handle_labeled_jump_key(editor: &mut Editor, key: KeyEvent) {
 }
 
 fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
-    let t_start = std::time::Instant::now();
-
     // Start screen shortcuts: 1-9 open a RECENT entry, h then 1-9 jumps to
     // that harpoon slot. Digits can't start a count here (the scratch is
     // empty) and h can't move left, so both keys are free; a pending leader
@@ -6907,7 +6905,6 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
     }
 
     // Check if this key is the leader key
-    let t_leader_check = std::time::Instant::now();
     // A pending key (`[`, `d`, `g`, ...) owns the next press, so the leader
     // must not steal it: `[<Space>` adds a blank line rather than opening a
     // leader sequence.
@@ -6920,42 +6917,20 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
             return;
         }
     }
-    let leader_check_elapsed = t_leader_check.elapsed();
 
     // Check for normal mode custom mapping first
     // But skip if we're in a partial sequence (like g; or g,) - let the input state handle it
     if editor.input_state.partial_key.is_none() && !editor.input_state.pending_window_cmd {
         if let Some(mapping) = editor.keymap.get_normal_mapping(key) {
             let mapping = mapping.clone();
-            let t_exec = std::time::Instant::now();
             execute_leader_action(editor, &mapping);
-            let total = t_start.elapsed();
-            if total.as_micros() > 1000 {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open("/tmp/nevi_debug.log")
-                {
-                    let _ = writeln!(
-                        f,
-                        "SLOW custom_mapping: total={:?} exec={:?} key={:?}",
-                        total,
-                        t_exec.elapsed(),
-                        key.code
-                    );
-                }
-            }
             return;
         }
     }
 
     let register_before_action = editor.input_state.selected_register;
-    let t_process = std::time::Instant::now();
     let action = editor.input_state.process_normal_key(key);
-    let process_elapsed = t_process.elapsed();
 
-    let t_action = std::time::Instant::now();
     match action {
         KeyAction::Pending => {
             // Key was consumed, waiting for more input
@@ -7103,22 +7078,6 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
                 InsertPosition::NewLineAbove => editor.open_line_above(),
             }
             editor.set_insert_repeat_count(count);
-            let action_elapsed = t_action.elapsed();
-            let total = t_start.elapsed();
-            if total.as_micros() > 1000 {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open("/tmp/nevi_debug.log")
-                {
-                    let _ = writeln!(
-                        f,
-                        "SLOW EnterInsert: total={:?} leader_check={:?} process={:?} action={:?}",
-                        total, leader_check_elapsed, process_elapsed, action_elapsed
-                    );
-                }
-            }
         }
 
         KeyAction::DeleteChar(count) => {
@@ -7801,7 +7760,6 @@ fn replace_completion_text(editor: &mut Editor, trigger_col: usize, text: &str) 
 }
 
 fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
-    let t_insert_start = std::time::Instant::now();
     let buffer_version_before = editor.buffer().version();
     let had_visible_search_matches = !editor.search_matches.is_empty();
 
@@ -8206,23 +8164,6 @@ fn handle_insert_mode(editor: &mut Editor, key: KeyEvent) {
 
     if had_visible_search_matches && editor.buffer().version() != buffer_version_before {
         editor.refresh_visible_search_matches_for_last_pattern();
-    }
-
-    // Log slow insert mode operations
-    let insert_elapsed = t_insert_start.elapsed();
-    if insert_elapsed.as_micros() > 500 {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open("/tmp/nevi_debug.log")
-        {
-            let _ = writeln!(
-                f,
-                "SLOW insert_mode: {:?} key={:?}",
-                insert_elapsed, key.code
-            );
-        }
     }
 }
 
@@ -10745,6 +10686,7 @@ mod tests {
     mod final_newline;
     mod finder;
     mod hover;
+    mod key_log;
     mod lsp_pickers;
     mod normal_interrupt;
     mod replay;

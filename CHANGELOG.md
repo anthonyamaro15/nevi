@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Nevi no longer writes to `/tmp/nevi_debug.log`. Key presses that took longer than usual to handle were logged there along with the key typed, in a file other users on the machine could read. The same timings are still available in memory through `:WhySlow`. (#405)
+
 ## 0.4.0 - 2026-11-13
 
 Nevi 0.4.0 makes the slow parts fast, closes another long list of Vim gaps,
