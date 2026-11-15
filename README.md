@@ -9,7 +9,7 @@ A fast, Neovim-inspired terminal editor written in Rust.
 
 *Your vim muscle memory, without the configuration overhead.*
 
-![Nevi demo: opening the rust-lang/rust repository, the start screen ready in 9ms, fuzzy finding a file among about 18,000, then live grep across the repo with a preview, narrowing to the line where rustc defines the "does not live long enough" error](nevi-demo.gif)
+![Nevi demo: starting in the rust-lang/rust repository in 9ms, opening a 183 MB log with 2 million lines and jumping to the last line with G, live grep across the repo narrowed to the line where rustc defines the "does not live long enough" error, a ci" edit on that line, then a rust-analyzer hover in Nevi's own source and the brew install command](nevi-demo.gif)
 
 **372 keybinds implemented**, 206 of them verified against real Neovim on every
 CI run. See the generated [parity scoreboard](PARITY.md).
