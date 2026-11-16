@@ -980,6 +980,7 @@ for example `:ProjectReplace#/api/v1#/api/v2#g`.
 | `:set cursorline` / `:set cul` | Highlight the cursor row, with the same `no`, `!`, and `inv` forms |
 | `:set tabstop={n}` / `:set ts={n}` | Tab width |
 | `:set scrolloff={n}` / `:set so={n}` | Lines kept visible above and below the cursor |
+| `:set fillchars=eob:{c}` / `:set fcs=...` | Character drawn on rows past the end of the file, like `eob:~`. `eob:\ ` is a blank, and `:set fcs=` goes back to the UI style's default |
 | `:set {option}?` | Show an option's current value. Several options can follow one `:set`, like `:set nu rnu so=3` |
 | `:Theme {name}` / `:theme {name}` / `:colorscheme {name}` | Set theme |
 | `:LazyGit` / `:lg` | Open lazygit |

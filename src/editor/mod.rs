@@ -2651,6 +2651,17 @@ impl Editor {
         crate::ui_glyphs::UiGlyphs::for_minimal(self.settings.resolved_ui_style().is_minimal())
     }
 
+    /// The filler drawn on rows past the end of the buffer: `fillchars`'
+    /// `eob` when it is set, otherwise the UI style's glyph.
+    pub fn eob_fill(&self) -> char {
+        self.settings
+            .editor
+            .fillchars
+            .eob
+            .or_else(|| self.ui_glyphs().eob.chars().next())
+            .unwrap_or(' ')
+    }
+
     /// Set the LSP lifecycle state together with its status text, as
     /// returned by `MultiLspManager::status_and_lifecycle`.
     pub fn set_lsp_state(&mut self, (state, msg): (crate::lsp::LspStatus, String)) {

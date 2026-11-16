@@ -119,6 +119,85 @@ impl SignColumn {
     }
 }
 
+/// Vim's `fillchars`, as `item:char` pairs separated by commas. Nevi only
+/// draws `eob`, the filler on rows past the end of the buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(try_from = "String")]
+pub struct FillChars {
+    /// `None` keeps the UI style's filler: blank in rich, `~` in minimal.
+    pub eob: Option<char>,
+}
+
+impl FillChars {
+    /// Neovim's other items. They are accepted so a value copied from an
+    /// nvim config still loads, but Nevi does not draw them.
+    const IGNORED_ITEMS: [&'static str; 17] = [
+        "stl",
+        "stlnc",
+        "wbr",
+        "horiz",
+        "horizup",
+        "horizdown",
+        "vert",
+        "vertleft",
+        "vertright",
+        "verthoriz",
+        "fold",
+        "foldopen",
+        "foldclose",
+        "foldsep",
+        "diff",
+        "msgsep",
+        "lastline",
+    ];
+
+    /// Parse a `fillchars` value such as `eob:~` or `eob: `. An empty value
+    /// goes back to the style's filler. Like Vim, each character must take
+    /// one cell, and it may itself be a comma (`eob:,`).
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let mut fill = Self::default();
+        let mut rest = value;
+        while !rest.is_empty() {
+            let (name, after) = rest
+                .split_once(':')
+                .ok_or_else(|| format!("fillchars: expected item:char, got {rest}"))?;
+            if name != "eob" && !Self::IGNORED_ITEMS.contains(&name) {
+                return Err(format!("fillchars: unknown item {name}"));
+            }
+            let mut chars = after.chars();
+            let ch = chars
+                .next()
+                .filter(|&c| unicode_width::UnicodeWidthChar::width(c) == Some(1));
+            rest = chars.as_str();
+            // One character, then a comma before the next item or the end.
+            let ch = match (ch, rest.strip_prefix(',')) {
+                (Some(c), Some(next)) => {
+                    rest = next;
+                    c
+                }
+                (Some(c), None) if rest.is_empty() => c,
+                _ => {
+                    return Err(format!(
+                        "fillchars: {name} needs one single-width character"
+                    ));
+                }
+            };
+            if name == "eob" {
+                fill.eob = Some(ch);
+            }
+        }
+        Ok(fill)
+    }
+}
+
+impl TryFrom<String> for FillChars {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
 /// Autosave mode configuration
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -151,6 +230,8 @@ pub struct EditorSettings {
     pub relative_numbers: bool,
     /// Gutter sign column: "auto", "yes", or "no" (default: yes)
     pub sign_column: SignColumn,
+    /// Vim's `fillchars`; only `eob` is drawn (default: the UI style's filler)
+    pub fillchars: FillChars,
     /// Highlight current line (default: false)
     pub cursor_line: bool,
     /// Lines to keep visible above/below cursor (default: 8)
@@ -188,6 +269,7 @@ impl Default for EditorSettings {
             bufferline: false,
             relative_numbers: false,
             sign_column: SignColumn::Yes,
+            fillchars: FillChars::default(),
             cursor_line: false,
             scroll_off: 8, // Neovim-like default
             auto_indent: true,
@@ -1106,6 +1188,7 @@ fn default_config_template() -> &'static str {
 # line_numbers = true        # Show line numbers
 # relative_numbers = false   # Show relative line numbers
 # sign_column = "yes"        # Git/diagnostic gutter: "auto" (only when a sign exists, like nvim), "yes", "no"
+# fillchars = "eob:~"        # Filler on rows past the end of the file (default: blank in rich, ~ in minimal)
 # cursor_line = false        # Highlight current line
 # scroll_off = 8             # Lines to keep visible above/below cursor
 # auto_indent = true         # Smart indentation on new lines
@@ -1867,6 +1950,26 @@ mod tests {
         assert!(settings.editor.bufferline);
         let settings: Settings = toml::from_str("").expect("parse empty");
         assert!(!settings.editor.bufferline);
+    }
+
+    #[test]
+    fn fillchars_parses_from_the_config_file() {
+        let s: Settings = toml::from_str("").expect("empty config");
+        assert_eq!(
+            s.editor.fillchars.eob, None,
+            "unset keeps the style's filler"
+        );
+        let s: Settings =
+            toml::from_str("[editor]\nfillchars = \"eob:~\"\n").expect("parse fillchars");
+        assert_eq!(s.editor.fillchars.eob, Some('~'));
+        let s: Settings =
+            toml::from_str("[editor]\nfillchars = \"eob: \"\n").expect("parse blank eob");
+        assert_eq!(s.editor.fillchars.eob, Some(' '));
+        // A value copied from an nvim config loads; the other items are ignored.
+        let s: Settings = toml::from_str("[editor]\nfillchars = \"vert:|,eob: ,fold:-\"\n")
+            .expect("parse nvim fillchars");
+        assert_eq!(s.editor.fillchars.eob, Some(' '));
+        assert!(toml::from_str::<Settings>("[editor]\nfillchars = \"bogus:x\"\n").is_err());
     }
 
     #[test]

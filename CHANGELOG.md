@@ -5,6 +5,7 @@
 ### Vim Compatibility
 
 - `:set` now understands `number`, `relativenumber`, `wrap`, `cursorline`, `tabstop`, and `scrolloff`, with Vim's short names (`nu`, `rnu`, `cul`, `ts`, `so`) and forms: `:set nu`, `:set nonu`, `:set nu!`, `:set invnu`, `:set ts=2`, and `:set so?` to show a value. Several options can follow one `:set`, like `:set nu rnu so=3`. Until now it only knew `mouse` and `signcolumn`. The changes last until you quit. (#409)
+- Added Vim's `fillchars` option, for the `eob` item only: the character on rows past the end of the file. Rich mode leaves those rows blank, so `fillchars = "eob:~"` under `[editor]`, or `:set fcs=eob:~` for the session, brings back the `~` column from Vim. `:set fcs=eob:\ ` blanks it in minimal mode. Nvim's other items, such as `vert:|`, are accepted and ignored, so a value copied from an nvim config still loads. `:set` now also takes Vim's backslash escapes, so a value can end in a space. (#331)
 
 ### Interface
 

@@ -16,7 +16,7 @@ the test suite enforces, so it cannot drift from what is actually verified.
   - 1 covered as default-keymap plumbing with dedicated tests
 - **708 oracle cases**: motions (164), editing (232), increment (31), insert-entry (17), linewise-operators (44), marks (45), open-line (20), replace (27), search (51), text-objects (30), undo-redo (2), viewport (16), visual (29)
 - **0 tracked coverage gaps**
-- **259 of 475 documented keybind rows map to an inventoried keybind**; the rest work today but are not yet individually tracked ([full list below](#documented-but-not-yet-inventoried))
+- **259 of 476 documented keybind rows map to an inventoried keybind**; the rest work today but are not yet individually tracked ([full list below](#documented-but-not-yet-inventoried))
 
 ## How the Vim oracle works
 
@@ -294,7 +294,7 @@ like `dw` are tracked as single inventory entries, so their building-block
 rows may already be covered compositionally.)
 
 <details>
-<summary>216 untracked rows</summary>
+<summary>217 untracked rows</summary>
 
 | Keybind | Behavior |
 |---------|----------|
@@ -486,6 +486,7 @@ rows may already be covered compositionally.)
 | `:set cursorline` / `:set cul` | Highlight the cursor row, with the same `no`, `!`, and `inv` forms |
 | `:set tabstop={n}` / `:set ts={n}` | Tab width |
 | `:set scrolloff={n}` / `:set so={n}` | Lines kept visible above and below the cursor |
+| `:set fillchars=eob:{c}` / `:set fcs=...` | Character drawn on rows past the end of the file, like `eob:~`. `eob:\ ` is a blank, and `:set fcs=` goes back to the UI style's default |
 | `:set {option}?` | Show an option's current value. Several options can follow one `:set`, like `:set nu rnu so=3` |
 | `:Theme {name}` / `:theme {name}` / `:colorscheme {name}` | Set theme |
 | `:LazyGit` / `:lg` | Open lazygit |

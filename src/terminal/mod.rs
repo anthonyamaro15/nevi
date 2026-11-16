@@ -2419,7 +2419,7 @@ impl Terminal {
             terminal_print!(self, "{:w$}", "", w = sign_column_width); // empty sign column
 
             execute!(self.stdout, SetForegroundColor(Color::Blue))?;
-            let eob = editor.ui_glyphs().eob;
+            let eob = editor.eob_fill();
             if show_line_numbers {
                 terminal_print!(self, "{:>width$} {}", "", eob, width = line_num_width);
             } else {
@@ -2775,7 +2775,7 @@ impl Terminal {
                 terminal_print!(self, "{:w$}", "", w = sign_column_width); // empty sign column
 
                 execute!(self.stdout, SetForegroundColor(Color::Blue))?;
-                let eob = editor.ui_glyphs().eob;
+                let eob = editor.eob_fill();
                 if show_line_numbers {
                     terminal_print!(self, "{:>width$} {}", "", eob, width = line_num_width);
                 } else {
@@ -11602,6 +11602,39 @@ mod tests {
             rendered.contains('~'),
             "minimal mode keeps end-of-buffer tildes; output={rendered:?}"
         );
+    }
+
+    #[test]
+    fn fillchars_eob_overrides_the_ui_style_filler() {
+        // Both filler paths: the plain one and the wrapped one.
+        for wrap in [false, true] {
+            let mut editor = Editor::default();
+            editor.set_size(40, 10);
+            editor.settings.editor.wrap = wrap;
+            editor.replace_buffer_content("only line\n");
+            editor.settings.ui.style = Some(crate::config::UiStyle::Minimal);
+            let minimal_tildes = render_editor_to_string(&editor).matches('~').count();
+            assert!(minimal_tildes > 0, "wrap={wrap}");
+
+            // Rich hides the tildes; `fillchars=eob:~` brings back Vim's look (#331).
+            editor.settings.ui.style = Some(crate::config::UiStyle::Rich);
+            editor.set_options("fillchars=eob:~").unwrap();
+            let rendered = render_editor_to_string(&editor);
+            assert_eq!(
+                rendered.matches('~').count(),
+                minimal_tildes,
+                "one tilde per row past the end, wrap={wrap}; output={rendered:?}"
+            );
+
+            // And a blank eob hides them in minimal.
+            editor.settings.ui.style = Some(crate::config::UiStyle::Minimal);
+            editor.set_options(r"fcs=eob:\ ").unwrap();
+            let rendered = render_editor_to_string(&editor);
+            assert!(
+                !rendered.contains('~'),
+                "eob blank hides minimal tildes, wrap={wrap}; output={rendered:?}"
+            );
+        }
     }
 
     /// Text painted on one screen row, decoded from the ANSI stream: only
