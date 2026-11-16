@@ -3699,6 +3699,8 @@ impl Editor {
             self.load_current_undo_stack();
             // Re-parse syntax for the buffer
             self.sync_syntax_to_current_buffer();
+            // The restored offsets may predate a gutter or size change (#335).
+            self.clamp_view_to_cursor();
         }
     }
 
@@ -4527,23 +4529,35 @@ impl Editor {
     /// Neovim: the least scroll for a short move, the cursor line centered
     /// after a far jump (see topline.rs).
     pub fn scroll_to_cursor(&mut self) {
+        let scroll_off = self.settings.editor.scroll_off;
+        self.scroll_to_cursor_with_margin(scroll_off);
+    }
+
+    /// Bring the cursor back inside the view with no margin. Runs when a pane
+    /// becomes active: its stored offsets were computed against the text area
+    /// it had when it was last active, and the gutter width or terminal size
+    /// may have changed since (`:set signcolumn`, a diagnostic under
+    /// `sign_column = auto`, a resize). Vim does not re-apply 'scrolloff' on
+    /// window entry, so this only moves the view when the cursor is actually
+    /// outside it.
+    fn clamp_view_to_cursor(&mut self) {
+        self.scroll_to_cursor_with_margin(0);
+    }
+
+    fn scroll_to_cursor_with_margin(&mut self, scroll_off: usize) {
         let text_rows = self.active_pane_text_rows();
         self.viewport_offset = topline::follow_cursor(
             self.viewport_offset,
             self.cursor.line,
             text_rows,
-            self.settings.editor.scroll_off,
+            scroll_off,
             last_addressable_line(self.buffer()),
         );
 
         if self.settings.editor.wrap {
             // A centered cursor sits (rows - 1) / 2 rows from an edge, so a
             // larger margin here would undo the centering.
-            let scroll_off = self
-                .settings
-                .editor
-                .scroll_off
-                .min(text_rows.saturating_sub(1) / 2);
+            let scroll_off = scroll_off.min(text_rows.saturating_sub(1) / 2);
             self.scroll_wrapped_view_to_cursor(text_rows, scroll_off);
         }
 

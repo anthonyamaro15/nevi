@@ -11898,6 +11898,143 @@ mod tests {
     /// Enabling the gutter shrinks the text area by two cells. The scroll
     /// offsets were computed against the old width, so without a rescroll a
     /// cursor on the last visible column is drawn outside the pane.
+    /// Two panes on one long line, no gutter, left pane scrolled so its
+    /// cursor sits on the last visible column (#335 setup).
+    fn split_editor_with_left_cursor_at_right_edge() -> Editor {
+        let mut editor = Editor::default();
+        editor.set_size(80, 24);
+        editor.settings.editor.line_numbers = false;
+        editor.settings.editor.scroll_off = 0;
+        editor.settings.editor.sign_column = crate::config::SignColumn::No;
+        editor.replace_buffer_content(&format!("{}\n", "x".repeat(100)));
+        editor.vsplit(None).expect("split");
+        editor.update_pane_rects();
+        editor.focus_pane(0);
+        editor.cursor.col = 60;
+        editor.scroll_to_cursor();
+        let left = editor.panes()[0].rect;
+        assert_eq!(editor.h_offset, 60 + 1 - left.width as usize);
+        assert_eq!(
+            final_cursor_cell(&render_editor_to_string(&editor)),
+            (left.y as usize, (left.x + left.width - 1) as usize),
+            "cursor starts on the pane's last column"
+        );
+        editor
+    }
+
+    /// #335: the gutter grew while another pane was active, so the left
+    /// pane's stored offsets no longer fit. Switching back must clamp them.
+    #[test]
+    fn switching_back_to_a_pane_rescrolls_after_the_gutter_grew() {
+        let mut editor = split_editor_with_left_cursor_at_right_edge();
+        let left = editor.panes()[0].rect;
+
+        editor.focus_pane(1);
+        execute_command(&mut editor, Command::Set("signcolumn=yes".to_string()));
+        editor.focus_pane(0);
+
+        assert_eq!(editor.h_offset, 60 + 1 - (left.width as usize - 2));
+        assert_eq!(
+            editor.panes()[0].h_offset,
+            editor.h_offset,
+            "pane mirror synced"
+        );
+        assert_eq!(
+            final_cursor_cell(&render_editor_to_string(&editor)),
+            (left.y as usize, (left.x + left.width - 1) as usize),
+            "still on the last column, not two cells past it"
+        );
+    }
+
+    /// Same defect through the trigger that predates the sign column: a
+    /// terminal resize while the pane is inactive.
+    #[test]
+    fn switching_back_to_a_pane_rescrolls_after_a_resize() {
+        let mut editor = split_editor_with_left_cursor_at_right_edge();
+
+        editor.focus_pane(1);
+        editor.set_size(60, 24);
+        editor.focus_pane(0);
+
+        let left = editor.panes()[0].rect;
+        assert!(left.width < 40, "panes got narrower: {}", left.width);
+        assert_eq!(editor.h_offset, 60 + 1 - left.width as usize);
+        let (_, col) = final_cursor_cell(&render_editor_to_string(&editor));
+        assert_eq!(col, (left.x + left.width - 1) as usize);
+    }
+
+    /// Wrapped panes have the same problem vertically: a narrower text area
+    /// reflows the line above onto one more row, pushing the cursor line off
+    /// the bottom of the pane.
+    #[test]
+    fn switching_back_to_a_wrapped_pane_rescrolls_after_reflow() {
+        let mut editor = Editor::default();
+        editor.set_size(60, 12);
+        editor.settings.editor.line_numbers = false;
+        editor.settings.editor.scroll_off = 0;
+        editor.settings.editor.sign_column = crate::config::SignColumn::No;
+        editor.settings.editor.wrap = true;
+        editor.settings.editor.wrap_width = 9999;
+        editor.replace_buffer_content("placeholder\n");
+        editor.vsplit(None).expect("split");
+        editor.update_pane_rects();
+        let left = editor.panes()[0].rect;
+        let (width, rows) = (left.width as usize, left.height as usize);
+        // Fills rows - 1 rows at the current width and rows at width - 2.
+        let long = "a".repeat((rows - 1) * width - 1);
+        editor.replace_buffer_content(&format!("{long}\nsecond\n"));
+        editor.focus_pane(0);
+        editor.cursor.line = 1;
+        editor.scroll_to_cursor();
+        assert_eq!(editor.viewport_offset, 0);
+        assert_eq!(
+            final_cursor_cell(&render_editor_to_string(&editor)),
+            ((left.y as usize) + rows - 1, left.x as usize),
+            "cursor on the pane's last row before the gutter appears"
+        );
+
+        editor.focus_pane(1);
+        execute_command(&mut editor, Command::Set("signcolumn=yes".to_string()));
+        editor.focus_pane(0);
+
+        let (row, col) = final_cursor_cell(&render_editor_to_string(&editor));
+        assert!(
+            row < left.y as usize + rows,
+            "row {row} is outside the pane"
+        );
+        assert_eq!(
+            editor.viewport_offset, 1,
+            "scrolled so line 1 is the top line"
+        );
+        assert_eq!(col, left.x as usize + 2);
+    }
+
+    /// Focus must only clamp. Vim does not re-apply 'scrolloff' when a
+    /// window becomes current, so a cursor sitting inside the margin stays
+    /// where it is.
+    #[test]
+    fn switching_panes_does_not_apply_scrolloff() {
+        let mut editor = Editor::default();
+        editor.set_size(80, 24);
+        editor.settings.editor.scroll_off = 8;
+        let content: String = (1..=100).map(|i| format!("line{i}\n")).collect();
+        editor.replace_buffer_content(&content);
+        editor.vsplit(None).expect("split");
+        editor.update_pane_rects();
+        editor.focus_pane(0);
+        editor.viewport_offset = 20;
+        editor.cursor.line = 21;
+
+        editor.focus_pane(1);
+        editor.focus_pane(0);
+
+        assert_eq!(
+            editor.viewport_offset, 20,
+            "one row inside the margin, left alone"
+        );
+        assert_eq!(editor.cursor.line, 21);
+    }
+
     #[test]
     fn set_signcolumn_rescrolls_so_the_cursor_stays_inside_the_pane() {
         use crate::config::SignColumn;
