@@ -28,6 +28,8 @@ macro_rules! terminal_print {
     }};
 }
 
+const THEME_PICKER_TITLE: &str = " Themes ";
+
 /// Enable finder profiling (writes to /tmp/nevi_finder_profile.log)
 pub static FINDER_PROFILE_ENABLED: AtomicBool = AtomicBool::new(false);
 
@@ -4835,6 +4837,12 @@ impl Terminal {
 
         // Calculate popup dimensions
         let popup_width = 60u16.min(editor.term_width.saturating_sub(4));
+        // The frame needs its two corners and the title between them. In a
+        // window narrower than that, draw nothing rather than underflow the
+        // layout math below.
+        if (popup_width as usize) < THEME_PICKER_TITLE.len() + 2 {
+            return Ok(());
+        }
         let filtered_count = picker.filtered.len();
         let max_visible = 10usize; // Max visible items
         let visible_count = filtered_count.min(max_visible);
@@ -4864,7 +4872,7 @@ impl Terminal {
             SetForegroundColor(border_color),
             SetBackgroundColor(bg_color)
         )?;
-        let title = " Themes ";
+        let title = THEME_PICKER_TITLE;
         let title_start = (popup_width as usize - title.len()) / 2;
         terminal_print!(self, "╭");
         for i in 1..(popup_width - 1) {
@@ -10709,6 +10717,7 @@ mod tests {
     mod set_options;
     mod suspend;
     mod viewport_rendering;
+    mod zero_size;
 
     use super::{
         INACTIVE_PANE_TEXT_KEEP, PartialRenderKind, RenderLineColors, RenderLineContext,
