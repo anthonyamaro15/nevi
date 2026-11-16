@@ -7114,11 +7114,19 @@ fn handle_normal_mode(editor: &mut Editor, key: KeyEvent) {
         }
 
         KeyAction::DeleteChar(count) => {
-            editor.delete_chars_at(count);
+            let register = editor
+                .input_state
+                .take_register()
+                .or(register_before_action);
+            editor.delete_chars_at(count, register);
         }
 
         KeyAction::DeleteCharBefore(count) => {
-            editor.delete_chars_before_normal(count);
+            let register = editor
+                .input_state
+                .take_register()
+                .or(register_before_action);
+            editor.delete_chars_before_normal(count, register);
         }
 
         KeyAction::SubstituteChars(count) => {
@@ -19078,6 +19086,43 @@ mod tests {
         assert_eq!(
             editor.registers.get(None),
             Some(&RegisterContent::Chars("target".to_string()))
+        );
+    }
+
+    /// x and X honor a register. The oracle checks this against nvim, but
+    /// only when nvim is available; this keeps it in the normal suite.
+    #[test]
+    fn x_and_shift_x_write_the_named_register_only() {
+        let mut editor = Editor::default();
+        editor.replace_buffer_content("abcd\n");
+        editor
+            .registers
+            .yank(None, RegisterContent::Chars("kept".to_string()));
+
+        for ch in ['"', '_', 'x'] {
+            handle_key(&mut editor, key(ch));
+        }
+        assert_eq!(editor.buffer().line(0).unwrap().to_string(), "bcd\n");
+        assert_eq!(
+            editor.registers.get(None),
+            Some(&RegisterContent::Chars("kept".to_string())),
+            "\"_x leaves the unnamed register alone"
+        );
+
+        for ch in ['"', 'a', 'x', '$', '"', 'A'] {
+            handle_key(&mut editor, key(ch));
+        }
+        handle_key(&mut editor, shift_key('X'));
+        assert_eq!(editor.buffer().line(0).unwrap().to_string(), "d\n");
+        assert_eq!(
+            editor.registers.get(Some('a')),
+            Some(&RegisterContent::Chars("bc".to_string())),
+            "\"ax fills a and \"AX appends to it"
+        );
+        assert_eq!(
+            editor.registers.get(Some('0')),
+            Some(&RegisterContent::Chars("kept".to_string())),
+            "deletes leave \"0 alone"
         );
     }
 

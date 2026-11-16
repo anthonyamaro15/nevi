@@ -420,10 +420,12 @@ const KEYBIND_COVERAGE: &[KeybindCoverage] = &[
         "Black hole register",
         "black hole delete keeps unnamed register",
     ),
+    // The older `yydd"0p` case can't tell "0 from the unnamed register,
+    // since both hold the same line; this one deletes a different line.
     vim_oracle(
         "\"0",
         "Last yank register",
-        "register zero keeps last yank after delete",
+        "register zero survives deleting another line",
     ),
     vim_oracle(
         "\".",
