@@ -958,12 +958,19 @@ fn completion_segments(input: &str) -> (CompletionKind, &str, &str, &str) {
         return (CompletionKind::Command, prefix, token, suffix);
     }
 
-    // The last argument. It is empty when the input ends in a space.
-    let word_start = input
-        .char_indices()
-        .rev()
-        .find(|(_, ch)| ch.is_whitespace())
-        .map_or(0, |(idx, ch)| idx + ch.len_utf8());
+    // The last argument. It is empty when the input ends in a space, but
+    // not in a backslash-escaped one, which belongs to the value.
+    let mut word_start = 0;
+    let mut escaped = false;
+    for (idx, ch) in input.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch.is_whitespace() {
+            word_start = idx + ch.len_utf8();
+        }
+    }
     let word = &input[word_start..];
     // No option name starts with `no` or `inv`, so these are always prefixes.
     let name_start = word_start
@@ -1046,8 +1053,37 @@ fn is_suspend_command(name: &str) -> bool {
         || (name.len() >= 2 && "stop".starts_with(name))
 }
 
+/// History entries, one per line. Trimmed like a typed command, so an
+/// entry such as `set fcs=eob:\ ` keeps its escaped space after a restart.
+fn parse_history(contents: &str) -> Vec<String> {
+    contents
+        .lines()
+        .map(trim_command)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// Trim a command line like `str::trim`, but keep a trailing space that a
+/// backslash escapes, as in `:set fillchars=eob:\ `. An even run of
+/// backslashes escapes itself, so the space after it is still trimmed.
+fn trim_command(input: &str) -> &str {
+    let input = input.trim_start();
+    let trimmed = input.trim_end();
+    let backslashes = trimmed.chars().rev().take_while(|&c| c == '\\').count();
+    if backslashes % 2 == 1 && trimmed.len() < input.len() {
+        let space = input[trimmed.len()..]
+            .chars()
+            .next()
+            .map_or(0, char::len_utf8);
+        &input[..trimmed.len() + space]
+    } else {
+        trimmed
+    }
+}
+
 pub fn parse_command(input: &str) -> Command {
-    let input = input.trim();
+    let input = trim_command(input);
 
     // Handle empty input
     if input.is_empty() {
@@ -1078,7 +1114,7 @@ pub fn parse_command(input: &str) -> Command {
     // Split into command and arguments
     let mut parts = input.splitn(2, char::is_whitespace);
     let cmd = parts.next().unwrap_or("");
-    let args = parts.next().map(|s| s.trim());
+    let args = parts.next().map(trim_command);
 
     match cmd {
         // Write commands
@@ -1878,7 +1914,7 @@ impl CommandLine {
 
     /// Add current input to history and execute
     pub fn execute(&mut self) -> Command {
-        let input = self.input.trim().to_string();
+        let input = trim_command(&self.input).to_string();
 
         // Add to history if non-empty, keeping it deduplicated and bounded.
         if !input.is_empty() {
@@ -1989,12 +2025,7 @@ impl CommandLine {
             return;
         };
 
-        self.history = contents
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(ToOwned::to_owned)
-            .collect();
+        self.history = parse_history(&contents);
 
         if self.history.len() > MAX_HISTORY_ENTRIES {
             let extra = self.history.len() - MAX_HISTORY_ENTRIES;
@@ -2122,6 +2153,37 @@ mod tests {
         ));
         assert!(matches!(parse_command("new"), Command::Unknown(_)));
         assert!(matches!(parse_command("touch"), Command::Unknown(_)));
+    }
+
+    #[test]
+    fn a_trailing_escaped_space_survives_the_command_line() {
+        let set_args = |command: Command| match command {
+            Command::Set(args) => args,
+            _ => panic!("expected :set"),
+        };
+        assert_eq!(set_args(parse_command(r"  set fcs=eob:\  ")), r"fcs=eob:\ ");
+        // Two backslashes escape each other, so the space is trimmed.
+        assert_eq!(set_args(parse_command(r"set fcs=eob:\\ ")), r"fcs=eob:\\");
+        assert_eq!(set_args(parse_command("set nu  ")), "nu");
+
+        // `execute` trims the same way. History saved with the space reads
+        // back with it, so recalling the command after a restart still works.
+        assert_eq!(
+            parse_history("set fcs=eob:\\ \n  w  \n\n"),
+            [r"set fcs=eob:\ ", "w"]
+        );
+    }
+
+    #[test]
+    fn an_escaped_space_in_a_set_value_is_not_a_new_argument() {
+        let (kind, _, token, suffix) = completion_segments(r"set fcs=eob:\ ");
+        assert_eq!(kind, CompletionKind::SetOption);
+        assert_eq!((token, suffix), ("fcs", r"=eob:\ "));
+        let (_, _, token, _) = completion_segments(r"set fcs=eob:\\ nu");
+        assert_eq!(
+            token, "nu",
+            "an escaped backslash leaves the space a separator"
+        );
     }
 
     #[test]

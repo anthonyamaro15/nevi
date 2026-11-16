@@ -3,7 +3,7 @@
 //! `nu?`, `ts=4`). Messages follow Vim's wording without the error numbers.
 
 use super::Editor;
-use crate::config::SignColumn;
+use crate::config::{FillChars, SignColumn};
 
 /// The largest `tabstop` Vim accepts.
 const MAX_TABSTOP: usize = 9999;
@@ -18,11 +18,12 @@ pub enum SetOption {
     TabStop,
     ScrollOff,
     SignColumn,
+    FillChars,
     Mouse,
 }
 
 impl SetOption {
-    pub(crate) const ALL: [SetOption; 8] = [
+    pub(crate) const ALL: [SetOption; 9] = [
         SetOption::Number,
         SetOption::RelativeNumber,
         SetOption::Wrap,
@@ -30,6 +31,7 @@ impl SetOption {
         SetOption::TabStop,
         SetOption::ScrollOff,
         SetOption::SignColumn,
+        SetOption::FillChars,
         SetOption::Mouse,
     ];
 
@@ -42,6 +44,7 @@ impl SetOption {
             SetOption::TabStop => "tabstop",
             SetOption::ScrollOff => "scrolloff",
             SetOption::SignColumn => "signcolumn",
+            SetOption::FillChars => "fillchars",
             SetOption::Mouse => "mouse",
         }
     }
@@ -55,6 +58,7 @@ impl SetOption {
             SetOption::TabStop => Some("ts"),
             SetOption::ScrollOff => Some("so"),
             SetOption::SignColumn => Some("scl"),
+            SetOption::FillChars => Some("fcs"),
             SetOption::Wrap | SetOption::Mouse => None,
         }
     }
@@ -76,7 +80,10 @@ impl SetOption {
             SetOption::Wrap => Some(&mut settings.wrap),
             SetOption::CursorLine => Some(&mut settings.cursor_line),
             SetOption::Mouse => Some(&mut settings.mouse),
-            SetOption::TabStop | SetOption::ScrollOff | SetOption::SignColumn => None,
+            SetOption::TabStop
+            | SetOption::ScrollOff
+            | SetOption::SignColumn
+            | SetOption::FillChars => None,
         }
     }
 
@@ -85,7 +92,10 @@ impl SetOption {
     pub(crate) fn takes_value(self) -> bool {
         matches!(
             self,
-            SetOption::TabStop | SetOption::ScrollOff | SetOption::SignColumn
+            SetOption::TabStop
+                | SetOption::ScrollOff
+                | SetOption::SignColumn
+                | SetOption::FillChars
         )
     }
 
@@ -103,6 +113,7 @@ impl SetOption {
             SetOption::TabStop => editor.get_effective_tab_width().to_string(),
             SetOption::ScrollOff => settings.scroll_off.to_string(),
             SetOption::SignColumn => settings.sign_column.as_str().to_string(),
+            SetOption::FillChars => format!("eob:{}", editor.eob_fill()),
         }
     }
 
@@ -126,6 +137,7 @@ impl SetOption {
             SetOption::TabStop => format!("  {name}={}", editor.get_effective_tab_width()),
             SetOption::ScrollOff => format!("  {name}={}", settings.scroll_off),
             SetOption::SignColumn => format!("  {name}={}", settings.sign_column.as_str()),
+            SetOption::FillChars => format!("  {name}=eob:{}", editor.eob_fill()),
             // Capture works like nvim's `mouse=nvi` when it is on.
             SetOption::Mouse => format!("  {name}={}", if settings.mouse { "nvi" } else { "" }),
         }
@@ -141,8 +153,8 @@ impl Editor {
         let mut changed = false;
         let mut result = Ok(());
 
-        for word in args.split_whitespace() {
-            match self.set_option_word(word) {
+        for word in set_words(args) {
+            match self.set_option_word(&word) {
                 Ok(Some(text)) => shown.push(text),
                 Ok(None) => changed = true,
                 Err(error) => {
@@ -235,6 +247,7 @@ impl Editor {
                 self.settings.editor.sign_column = SignColumn::parse(value)
                     .ok_or_else(|| "signcolumn: expected auto, yes, or no".to_string())?;
             }
+            SetOption::FillChars => self.settings.editor.fillchars = FillChars::parse(value)?,
             // Vim's 'mouse' holds mode flags: empty turns capture off, any
             // flags (`a`, `nvi`) turn it on.
             SetOption::Mouse => self.settings.editor.mouse = !value.is_empty(),
@@ -265,6 +278,30 @@ impl Editor {
             }
         }
     }
+}
+
+/// Split `:set` arguments on white space. As in Vim, a backslash is dropped
+/// and the character after it kept, so `fillchars=eob:\ ` is one word ending
+/// in a space and `eob:\~` is `eob:~`. A trailing lone backslash stays.
+fn set_words(args: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut chars = args.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => word.push(chars.next().unwrap_or(c)),
+            c if c.is_whitespace() => {
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+            }
+            c => word.push(c),
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
 }
 
 fn parse_number(value: &str, word: &str) -> Result<usize, String> {
@@ -464,5 +501,88 @@ mod tests {
 
         assert!(editor.h_offset > before);
         assert!(editor.cursor.col < editor.h_offset + editor.text_area_width());
+    }
+
+    #[test]
+    fn fillchars_sets_the_end_of_buffer_filler() {
+        let mut editor = editor();
+        // Unset, the rich style's filler shows: a blank.
+        assert_eq!(editor.settings.editor.fillchars.eob, None);
+        assert_eq!(
+            set(&mut editor, "fcs?").as_deref(),
+            Some("  fillchars=eob: ")
+        );
+
+        set(&mut editor, "fillchars=eob:~");
+        assert_eq!(editor.settings.editor.fillchars.eob, Some('~'));
+        assert_eq!(editor.eob_fill(), '~');
+        assert_eq!(
+            set(&mut editor, "fillchars").as_deref(),
+            Some("  fillchars=eob:~")
+        );
+
+        // Vim's escaped space, as typed on the command line.
+        set(&mut editor, r"fcs=eob:\ ");
+        assert_eq!(editor.settings.editor.fillchars.eob, Some(' '));
+        set(&mut editor, "fcs=eob:·");
+        assert_eq!(editor.eob_fill(), '·');
+
+        // Like nvim: a comma can be the filler, a backslash before any
+        // character is dropped, and the items Nevi does not draw are ignored.
+        set(&mut editor, "fcs=eob:,");
+        assert_eq!(editor.eob_fill(), ',');
+        set(&mut editor, r"fcs=eob:\~");
+        assert_eq!(editor.eob_fill(), '~');
+        set(&mut editor, "fcs=vert:|,eob:x,fold:-");
+        assert_eq!(editor.eob_fill(), 'x');
+
+        // Empty goes back to the style's filler.
+        set(&mut editor, "fcs=");
+        assert_eq!(editor.settings.editor.fillchars.eob, None);
+    }
+
+    #[test]
+    fn fillchars_rejects_what_it_cannot_draw() {
+        let mut editor = editor();
+        set(&mut editor, "fcs=eob:~");
+        for (args, expected) in [
+            ("fcs=bogus:x", "fillchars: unknown item bogus"),
+            ("fcs=eob", "fillchars: expected item:char, got eob"),
+            ("fcs=,", "fillchars: expected item:char, got ,"),
+            // An empty item between two commas is an error in nvim too.
+            ("fcs=eob:x,,eob:y", "fillchars: unknown item ,eob"),
+            (
+                "fcs=eob:",
+                "fillchars: eob needs one single-width character",
+            ),
+            (
+                "fcs=eob:ab",
+                "fillchars: eob needs one single-width character",
+            ),
+            (
+                "fcs=eob:中",
+                "fillchars: eob needs one single-width character",
+            ),
+            ("nofcs", "Invalid argument: nofcs"),
+        ] {
+            assert_eq!(error(&mut editor, args), expected, ":set {args}");
+        }
+        assert_eq!(
+            editor.settings.editor.fillchars.eob,
+            Some('~'),
+            "nothing changed"
+        );
+    }
+
+    #[test]
+    fn set_words_keep_backslash_escaped_spaces() {
+        assert_eq!(
+            set_words(r"nu fcs=eob:\  so=3"),
+            ["nu", "fcs=eob: ", "so=3"]
+        );
+        assert_eq!(set_words(r"a\\ b"), [r"a\", "b"]);
+        assert_eq!(set_words(r"a\b"), ["ab"]);
+        assert_eq!(set_words(r"a\"), [r"a\"], "a trailing backslash stays");
+        assert!(set_words("   ").is_empty());
     }
 }
