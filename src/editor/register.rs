@@ -74,6 +74,8 @@ pub struct Registers {
     unnamed: Option<RegisterContent>,
     /// Small delete register (for deletes less than one line)
     small_delete: Option<RegisterContent>,
+    /// Register 0: the last yank that named no register (:h quote0)
+    last_yank: Option<RegisterContent>,
     /// Numbered registers 1-9 (for delete history)
     numbered: [Option<RegisterContent>; 9],
     /// Last clipboard error (for display to user)
@@ -99,11 +101,7 @@ impl Registers {
                 let idx = c.to_digit(10).unwrap() as usize - 1;
                 self.numbered[idx].as_ref()
             }
-            Some('0') => {
-                // Register 0 contains the last yank
-                // For simplicity, we'll just return unnamed for now
-                self.unnamed.as_ref()
-            }
+            Some('0') => self.last_yank.as_ref(),
             Some('_') => {
                 // Black hole register - always empty
                 None
@@ -175,13 +173,14 @@ impl Registers {
         self.clipboard_error.take()
     }
 
-    /// Set the content of a register
-    /// Restore a delete-history register from persisted state. Only shada
-    /// apply uses this: `set` deliberately excludes "1-"9 because the shift
-    /// logic in the delete path owns those slots during normal editing.
+    /// Restore "0 or a delete-history register from persisted state. Only
+    /// shada apply uses this: `set` deliberately excludes "1-"9 because the
+    /// shift logic in the delete path owns those slots during normal editing.
     pub fn restore_numbered(&mut self, digit: char, content: RegisterContent) {
-        if let Some(idx) = digit.to_digit(10).filter(|d| (1..=9).contains(d)) {
-            self.numbered[idx as usize - 1] = Some(content);
+        match digit.to_digit(10) {
+            Some(0) => self.last_yank = Some(content),
+            Some(idx @ 1..=9) => self.numbered[idx as usize - 1] = Some(content),
+            _ => {}
         }
     }
 
@@ -226,6 +225,9 @@ impl Registers {
                     self.named.insert(lower, content);
                 }
             }
+            Some('0') => {
+                self.last_yank = Some(content);
+            }
             _ => {
                 // For other registers, just set unnamed
                 self.unnamed = Some(content);
@@ -258,8 +260,10 @@ impl Registers {
         if let Some(c) = name {
             if c != '"' {
                 self.set(Some(c), content);
+                return;
             }
         }
+        self.last_yank = Some(content);
     }
 
     /// Set content from a delete operation (updates numbered registers)
@@ -283,7 +287,15 @@ impl Registers {
         // Always sync with system clipboard (modern behavior like clipboard=unnamedplus)
         self.set_clipboard(&content);
 
-        if let Some(c) = name {
+        if name == Some('"') {
+            // Vim quirk: naming the unnamed register (`""dd`, `""x`) also
+            // writes "0, and a delete that is not small still shifts into "1.
+            self.last_yank = Some(content.clone());
+            if !is_small {
+                self.numbered.rotate_right(1);
+                self.numbered[0] = Some(content);
+            }
+        } else if let Some(c) = name {
             // If a register was specified, use it
             self.set(Some(c), content);
         } else if is_small {
@@ -317,8 +329,26 @@ impl Registers {
 #[cfg(test)]
 mod tests {
     use super::{
-        RegisterContent, clipboard_text_for_content, register_content_from_clipboard_text,
+        RegisterContent, Registers, clipboard_text_for_content,
+        register_content_from_clipboard_text,
     };
+
+    #[test]
+    fn register_zero_keeps_the_last_plain_yank() {
+        let mut registers = Registers::new();
+        registers.yank(None, RegisterContent::Chars("kept".to_string()));
+        // Deletes and yanks into a named, clipboard or black hole register
+        // leave "0 alone (:h quote0).
+        registers.delete(None, RegisterContent::Lines("gone\n".to_string()), false);
+        registers.yank(Some('a'), RegisterContent::Chars("named".to_string()));
+        registers.yank(Some('+'), RegisterContent::Chars("clip".to_string()));
+        registers.yank(Some('_'), RegisterContent::Chars("void".to_string()));
+
+        assert_eq!(
+            registers.get(Some('0')),
+            Some(&RegisterContent::Chars("kept".to_string()))
+        );
+    }
 
     #[test]
     fn linewise_clipboard_round_trip_preserves_shape_without_final_newline() {

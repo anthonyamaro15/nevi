@@ -14,7 +14,7 @@ the test suite enforces, so it cannot drift from what is actually verified.
   - 207 verified against real Neovim (v0.11.3) by the Vim oracle
   - 23 protected by focused Nevi regression tests
   - 1 covered as default-keymap plumbing with dedicated tests
-- **708 oracle cases**: motions (164), editing (232), increment (31), insert-entry (17), linewise-operators (44), marks (45), open-line (20), replace (27), search (51), text-objects (30), undo-redo (2), viewport (16), visual (29)
+- **720 oracle cases**: motions (164), editing (244), increment (31), insert-entry (17), linewise-operators (44), marks (45), open-line (20), replace (27), search (51), text-objects (30), undo-redo (2), viewport (16), visual (29)
 - **0 tracked coverage gaps**
 - **259 of 476 documented keybind rows map to an inventoried keybind**; the rest work today but are not yet individually tracked ([full list below](#documented-but-not-yet-inventoried))
 
@@ -137,7 +137,7 @@ claim protection.
 | `"a` | Named registers | `named register yank and paste` |
 | `"A` | Append to named registers | `named register append` |
 | `"_` | Black hole register | `black hole delete keeps unnamed register` |
-| `"0` | Last yank register | `register zero keeps last yank after delete` |
+| `"0` | Last yank register | `register zero survives deleting another line` |
 | `".` | Last inserted text register | `last inserted text register` |
 | `<C-[>` | Exit insert mode | `ctrl-bracket exits insert like escape` |
 | `Backspace` | Delete character before cursor in insert | `insert backspace deletes typed chars` |

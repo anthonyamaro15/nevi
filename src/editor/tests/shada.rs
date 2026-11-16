@@ -12,6 +12,10 @@ fn populated_editor() -> Editor {
         Some('r'),
         RegisterContent::Lines("a full line\n".to_string()),
     );
+    // A plain yank fills "0, which the delete below must not touch.
+    editor
+        .registers
+        .yank(None, RegisterContent::Chars("yanked".to_string()));
     // A linewise delete shifts into "1 through the real delete path.
     editor.registers.delete(
         None,
@@ -74,6 +78,11 @@ fn shada_roundtrips_through_a_fresh_editor() {
         restored.registers.get(Some('1')).map(|c| c.as_str()),
         Some("removed line\n"),
         "delete-history register \"1 survives"
+    );
+    assert_eq!(
+        restored.registers.get(Some('0')).map(|c| c.as_str()),
+        Some("yanked"),
+        "last-yank register \"0 survives"
     );
 
     let jumps = restored.jump_list.entries();

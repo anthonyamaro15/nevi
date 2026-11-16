@@ -33,8 +33,7 @@ pub struct ShadaState {
     pub registers: BTreeMap<char, RegisterEntry>,
     #[serde(default)]
     pub unnamed_register: Option<RegisterEntry>,
-    /// Delete-history registers "1-"9. "0 is not stored: the editor currently
-    /// aliases it to the unnamed register, which is persisted separately.
+    /// The last-yank register "0 and the delete-history registers "1-"9.
     #[serde(default)]
     pub numbered_registers: BTreeMap<char, RegisterEntry>,
     #[serde(default)]
@@ -151,7 +150,7 @@ fn enforce_caps(state: &mut ShadaState) {
     }
     state
         .numbered_registers
-        .retain(|name, entry| ('1'..='9').contains(name) && fits_register_cap(entry));
+        .retain(|name, entry| name.is_ascii_digit() && fits_register_cap(entry));
     state.macros.retain(|name, _| name.is_ascii_lowercase());
     state
         .global_marks
@@ -277,8 +276,7 @@ mod tests {
     fn caps_drop_invalid_numbered_keys_and_trim_jumplist() {
         let path = temp_state_path("v2caps");
         let mut state = ShadaState::default();
-        // "0 aliases the unnamed register and letters are not numbered
-        // registers; only "1-"9 may persist.
+        // Letters are not numbered registers; only "0-"9 may persist.
         for key in ['0', '5', 'x'] {
             state.numbered_registers.insert(
                 key,
@@ -301,7 +299,7 @@ mod tests {
 
         assert_eq!(
             loaded.numbered_registers.keys().collect::<Vec<_>>(),
-            vec![&'5']
+            vec![&'0', &'5']
         );
         assert_eq!(loaded.jumplist.len(), 100);
         assert_eq!(

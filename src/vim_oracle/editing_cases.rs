@@ -680,6 +680,71 @@ pub(super) const EDITING_CASES: &[OracleCase] = &[
         initial_text: "abc\ndef\n",
         keys: "yydd\"0p",
     },
+    // "0 holds the last yank, so it has to differ from the unnamed register
+    // once something else was deleted or yanked into a named register.
+    OracleCase {
+        name: "register zero survives deleting another line",
+        initial_text: "abc\ndef\n",
+        keys: "yyjdd\"0p",
+    },
+    OracleCase {
+        name: "register zero survives a characterwise delete",
+        initial_text: "foo bar baz\n",
+        keys: "yiwwdiw\"0P",
+    },
+    OracleCase {
+        name: "named yank leaves register zero alone",
+        initial_text: "abc\ndef\n",
+        keys: "yyj\"ayy\"0p",
+    },
+    // Vim quirk: naming the unnamed register on a delete also writes "0,
+    // and a linewise delete still shifts into "1.
+    OracleCase {
+        name: "explicit unnamed delete writes register zero",
+        initial_text: "abc\ndef\n",
+        keys: "yyj\"\"dd\"0p",
+    },
+    OracleCase {
+        name: "explicit unnamed x writes register zero",
+        initial_text: "abc\ndef\n",
+        keys: "yyj\"\"x\"0p",
+    },
+    OracleCase {
+        name: "explicit unnamed delete shifts into register one",
+        initial_text: "abc\ndef\nghi\n",
+        keys: "jj\"\"ddk\"1p",
+    },
+    // x and X honor a register like every other delete.
+    OracleCase {
+        name: "black hole x keeps unnamed register",
+        initial_text: "abc\ndef\n",
+        keys: "yyj\"_xp",
+    },
+    OracleCase {
+        name: "x into named register",
+        initial_text: "abcd\n",
+        keys: "\"axx\"ap",
+    },
+    OracleCase {
+        name: "x appends to named register",
+        initial_text: "abcd\n",
+        keys: "\"ax\"Ax\"aP",
+    },
+    OracleCase {
+        name: "counted x into named register",
+        initial_text: "abcd\n",
+        keys: "\"a2x\"ap",
+    },
+    OracleCase {
+        name: "black hole X keeps unnamed register",
+        initial_text: "abc\ndef\n",
+        keys: "yyj$\"_Xp",
+    },
+    OracleCase {
+        name: "X into named register",
+        initial_text: "abcd\n",
+        keys: "$\"aX\"aP",
+    },
     OracleCase {
         name: "last inserted text register",
         initial_text: "x\n",

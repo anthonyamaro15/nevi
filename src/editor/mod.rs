@@ -2105,8 +2105,8 @@ impl Editor {
         Ok(message)
     }
 
-    /// Gather persistable session state (macros, registers including the
-    /// "1-"9 delete history, global marks, search history, jumplist) for the
+    /// Gather persistable session state (macros, registers including "0 and
+    /// the "1-"9 delete history, global marks, search history, jumplist) for the
     /// shada-lite file. Unencodable macros, clipboard-backed registers, and
     /// jumps in scratch buffers are session-only by design.
     pub fn export_shada(&self) -> crate::shada::ShadaState {
@@ -2130,7 +2130,7 @@ impl Editor {
             .registers
             .get(None)
             .map(RegisterContent::to_shada_entry);
-        for register in '1'..='9' {
+        for register in '0'..='9' {
             if let Some(content) = self.registers.get(Some(register)) {
                 state
                     .numbered_registers
@@ -6551,11 +6551,11 @@ impl Editor {
 
     /// Delete character at cursor (x in normal mode)
     pub fn delete_char_at(&mut self) {
-        self.delete_chars_at(1);
+        self.delete_chars_at(1, None);
     }
 
     /// Delete count characters at cursor (x with count)
-    pub fn delete_chars_at(&mut self, count: usize) {
+    pub fn delete_chars_at(&mut self, count: usize, register: Option<char>) {
         let count = count.max(1);
         let line_len = self.buffers[self.current_buffer_idx].line_len(self.cursor.line);
         if line_len == 0 || self.cursor.col >= line_len {
@@ -6581,7 +6581,7 @@ impl Editor {
         self.undo_stack
             .end_undo_group(self.cursor.line, self.cursor.col);
         self.registers
-            .delete(None, RegisterContent::Chars(deleted), true);
+            .delete(register, RegisterContent::Chars(deleted), true);
         self.clamp_cursor();
     }
 
@@ -6607,11 +6607,11 @@ impl Editor {
 
     /// Delete character before cursor in normal mode (X)
     pub fn delete_char_before_normal(&mut self) {
-        self.delete_chars_before_normal(1);
+        self.delete_chars_before_normal(1, None);
     }
 
     /// Delete count characters before cursor in normal mode (X with count)
-    pub fn delete_chars_before_normal(&mut self, count: usize) {
+    pub fn delete_chars_before_normal(&mut self, count: usize, register: Option<char>) {
         if self.cursor.col == 0 {
             return;
         }
@@ -6636,7 +6636,7 @@ impl Editor {
         self.undo_stack
             .end_undo_group(self.cursor.line, self.cursor.col);
         self.registers
-            .delete(None, RegisterContent::Chars(deleted), true);
+            .delete(register, RegisterContent::Chars(deleted), true);
     }
 
     /// Delete word before cursor (Ctrl+w in insert mode)
