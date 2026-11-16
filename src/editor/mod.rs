@@ -243,6 +243,9 @@ impl Pane {
 const WINDOW_RESIZE_STEP: u16 = 5;
 const MIN_WINDOW_WIDTH: u16 = 10;
 const MIN_WINDOW_HEIGHT: u16 = 3;
+/// Size to assume when the terminal reports none.
+const FALLBACK_TERM_WIDTH: u16 = 80;
+const FALLBACK_TERM_HEIGHT: u16 = 24;
 
 /// Split layout orientation for panes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4340,6 +4343,20 @@ impl Editor {
 
     /// Set terminal size
     pub fn set_size(&mut self, width: u16, height: u16) {
+        // A pty whose size was never set reports 0x0. That means "unknown",
+        // not "no cells", so assume the classic 80x24 like Vim and ncurses
+        // do. Every size passes through here, and the layout math subtracts
+        // from these without checking.
+        let width = if width == 0 {
+            FALLBACK_TERM_WIDTH
+        } else {
+            width
+        };
+        let height = if height == 0 {
+            FALLBACK_TERM_HEIGHT
+        } else {
+            height
+        };
         let size_changed = self.term_width != width || self.term_height != height;
         self.term_width = width;
         self.term_height = height;
