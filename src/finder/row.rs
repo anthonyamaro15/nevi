@@ -1,7 +1,9 @@
 //! Live grep rows, laid out when they're drawn, once the width is known.
 //!
 //! Widths are terminal cells: wide characters such as CJK take two, and
-//! control characters one, because rows draw them as blanks.
+//! control characters one, because rows draw them as blanks. The rest of the
+//! UI draws them the same way (`terminal::chrome_writer`), so it measures with
+//! these too.
 
 use unicode_width::UnicodeWidthChar;
 

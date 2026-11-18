@@ -375,7 +375,7 @@ pub fn wrap_preview_lines(lines: &[PreviewLine], width: usize) -> Vec<PreviewLin
 }
 
 fn wrap_preview_line(line: &PreviewLine, width: usize) -> Vec<PreviewLine> {
-    use unicode_width::UnicodeWidthChar;
+    use crate::finder::row::cell_width;
 
     if width == 0
         || matches!(
@@ -412,7 +412,7 @@ fn wrap_preview_line(line: &PreviewLine, width: usize) -> Vec<PreviewLine> {
         };
         let prefix_width = prefix
             .iter()
-            .map(|styled| UnicodeWidthChar::width(styled.ch).unwrap_or(0))
+            .map(|styled| cell_width(styled.ch))
             .sum::<usize>();
         let available_width = width.saturating_sub(prefix_width).max(1);
 
@@ -421,7 +421,7 @@ fn wrap_preview_line(line: &PreviewLine, width: usize) -> Vec<PreviewLine> {
         let mut last_whitespace = None;
 
         for (idx, styled) in remaining.iter().enumerate() {
-            let char_width = UnicodeWidthChar::width(styled.ch).unwrap_or(0);
+            let char_width = cell_width(styled.ch);
             if consumed_width.saturating_add(char_width) > available_width {
                 break;
             }

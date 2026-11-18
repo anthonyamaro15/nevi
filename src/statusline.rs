@@ -358,10 +358,9 @@ fn build_minimal(ctx: &StatusContext, glyphs: &UiGlyphs, theme: &Theme) -> Statu
 /// Icons are multi-byte and CJK filenames are double-width; byte math
 /// misaligns the right side.
 pub fn display_width(segments: &[StatusSegment]) -> usize {
-    use unicode_width::UnicodeWidthStr;
     segments
         .iter()
-        .map(|s| UnicodeWidthStr::width(s.text.as_str()))
+        .map(|s| crate::finder::row::text_width(&s.text))
         .sum()
 }
 
