@@ -1,3 +1,4 @@
+use chrome_writer::ChromeWriter;
 use crossterm::{
     cursor,
     event::{
@@ -13,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
 
+mod chrome_writer;
 mod explorer_keys;
 mod explorer_prompt;
 mod hover;
@@ -670,7 +672,8 @@ fn ansi_underline_color_code(color: Color) -> String {
 
 fn write_ansi_underline_color<W: Write>(writer: &mut W, color: Color) -> io::Result<()> {
     let code = ansi_underline_color_code(color);
-    write!(writer, "\x1b[{code}m")
+    // Bytes, not `write!`: formatted output is filtered for control characters.
+    writer.write_all(format!("\x1b[{code}m").as_bytes())
 }
 
 fn apply_diagnostic_underline<W: Write>(
@@ -953,15 +956,15 @@ fn has_vim_error_prefix(msg: &str) -> bool {
 /// alone; a long one gets the home directory as `~`, then the middle of its
 /// longest path dropped (`~/Desktop/…/rvim`), then its end cut with `…`.
 fn fit_message(msg: &str, max: usize, home: Option<&str>) -> String {
-    use unicode_width::UnicodeWidthStr;
-    if msg.width() <= max {
+    use crate::finder::row::{cell_width, text_width};
+    if text_width(msg) <= max {
         return msg.to_string();
     }
     let mut text = match home.filter(|h| h.len() > 1) {
         Some(home) => msg.replace(home, "~"),
         None => msg.to_string(),
     };
-    if text.width() > max {
+    if text_width(&text) > max {
         let longest_path = text
             .split_whitespace()
             .filter(|word| word.matches('/').count() >= 3)
@@ -973,11 +976,11 @@ fn fit_message(msg: &str, max: usize, home: Option<&str>) -> String {
             text = text.replacen(&path, &short, 1);
         }
     }
-    if text.width() > max {
+    if text_width(&text) > max {
         let mut cut = String::new();
         let mut used = 0;
         for ch in text.chars() {
-            let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            let w = cell_width(ch);
             if used + w + 1 > max {
                 break;
             }
@@ -1253,7 +1256,7 @@ fn source_col_for_wrap_segment_char(segment: &WrapSegment, visual_idx: usize) ->
 
 /// Terminal handler responsible for rendering and input
 pub struct Terminal {
-    stdout: Box<dyn Write>,
+    stdout: ChromeWriter<Box<dyn Write>>,
     mouse_capture_enabled: bool,
     leader_popup_rect: Option<(u16, u16)>,
     /// Whether the editor behind the open finder / Markdown preview has been
@@ -1287,7 +1290,7 @@ impl Terminal {
 
     fn new_with_writer(stdout: Box<dyn Write>) -> anyhow::Result<Self> {
         let mut terminal = Self {
-            stdout,
+            stdout: ChromeWriter(stdout),
             mouse_capture_enabled: false,
             leader_popup_rect: None,
             overlay_background_drawn: false,
@@ -1300,7 +1303,7 @@ impl Terminal {
     #[cfg(test)]
     fn new_for_test(stdout: Box<dyn Write>) -> Self {
         Self {
-            stdout,
+            stdout: ChromeWriter(stdout),
             mouse_capture_enabled: false,
             leader_popup_rect: None,
             overlay_background_drawn: false,
@@ -1532,11 +1535,7 @@ impl Terminal {
         terminal_print!(self, "{:width$}", "", width = editor.term_width as usize);
         execute!(self.stdout, cursor::MoveTo(0, 0))?;
 
-        let text_width = |s: &str| -> usize {
-            s.chars()
-                .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0))
-                .sum()
-        };
+        use crate::finder::row::{cell_width, text_width};
         let available = editor.term_width as usize;
 
         let widths: Vec<usize> = entries
@@ -1584,7 +1583,7 @@ impl Terminal {
                 let mut width = 0;
                 let target = max_label_width - 1;
                 for ch in entry.label.chars() {
-                    let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+                    let ch_width = cell_width(ch);
                     if width + ch_width > target {
                         break;
                     }
@@ -1967,7 +1966,7 @@ impl Terminal {
 
         let rows = rect.height as usize;
         let cols = rect.width as usize;
-        let mut frame: Vec<u8> = Vec::with_capacity(rows * cols + 1024);
+        let mut frame = ChromeWriter(Vec::with_capacity(rows * cols + 1024));
         // Blank the pane so line numbers and tildes don't show through.
         queue!(&mut frame, SetBackgroundColor(theme.ui.background))?;
         for row in 0..rows {
@@ -2015,7 +2014,7 @@ impl Terminal {
             queue!(&mut frame, SetAttribute(Attribute::NormalIntensity))?;
         }
         queue!(&mut frame, SetAttribute(Attribute::Reset), ResetColor)?;
-        self.stdout.write_all(&frame)?;
+        self.stdout.write_all(&frame.0)?;
         Ok(())
     }
 
@@ -4772,7 +4771,7 @@ impl Terminal {
             let mut display = String::new();
             let mut display_width = 0;
             for ch in span.text.chars() {
-                let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+                let ch_width = crate::finder::row::cell_width(ch);
                 if display_width + ch_width > remaining {
                     break;
                 }
@@ -5096,7 +5095,7 @@ impl Terminal {
         // Assemble the logical popup frame before exposing it to the host terminal.
         // Crossterm's execute! macro flushes after every command, which otherwise
         // lets terminal emulators present intermediate cursor-positioned states.
-        let mut frame = Vec::new();
+        let mut frame = ChromeWriter(Vec::new());
         queue!(&mut frame, cursor::Hide)?;
 
         // Draw top border with title
@@ -5246,7 +5245,7 @@ impl Terminal {
             )?;
         }
 
-        self.stdout.write_all(&frame)?;
+        self.stdout.write_all(&frame.0)?;
         Ok(())
     }
 
@@ -10714,6 +10713,7 @@ pub fn execute_leader_action(editor: &mut Editor, action: &LeaderAction) {
 
 #[cfg(test)]
 mod tests {
+    mod control_chars;
     mod final_newline;
     mod finder;
     mod hover;

@@ -3,13 +3,14 @@
 //! hover costs no parsing per frame.
 
 use crate::editor::Editor;
+use crate::finder::row::cell_width;
 use crate::markdown_preview::{
     PreviewLine, PreviewLineKind, PreviewSpan, render_markdown, wrap_preview_lines,
 };
 use crate::syntax::{HighlightSpan, SyntaxManager, SyntaxStyle};
 use crate::theme::Theme;
 use std::path::Path;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 /// Widest the text area gets; docs reflow to this, like a readable column.
 const MAX_WIDTH: usize = 76;
@@ -158,7 +159,7 @@ fn expand_tabs(text: &str) -> String {
             }
             _ => {
                 out.push(ch);
-                col += ch.width().unwrap_or(0);
+                col += cell_width(ch);
             }
         }
     }
@@ -285,7 +286,7 @@ fn wrap_code(line: &[CodeSpan], width: usize) -> Vec<Vec<CodeSpan>> {
     let mut used = 0;
     for span in line {
         for ch in span.text.chars() {
-            let w = ch.width().unwrap_or(0);
+            let w = cell_width(ch);
             if used + w > width && used > 0 {
                 rows.push(Vec::new());
                 used = 0;

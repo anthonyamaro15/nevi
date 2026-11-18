@@ -5,12 +5,12 @@
 use super::{Terminal, explorer_action_input_view};
 use crate::editor::Editor;
 use crate::explorer::ExplorerAction;
+use crate::finder::row::{cell_width, text_width};
 use crossterm::{
     cursor, queue,
     style::{Attribute, SetAttribute, SetBackgroundColor, SetForegroundColor},
 };
 use std::io::{self, Write};
-use unicode_width::UnicodeWidthStr;
 
 /// Border, input row, border.
 const BOX_ROWS: u16 = 3;
@@ -41,7 +41,7 @@ impl PromptBox {
 
     /// Columns left for the typed text after the folder prefix.
     fn input_width(&self) -> usize {
-        self.inner_width().saturating_sub(self.prefix.width())
+        self.inner_width().saturating_sub(text_width(&self.prefix))
     }
 }
 
@@ -93,7 +93,7 @@ pub(super) fn prompt_box(editor: &Editor) -> Option<PromptBox> {
     };
     // A deep folder keeps its end, and never more than half the field.
     let budget = width.saturating_sub(4) / 2;
-    if prefix.width() > budget {
+    if text_width(&prefix) > budget {
         prefix = crate::finder::row::cut_left(&prefix, budget);
     }
 
@@ -152,21 +152,24 @@ pub(super) fn prompt_cursor(editor: &Editor) -> Option<(u16, u16)> {
         editor.explorer.input_cursor,
         prompt.input_width(),
     );
-    let x = prompt.x as usize + 2 + prompt.prefix.width() + cursor_col;
+    let x = prompt.x as usize + 2 + text_width(&prompt.prefix) + cursor_col;
     Some((x as u16, prompt.y + 1))
 }
 
 /// `text` cut to `width` columns, with "…" when it doesn't fit.
 pub(super) fn fit(text: &str, width: usize) -> String {
-    if text.width() <= width {
+    if text_width(text) <= width {
         return text.to_string();
     }
     let mut out = String::new();
+    let mut used = 0;
     for ch in text.chars() {
-        if out.width() + unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) + 1 > width {
+        let ch_width = cell_width(ch);
+        if used + ch_width + 1 > width {
             break;
         }
         out.push(ch);
+        used += ch_width;
     }
     out.push('…');
     out
@@ -176,7 +179,7 @@ pub(super) fn fit(text: &str, width: usize) -> String {
 /// Split in three so the label can take its own color.
 pub(super) fn edge(width: usize, left: &str, label: &str, right: &str) -> (String, String, String) {
     let label = fit(label, width.saturating_sub(5));
-    let fill = width.saturating_sub(label.width() + 5);
+    let fill = width.saturating_sub(text_width(&label) + 5);
     (
         format!("{left}─ "),
         label,
@@ -236,7 +239,7 @@ impl Terminal {
             let body = fit(body, inner);
             queue!(self.stdout, SetForegroundColor(fg))?;
             write!(self.stdout, "{body}")?;
-            body.width()
+            text_width(&body)
         } else {
             let (visible, _) = explorer_action_input_view(
                 &editor.explorer.input_buffer,
@@ -247,7 +250,7 @@ impl Terminal {
             write!(self.stdout, "{}", prompt.prefix)?;
             queue!(self.stdout, SetForegroundColor(fg))?;
             write!(self.stdout, "{visible}")?;
-            prompt.prefix.width() + visible.width()
+            text_width(&prompt.prefix) + text_width(&visible)
         };
         queue!(self.stdout, SetForegroundColor(border))?;
         write!(self.stdout, "{} │", " ".repeat(inner.saturating_sub(used)))?;
