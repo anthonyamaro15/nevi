@@ -1438,11 +1438,13 @@ fn main() -> anyhow::Result<()> {
                             // Note: Ghost text can coexist with LSP completion popup
                             sync_copilot_ghost(&mut editor, cop);
                         }
+                    }
 
-                        // Check if signature help should be dismissed
-                        if editor.mode == Mode::Insert && should_dismiss_signature_help(&editor) {
-                            editor.signature_help = None;
-                        }
+                    // Runs every frame, not just on buffer changes, so moving
+                    // the cursor off the call dismisses it too.
+                    if editor.mode == Mode::Insert && should_dismiss_signature_help(&editor) {
+                        editor.signature_help = None;
+                        editor.signature_help_trigger = None;
                     }
 
                     editor.maybe_update_syntax();
@@ -1814,7 +1816,7 @@ fn main() -> anyhow::Result<()> {
                             help,
                             request_uri,
                             request_line,
-                            request_character: _,
+                            request_character,
                         } => {
                             // Validate response is for current file
                             let current_uri =
@@ -1833,6 +1835,9 @@ fn main() -> anyhow::Result<()> {
                             }
 
                             // Store signature help for rendering
+                            editor.signature_help_trigger = help
+                                .is_some()
+                                .then(|| (request_line as usize, request_character as usize));
                             editor.signature_help = help;
                             needs_redraw = true;
                         }
@@ -2650,22 +2655,27 @@ fn should_trigger_signature_help(editor: &Editor) -> bool {
     false
 }
 
-/// Check if signature help should be dismissed (cursor moved out of function call)
+/// True once the cursor leaves the call the signature help was opened for.
+fn should_dismiss_signature_help_at(
+    cursor_line: usize,
+    cursor_col: usize,
+    trigger_line: usize,
+    trigger_col: usize,
+) -> bool {
+    cursor_line != trigger_line || cursor_col < trigger_col
+}
+
+/// Check if signature help should be dismissed (cursor left the call)
 fn should_dismiss_signature_help(editor: &Editor) -> bool {
-    let col = editor.cursor.col;
-
-    // Get the current line
-    if let Some(line) = editor.buffer().line(editor.cursor.line) {
-        let line_str: String = line.chars().collect();
-        let chars: Vec<char> = line_str.chars().collect();
-
-        // Check if we just typed ')' - dismiss signature help
-        if col > 0 && col <= chars.len() && chars[col - 1] == ')' {
-            return true;
-        }
-    }
-
-    false
+    let Some((trigger_line, trigger_col)) = editor.signature_help_trigger else {
+        return false;
+    };
+    should_dismiss_signature_help_at(
+        editor.cursor.line,
+        editor.cursor.col,
+        trigger_line,
+        trigger_col,
+    )
 }
 
 fn sync_copilot_ghost(editor: &mut Editor, cop: &mut CopilotManager) {
@@ -2882,7 +2892,8 @@ mod tests {
         diagnostic_to_lsp_offsets, editor_lsp_cursor_col, editor_lsp_line_len, help_output,
         lsp_completion_response_matches_current_cursor, lsp_response_matches_current_buffer,
         open_rename_prompt_if_current, pick_mode_action_for_key, profile_enabled_from_value,
-        startup_action_from_args, terminal_output_target_for_pick_mode,
+        should_dismiss_signature_help_at, startup_action_from_args,
+        terminal_output_target_for_pick_mode,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use nevi::lsp::types::{Diagnostic, DiagnosticSeverity, TextEdit};
@@ -2921,6 +2932,16 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).expect("read file"), "a😀X\n");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn signature_help_dismisses_on_leaving_the_call_not_just_on_typing_close_paren() {
+        // cursor still inside the call, at or after the trigger: keep it open
+        assert!(!should_dismiss_signature_help_at(0, 5, 0, 3));
+        // cursor moved back before the trigger column: dismiss
+        assert!(should_dismiss_signature_help_at(0, 2, 0, 3));
+        // cursor moved to a different line entirely: dismiss
+        assert!(should_dismiss_signature_help_at(1, 3, 0, 3));
     }
 
     #[test]

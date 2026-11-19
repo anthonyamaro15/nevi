@@ -1218,6 +1218,8 @@ pub struct Editor {
     pub dashboard_harpoon_pending: bool,
     /// Signature help popup content
     pub signature_help: Option<crate::lsp::types::SignatureHelpResult>,
+    /// Where signature help was opened (line, col); dismiss once the cursor leaves it
+    pub signature_help_trigger: Option<(usize, usize)>,
     /// Show diagnostic floating popup at cursor
     pub show_diagnostic_float: bool,
     /// Incremental search matches: (line, start_col, end_col)
@@ -1788,6 +1790,7 @@ impl Editor {
             startup_ready_ms: None,
             dashboard_harpoon_pending: false,
             signature_help: None,
+            signature_help_trigger: None,
             show_diagnostic_float: false,
             search_matches: Vec::new(),
             project_root: None,
@@ -6156,6 +6159,7 @@ impl Editor {
         // Hide any active popups
         self.completion.hide();
         self.signature_help = None;
+        self.signature_help_trigger = None;
         self.show_diagnostic_float = false;
 
         self.mode = Mode::Normal;
