@@ -30,9 +30,9 @@ fn leave_sequences() -> Vec<String> {
     ]
 }
 
-// Crossterm has no real windows implementation of keyboard enhancement
-// `supports_keyboard_enhancement()` is hardcoded `Ok(false)`, so enter_editor_screen's guard never pushes it
-// and leave_editor_screen correctly never pops it
+// Crossterm has no real Windows implementation of keyboard enhancement: `is_ansi_code_supported()`
+// is false for it there, so the push goes through `execute_winapi()`, which always errors.
+// enter_editor_screen stores that as a failed push, so leave_editor_screen never pops it.
 //
 // DisableMouseCapture is also absent here: on Windows `is_ansi_code_supported()` is false for mouse capture,
 // so crossterm calls the real SetConsoleMode via execute_winapi() instead of writing ANSI.

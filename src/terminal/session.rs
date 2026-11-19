@@ -37,27 +37,25 @@ impl Terminal {
             event::EnableFocusChange,
             EnableBracketedPaste,
         )?;
-        // Despite the name, this can return `Err` on a legacy Windows console instead of `Ok(false)`
-        // we treat "can't tell" the same as "not supported" rather than failing the whole screen hand-off over it
-        if terminal::supports_keyboard_enhancement().unwrap_or(false) {
-            execute!(
-                self.stdout,
-                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-            )?;
-        }
+        // An unsupported terminal just ignores the escape code; crossterm's Windows
+        // backend instead errors the push itself, so store success rather than ask first
+        self.keyboard_enhancement_pushed = execute!(
+            self.stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )
+        .is_ok();
         Ok(())
     }
 
     /// Give the terminal back the way the shell expects it. Mouse capture is
     /// switched off here and comes back with the next render.
     pub(super) fn leave_editor_screen(&mut self) -> io::Result<()> {
-        // only pop it if we push it (see [`enter_editor_screen()`]); same Err-as-false treatment
-        // push and pop decisions have to agree
-        if terminal::supports_keyboard_enhancement().unwrap_or(false) {
+        // only pop what enter_editor_screen actually pushed
+        if self.keyboard_enhancement_pushed {
             execute!(self.stdout, PopKeyboardEnhancementFlags)?;
         }
-        
-        // On Windows, DisableMouseCapture bypasses the writer and calls SetConsoleMode, 
+
+        // On Windows, DisableMouseCapture bypasses the writer and calls SetConsoleMode,
         // which panics if mouse capture was never enabled in this process
         // only ask for it, when we know it's actually on
         let mouse = if self.mouse_capture_enabled {

@@ -11,11 +11,12 @@ until one exists.
 - **Every keystroke ran twice.** crossterm's Windows console backend emits
   both a `Press` and a `Release` `Event::Key` per keystroke, unlike Unix.
   `read_event`/`read_key` (`src/terminal/mod.rs`) now drop `KeyEventKind::Release`.
-- **Startup crashed on legacy consoles.** `terminal::supports_keyboard_enhancement()`
-  can return `Err` instead of `Ok(false)` on a legacy Windows console — the
-  same error `PushKeyboardEnhancementFlags` itself throws. `enter_editor_screen`/
-  `leave_editor_screen` (`src/terminal/session.rs`) now treat a failed probe
-  as unsupported (`.unwrap_or(false)`) instead of propagating it.
+- **Startup crashed pushing keyboard enhancement.** crossterm has no real Windows
+  implementation of it: `PushKeyboardEnhancementFlags` always errors there with
+  `Unsupported`. `enter_editor_screen` (`src/terminal/session.rs`) now stores
+  whether the push succeeded instead of assuming it did, and `leave_editor_screen`
+  pops only when it did. This also sidesteps `supports_keyboard_enhancement()`,
+  which on Unix opens `/dev/tty` and blocks without a real terminal to answer.
 - **Leaving the editor screen could panic.** Windows' `EnableMouseCapture`/
   `DisableMouseCapture` bypass the `Write` sink entirely and call
   `SetConsoleMode` on the real console handle. Disabling mouse capture before

@@ -1255,6 +1255,8 @@ fn source_col_for_wrap_segment_char(segment: &WrapSegment, visual_idx: usize) ->
 pub struct Terminal {
     stdout: ChromeWriter<Box<dyn Write>>,
     mouse_capture_enabled: bool,
+    /// Whether the keyboard enhancement push was accepted, so leave only pops what was pushed.
+    keyboard_enhancement_pushed: bool,
     leader_popup_rect: Option<(u16, u16)>,
     /// Whether the editor behind the open finder / Markdown preview has been
     /// painted since it opened. Those overlays skip the background, so the
@@ -1289,6 +1291,7 @@ impl Terminal {
         let mut terminal = Self {
             stdout: ChromeWriter(stdout),
             mouse_capture_enabled: false,
+            keyboard_enhancement_pushed: false,
             leader_popup_rect: None,
             overlay_background_drawn: false,
             owns_tty: true,
@@ -1302,6 +1305,7 @@ impl Terminal {
         Self {
             stdout: ChromeWriter(stdout),
             mouse_capture_enabled: false,
+            keyboard_enhancement_pushed: false,
             leader_popup_rect: None,
             overlay_background_drawn: false,
             owns_tty: false,
