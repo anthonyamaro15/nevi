@@ -1,0 +1,34 @@
+# Windows support
+
+Tracking issue: [#123](https://github.com/anthonyamaro15/nevi/issues/123).
+
+No CI job builds or tests Windows yet (`.github/workflows/rust.yml` runs
+macOS and Linux only), so regressions here won't be caught automatically
+until one exists.
+
+## Windows-specific gaps found so far
+
+- **Every keystroke ran twice.** crossterm's Windows console backend emits
+  both a `Press` and a `Release` `Event::Key` per keystroke, unlike Unix.
+  `read_event`/`read_key` (`src/terminal/mod.rs`) now drop `KeyEventKind::Release`.
+- **Startup crashed on legacy consoles.** `terminal::supports_keyboard_enhancement()`
+  can return `Err` instead of `Ok(false)` on a legacy Windows console — the
+  same error `PushKeyboardEnhancementFlags` itself throws. `enter_editor_screen`/
+  `leave_editor_screen` (`src/terminal/session.rs`) now treat a failed probe
+  as unsupported (`.unwrap_or(false)`) instead of propagating it.
+- **Leaving the editor screen could panic.** Windows' `EnableMouseCapture`/
+  `DisableMouseCapture` bypass the `Write` sink entirely and call
+  `SetConsoleMode` on the real console handle. Disabling mouse capture before
+  it was ever enabled in the process panics with `"Initial console modes not
+  set"`. `leave_editor_screen` now only disables it when `mouse_capture_enabled`
+  is actually true.
+
+## Still open
+
+- No Windows CI job, so the above was only verified by running the suite
+  locally on Windows.
+- Job control (`Ctrl-Z` suspend, `:stop`) is a no-op on Windows (no SIGTSTP);
+  `:!` and lazygit-style external commands still work since they don't depend
+  on it.
+- Anything outside manual testing of normal/insert mode and the terminal
+  hand-off above is unverified on Windows.
