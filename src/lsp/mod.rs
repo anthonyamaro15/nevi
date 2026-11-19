@@ -722,8 +722,9 @@ mod tests {
     fn a_server_that_exits_reports_a_fatal_channel_closed_error() {
         // `false` starts and exits at once, before any handshake. The reader
         // must say so; a silent EOF left the statusline spinning forever.
+        // Looked up on PATH: the Nix build sandbox has no /usr/bin.
         let root = std::env::temp_dir();
-        let mut manager = super::LspManager::start("/usr/bin/false", &[], root)
+        let mut manager = super::LspManager::start("false", &[], root)
             .expect("spawning the worker thread does not fail");
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut seen = Vec::new();
