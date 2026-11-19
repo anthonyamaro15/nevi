@@ -5,8 +5,8 @@ use super::Terminal;
 use crossterm::{
     cursor,
     event::{
-        self, DisableBracketedPaste, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-        PushKeyboardEnhancementFlags,
+        self, DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute, terminal,
 };
@@ -25,7 +25,9 @@ pub enum SuspendOutcome {
 
 impl Terminal {
     /// Put the editor screen up: raw mode, the alternate screen, focus
-    /// reporting, and unambiguous key codes.
+    /// reporting, bracketed paste, and unambiguous key codes. Bracketed paste
+    /// stays on whatever the mouse setting is; without it a paste arrives as
+    /// typed keys and cannot be kept from running as commands.
     pub(super) fn enter_editor_screen(&mut self) -> io::Result<()> {
         self.set_raw_mode(true)?;
         execute!(
@@ -33,6 +35,7 @@ impl Terminal {
             terminal::EnterAlternateScreen,
             cursor::Hide,
             event::EnableFocusChange,
+            EnableBracketedPaste,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         )
     }

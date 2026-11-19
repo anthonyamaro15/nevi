@@ -38,7 +38,19 @@ pub struct DotRepeat {
     poisoned: bool,
     /// True while `.` is replaying; replayed keys are not observed.
     replaying: bool,
+    /// Text pasted during the candidate, one entry per `PASTE_KEY` in it.
+    /// A paste is kept as text because replaying it as keys would run
+    /// auto-pairs and auto-indent over it.
+    candidate_pastes: Vec<String>,
+    /// The pastes of the committed change, one per `PASTE_KEY` in it.
+    redo_pastes: Vec<String>,
+    /// Next entry of `redo_pastes` to hand out during a replay.
+    replay_paste_idx: usize,
 }
+
+/// Stands in for one paste in a recorded change. Terminals never send a
+/// null key code, so it cannot be typed.
+pub const PASTE_KEY: KeyEvent = KeyEvent::new(KeyCode::Null, KeyModifiers::NONE);
 
 impl DotRepeat {
     /// Observe one key before it is handled. `mode`, `pending`, `version`,
@@ -83,8 +95,10 @@ impl DotRepeat {
         let same_buffer = buffer_idx == self.start_buffer_idx;
         if !self.candidate.is_empty() && changed && same_buffer && !self.poisoned {
             self.redo_keys = std::mem::take(&mut self.candidate);
+            self.redo_pastes = std::mem::take(&mut self.candidate_pastes);
         } else {
             self.candidate.clear();
+            self.candidate_pastes.clear();
         }
         self.start_version = version;
         self.start_buffer_idx = buffer_idx;
@@ -130,6 +144,7 @@ impl DotRepeat {
 
     pub fn begin_replay(&mut self) {
         self.replaying = true;
+        self.replay_paste_idx = 0;
     }
 
     pub fn end_replay(&mut self) {
@@ -149,10 +164,39 @@ impl DotRepeat {
         self.candidate.extend_from_slice(keys);
     }
 
+    /// Record a paste typed into the current insert or replace session.
+    pub fn record_paste(&mut self, text: &str) {
+        if self.replaying {
+            return;
+        }
+        self.candidate.push(PASTE_KEY);
+        self.candidate_pastes.push(text.to_string());
+    }
+
+    /// The text for the next `PASTE_KEY` of the change being replayed.
+    pub fn next_replay_paste(&mut self) -> Option<String> {
+        if !self.replaying {
+            return None;
+        }
+        let text = self.redo_pastes.get(self.replay_paste_idx).cloned();
+        self.replay_paste_idx += 1;
+        text
+    }
+
+    /// A paste outside insert mode is a change `.` does not repeat. Settle
+    /// whatever came before it now: a finished `x` stays the last change and
+    /// a half-typed `d` is dropped, so the paste cannot turn it into one.
+    pub fn settle_before_paste(&mut self, version: u64, buffer_idx: usize) {
+        if !self.replaying {
+            self.settle(version, buffer_idx);
+        }
+    }
+
     /// Drop the in-flight candidate. The `.` keystroke (and its count) must
     /// never become the recorded change.
     pub fn abandon_candidate(&mut self) {
         self.candidate.clear();
+        self.candidate_pastes.clear();
         self.ran_insert_session = false;
         self.resumed_insert = false;
         self.poisoned = false;

@@ -852,89 +852,32 @@ fn main() -> anyhow::Result<()> {
                                     last_input_at = Some(Instant::now());
                                     terminal_redraw_pending = true;
                                 }
-                            } else {
-                                for ch in text.chars() {
-                                    let paste_key = match ch {
-                                        '\n' | '\r' => {
-                                            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
-                                        }
-                                        '\t' => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-                                        ch => KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
-                                    };
-                                    handle_key(&mut editor, paste_key);
+                                if !finish_input_batch_event(
+                                    &terminal,
+                                    &mut events_processed,
+                                    max_key_events_per_frame,
+                                )? {
+                                    break;
                                 }
-                                editor.mark_bufferline_damage();
-                                last_input_at = Some(Instant::now());
-                                needs_redraw = true;
-                                redraw_from_input = true;
+                                continue;
                             }
-                            if !finish_input_batch_event(
-                                &terminal,
-                                &mut events_processed,
-                                max_key_events_per_frame,
-                            )? {
-                                break;
-                            }
-                            continue;
+                            // Taken as text, never as keys, then on to the
+                            // same bookkeeping as a typed edit.
+                            editor.hover = None;
+                            editor.show_diagnostic_float = false;
+                            editor.paste_text(&text);
+                            editor.mark_bufferline_damage();
+                            last_input_at = Some(Instant::now());
+                            None
                         }
-                        EditorEvent::Key(k) => k,
+                        EditorEvent::Key(k) => Some(k),
                     };
 
-                    // Ctrl-d / Ctrl-u page a hover that doesn't fit; any
-                    // other key closes it.
-                    if nevi::terminal::scroll_hover(&mut editor, key) {
-                        last_input_at = Some(Instant::now());
-                        needs_redraw = true;
-                        redraw_from_input = true;
-                        if !finish_input_batch_event(
-                            &terminal,
-                            &mut events_processed,
-                            max_key_events_per_frame,
-                        )? {
-                            break;
-                        }
-                        continue;
-                    }
-                    editor.hover = None;
-                    // Dismiss diagnostic float on any key press (it can be reopened with gl)
-                    editor.show_diagnostic_float = false;
-
-                    if pick_mode {
-                        match pick_mode_action_for_key(&editor, key) {
-                            PickModeAction::Select(path) => {
-                                pick_result = Some(path);
-                                break 'main_loop;
-                            }
-                            PickModeAction::Cancel => break 'main_loop,
-                            PickModeAction::Continue => {}
-                        }
-                    }
-
-                    if editor.floating_terminal.is_visible() {
-                        if editor.floating_terminal.handle_search_key(key) {
-                            last_input_at = Some(Instant::now());
-                            terminal_redraw_pending = true;
-                            if !finish_input_batch_event(
-                                &terminal,
-                                &mut events_processed,
-                                max_key_events_per_frame,
-                            )? {
-                                break;
-                            }
-                            continue;
-                        }
-
-                        let has_selection = editor.floating_terminal.has_selection();
-                        let platform_copy = is_terminal_selection_platform_copy_key(key);
-                        let selection_copy = has_selection && is_terminal_selection_copy_key(key);
-                        if platform_copy || selection_copy {
-                            if let Some(text) = editor.floating_terminal.copy_selection() {
-                                editor.registers.yank(None, RegisterContent::Chars(text));
-                                editor.check_clipboard_error();
-                                editor.set_status("Terminal selection copied");
-                            } else {
-                                editor.set_status("No terminal selection");
-                            }
+                    let mut key_went_to_terminal = false;
+                    if let Some(key) = key {
+                        // Ctrl-d / Ctrl-u page a hover that doesn't fit; any
+                        // other key closes it.
+                        if nevi::terminal::scroll_hover(&mut editor, key) {
                             last_input_at = Some(Instant::now());
                             needs_redraw = true;
                             redraw_from_input = true;
@@ -947,11 +890,124 @@ fn main() -> anyhow::Result<()> {
                             }
                             continue;
                         }
+                        editor.hover = None;
+                        // Dismiss diagnostic float on any key press (it can be reopened with gl)
+                        editor.show_diagnostic_float = false;
 
-                        if has_selection && is_terminal_selection_clear_key(key) {
-                            editor.floating_terminal.clear_selection();
-                            last_input_at = Some(Instant::now());
-                            terminal_redraw_pending = true;
+                        if pick_mode {
+                            match pick_mode_action_for_key(&editor, key) {
+                                PickModeAction::Select(path) => {
+                                    pick_result = Some(path);
+                                    break 'main_loop;
+                                }
+                                PickModeAction::Cancel => break 'main_loop,
+                                PickModeAction::Continue => {}
+                            }
+                        }
+
+                        if editor.floating_terminal.is_visible() {
+                            if editor.floating_terminal.handle_search_key(key) {
+                                last_input_at = Some(Instant::now());
+                                terminal_redraw_pending = true;
+                                if !finish_input_batch_event(
+                                    &terminal,
+                                    &mut events_processed,
+                                    max_key_events_per_frame,
+                                )? {
+                                    break;
+                                }
+                                continue;
+                            }
+
+                            let has_selection = editor.floating_terminal.has_selection();
+                            let platform_copy = is_terminal_selection_platform_copy_key(key);
+                            let selection_copy =
+                                has_selection && is_terminal_selection_copy_key(key);
+                            if platform_copy || selection_copy {
+                                if let Some(text) = editor.floating_terminal.copy_selection() {
+                                    editor.registers.yank(None, RegisterContent::Chars(text));
+                                    editor.check_clipboard_error();
+                                    editor.set_status("Terminal selection copied");
+                                } else {
+                                    editor.set_status("No terminal selection");
+                                }
+                                last_input_at = Some(Instant::now());
+                                needs_redraw = true;
+                                redraw_from_input = true;
+                                if !finish_input_batch_event(
+                                    &terminal,
+                                    &mut events_processed,
+                                    max_key_events_per_frame,
+                                )? {
+                                    break;
+                                }
+                                continue;
+                            }
+
+                            if has_selection && is_terminal_selection_clear_key(key) {
+                                editor.floating_terminal.clear_selection();
+                                last_input_at = Some(Instant::now());
+                                terminal_redraw_pending = true;
+                                if !finish_input_batch_event(
+                                    &terminal,
+                                    &mut events_processed,
+                                    max_key_events_per_frame,
+                                )? {
+                                    break;
+                                }
+                                continue;
+                            }
+                        }
+
+                        // Check for manual completion trigger (Ctrl+Space) in insert mode
+                        let manual_completion = editor.mode == Mode::Insert
+                            && !editor.floating_terminal.is_visible()
+                            && key.modifiers == KeyModifiers::CONTROL
+                            && key.code == KeyCode::Char(' ');
+
+                        if manual_completion {
+                            // Request completion from LSP (only if ready for this file type)
+                            if let Some(ref mut mlsp) = multi_lsp {
+                                if let Some(path) = editor.buffer().path.clone() {
+                                    if mlsp.is_ready_for_file(&path) {
+                                        let _ = mlsp.completion(
+                                            &path,
+                                            editor.cursor.line as u32,
+                                            editor_lsp_cursor_col(&editor),
+                                            editor.buffer().version(),
+                                        );
+                                    }
+                                }
+                            }
+                        } else {
+                            let t_handle_key = Instant::now();
+                            let mode_before = editor.mode;
+                            let terminal_visible_before_key = editor.floating_terminal.is_visible();
+                            handle_key(&mut editor, key);
+                            key_went_to_terminal = terminal_visible_before_key
+                                && editor.floating_terminal.is_visible();
+                            let elapsed = t_handle_key.elapsed();
+                            record_metric!(
+                                editor,
+                                profile_stats,
+                                profile_file,
+                                "handle_key",
+                                elapsed
+                            );
+                            // Only log slow handle_key operations (>1ms) with details
+                            if elapsed.as_micros() > 1000 {
+                                profile!(
+                                    profile_file,
+                                    "SLOW handle_key: {:?} mode={:?} key={:?}",
+                                    elapsed,
+                                    mode_before,
+                                    key.code
+                                );
+                            }
+                        }
+                        last_input_at = Some(Instant::now());
+
+                        if key_went_to_terminal {
                             if !finish_input_batch_event(
                                 &terminal,
                                 &mut events_processed,
@@ -961,60 +1017,6 @@ fn main() -> anyhow::Result<()> {
                             }
                             continue;
                         }
-                    }
-
-                    // Check for manual completion trigger (Ctrl+Space) in insert mode
-                    let manual_completion = editor.mode == Mode::Insert
-                        && !editor.floating_terminal.is_visible()
-                        && key.modifiers == KeyModifiers::CONTROL
-                        && key.code == KeyCode::Char(' ');
-
-                    let mut key_went_to_terminal = false;
-                    if manual_completion {
-                        // Request completion from LSP (only if ready for this file type)
-                        if let Some(ref mut mlsp) = multi_lsp {
-                            if let Some(path) = editor.buffer().path.clone() {
-                                if mlsp.is_ready_for_file(&path) {
-                                    let _ = mlsp.completion(
-                                        &path,
-                                        editor.cursor.line as u32,
-                                        editor_lsp_cursor_col(&editor),
-                                        editor.buffer().version(),
-                                    );
-                                }
-                            }
-                        }
-                    } else {
-                        let t_handle_key = Instant::now();
-                        let mode_before = editor.mode;
-                        let terminal_visible_before_key = editor.floating_terminal.is_visible();
-                        handle_key(&mut editor, key);
-                        key_went_to_terminal =
-                            terminal_visible_before_key && editor.floating_terminal.is_visible();
-                        let elapsed = t_handle_key.elapsed();
-                        record_metric!(editor, profile_stats, profile_file, "handle_key", elapsed);
-                        // Only log slow handle_key operations (>1ms) with details
-                        if elapsed.as_micros() > 1000 {
-                            profile!(
-                                profile_file,
-                                "SLOW handle_key: {:?} mode={:?} key={:?}",
-                                elapsed,
-                                mode_before,
-                                key.code
-                            );
-                        }
-                    }
-                    last_input_at = Some(Instant::now());
-
-                    if key_went_to_terminal {
-                        if !finish_input_batch_event(
-                            &terminal,
-                            &mut events_processed,
-                            max_key_events_per_frame,
-                        )? {
-                            break;
-                        }
-                        continue;
                     }
 
                     // Resolve completion documentation/details for the selected item.
@@ -1306,7 +1308,9 @@ fn main() -> anyhow::Result<()> {
                                     // Use debouncing to avoid flooding LSP with requests
                                     // Don't re-trigger if completion popup is already active (preserves resolved docs)
                                     // Explicit triggers like Ctrl+Space or isIncomplete refresh bypass this
-                                    if editor.mode == Mode::Insert
+                                    // A paste is not typing: it opens no popup.
+                                    if key.is_some()
+                                        && editor.mode == Mode::Insert
                                         && !editor.completion.active
                                         && should_trigger_completion(&editor)
                                     {
@@ -1319,7 +1323,8 @@ fn main() -> anyhow::Result<()> {
                                     }
 
                                     // Check for signature help triggers (( or ,)
-                                    if editor.mode == Mode::Insert
+                                    if key.is_some()
+                                        && editor.mode == Mode::Insert
                                         && should_trigger_signature_help(&editor)
                                     {
                                         signature_help_pending = Some((
