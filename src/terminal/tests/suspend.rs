@@ -35,6 +35,7 @@ fn enter_sequences() -> Vec<String> {
         ansi(terminal::EnterAlternateScreen),
         ansi(cursor::Hide),
         ansi(event::EnableFocusChange),
+        ansi(event::EnableBracketedPaste),
         ansi(event::PushKeyboardEnhancementFlags(
             event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
         )),

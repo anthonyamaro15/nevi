@@ -830,6 +830,7 @@ impl TerminalSession {
         }
 
         if self.term.mode().contains(TermMode::BRACKETED_PASTE) {
+            let text = strip_paste_markers(text);
             let mut data = Vec::with_capacity(text.len() + 12);
             data.extend_from_slice(b"\x1b[200~");
             data.extend_from_slice(text.as_bytes());
@@ -2257,6 +2258,20 @@ impl Default for FloatingTerminal {
     }
 }
 
+/// A paste must not close the bracket it is sent in, or the rest of it reaches
+/// the child as typed input. Removing one marker can join the bytes around it
+/// into a new one, so this repeats until nothing changes.
+fn strip_paste_markers(text: &str) -> String {
+    let mut clean = text.to_string();
+    loop {
+        let next = clean.replace("\x1b[200~", "").replace("\x1b[201~", "");
+        if next.len() == clean.len() {
+            return clean;
+        }
+        clean = next;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3112,6 +3127,28 @@ mod tests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .as_slice(),
             b"\x1b[200~total 40\n\x1b[201~"
+        );
+    }
+
+    #[test]
+    fn paste_cannot_end_the_bracket_early() {
+        let mut terminal = FloatingTerminal::new();
+        terminal.process_bytes(b"\x1b[?2004h");
+        terminal.sessions[0].visible = true;
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        terminal.sessions[0].pty_writer = Some(Box::new(TestWriter {
+            data: captured.clone(),
+        }));
+
+        // The nested marker would rebuild a bare end marker if removed once.
+        assert!(terminal.send_paste("echo hi\x1b[201~rm -rf x\n\x1b[20\x1b[201~1~\x1b[200~"));
+        assert_eq!(
+            captured
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_slice(),
+            b"\x1b[200~echo hirm -rf x\n\x1b[201~"
         );
     }
 

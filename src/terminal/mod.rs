@@ -1,10 +1,7 @@
 use chrome_writer::ChromeWriter;
 use crossterm::{
     cursor,
-    event::{
-        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyModifiers,
-        MouseEvent,
-    },
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent},
     execute, queue,
     style::{Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor},
     terminal::{self, ClearType},
@@ -1317,13 +1314,9 @@ impl Terminal {
         }
 
         if enabled {
-            execute!(self.stdout, event::EnableMouseCapture, EnableBracketedPaste)?;
+            execute!(self.stdout, event::EnableMouseCapture)?;
         } else {
-            execute!(
-                self.stdout,
-                event::DisableMouseCapture,
-                DisableBracketedPaste
-            )?;
+            execute!(self.stdout, event::DisableMouseCapture)?;
         }
         self.mouse_capture_enabled = enabled;
         Ok(())
@@ -6769,6 +6762,14 @@ fn handle_key_inner(editor: &mut Editor, key: KeyEvent) {
         editor
             .dot_repeat
             .observe(mode, pending, version, editor.current_buffer_index(), key);
+    }
+
+    // `.` replays a recorded paste as text, never as the keys it contains.
+    if key == crate::dot_repeat::PASTE_KEY {
+        if let Some(text) = editor.dot_repeat.next_replay_paste() {
+            editor.paste_text(&text);
+        }
+        return;
     }
 
     if editor.pending_insert_normal_once && editor.mode == Mode::Normal {

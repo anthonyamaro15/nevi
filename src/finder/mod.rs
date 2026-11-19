@@ -837,6 +837,16 @@ impl FuzzyFinder {
         self.update_filter();
     }
 
+    /// Insert pasted text at the cursor, filtering once rather than per
+    /// character.
+    pub fn insert_text(&mut self, text: &str) {
+        self.input_mode = FinderInputMode::Insert;
+        let byte_idx = self.char_to_byte_index(self.cursor);
+        self.query.insert_str(byte_idx, text);
+        self.cursor += text.chars().count();
+        self.update_filter();
+    }
+
     /// Delete character before cursor (backspace)
     pub fn delete_char_before(&mut self) {
         if self.cursor > 0 {

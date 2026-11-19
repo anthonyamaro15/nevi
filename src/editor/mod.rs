@@ -8,6 +8,7 @@ mod increment;
 mod macros;
 mod marks;
 mod mouse;
+mod paste_text;
 mod reference_rows;
 mod register;
 mod replace;
@@ -8732,11 +8733,23 @@ impl Editor {
             return;
         };
 
-        let replacement = content.as_str().to_string();
+        if let Some((deleted, is_small)) =
+            self.replace_visual_selection_with(content.as_str().to_string())
+        {
+            self.registers.delete(None, deleted, is_small);
+        }
+    }
+
+    /// Replace the visual selection with `replacement` and return to Normal
+    /// mode. Returns the replaced text for the caller to put in a register.
+    fn replace_visual_selection_with(
+        &mut self,
+        replacement: String,
+    ) -> Option<(RegisterContent, bool)> {
         let mode = self.mode;
         let (start_line, start_col, end_line, end_col) = self.get_visual_range();
 
-        match mode {
+        let deleted = match mode {
             Mode::VisualLine => {
                 let deleted = self.get_lines_text(start_line, end_line);
                 let count = end_line - start_line + 1;
@@ -8767,8 +8780,7 @@ impl Editor {
                 self.cursor.col = 0;
                 self.undo_stack
                     .end_undo_group(self.cursor.line, self.cursor.col);
-                self.registers
-                    .delete(None, RegisterContent::Lines(deleted), false);
+                (RegisterContent::Lines(deleted), false)
             }
             Mode::Visual => {
                 let deleted = self.get_range_text(start_line, start_col, end_line, end_col);
@@ -8793,8 +8805,7 @@ impl Editor {
                     .end_undo_group(self.cursor.line, self.cursor.col);
 
                 let is_small = !deleted.contains('\n');
-                self.registers
-                    .delete(None, RegisterContent::Chars(deleted), is_small);
+                (RegisterContent::Chars(deleted), is_small)
             }
             Mode::VisualBlock => {
                 let (top, left, bottom, right) = self
@@ -8843,18 +8854,15 @@ impl Editor {
                 self.cursor.col = left;
                 self.undo_stack
                     .end_undo_group(self.cursor.line, self.cursor.col);
-                self.registers.delete(
-                    None,
-                    RegisterContent::Chars(deleted_lines.join("\n")),
-                    false,
-                );
+                (RegisterContent::Chars(deleted_lines.join("\n")), false)
             }
-            _ => return,
-        }
+            _ => return None,
+        };
 
         self.mode = Mode::Normal;
         self.clamp_cursor();
         self.scroll_to_cursor();
+        Some(deleted)
     }
 
     /// Surround the current visual selection.
@@ -12798,6 +12806,7 @@ mod tests {
     mod lsp_rename;
     mod macro_lens;
     mod open_line;
+    mod paste_text;
     mod replace;
     mod screen_position;
     mod shada;
