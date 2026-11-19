@@ -2665,17 +2665,29 @@ fn should_dismiss_signature_help_at(
     cursor_line != trigger_line || cursor_col < trigger_col
 }
 
-/// Check if signature help should be dismissed (cursor left the call)
+/// Check if signature help should be dismissed: the cursor left the call,
+/// or the call's closing paren was just typed.
 fn should_dismiss_signature_help(editor: &Editor) -> bool {
     let Some((trigger_line, trigger_col)) = editor.signature_help_trigger else {
         return false;
     };
-    should_dismiss_signature_help_at(
+    if should_dismiss_signature_help_at(
         editor.cursor.line,
         editor.cursor.col,
         trigger_line,
         trigger_col,
-    )
+    ) {
+        return true;
+    }
+
+    let col = editor.cursor.col;
+    if let Some(line) = editor.buffer().line(editor.cursor.line) {
+        let chars: Vec<char> = line.chars().collect();
+        if col > 0 && col <= chars.len() && chars[col - 1] == ')' {
+            return true;
+        }
+    }
+    false
 }
 
 fn sync_copilot_ghost(editor: &mut Editor, cop: &mut CopilotManager) {
@@ -2892,7 +2904,7 @@ mod tests {
         diagnostic_to_lsp_offsets, editor_lsp_cursor_col, editor_lsp_line_len, help_output,
         lsp_completion_response_matches_current_cursor, lsp_response_matches_current_buffer,
         open_rename_prompt_if_current, pick_mode_action_for_key, profile_enabled_from_value,
-        should_dismiss_signature_help_at, startup_action_from_args,
+        should_dismiss_signature_help, should_dismiss_signature_help_at, startup_action_from_args,
         terminal_output_target_for_pick_mode,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -2942,6 +2954,17 @@ mod tests {
         assert!(should_dismiss_signature_help_at(0, 2, 0, 3));
         // cursor moved to a different line entirely: dismiss
         assert!(should_dismiss_signature_help_at(1, 3, 0, 3));
+    }
+
+    #[test]
+    fn signature_help_dismisses_on_typing_close_paren() {
+        let mut editor = Editor::default();
+        editor.buffer_mut().insert_str(0, 0, "foo(a)\n");
+        editor.signature_help_trigger = Some((0, 4));
+        editor.cursor.line = 0;
+        editor.cursor.col = 6; // just typed the ')' after "foo(a"
+
+        assert!(should_dismiss_signature_help(&editor));
     }
 
     #[test]
