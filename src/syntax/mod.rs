@@ -1,6 +1,7 @@
 mod highlighter;
 #[cfg(test)]
 mod ruby_heredoc_tests;
+mod scanner_guard;
 mod theme;
 
 pub use highlighter::HighlightSpan;
@@ -631,19 +632,17 @@ impl SyntaxManager {
         }
 
         if exceeds_highlight_limits(buffer.len_lines(), buffer.len_chars()) {
-            self.tree = None;
-            self.incremental_identity = None;
-            buffer.reset_edit_history();
-            self.source_cache.clear();
-            self.line_start_bytes.clear();
-            self.highlight_cache.borrow_mut().clear();
-            self.cache_version.set(0);
-            self.parse_version = buffer.version();
+            self.skip_parse(buffer);
             return;
         }
 
         // Convert buffer to string for parsing
         self.source_cache = buffer_to_string(buffer);
+        // Checked on every reparse, since an edit can add nesting too.
+        if self.scanner_would_overflow(&self.source_cache) {
+            self.skip_parse(buffer);
+            return;
+        }
         self.line_start_bytes.clear();
         self.line_start_bytes.push(0);
         for (idx, b) in self.source_cache.bytes().enumerate() {
@@ -698,6 +697,27 @@ impl SyntaxManager {
             .replace(vec![None; self.line_start_bytes.len()]);
     }
 
+    /// Leave the buffer without a tree, so it shows without highlighting,
+    /// the same way a file over the large-file limits does.
+    fn skip_parse(&mut self, buffer: &mut Buffer) {
+        self.tree = None;
+        self.incremental_identity = None;
+        buffer.reset_edit_history();
+        self.source_cache.clear();
+        self.line_start_bytes.clear();
+        self.highlight_cache.borrow_mut().clear();
+        self.cache_version.set(0);
+        self.parse_version = buffer.version();
+    }
+
+    /// Whether `source` is Markdown nested too deeply to hand to the parser
+    /// (see `scanner_guard`).
+    fn scanner_would_overflow(&self, source: &str) -> bool {
+        self.language
+            .as_deref()
+            .is_some_and(|language| scanner_guard::too_deep_to_parse(language, source))
+    }
+
     /// Parse string content directly (for preview panels, etc.)
     /// Designed for small content like finder preview (~150 lines max)
     pub fn parse_string(&mut self, content: &str) {
@@ -732,7 +752,10 @@ impl SyntaxManager {
         let line_count = content.lines().count();
         let char_count = content.chars().count();
 
-        if line_count > MAX_HIGHLIGHT_LINES || char_count > MAX_HIGHLIGHT_CHARS {
+        if line_count > MAX_HIGHLIGHT_LINES
+            || char_count > MAX_HIGHLIGHT_CHARS
+            || self.scanner_would_overflow(content)
+        {
             self.tree = None;
             self.source_cache.clear();
             self.line_start_bytes.clear();
