@@ -48,7 +48,13 @@
 
             src = ./.;
 
-            cargoLock.lockFile = ./Cargo.lock;
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              # Hash of the tree-sitter-ruby rev pinned in Cargo.toml; update it with the rev.
+              outputHashes = {
+                "tree-sitter-ruby-0.23.1" = "sha256-JcAgEKmn1cvuBmicnzwkQiVG0GNJCNp5C2pVSxz699g=";
+              };
+            };
 
             nativeBuildInputs = [ pkgs.pkg-config pkgs.cmake ];
             buildInputs = nativeLibs pkgs;

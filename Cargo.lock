@@ -1963,8 +1963,7 @@ dependencies = [
 [[package]]
 name = "tree-sitter-ruby"
 version = "0.23.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be0484ea4ef6bb9c575b4fdabde7e31340a8d2dbc7d52b321ac83da703249f95"
+source = "git+https://github.com/tree-sitter/tree-sitter-ruby?rev=ad907a69da0c8a4f7a943a7fe012712208da6dee#ad907a69da0c8a4f7a943a7fe012712208da6dee"
 dependencies = [
  "cc",
  "tree-sitter-language",

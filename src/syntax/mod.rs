@@ -1,4 +1,6 @@
 mod highlighter;
+#[cfg(test)]
+mod ruby_heredoc_tests;
 mod theme;
 
 pub use highlighter::HighlightSpan;
