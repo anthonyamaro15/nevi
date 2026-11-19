@@ -18,9 +18,9 @@ fn ansi(command: impl crossterm::Command) -> String {
     out
 }
 
+#[cfg(unix)]
 fn leave_sequences() -> Vec<String> {
     vec![
-        ansi(event::DisableMouseCapture),
         ansi(event::DisableFocusChange),
         ansi(event::DisableBracketedPaste),
         ansi(event::PopKeyboardEnhancementFlags),
@@ -30,15 +30,49 @@ fn leave_sequences() -> Vec<String> {
     ]
 }
 
+// Crossterm has no real windows implementation of keyboard enhancement
+// `supports_keyboard_enhancement()` is hardcoded `Ok(false)`, so enter_editor_screen's guard never pushes it
+// and leave_editor_screen correctly never pops it
+//
+// DisableMouseCapture is also absent here: on Windows `is_ansi_code_supported()` is false for mouse capture,
+// so crossterm calls the real SetConsoleMode via execute_winapi() instead of writing ANSI.
+// Therefore nothing lands in this mock sink to assert on
+
+#[cfg(windows)]
+fn leave_sequences() -> Vec<String> {
+    vec![
+        ansi(event::DisableFocusChange),
+        ansi(event::DisableBracketedPaste),
+        ansi(cursor::SetCursorStyle::DefaultUserShape),
+        ansi(cursor::Show),
+        ansi(terminal::LeaveAlternateScreen),
+    ]
+}
+
+fn keyboard_enhancement_push() -> String {
+    ansi(event::PushKeyboardEnhancementFlags(
+        event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+    ))
+}
+
+#[cfg(unix)]
 fn enter_sequences() -> Vec<String> {
     vec![
         ansi(terminal::EnterAlternateScreen),
         ansi(cursor::Hide),
         ansi(event::EnableFocusChange),
         ansi(event::EnableBracketedPaste),
-        ansi(event::PushKeyboardEnhancementFlags(
-            event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
-        )),
+        keyboard_enhancement_push(),
+    ]
+}
+
+#[cfg(windows)]
+fn enter_sequences() -> Vec<String> {
+    vec![
+        ansi(terminal::EnterAlternateScreen),
+        ansi(cursor::Hide),
+        ansi(event::EnableFocusChange),
+        ansi(event::EnableBracketedPaste),
     ]
 }
 
@@ -176,6 +210,11 @@ fn suspend_hands_the_screen_back_before_stopping_and_takes_it_after() {
         &enter_sequences(),
         "the take-back after resuming",
     );
+    #[cfg(windows)]
+    assert!(
+        !taken_back.contains(&keyboard_enhancement_push()),
+        "Windows must never attempt keyboard enhancement — crossterm has no real implementation"
+    );
     // Mouse capture comes back with the next render, which re-applies it.
     assert!(!terminal.mouse_capture_enabled);
 }
@@ -196,6 +235,11 @@ fn suspend_takes_the_screen_back_even_if_the_stop_fails() {
         &enter_sequences(),
         "the take-back after a failed stop",
     );
+    #[cfg(windows)]
+    assert!(
+        !taken_back.contains(&keyboard_enhancement_push()),
+        "Windows must never attempt keyboard enhancement — crossterm has no real implementation"
+    );
 }
 
 #[test]
@@ -213,4 +257,9 @@ fn external_commands_use_the_same_hand_off_as_suspend() {
     assert!(leave_at < enter_at);
     assert_contains_all(&written[..enter_at], &leave_sequences(), "the hand-off");
     assert_contains_all(&written[leave_at..], &enter_sequences(), "the take-back");
+    #[cfg(windows)]
+    assert!(
+        !written[leave_at..].contains(&keyboard_enhancement_push()),
+        "Windows must never attempt keyboard enhancement — crossterm has no real implementation"
+    );
 }

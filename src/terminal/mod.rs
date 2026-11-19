@@ -1,7 +1,7 @@
 use chrome_writer::ChromeWriter;
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent},
     execute, queue,
     style::{Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor},
     terminal::{self, ClearType},
@@ -6035,6 +6035,9 @@ impl Terminal {
     /// Returns EditorEvent for key presses and focus changes
     pub fn read_event(&self) -> anyhow::Result<Option<EditorEvent>> {
         match event::read()? {
+            // Unlike unix, windows reports a Release event for every keystroke;
+            // without this every key press would run this twice
+            Event::Key(key_event) if key_event.kind == KeyEventKind::Release => Ok(None),
             Event::Key(key_event) => Ok(Some(EditorEvent::Key(key_event))),
             Event::Paste(text) => Ok(Some(EditorEvent::Paste(text))),
             Event::Mouse(mouse_event) => Ok(Some(EditorEvent::Mouse(mouse_event))),
@@ -6047,10 +6050,10 @@ impl Terminal {
     /// Read a key event (blocking for the next event)
     /// Deprecated: prefer read_event() for autoread support
     pub fn read_key(&self) -> anyhow::Result<Option<KeyEvent>> {
-        if let Event::Key(key_event) = event::read()? {
-            Ok(Some(key_event))
-        } else {
-            Ok(None)
+        match event::read()? {
+            // Filter release here as well, so we do not double-fire every keystroke
+            Event::Key(key_event) if key_event.kind != KeyEventKind::Release => Ok(Some(key_event)),
+            _ => Ok(None),
         }
     }
 

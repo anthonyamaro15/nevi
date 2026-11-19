@@ -36,28 +36,49 @@ impl Terminal {
             cursor::Hide,
             event::EnableFocusChange,
             EnableBracketedPaste,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        )
+        )?;
+        // Despite the name, this can return `Err` on a legacy Windows console instead of `Ok(false)`
+        // we treat "can't tell" the same as "not supported" rather than failing the whole screen hand-off over it
+        if terminal::supports_keyboard_enhancement().unwrap_or(false) {
+            execute!(
+                self.stdout,
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            )?;
+        }
+        Ok(())
     }
 
     /// Give the terminal back the way the shell expects it. Mouse capture is
     /// switched off here and comes back with the next render.
     pub(super) fn leave_editor_screen(&mut self) -> io::Result<()> {
+        // only pop it if we push it (see [`enter_editor_screen()`]); same Err-as-false treatment
+        // push and pop decisions have to agree
+        if terminal::supports_keyboard_enhancement().unwrap_or(false) {
+            execute!(self.stdout, PopKeyboardEnhancementFlags)?;
+        }
+        
+        // On Windows, DisableMouseCapture bypasses the writer and calls SetConsoleMode, 
+        // which panics if mouse capture was never enabled in this process
+        // only ask for it, when we know it's actually on
+        let mouse = if self.mouse_capture_enabled {
+            execute!(self.stdout, event::DisableMouseCapture)
+        } else {
+            Ok(())
+        };
+        self.mouse_capture_enabled = false;
+
         let written = execute!(
             self.stdout,
-            event::DisableMouseCapture,
             event::DisableFocusChange,
             DisableBracketedPaste,
-            PopKeyboardEnhancementFlags,
             cursor::SetCursorStyle::DefaultUserShape,
             cursor::Show,
             terminal::LeaveAlternateScreen
         );
-        self.mouse_capture_enabled = false;
         // Leave raw mode even if the write failed: a shell stuck in raw mode
         // is worse than a stray escape code.
         let cooked = self.set_raw_mode(false);
-        written.and(cooked)
+        mouse.and(written).and(cooked)
     }
 
     fn set_raw_mode(&self, enabled: bool) -> io::Result<()> {
