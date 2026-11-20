@@ -78,6 +78,7 @@ fn lsp_redraw_decision(
     }
 }
 
+#[cfg(test)]
 fn should_redraw_for_lsp_notification(
     priority: LspRedrawPriority,
     last_status_redraw_at: Option<Instant>,

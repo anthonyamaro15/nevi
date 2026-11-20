@@ -80,7 +80,7 @@ pub fn get_line_highlights(
     let mut matches = cursor.matches(query, root, source.as_bytes());
 
     while let Some(m) = matches.next() {
-        for capture in m.captures {
+        for capture in m.captures() {
             let node = capture.node;
             let capture_name = query.capture_names()[capture.index as usize];
 
@@ -1501,7 +1501,7 @@ mod tests {
         let mut captures = Vec::new();
 
         while let Some(m) = matches.next() {
-            for capture in m.captures {
+            for capture in m.captures() {
                 let name = query.capture_names()[capture.index as usize].to_string();
                 let text = capture
                     .node
@@ -1899,7 +1899,7 @@ mod tests {
         let mut keyword_count = 0usize;
 
         while let Some(m) = matches.next() {
-            for capture in m.captures {
+            for capture in m.captures() {
                 let capture_name = query.capture_names()[capture.index as usize];
                 if capture_name == "keyword" {
                     keyword_count += 1;

@@ -288,6 +288,8 @@ impl LspClient {
             )
         })?;
 
+        // Keep legacy roots for servers without workspace-folder support.
+        #[allow(deprecated)]
         let params = InitializeParams {
             process_id: Some(std::process::id()),
             root_path: Some(root_path.to_string_lossy().to_string()),

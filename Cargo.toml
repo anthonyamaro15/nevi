@@ -2,14 +2,14 @@
 name = "nevi"
 version = "0.4.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.91"
 description = "A Neovim-like terminal editor in Rust"
 authors = ["Anthony Amaro"]
 repository = "https://github.com/anthonyamaro15/nevi"
 
 [dependencies]
 # Terminal handling
-crossterm = { version = "0.28", features = ["bracketed-paste"] }
+crossterm = { version = "0.29", features = ["bracketed-paste","osc52"] }
 
 # Text storage (rope data structure). Default features are off so only LF
 # (and CRLF) end a line, as in Vim with fileformat=unix. The default
@@ -25,25 +25,25 @@ unicode-width = "0.1"
 unicode-segmentation = "1.10"
 
 # Syntax highlighting
-tree-sitter = "0.26"
+tree-sitter = "0.27"
 tree-sitter-rust = "0.24"
-tree-sitter-javascript = "0.23"
+tree-sitter-javascript = "0.25"
 tree-sitter-typescript = "0.23"
-tree-sitter-css = "0.23"
+tree-sitter-css = "0.25"
 tree-sitter-json = "0.24"
-tree-sitter-md = "0.3"
+tree-sitter-md = "0.5"
 tree-sitter-toml-ng = "0.7"
 tree-sitter-html = "0.23"
-tree-sitter-python = "0.23"
-tree-sitter-php = "0.24.2"
-tree-sitter-go = "0.25.0"
+tree-sitter-python = "0.25"
+tree-sitter-php = "0.25"
+tree-sitter-go = "0.25"
 # Pinned to a commit on master: the 0.23.1 release aborts the whole process
 # on a heredoc terminator of 256 bytes or more (tree-sitter-ruby #269, fixed
 # by #287). Go back to the crates.io release once one includes that fix.
 tree-sitter-ruby = { git = "https://github.com/tree-sitter/tree-sitter-ruby", rev = "ad907a69da0c8a4f7a943a7fe012712208da6dee" }
 tree-sitter-bash = "0.25"
-tree-sitter-swift = "0.7.3"
-codebook-tree-sitter-typst = "0.12.1"
+tree-sitter-swift = "0.7"
+codebook-tree-sitter-typst = "0.12"
 streaming-iterator = "0.1"
 
 # System clipboard
