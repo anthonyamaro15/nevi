@@ -528,6 +528,11 @@ fn should_show_floating_terminal_cursor(
         && shape != crate::floating_terminal::TerminalCursorShape::Hidden
 }
 
+/// Ghost text only makes sense with nothing after the cursor to collide with.
+fn ghost_text_cursor_at_end(cursor_col: usize, full_line_len: usize) -> bool {
+    cursor_col >= full_line_len
+}
+
 /// Top border row for full-width bottom popups (leader/which-key, command
 /// suggestions/history): corners from the glyph table, a left-aligned title,
 /// and a right-aligned key hint. `width` is the full popup width in columns.
@@ -2618,8 +2623,9 @@ impl Terminal {
                         && editor.mode == Mode::Insert
                         && editor.completion.active
                     {
-                        // Only show ghost text if cursor is at or near end of line
-                        let cursor_at_end = pane.cursor.col >= full_line_len.saturating_sub(1);
+                        // Only show ghost text if cursor is at the true end of line
+                        let cursor_at_end =
+                            ghost_text_cursor_at_end(pane.cursor.col, full_line_len);
                         if cursor_at_end {
                             if let Some(ghost) = editor.completion.ghost_text() {
                                 // Limit ghost text to remaining space
@@ -10733,9 +10739,9 @@ mod tests {
         RenderLineContextFactory, RenderLineTextScope, RenderTextOptions, Terminal,
         UNNECESSARY_TEXT_KEEP, apply_diagnostic_underline, apply_labeled_jump_style,
         diagnostic_at_col, diagnostic_underline_color, execute_command, execute_leader_action,
-        fade_toward, finder_preview_match_ranges, fit_message, handle_insert_mode, handle_key,
-        has_vim_error_prefix, render_line_text_with_context, replace_completion_text,
-        restore_after_labeled_jump, should_show_floating_terminal_cursor,
+        fade_toward, finder_preview_match_ranges, fit_message, ghost_text_cursor_at_end,
+        handle_insert_mode, handle_key, has_vim_error_prefix, render_line_text_with_context,
+        replace_completion_text, restore_after_labeled_jump, should_show_floating_terminal_cursor,
     };
     use crate::commands::{Command, CommandPopupMode};
     use crate::config::{KeymapEntry, Settings};
@@ -11244,6 +11250,14 @@ mod tests {
             false,
             TerminalCursorShape::Hidden,
         ));
+    }
+
+    #[test]
+    fn ghost_text_only_shows_when_cursor_is_at_the_true_end_of_line() {
+        // line_len excludes the trailing newline, so col == len is true "end".
+        assert!(ghost_text_cursor_at_end(5, 5));
+        // A trailing char still after the cursor must not count as "at end".
+        assert!(!ghost_text_cursor_at_end(4, 5));
     }
 
     #[test]
