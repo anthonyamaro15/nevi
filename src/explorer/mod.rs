@@ -137,7 +137,7 @@ pub struct FileExplorer {
     pub pending_action: Option<ExplorerAction>,
     /// Input buffer for pending action
     pub input_buffer: String,
-    /// Cursor position in input buffer
+    /// Cursor position in input buffer, in characters (not bytes)
     pub input_cursor: usize,
     /// Clipboard for copy/cut operations
     pub clipboard: Option<Clipboard>,
@@ -145,7 +145,7 @@ pub struct FileExplorer {
     pub is_searching: bool,
     /// Search query buffer
     pub search_buffer: String,
-    /// Cursor position in search buffer
+    /// Cursor position in search buffer, in characters (not bytes)
     pub search_cursor: usize,
     /// Filtered indices (indices into flat_view that match search)
     pub search_matches: Vec<usize>,
@@ -1210,7 +1210,7 @@ impl FileExplorer {
         if let Some(name) = name {
             self.pending_action = Some(ExplorerAction::Rename);
             self.input_buffer = name;
-            self.input_cursor = self.input_buffer.len();
+            self.input_cursor = self.input_buffer.chars().count();
         }
     }
 
@@ -1255,7 +1255,8 @@ impl FileExplorer {
 
     /// Insert a character at the cursor position
     pub fn input_insert(&mut self, c: char) {
-        self.input_buffer.insert(self.input_cursor, c);
+        let byte_idx = char_to_byte_index(&self.input_buffer, self.input_cursor);
+        self.input_buffer.insert(byte_idx, c);
         self.input_cursor += 1;
     }
 
@@ -1263,14 +1264,16 @@ impl FileExplorer {
     pub fn input_backspace(&mut self) {
         if self.input_cursor > 0 {
             self.input_cursor -= 1;
-            self.input_buffer.remove(self.input_cursor);
+            let byte_idx = char_to_byte_index(&self.input_buffer, self.input_cursor);
+            self.input_buffer.remove(byte_idx);
         }
     }
 
     /// Delete character at cursor (delete)
     pub fn input_delete(&mut self) {
-        if self.input_cursor < self.input_buffer.len() {
-            self.input_buffer.remove(self.input_cursor);
+        if self.input_cursor < self.input_buffer.chars().count() {
+            let byte_idx = char_to_byte_index(&self.input_buffer, self.input_cursor);
+            self.input_buffer.remove(byte_idx);
         }
     }
 
@@ -1283,7 +1286,7 @@ impl FileExplorer {
 
     /// Move cursor right
     pub fn input_cursor_right(&mut self) {
-        if self.input_cursor < self.input_buffer.len() {
+        if self.input_cursor < self.input_buffer.chars().count() {
             self.input_cursor += 1;
         }
     }
@@ -1295,7 +1298,7 @@ impl FileExplorer {
 
     /// Move cursor to end
     pub fn input_cursor_end(&mut self) {
-        self.input_cursor = self.input_buffer.len();
+        self.input_cursor = self.input_buffer.chars().count();
     }
 
     // === Copy/Cut/Paste methods ===
@@ -1368,7 +1371,7 @@ impl FileExplorer {
 
     /// Insert character into search buffer
     pub fn search_insert(&mut self, c: char) {
-        let byte_idx = self.search_char_to_byte_index(self.search_cursor);
+        let byte_idx = char_to_byte_index(&self.search_buffer, self.search_cursor);
         self.search_buffer.insert(byte_idx, c);
         self.search_cursor += 1;
         self.update_search_matches();
@@ -1378,7 +1381,7 @@ impl FileExplorer {
     pub fn search_backspace(&mut self) {
         if self.search_cursor > 0 {
             self.search_cursor -= 1;
-            let byte_idx = self.search_char_to_byte_index(self.search_cursor);
+            let byte_idx = char_to_byte_index(&self.search_buffer, self.search_cursor);
             self.search_buffer.remove(byte_idx);
             self.update_search_matches();
         }
@@ -1418,8 +1421,8 @@ impl FileExplorer {
         }
 
         if cursor < start_cursor {
-            let start_byte = self.search_char_to_byte_index(cursor);
-            let end_byte = self.search_char_to_byte_index(start_cursor);
+            let start_byte = char_to_byte_index(&self.search_buffer, cursor);
+            let end_byte = char_to_byte_index(&self.search_buffer, start_cursor);
             self.search_buffer.replace_range(start_byte..end_byte, "");
             self.search_cursor = cursor;
             self.update_search_matches();
@@ -1432,7 +1435,7 @@ impl FileExplorer {
             return;
         }
 
-        let end_byte = self.search_char_to_byte_index(self.search_cursor);
+        let end_byte = char_to_byte_index(&self.search_buffer, self.search_cursor);
         self.search_buffer.replace_range(0..end_byte, "");
         self.search_cursor = 0;
         self.update_search_matches();
@@ -1450,14 +1453,6 @@ impl FileExplorer {
         if self.search_cursor < self.search_buffer.chars().count() {
             self.search_cursor += 1;
         }
-    }
-
-    fn search_char_to_byte_index(&self, char_idx: usize) -> usize {
-        self.search_buffer
-            .char_indices()
-            .map(|(byte_idx, _)| byte_idx)
-            .nth(char_idx)
-            .unwrap_or(self.search_buffer.len())
     }
 
     /// Update search matches based on current query
@@ -1559,6 +1554,15 @@ impl FileExplorer {
     }
 }
 
+/// Byte offset of the `char_idx`th character, for the `String` calls behind
+/// the add / rename and search inputs, whose cursors count characters.
+fn char_to_byte_index(text: &str, char_idx: usize) -> usize {
+    text.char_indices()
+        .map(|(byte_idx, _)| byte_idx)
+        .nth(char_idx)
+        .unwrap_or(text.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::FileExplorer;
@@ -1596,6 +1600,116 @@ mod tests {
             })
             .collect();
         explorer
+    }
+
+    fn typed(name: &str) -> FileExplorer {
+        let mut explorer = FileExplorer::new();
+        explorer.start_add();
+        for ch in name.chars() {
+            explorer.input_insert(ch);
+        }
+        explorer
+    }
+
+    #[test]
+    fn add_prompt_takes_non_ascii_names_char_by_char() {
+        for name in ["café.txt", "日本語.txt", "e\u{301}.md"] {
+            let explorer = typed(name);
+            assert_eq!(explorer.input_buffer, name);
+            assert_eq!(explorer.input_cursor, name.chars().count());
+        }
+    }
+
+    #[test]
+    fn add_prompt_edits_around_multi_byte_chars() {
+        let mut explorer = typed("café.txt");
+
+        // Backspace from the end, then step back over the é.
+        explorer.input_backspace();
+        assert_eq!(explorer.input_buffer, "café.tx");
+        for _ in 0..3 {
+            explorer.input_cursor_left();
+        }
+        assert_eq!(explorer.input_cursor, 4);
+        explorer.input_backspace();
+        assert_eq!(explorer.input_buffer, "caf.tx");
+        assert_eq!(explorer.input_cursor, 3);
+        explorer.input_insert('é');
+        assert_eq!(explorer.input_buffer, "café.tx");
+
+        // Delete on the é itself.
+        explorer.input_cursor_left();
+        explorer.input_delete();
+        assert_eq!(explorer.input_buffer, "caf.tx");
+        assert_eq!(explorer.input_cursor, 3);
+
+        explorer.input_cursor_home();
+        explorer.input_delete();
+        assert_eq!(explorer.input_buffer, "af.tx");
+        assert_eq!(explorer.input_cursor, 0);
+
+        explorer.input_cursor_end();
+        assert_eq!(explorer.input_cursor, 5);
+        explorer.input_cursor_right();
+        assert_eq!(explorer.input_cursor, 5, "right stops at the end");
+        explorer.input_delete();
+        assert_eq!(
+            explorer.input_buffer, "af.tx",
+            "delete at the end is a no-op"
+        );
+
+        let mut explorer = typed("日本語.txt");
+        explorer.input_cursor_home();
+        explorer.input_cursor_right();
+        explorer.input_cursor_right();
+        explorer.input_delete();
+        assert_eq!(explorer.input_buffer, "日本.txt");
+        explorer.input_backspace();
+        assert_eq!(explorer.input_buffer, "日.txt");
+        explorer.input_insert('x');
+        assert_eq!(explorer.input_buffer, "日x.txt");
+        assert_eq!(explorer.input_cursor, 2);
+    }
+
+    #[test]
+    fn add_prompt_inserts_mid_name_after_a_multi_byte_char() {
+        let mut explorer = typed("日本.txt");
+        explorer.input_cursor_home();
+        explorer.input_cursor_right();
+        explorer.input_cursor_right();
+        explorer.input_insert('語');
+        assert_eq!(explorer.input_buffer, "日本語.txt");
+        assert_eq!(explorer.input_cursor, 3);
+
+        let mut explorer = typed("cafe.txt");
+        explorer.input_cursor_home();
+        for _ in 0..3 {
+            explorer.input_cursor_right();
+        }
+        explorer.input_delete();
+        explorer.input_insert('é');
+        explorer.input_insert('s');
+        assert_eq!(explorer.input_buffer, "cafés.txt");
+    }
+
+    #[test]
+    fn rename_prompt_starts_at_the_end_of_a_non_ascii_name() {
+        let mut explorer = explorer_with_flat_rows(1);
+        explorer.flat_view[0].name = "naïve-日記.md".to_string();
+        explorer.start_rename();
+        assert_eq!(explorer.input_cursor, "naïve-日記.md".chars().count());
+
+        // Rename to "naïve-日誌.md": move left over ".md", fix one char.
+        for _ in 0..3 {
+            explorer.input_cursor_left();
+        }
+        explorer.input_backspace();
+        explorer.input_insert('誌');
+        assert_eq!(explorer.input_buffer, "naïve-日誌.md");
+
+        explorer.input_cursor_end();
+        explorer.input_insert('x');
+        assert_eq!(explorer.input_buffer, "naïve-日誌.mdx");
     }
 
     #[test]

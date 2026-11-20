@@ -831,44 +831,54 @@ fn take_rope_display_width(
     out
 }
 
-fn explorer_action_input_view(
-    input: &str,
-    cursor_byte_idx: usize,
-    field_width: usize,
-) -> (String, usize) {
+/// The slice of the explorer's add / rename input that fits in
+/// `field_width` cells, and the cursor's cell within it. `cursor` counts
+/// characters; columns count cells, so wide names like `日本語` line up.
+fn explorer_action_input_view(input: &str, cursor: usize, field_width: usize) -> (String, usize) {
+    use crate::finder::row::{cell_width, text_width};
+
     if field_width == 0 {
         return (String::new(), 0);
     }
 
-    let mut cursor_byte_idx = cursor_byte_idx.min(input.len());
-    while cursor_byte_idx > 0 && !input.is_char_boundary(cursor_byte_idx) {
-        cursor_byte_idx -= 1;
+    let chars: Vec<char> = input.chars().collect();
+    let cursor = cursor.min(chars.len());
+    let cursor_col: usize = chars[..cursor].iter().map(|&ch| cell_width(ch)).sum();
+    let max_cursor_col = field_width - 1;
+
+    if text_width(input) <= field_width {
+        return (input.to_string(), cursor_col.min(max_cursor_col));
     }
 
-    let cursor_col = input[..cursor_byte_idx].chars().count();
-    let input_width = input.chars().count();
-
-    if input_width <= field_width {
-        return (
-            input.to_string(),
-            cursor_col.min(field_width.saturating_sub(1)),
-        );
-    }
-
-    let max_cursor_col = field_width.saturating_sub(1);
-    let start_col = cursor_col.saturating_sub(max_cursor_col);
-    let mut visible = String::with_capacity(field_width);
-
-    if start_col > 0 && field_width > 1 {
-        visible.push('…');
-        visible.extend(input.chars().skip(start_col + 1).take(field_width - 1));
+    // Scrolled: "…" stands in for what is cut off on the left, and as much
+    // as fits before the cursor follows it, leaving room for a wide char
+    // under the cursor so it is not cut at the right edge.
+    let cursor_cells = chars.get(cursor).map_or(1, |&ch| cell_width(ch).max(1));
+    let last_cursor_col = field_width.saturating_sub(cursor_cells);
+    let (start, cursor_x) = if cursor_col <= last_cursor_col {
+        (0, cursor_col)
     } else {
-        visible.extend(input.chars().skip(start_col).take(field_width));
-    }
+        let (mut start, mut used) = (cursor, 1);
+        while start > 0 && used + cell_width(chars[start - 1]) <= last_cursor_col {
+            start -= 1;
+            used += cell_width(chars[start]);
+        }
+        (start, used.min(max_cursor_col))
+    };
 
-    let cursor_x = cursor_col
-        .saturating_sub(start_col)
-        .min(field_width.saturating_sub(1));
+    let mut visible = String::with_capacity(field_width);
+    let mut used = 0;
+    if start > 0 {
+        visible.push('…');
+        used = 1;
+    }
+    for &ch in &chars[start..] {
+        if used + cell_width(ch) > field_width {
+            break;
+        }
+        visible.push(ch);
+        used += cell_width(ch);
+    }
     (visible, cursor_x)
 }
 
@@ -11101,6 +11111,29 @@ mod tests {
     }
 
     #[test]
+    fn explorer_add_cursor_counts_cells_for_wide_and_accented_names() {
+        // After "  │ src/" (8 cells), then the name's own width.
+        for (name, cursor_col) in [("café", 12), ("日本語", 14), ("e\u{301}x", 10)] {
+            let mut editor = explorer_test_editor();
+            editor.settings.editor.bufferline = false;
+            editor.mode = Mode::Explorer;
+            editor.explorer.start_add();
+            for ch in name.chars() {
+                editor.explorer.input_insert(ch);
+            }
+            let (rendered, cursor) = render_explorer_with_cursor(&editor);
+            assert!(rendered.contains(name), "{name}");
+            assert_eq!(cursor, (4, cursor_col), "{name}");
+
+            // Back over the last char: one cell for é and x, two for 語.
+            editor.explorer.input_cursor_left();
+            let (_, cursor) = render_explorer_with_cursor(&editor);
+            let last = name.chars().last().map(crate::finder::row::cell_width);
+            assert_eq!(cursor, (4, cursor_col - last.unwrap_or(0)), "{name}");
+        }
+    }
+
+    #[test]
     fn explorer_prompt_opens_above_a_row_at_the_bottom() {
         let mut editor = explorer_test_editor();
         editor.explorer.flat_view.truncate(1);
@@ -15727,6 +15760,24 @@ mod tests {
     }
 
     #[test]
+    fn explorer_action_input_view_scrolls_wide_names_by_cells() {
+        // 8 cells of 日本語 before the cursor in a 6-cell field.
+        let (visible, cursor_x) = super::explorer_action_input_view("日本語日x", 5, 6);
+        assert_eq!(visible, "…日x");
+        assert_eq!(cursor_x, 4);
+
+        // Cursor at the start of a long wide name: no "…", nothing past the field.
+        let (visible, cursor_x) = super::explorer_action_input_view("日本語日本語", 0, 7);
+        assert_eq!(visible, "日本語");
+        assert_eq!(cursor_x, 0);
+
+        // Cursor on a wide char mid-name stays inside the field.
+        let (visible, cursor_x) = super::explorer_action_input_view("abcdef日本語", 7, 6);
+        assert_eq!(visible, "…f日本");
+        assert_eq!(cursor_x, 4);
+    }
+
+    #[test]
     fn explorer_g_and_gg_follow_regular_buffer_top_bottom_motions() {
         let mut editor = editor_with_explorer_rows(5);
         editor.explorer.selected = 2;
@@ -15918,6 +15969,59 @@ mod tests {
         handle_key(&mut editor, ctrl_key('u'));
         assert_eq!(editor.explorer.search_buffer, "");
         assert!(editor.explorer.search_matches.is_empty());
+    }
+
+    #[test]
+    fn explorer_add_and_rename_take_non_ascii_names_through_keys() {
+        let root = unique_temp_dir("nevi_explorer_non_ascii");
+        std::fs::create_dir_all(&root).expect("create root");
+        let mut editor = editor_with_project_explorer(&root);
+        assert_eq!(editor.mode, Mode::Explorer);
+
+        // Type "cafe.txt" with a typo, fix it after the é: needs the cursor
+        // to step over a two-byte char.
+        handle_key(&mut editor, key('a'));
+        assert_eq!(editor.explorer.pending_action, Some(ExplorerAction::Add));
+        for ch in "caféx.txt".chars() {
+            handle_key(&mut editor, key(ch));
+        }
+        for _ in 0..4 {
+            handle_key(&mut editor, left_key());
+        }
+        handle_key(&mut editor, backspace_key());
+        handle_key(&mut editor, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(editor.explorer.input_buffer, "café.txt");
+        handle_key(&mut editor, enter_key());
+        assert_eq!(editor.explorer.pending_action, None);
+        let created = root.join("café.txt");
+        assert!(created.is_file(), "{}", created.display());
+
+        // Add opens the new file; come back to the explorer to rename it.
+        editor.mode = Mode::Explorer;
+        select_explorer_path(&mut editor, &created);
+        handle_key(&mut editor, key('r'));
+        assert_eq!(editor.explorer.pending_action, Some(ExplorerAction::Rename));
+        for _ in 0..4 {
+            handle_key(&mut editor, left_key());
+        }
+        for ch in "-日本語".chars() {
+            handle_key(&mut editor, key(ch));
+        }
+        handle_key(
+            &mut editor,
+            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+        );
+        handle_key(
+            &mut editor,
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+        );
+        handle_key(&mut editor, key('C'));
+        assert_eq!(editor.explorer.input_buffer, "Café-日本語.txt");
+        handle_key(&mut editor, enter_key());
+        assert!(root.join("Café-日本語.txt").is_file());
+        assert!(!created.exists());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
