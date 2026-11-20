@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -53,11 +54,8 @@ impl FrecencyDb {
 
     /// Save the database to an explicit file.
     pub fn save_at(&self, path: &std::path::Path) {
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
         if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = fs::write(path, json);
+            let _ = crate::shada::open_private(path).and_then(|mut f| f.write_all(json.as_bytes()));
         }
     }
 
@@ -158,5 +156,27 @@ mod tests {
         db.record_use("test_item");
         let score2 = db.score("test_item");
         assert!(score2 > score1, "More frequent use should increase score");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_writes_private_file_and_tightens_a_wide_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &std::path::Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = std::env::temp_dir().join(format!("nevi-frecency-mode-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("frecency.json");
+
+        let mut db = FrecencyDb::default();
+        db.record_use("first");
+        db.save_at(&path);
+        assert_eq!(mode(&path), 0o600, "fresh file is private");
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        db.record_use("second");
+        db.save_at(&path);
+        assert_eq!(mode(&path), 0o600, "older wide file is tightened");
+        assert!(FrecencyDb::load_at(&path).entries().contains_key("second"));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

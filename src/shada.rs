@@ -10,7 +10,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io;
+use std::fs::{DirBuilder, File, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub const FORMAT_VERSION: u32 = 1;
@@ -129,13 +130,45 @@ pub fn save_to(path: &Path, state: &ShadaState) -> io::Result<()> {
     let json = serde_json::to_string_pretty(&capped)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     // Atomic replace so a crash mid-write can't corrupt existing state.
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json)?;
+    // A stale temp file may be world-readable and already open elsewhere, so
+    // start from a fresh inode rather than reuse it.
+    let _ = std::fs::remove_file(&tmp);
+    open_private(&tmp)?.write_all(json.as_bytes())?;
     std::fs::rename(&tmp, path)
+}
+
+/// Open a state file for a full rewrite, readable by its owner alone.
+///
+/// State files hold yanked text and command lines, which can be secrets, so
+/// on Unix they are 0600 like Vim's viminfo and Neovim's shada. A new file is
+/// 0600 from creation; an existing one (an older Nevi wrote 0644) is emptied
+/// and tightened before the caller writes. A missing parent directory is
+/// created 0700; an existing one keeps its mode.
+pub fn open_private(path: &Path) -> io::Result<File> {
+    let mut dir = DirBuilder::new();
+    dir.recursive(true);
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        dir.mode(0o700);
+        options.mode(0o600);
+    }
+
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        dir.create(parent)?;
+    }
+    let file = options.open(path)?;
+    // The open mode only applies to a new file, and is masked by the umask.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
 }
 
 /// Applied on both save and load: caps hold even for hand-edited files.
@@ -406,5 +439,100 @@ mod tests {
         );
         assert!(loaded.search_history.is_empty(), "absent fields default");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    mod private_mode {
+        use super::super::{open_private, save_to};
+        use super::{sample_state, temp_state_path};
+        use crate::shada::load_from;
+        use std::fs;
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::Path;
+
+        fn mode(path: &Path) -> u32 {
+            fs::metadata(path).unwrap().permissions().mode() & 0o777
+        }
+
+        fn set_mode(path: &Path, mode: u32) {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        }
+
+        #[test]
+        fn fresh_state_file_is_private_in_a_private_new_dir() {
+            let root = temp_state_path("fresh_dir");
+            let dir = root.join("nevi");
+            let path = dir.join("state.json");
+
+            save_to(&path, &sample_state()).unwrap();
+
+            assert_eq!(mode(&path), 0o600);
+            assert_eq!(mode(&dir), 0o700, "a state dir Nevi creates is private");
+            assert_eq!(load_from(&path).registers, sample_state().registers);
+            let _ = fs::remove_dir_all(&root);
+        }
+
+        #[test]
+        fn wide_state_file_is_tightened_and_existing_dir_keeps_its_mode() {
+            let dir = temp_state_path("wide_file");
+            fs::create_dir_all(&dir).unwrap();
+            set_mode(&dir, 0o755);
+            let path = dir.join("state.json");
+            fs::write(&path, "{}").unwrap();
+            set_mode(&path, 0o644);
+
+            save_to(&path, &sample_state()).unwrap();
+
+            assert_eq!(mode(&path), 0o600);
+            assert_eq!(load_from(&path).registers, sample_state().registers);
+            assert_eq!(mode(&dir), 0o755, "an existing dir is left alone");
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn stale_wide_temp_file_does_not_widen_state_file() {
+            let dir = temp_state_path("stale_tmp");
+            fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("state.json");
+            let tmp = dir.join("state.json.tmp");
+            fs::write(&tmp, "stale").unwrap();
+            set_mode(&tmp, 0o644);
+
+            save_to(&path, &sample_state()).unwrap();
+
+            assert_eq!(mode(&path), 0o600);
+            assert!(!tmp.exists(), "the temp file is renamed into place");
+            assert_eq!(load_from(&path).registers, sample_state().registers);
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        /// The helper hands back the file before any content is written, so
+        /// the mode it reports here is the mode the content goes into.
+        #[test]
+        fn open_private_is_private_before_content_goes_in() {
+            let dir = temp_state_path("open_private");
+            let fresh = dir.join("sub").join("command_history.txt");
+
+            let mut file = open_private(&fresh).unwrap();
+            assert_eq!(mode(&fresh), 0o600, "new file is private from creation");
+            assert_eq!(mode(fresh.parent().unwrap()), 0o700);
+            file.write_all(b"one\n").unwrap();
+            drop(file);
+
+            let wide = dir.join("frecency.json");
+            fs::write(&wide, "old secret, much longer than the new text").unwrap();
+            set_mode(&wide, 0o644);
+
+            let mut file = open_private(&wide).unwrap();
+            assert_eq!(mode(&wide), 0o600, "tightened before new content");
+            assert_eq!(fs::metadata(&wide).unwrap().len(), 0, "old content is gone");
+            file.write_all(b"new").unwrap();
+            drop(file);
+
+            assert_eq!(fs::read_to_string(&wide).unwrap(), "new");
+            assert_eq!(fs::read_to_string(&fresh).unwrap(), "one\n");
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 }

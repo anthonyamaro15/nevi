@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use crate::editor::set_options::SetOption;
@@ -2034,18 +2035,14 @@ impl CommandLine {
     }
 
     fn save_history(&self) {
-        let path = command_history_save_path();
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-
         if self.history.is_empty() {
             return;
         }
 
         let mut contents = self.history.join("\n");
         contents.push('\n');
-        let _ = fs::write(path, contents);
+        let _ = crate::shada::open_private(&command_history_save_path())
+            .and_then(|mut f| f.write_all(contents.as_bytes()));
     }
 }
 
