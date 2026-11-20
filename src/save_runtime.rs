@@ -227,7 +227,7 @@ mod tests {
             Self(p)
         }
         fn editor(&self) -> Editor {
-            let mut e = Editor::default();
+            let mut e = crate::tests::test_editor();
             e.languages_config = Default::default();
             let p = self.0.join("a.md");
             std::fs::write(&p, "old\n").unwrap();

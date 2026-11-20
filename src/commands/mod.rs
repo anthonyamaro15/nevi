@@ -2446,6 +2446,16 @@ mod tests {
     }
 
     #[test]
+    fn executed_commands_never_reach_another_command_line() {
+        let mut first = CommandLine::new();
+        first.input = "set rnu".to_string();
+        first.execute();
+        assert_eq!(first.history, vec!["set rnu".to_string()]);
+
+        assert!(CommandLine::new().history.is_empty());
+    }
+
+    #[test]
     fn completion_accept_replaces_token_and_keeps_args() {
         let mut line = CommandLine::default();
         line.input = "mk src/components".to_string();

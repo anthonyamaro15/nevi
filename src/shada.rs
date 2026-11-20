@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::fs::{DirBuilder, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const FORMAT_VERSION: u32 = 1;
 
@@ -68,6 +69,9 @@ pub struct MarkEntry {
 /// everywhere (same reasoning as the hardcoded `~/.config` in the config
 /// loader).
 pub fn state_dir() -> PathBuf {
+    if let Some(dir) = isolated_state_dir() {
+        return dir;
+    }
     std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         // Per the XDG spec, a relative $XDG_STATE_HOME must be ignored.
@@ -83,11 +87,38 @@ pub fn state_dir() -> PathBuf {
 /// so data migrates to the XDG home on its next save; the legacy copy is
 /// left behind, inert.
 pub fn state_file(name: &str) -> PathBuf {
+    if let Some(dir) = isolated_state_dir() {
+        return dir.join(name);
+    }
     let legacy = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("nevi")
         .join(name);
     resolve_state_file(state_dir().join(name), legacy)
+}
+
+/// Tests must never see or change the developer's real state. The library's
+/// own tests are isolated from the start; the binary's tests link the library
+/// built without `cfg(test)`, so they flip this switch themselves.
+static STATE_ISOLATED: AtomicBool = AtomicBool::new(cfg!(test));
+
+/// Turn off all state persistence for the rest of this process. Only for
+/// test code; nothing in the editor calls it.
+#[doc(hidden)]
+pub fn isolate_state_for_tests() {
+    STATE_ISOLATED.store(true, Ordering::Relaxed);
+}
+
+/// Under isolation, state paths point inside the running executable. That is
+/// a file, so the path can never exist or be created: reads find no state and
+/// writes fail (every caller already ignores state write errors). Tests get no
+/// persistence at all, so they cannot leak history into each other either.
+fn isolated_state_dir() -> Option<PathBuf> {
+    STATE_ISOLATED.load(Ordering::Relaxed).then(|| {
+        std::env::current_exe()
+            .expect("isolated state needs the test executable path")
+            .join("nevi-state")
+    })
 }
 
 fn resolve_state_file(new: PathBuf, legacy: PathBuf) -> PathBuf {
@@ -206,9 +237,52 @@ fn fits_register_cap(entry: &RegisterEntry) -> bool {
 mod tests {
     use super::{
         FORMAT_VERSION, MAX_HISTORY_ENTRIES, MAX_REGISTER_TEXT_CHARS, MarkEntry, RegisterEntry,
-        ShadaState, load_from, resolve_state_file, save_to,
+        ShadaState, load_from, open_private, resolve_state_file, save_to, state_dir, state_file,
+        state_file_path,
     };
     use std::path::PathBuf;
+
+    /// The developer's real state homes: XDG, the `~/.local/state` default,
+    /// and the pre-0.4.0 legacy location.
+    fn real_state_roots() -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+        if let Some(xdg) = std::env::var_os("XDG_STATE_HOME") {
+            roots.push(PathBuf::from(xdg).join("nevi"));
+        }
+        if let Some(home) = dirs::home_dir() {
+            roots.push(home.join(".local").join("state").join("nevi"));
+        }
+        if let Some(config) = dirs::config_dir() {
+            roots.push(config.join("nevi"));
+        }
+        roots
+    }
+
+    #[test]
+    fn test_builds_never_resolve_a_real_state_path() {
+        let resolved = [
+            state_dir(),
+            state_file_path(),
+            state_file("command_history.txt"),
+            state_file("frecency.json"),
+            state_file("recent_files.json"),
+        ];
+        for path in &resolved {
+            assert!(!path.exists(), "test state path exists: {}", path.display());
+            for root in real_state_roots() {
+                assert!(
+                    !path.starts_with(&root),
+                    "test state path {} is inside real state {}",
+                    path.display(),
+                    root.display()
+                );
+            }
+        }
+        assert!(
+            open_private(&state_dir().join("command_history.txt")).is_err(),
+            "test state must not be writable"
+        );
+    }
 
     fn temp_state_path(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
