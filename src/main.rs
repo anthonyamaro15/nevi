@@ -2913,6 +2913,56 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+    /// Every editor in this binary's tests comes from here. The binary links
+    /// the library built without `cfg(test)`, so state isolation is switched
+    /// on at runtime before the editor loads history, frecency and recent files.
+    pub(crate) fn test_editor() -> Editor {
+        nevi::shada::isolate_state_for_tests();
+        Editor::default()
+    }
+
+    #[test]
+    fn binary_tests_build_editors_only_through_the_isolating_helper() {
+        let main = include_str!("main.rs");
+        let mut sources = vec![("main.rs".to_string(), main.to_string())];
+        for name in main
+            .lines()
+            .filter_map(|line| line.strip_prefix("mod ")?.strip_suffix(';'))
+        {
+            let path = format!("{}/src/{name}.rs", env!("CARGO_MANIFEST_DIR"));
+            let text = std::fs::read_to_string(&path).expect("binary module source");
+            sources.push((format!("{name}.rs"), text));
+        }
+
+        for (file, text) in &sources {
+            let Some(start) = text.find(concat!("#[cfg(test)]\nmod ", "tests {")) else {
+                continue;
+            };
+            let tests = &text[start..];
+            // Split so these needles do not match themselves.
+            for needle in [
+                concat!("Editor::", "default("),
+                concat!("Editor::", "new("),
+                concat!("CommandLine::", "new("),
+                concat!("FrecencyDb::", "load("),
+                concat!("RecentFiles::", "load("),
+                concat!("shada::", "load("),
+                concat!("shada::", "save("),
+            ] {
+                let allowed = usize::from(file == "main.rs" && needle.starts_with("Editor::d"));
+                assert!(
+                    tests.matches(needle).count() <= allowed,
+                    "{file}: {needle} in tests touches real state; use test_editor()"
+                );
+            }
+        }
+
+        test_editor();
+        let dir = nevi::shada::state_dir();
+        assert!(dir.starts_with(std::env::current_exe().unwrap()));
+        assert!(!nevi::shada::state_file("command_history.txt").exists());
+    }
+
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2958,7 +3008,7 @@ mod tests {
 
     #[test]
     fn signature_help_dismisses_on_typing_close_paren() {
-        let mut editor = Editor::default();
+        let mut editor = test_editor();
         editor.buffer_mut().insert_str(0, 0, "foo(a)\n");
         editor.signature_help_trigger = Some((0, 4));
         editor.cursor.line = 0;
@@ -3073,7 +3123,7 @@ mod tests {
 
     #[test]
     fn pick_mode_enter_selects_current_file_path() {
-        let mut editor = Editor::default();
+        let mut editor = test_editor();
         editor.mode = Mode::Finder;
         editor.finder.mode = nevi::finder::FinderMode::Files;
         editor.finder.items = vec![nevi::finder::FinderItem::new(
@@ -3091,7 +3141,7 @@ mod tests {
 
     #[test]
     fn pick_mode_escape_and_empty_query_q_cancel() {
-        let mut editor = Editor::default();
+        let mut editor = test_editor();
         editor.mode = Mode::Finder;
         editor.finder.mode = nevi::finder::FinderMode::Files;
         editor.finder.input_mode = nevi::finder::FinderInputMode::Normal;
@@ -3120,7 +3170,7 @@ mod tests {
 
     #[test]
     fn pick_mode_q_only_cancels_in_finder_normal_mode() {
-        let mut editor = Editor::default();
+        let mut editor = test_editor();
         editor.mode = Mode::Finder;
         editor.finder.mode = nevi::finder::FinderMode::Files;
         editor.finder.input_mode = nevi::finder::FinderInputMode::Insert;
@@ -3247,7 +3297,7 @@ mod tests {
 
     #[test]
     fn lsp_request_columns_use_utf16_offsets() {
-        let mut editor = Editor::default();
+        let mut editor = test_editor();
         editor.buffer_mut().insert_str(0, 0, "a😀b\n");
         editor.cursor.line = 0;
         editor.cursor.col = 2;
@@ -3258,7 +3308,7 @@ mod tests {
 
     #[test]
     fn code_action_diagnostics_are_converted_back_to_utf16_offsets() {
-        let mut editor = Editor::default();
+        let mut editor = test_editor();
         editor.buffer_mut().insert_str(0, 0, "a😀b\n");
 
         let diagnostic = diagnostic_to_lsp_offsets(
@@ -3287,7 +3337,7 @@ mod tests {
         let path = tmp.join("main.tsx");
         std::fs::write(&path, "const a = 1;\n").expect("write file");
 
-        let mut editor = Editor::default();
+        let mut editor = test_editor();
         editor.open_file(path.clone()).expect("open file");
         let uri = nevi::lsp::path_to_uri(&path);
         let request_version = editor.buffer().version();
@@ -3316,7 +3366,7 @@ mod tests {
         let path = tmp.join("main.tsx");
         std::fs::write(&path, "useE\n").expect("write file");
 
-        let mut editor = Editor::default();
+        let mut editor = test_editor();
         editor.open_file(path.clone()).expect("open file");
         editor.cursor.line = 0;
         editor.cursor.col = 4;
@@ -3359,7 +3409,7 @@ mod tests {
         .expect("write file");
         let placeholder = || PrepareRenameOutcome::Placeholder("makeSUT(preferredCountry:)".into());
 
-        let mut editor = Editor::default();
+        let mut editor = test_editor();
         editor.open_file(path.clone()).expect("open file");
         editor.cursor.line = 1;
         editor.cursor.col = 4;
