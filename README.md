@@ -87,11 +87,14 @@ sudo apt install -y build-essential cmake pkg-config libssl-dev zlib1g-dev \
 
 # Fedora
 sudo dnf install -y gcc gcc-c++ make cmake pkgconf-pkg-config openssl-devel \
-  zlib-devel libX11-devel libxcb-devel
+  zlib-ng-compat-devel libX11-devel libxcb-devel
 
 # Arch
 sudo pacman -S --needed base-devel cmake pkgconf openssl zlib libx11 libxcb
 ```
+
+On Arch, `zlib-ng-compat` can be used instead of `zlib`. It provides the same
+headers and library interface, but replaces the system `zlib` package.
 
 Linux binary tarballs and distro packages (`.deb`, `.rpm`, AUR) are not
 published yet.
