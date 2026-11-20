@@ -358,6 +358,20 @@ fn rename_and_explorer_prompts_take_the_first_line() {
 }
 
 #[test]
+fn explorer_prompt_takes_a_non_ascii_paste() {
+    let mut editor = editor_with("one\n");
+    editor.mode = Mode::Explorer;
+    editor.explorer.start_add();
+    editor.paste_text("café-日本語");
+    editor.paste_text(".txt");
+    assert_eq!(editor.explorer.input_buffer, "café-日本語.txt");
+    assert_eq!(
+        editor.explorer.input_cursor,
+        "café-日本語.txt".chars().count()
+    );
+}
+
+#[test]
 fn states_without_a_text_input_ignore_the_paste() {
     // Start screen.
     let mut editor = Editor::default();
