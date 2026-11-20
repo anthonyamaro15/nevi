@@ -36,28 +36,47 @@ impl Terminal {
             cursor::Hide,
             event::EnableFocusChange,
             EnableBracketedPaste,
+        )?;
+        // An unsupported terminal just ignores the escape code; crossterm's Windows
+        // backend instead errors the push itself, so store success rather than ask first
+        self.keyboard_enhancement_pushed = execute!(
+            self.stdout,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         )
+        .is_ok();
+        Ok(())
     }
 
     /// Give the terminal back the way the shell expects it. Mouse capture is
     /// switched off here and comes back with the next render.
     pub(super) fn leave_editor_screen(&mut self) -> io::Result<()> {
+        // only pop what enter_editor_screen actually pushed
+        if self.keyboard_enhancement_pushed {
+            execute!(self.stdout, PopKeyboardEnhancementFlags)?;
+        }
+
+        // On Windows, DisableMouseCapture bypasses the writer and calls SetConsoleMode,
+        // which panics if mouse capture was never enabled in this process
+        // only ask for it, when we know it's actually on
+        let mouse = if self.mouse_capture_enabled {
+            execute!(self.stdout, event::DisableMouseCapture)
+        } else {
+            Ok(())
+        };
+        self.mouse_capture_enabled = false;
+
         let written = execute!(
             self.stdout,
-            event::DisableMouseCapture,
             event::DisableFocusChange,
             DisableBracketedPaste,
-            PopKeyboardEnhancementFlags,
             cursor::SetCursorStyle::DefaultUserShape,
             cursor::Show,
             terminal::LeaveAlternateScreen
         );
-        self.mouse_capture_enabled = false;
         // Leave raw mode even if the write failed: a shell stuck in raw mode
         // is worse than a stray escape code.
         let cooked = self.set_raw_mode(false);
-        written.and(cooked)
+        mouse.and(written).and(cooked)
     }
 
     fn set_raw_mode(&self, enabled: bool) -> io::Result<()> {

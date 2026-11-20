@@ -1,7 +1,7 @@
 use chrome_writer::ChromeWriter;
 use crossterm::{
     cursor,
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent},
     execute, queue,
     style::{Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor},
     terminal::{self, ClearType},
@@ -1270,6 +1270,8 @@ fn source_col_for_wrap_segment_char(segment: &WrapSegment, visual_idx: usize) ->
 pub struct Terminal {
     stdout: ChromeWriter<Box<dyn Write>>,
     mouse_capture_enabled: bool,
+    /// Whether the keyboard enhancement push was accepted, so leave only pops what was pushed.
+    keyboard_enhancement_pushed: bool,
     leader_popup_rect: Option<(u16, u16)>,
     /// Whether the editor behind the open finder / Markdown preview has been
     /// painted since it opened. Those overlays skip the background, so the
@@ -1304,6 +1306,7 @@ impl Terminal {
         let mut terminal = Self {
             stdout: ChromeWriter(stdout),
             mouse_capture_enabled: false,
+            keyboard_enhancement_pushed: false,
             leader_popup_rect: None,
             overlay_background_drawn: false,
             owns_tty: true,
@@ -1317,6 +1320,7 @@ impl Terminal {
         Self {
             stdout: ChromeWriter(stdout),
             mouse_capture_enabled: false,
+            keyboard_enhancement_pushed: cfg!(not(windows)),
             leader_popup_rect: None,
             overlay_background_drawn: false,
             owns_tty: false,
@@ -6051,6 +6055,9 @@ impl Terminal {
     /// Returns EditorEvent for key presses and focus changes
     pub fn read_event(&self) -> anyhow::Result<Option<EditorEvent>> {
         match event::read()? {
+            // Unlike unix, windows reports a Release event for every keystroke;
+            // without this every key press would run this twice
+            Event::Key(key_event) if key_event.kind == KeyEventKind::Release => Ok(None),
             Event::Key(key_event) => Ok(Some(EditorEvent::Key(key_event))),
             Event::Paste(text) => Ok(Some(EditorEvent::Paste(text))),
             Event::Mouse(mouse_event) => Ok(Some(EditorEvent::Mouse(mouse_event))),
@@ -6063,10 +6070,10 @@ impl Terminal {
     /// Read a key event (blocking for the next event)
     /// Deprecated: prefer read_event() for autoread support
     pub fn read_key(&self) -> anyhow::Result<Option<KeyEvent>> {
-        if let Event::Key(key_event) = event::read()? {
-            Ok(Some(key_event))
-        } else {
-            Ok(None)
+        match event::read()? {
+            // Filter release here as well, so we do not double-fire every keystroke
+            Event::Key(key_event) if key_event.kind != KeyEventKind::Release => Ok(Some(key_event)),
+            _ => Ok(None),
         }
     }
 
