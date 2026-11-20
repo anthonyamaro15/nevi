@@ -143,4 +143,17 @@ mod tests {
             ]
         );
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_db_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut store = temp_store("private");
+        store.save();
+        let mode = std::fs::metadata(&store.db_path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
 }
