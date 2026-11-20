@@ -737,7 +737,8 @@ fn write_file_atomically(
     let target_permissions = fs::metadata(path)
         .ok()
         .map(|metadata| metadata.permissions());
-    let (temp_path, temp_file) = create_save_temp_file(parent, file_name)?;
+    let (temp_path, temp_file) =
+        create_save_temp_file(parent, file_name, target_permissions.is_some())?;
     let mut writer = io::BufWriter::new(temp_file);
 
     let write_result = (|| -> anyhow::Result<()> {
@@ -788,14 +789,27 @@ fn resolve_symlinks(path: &Path) -> PathBuf {
     current
 }
 
-fn create_save_temp_file(parent: &Path, file_name: &OsStr) -> io::Result<(PathBuf, File)> {
+fn create_save_temp_file(
+    parent: &Path,
+    file_name: &OsStr,
+    private: bool,
+) -> io::Result<(PathBuf, File)> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    // The target's own mode is only applied after the content is written, so
+    // until then an existing file's new content must be readable by its owner
+    // alone. A new file keeps the umask default: there is no mode to protect.
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+
     for attempt in 0..100 {
         let temp_path = parent.join(save_temp_file_name(file_name, attempt));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
+        match options.open(&temp_path) {
             Ok(file) => return Ok((temp_path, file)),
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),
@@ -1219,6 +1233,126 @@ mod tests {
         buffer.save().expect("save");
 
         assert!(!buffer.has_external_changes());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    fn file_mode(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    /// Save `path` and return the mode the temp file had while the new
+    /// content was being written into it.
+    #[cfg(unix)]
+    fn temp_file_mode_during_save(path: &std::path::Path, dir: &std::path::Path) -> u32 {
+        let mut temp_mode = None;
+        write_file_atomically(path, |writer| {
+            writer.write_all(b"new secret\n")?;
+            let temp = std::fs::read_dir(dir)?
+                .filter_map(Result::ok)
+                .find(|entry| entry.file_name().to_string_lossy().contains(".nevi-save-"))
+                .expect("temp file exists during write");
+            temp_mode = Some(file_mode(&temp.path()));
+            Ok(())
+        })
+        .expect("save");
+        temp_mode.expect("write callback ran")
+    }
+
+    // The target's mode is applied only after the content is written, so the
+    // temp file must not be group or world readable before that.
+    #[cfg(unix)]
+    #[test]
+    fn save_of_private_file_never_exposes_content_in_temp_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = unique_temp_dir("nevi_save_private");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let path = tmp.join("secret.env");
+        std::fs::write(&path, "old\n").expect("write file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+
+        let temp_mode = temp_file_mode_during_save(&path, &tmp);
+
+        assert_eq!(temp_mode & 0o077, 0, "temp mode was {temp_mode:o}");
+        assert_eq!(file_mode(&path), 0o600);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "new secret\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_keeps_mode_of_existing_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = unique_temp_dir("nevi_save_keeps_mode");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        for mode in [0o644, 0o755] {
+            let path = tmp.join(format!("file_{mode:o}"));
+            std::fs::write(&path, "old\n").expect("write file");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+
+            let mut buffer = Buffer::from_file(path.clone()).expect("open");
+            buffer.set_content("new\n");
+            buffer.save().expect("save");
+
+            assert_eq!(file_mode(&path), mode);
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // A new file has no mode to protect, so it gets the umask default like a
+    // plain create, not the private temp mode.
+    #[cfg(unix)]
+    #[test]
+    fn save_of_new_file_gets_default_mode() {
+        let tmp = unique_temp_dir("nevi_save_new_mode");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let reference = tmp.join("reference.txt");
+        std::fs::File::create(&reference).expect("create reference");
+        let path = tmp.join("new.txt");
+
+        let mut buffer = Buffer::new();
+        buffer.path = Some(path.clone());
+        buffer.set_content("new\n");
+        buffer.save().expect("save");
+
+        assert_eq!(file_mode(&path), file_mode(&reference));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_through_symlink_to_private_file_keeps_target_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = unique_temp_dir("nevi_save_symlink_private");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let target = tmp.join("real.env");
+        let link = tmp.join("link.env");
+        std::fs::write(&target, "old\n").expect("write target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        std::os::unix::fs::symlink("real.env", &link).expect("symlink");
+
+        let temp_mode = temp_file_mode_during_save(&link, &tmp);
+
+        assert_eq!(temp_mode & 0o077, 0, "temp mode was {temp_mode:o}");
+        assert_eq!(file_mode(&target), 0o600);
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("link metadata")
+                .file_type()
+                .is_symlink()
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
