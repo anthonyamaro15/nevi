@@ -1305,7 +1305,7 @@ impl Terminal {
         Self {
             stdout: ChromeWriter(stdout),
             mouse_capture_enabled: false,
-            keyboard_enhancement_pushed: false,
+            keyboard_enhancement_pushed: cfg!(not(windows)),
             leader_popup_rect: None,
             overlay_background_drawn: false,
             owns_tty: false,
