@@ -192,7 +192,9 @@ fn resolve_color(value: &str, palette: &HashMap<String, String>) -> Option<Color
 /// Parse a hex color string (e.g., "#ff0000" or "ff0000")
 fn parse_hex_color(s: &str) -> Option<Color> {
     let s = s.trim_start_matches('#');
-    if s.len() != 6 {
+    // ASCII only, so the byte slices below never split a character, and
+    // digits only, because from_str_radix would also take a leading `+`.
+    if s.len() != 6 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
 
@@ -816,4 +818,83 @@ added = "green"                          # new lines
 modified = "yellow"                      # changed lines
 deleted = "red"                          # deleted lines
 "##
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rgb(r: u8, g: u8, b: u8) -> Option<Color> {
+        Some(Color::Rgb { r, g, b })
+    }
+
+    #[test]
+    fn hex_color_accepts_six_hex_digits_with_or_without_hash() {
+        assert_eq!(parse_hex_color("#e06c75"), rgb(0xe0, 0x6c, 0x75));
+        assert_eq!(parse_hex_color("e06c75"), rgb(0xe0, 0x6c, 0x75));
+        assert_eq!(parse_hex_color("#E06C75"), rgb(0xe0, 0x6c, 0x75));
+        assert_eq!(parse_hex_color("AbCdEf"), rgb(0xab, 0xcd, 0xef));
+    }
+
+    #[test]
+    fn hex_color_rejects_multibyte_characters_without_panicking() {
+        // Each of these is six bytes, so it passes a byte length check.
+        // The multi-byte character straddles the first or second slice
+        // boundary, or sits whole in the last slice.
+        for value in [
+            "aé123", "#aé123", "a€12", "🎨ab", "12aé3", "123€", "1234é", "€€",
+        ] {
+            assert_eq!(value.trim_start_matches('#').len(), 6, "{value:?}");
+            assert_eq!(parse_hex_color(value), None, "{value:?}");
+        }
+        assert_eq!(parse_hex_color("éééééé"), None);
+    }
+
+    #[test]
+    fn hex_color_rejects_signs() {
+        assert_eq!(parse_hex_color("+f+f+f"), None);
+        assert_eq!(parse_hex_color("#+f+f+f"), None);
+        assert_eq!(parse_hex_color("-f-f-f"), None);
+    }
+
+    #[test]
+    fn hex_color_rejects_wrong_lengths_and_non_hex() {
+        for value in [
+            "", "#", "#fff", "fffff", "fffffff", "#ff00000", "zzzzzz", " ff0000",
+        ] {
+            assert_eq!(parse_hex_color(value), None, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn theme_with_multibyte_colors_loads_with_defaults_for_those_fields() {
+        let toml = r##"
+[palette]
+bg = "12aé3"
+blue = "#61afef"
+
+[syntax]
+keyword = { fg = "aé123", bg = "bg" }
+function = { fg = "blue" }
+
+[ui]
+background = "bg"
+foreground = "+f+f+f"
+cursor_line = "123€"
+
+[git]
+added = "🎨ab"
+"##;
+        let theme = try_load_theme_from_toml("odd", toml).expect("theme should load");
+        let base = Theme::onedark();
+
+        assert_eq!(theme.ui.background, base.ui.background);
+        assert_eq!(theme.ui.foreground, base.ui.foreground);
+        assert_eq!(theme.ui.cursor_line, base.ui.cursor_line);
+        assert_eq!(theme.git.added, base.git.added);
+        assert_eq!(theme.syntax.keyword.fg, base.syntax.keyword.fg);
+        assert_eq!(theme.syntax.keyword.bg, None);
+        // Valid fields in the same file still apply.
+        assert_eq!(Some(theme.syntax.function.fg), rgb(0x61, 0xaf, 0xef));
+    }
 }
