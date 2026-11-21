@@ -4,7 +4,7 @@
 //! The protocol is similar to LSP but uses custom methods.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
@@ -414,35 +414,11 @@ pub fn read_messages(
     let mut reader = BufReader::new(stdout);
 
     loop {
-        // Read headers until empty line
-        let mut content_length: Option<usize> = None;
-        loop {
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) => return, // EOF
-                Ok(_) => {
-                    let line = line.trim();
-                    if line.is_empty() {
-                        break;
-                    }
-                    if let Some(len_str) = line.strip_prefix("Content-Length: ") {
-                        content_length = len_str.parse().ok();
-                    }
-                }
-                Err(_) => return,
-            }
-        }
-
-        // Read content
-        let content_length = match content_length {
-            Some(len) => len,
-            None => continue,
-        };
-
-        let mut content = vec![0u8; content_length];
-        if std::io::Read::read_exact(&mut reader, &mut content).is_err() {
+        // A refused frame leaves the stream position unknown, so it ends the
+        // reader the same way EOF does.
+        let Ok(content) = crate::lsp::frame::read_frame(&mut reader) else {
             return;
-        }
+        };
 
         // Parse JSON
         let content_str = match String::from_utf8(content) {

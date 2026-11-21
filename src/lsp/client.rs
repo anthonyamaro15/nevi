@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender, SyncSender};
@@ -905,40 +905,13 @@ pub fn read_messages(
     watcher_tx: Sender<WatcherCommand>,
 ) {
     let mut reader = BufReader::new(stdout);
-    let mut headers = String::new();
 
     loop {
-        headers.clear();
-
-        // Read headers until empty line
-        let mut content_length: Option<usize> = None;
-        loop {
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) => return server_exited(&tx), // EOF
-                Ok(_) => {
-                    let line = line.trim();
-                    if line.is_empty() {
-                        break;
-                    }
-                    if let Some(len_str) = line.strip_prefix("Content-Length: ") {
-                        content_length = len_str.parse().ok();
-                    }
-                }
-                Err(_) => return server_exited(&tx),
-            }
-        }
-
-        // Read content
-        let content_length = match content_length {
-            Some(len) => len,
-            None => continue,
-        };
-
-        let mut content = vec![0u8; content_length];
-        if reader.read_exact(&mut content).is_err() {
+        // A refused frame leaves the stream position unknown, so it ends the
+        // connection the same way EOF does.
+        let Ok(content) = super::frame::read_frame(&mut reader) else {
             return server_exited(&tx);
-        }
+        };
 
         // Parse JSON
         let content_str = match String::from_utf8(content) {
@@ -2221,6 +2194,7 @@ mod tests {
     use super::*;
     use crate::lsp::types::{DiagnosticCode, DiagnosticSeverity, DiagnosticTags};
     use lsp_types::Url;
+    use std::io::{BufRead, Read};
     use std::path::Path;
     use std::thread;
     use std::time::Duration;
