@@ -428,7 +428,9 @@ pub struct SignatureInfo {
 /// Information about a single parameter
 #[derive(Debug, Clone)]
 pub struct ParameterInfo {
-    /// Start and end offset in the signature label where this parameter appears
+    /// Where this parameter appears in the signature label, as character
+    /// indices (start inclusive, end exclusive). Servers send UTF-16 offsets;
+    /// they are converted when the response is parsed.
     pub label_offsets: Option<(usize, usize)>,
     /// The parameter label text
     pub label: String,

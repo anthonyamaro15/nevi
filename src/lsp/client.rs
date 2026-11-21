@@ -1859,23 +1859,32 @@ fn handle_signature_help_response(
                         .filter_map(|param| {
                             let param_label = param.get("label")?;
                             let (label_offsets, label_text) = if param_label.is_array() {
-                                // Label offsets [start, end]
+                                // [start, end] counts UTF-16 code units of the label.
+                                // Offsets past the end or inside a surrogate pair
+                                // do not survive the round trip and give no range.
                                 let arr = param_label.as_array()?;
-                                let start = arr.first()?.as_u64()? as usize;
-                                let end = arr.get(1)?.as_u64()? as usize;
-                                // Extract the label text from the signature
-                                let text = if end <= label.len() && start < end {
-                                    label[start..end].to_string()
-                                } else {
-                                    String::new()
+                                let to_char = |utf16: u64| {
+                                    let utf16 = u32::try_from(utf16).ok()?;
+                                    let col = crate::copilot::utf16_to_utf8_col(&label, utf16);
+                                    (crate::copilot::utf8_to_utf16_col(&label, col) == utf16)
+                                        .then_some(col)
                                 };
-                                (Some((start, end)), text)
+                                match (
+                                    to_char(arr.first()?.as_u64()?),
+                                    to_char(arr.get(1)?.as_u64()?),
+                                ) {
+                                    (Some(start), Some(end)) if start < end => (
+                                        Some((start, end)),
+                                        label.chars().skip(start).take(end - start).collect(),
+                                    ),
+                                    _ => (None, String::new()),
+                                }
                             } else {
-                                // Label is a string
                                 let text = param_label.as_str()?.to_string();
-                                // Find the offsets in the signature label
-                                let offsets =
-                                    label.find(&text).map(|start| (start, start + text.len()));
+                                let offsets = label.find(&text).map(|byte| {
+                                    let start = label[..byte].chars().count();
+                                    (start, start + text.chars().count())
+                                });
                                 (offsets, text)
                             };
 
@@ -2238,6 +2247,87 @@ mod tests {
                 payload.get("error").is_some() || payload["result"].is_object()
             );
         }
+    }
+
+    /// Parses a one-signature response and returns each parameter's
+    /// (offsets, text).
+    fn signature_params(label: &str, params: Value) -> Vec<(Option<(usize, usize)>, String)> {
+        let result = json!({"signatures": [{"label": label, "parameters": params}]});
+        let Some(LspNotification::SignatureHelp {
+            help: Some(help), ..
+        }) = handle_signature_help_response(result, "file:///a.rs".into(), 0, 0)
+        else {
+            panic!("expected a signature");
+        };
+        help.signatures[0]
+            .parameters
+            .iter()
+            .map(|p| (p.label_offsets, p.label.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn signature_help_ascii_offsets_are_unchanged() {
+        assert_eq!(
+            signature_params(
+                "fn add(a: i32, b: i32)",
+                json!([{"label": [7, 13]}, {"label": [15, 21]}])
+            ),
+            vec![
+                (Some((7, 13)), "a: i32".to_string()),
+                (Some((15, 21)), "b: i32".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn signature_help_offsets_count_utf16_units_not_bytes() {
+        // 日 is one UTF-16 unit and three bytes, so `x: i32` is [5, 11] in
+        // UTF-16 but bytes 7..13.
+        assert_eq!(
+            signature_params("fn 日(x: i32)", json!([{"label": [5, 11]}])),
+            vec![(Some((5, 11)), "x: i32".to_string())]
+        );
+        // An emoji is two UTF-16 units, one character and four bytes.
+        assert_eq!(
+            signature_params("fn 😀(x: i32)", json!([{"label": [6, 12]}])),
+            vec![(Some((5, 11)), "x: i32".to_string())]
+        );
+    }
+
+    #[test]
+    fn signature_help_bad_offsets_keep_the_parameter_without_a_range() {
+        let label = "fn 😀(x: i32)";
+        for offsets in [
+            json!([5, 99]),            // past the end
+            json!([12, 6]),            // reversed
+            json!([4, 12]),            // inside the emoji's surrogate pair
+            json!([6, 4294967302u64]), // wraps to 6 if truncated to u32
+        ] {
+            assert_eq!(
+                signature_params(label, json!([{"label": offsets}, {"label": [6, 12]}])),
+                vec![(None, String::new()), (Some((5, 11)), "x: i32".to_string())],
+                "offsets {offsets}"
+            );
+        }
+    }
+
+    #[test]
+    fn signature_help_string_labels_give_character_offsets() {
+        assert_eq!(
+            signature_params(
+                "fn f(名前: &str, x: i32)",
+                json!([{"label": "名前: &str"}, {"label": "x: i32"}])
+            ),
+            vec![
+                (Some((5, 13)), "名前: &str".to_string()),
+                (Some((15, 21)), "x: i32".to_string()),
+            ]
+        );
+        assert_eq!(
+            signature_params("fn f(x: i32)", json!([{"label": "名前"}])),
+            vec![(None, "名前".to_string())]
+        );
     }
 
     fn watched_file_register_params(root: &Path) -> Option<Value> {
