@@ -3162,18 +3162,22 @@ impl Terminal {
             let search = &editor.explorer.search_buffer;
 
             let available = width.saturating_sub(1);
-            if search.len() <= available {
+            let search_width = crate::finder::row::text_width(search);
+            if search_width <= available {
                 terminal_print!(self, "{}", search);
                 let match_info = editor.explorer.search_match_info();
                 let padding = available
-                    .saturating_sub(search.len())
+                    .saturating_sub(search_width)
                     .saturating_sub(match_info.len());
                 terminal_print!(self, "{:padding$}", "", padding = padding);
                 execute!(self.stdout, SetForegroundColor(line_num_color))?;
                 terminal_print!(self, "{}", match_info);
             } else {
-                let visible = &search[..available.saturating_sub(1)];
-                terminal_print!(self, "{}…", visible);
+                let room = available.saturating_sub(1);
+                let visible = take_display_width(search, 0, room, 1);
+                // A wide char that does not fit leaves one column to blank.
+                let pad = room.saturating_sub(crate::finder::row::text_width(&visible));
+                terminal_print!(self, "{}…{:pad$}", visible, "");
             }
         }
 
@@ -4289,12 +4293,13 @@ impl Terminal {
                             )?;
                             terminal_print!(self, "│");
                             execute!(self.stdout, SetForegroundColor(*color))?;
-                            let padded = format!(" {:width$}", line, width = content_width);
-                            terminal_print!(
-                                self,
-                                "{}",
-                                &padded[..padded.len().min(content_width + 1)]
-                            );
+                            // A word too long to wrap (CJK has no spaces) is
+                            // cut at the edge. Tabs count as one column, as
+                            // the chrome writer draws them as a blank.
+                            let text = take_display_width(line, 0, content_width, 1);
+                            let pad =
+                                content_width.saturating_sub(crate::finder::row::text_width(&text));
+                            terminal_print!(self, " {}{:pad$}", text, "");
                             execute!(self.stdout, SetForegroundColor(border_color))?;
                             terminal_print!(self, " │");
                             row_offset += 1;
@@ -11076,6 +11081,50 @@ mod tests {
         }
     }
 
+    /// The explorer search bar as drawn, without colors: "/", the query,
+    /// then padding and the match count, or "…" when the query is too long.
+    fn explorer_search_bar(search: &str) -> (String, usize) {
+        let mut editor = explorer_test_editor();
+        editor.mode = Mode::Explorer;
+        editor.explorer.start_search();
+        editor.explorer.search_buffer = search.to_string();
+        editor.explorer.search_cursor = search.chars().count();
+        let output = SharedOutput::default();
+        let mut terminal = Terminal::new_for_test(Box::new(output.clone()));
+        terminal.render_explorer(&editor).expect("render explorer");
+        let plain = without_ansi(&output.into_string());
+        let bar = &plain[plain.rfind('/').expect("search bar")..];
+        let bar = bar.split('│').next().unwrap_or(bar).to_string();
+        (bar, editor.explorer.width as usize)
+    }
+
+    /// Typing a long non-ASCII search panicked: the query was cut at a
+    /// byte offset that landed inside a character.
+    #[test]
+    fn explorer_search_cuts_a_long_wide_query_inside_the_sidebar() {
+        use unicode_width::UnicodeWidthStr;
+        let (bar, width) = explorer_search_bar(&format!("a{}", "日本語".repeat(20)));
+        assert!(bar.starts_with("/a日本語") && bar.ends_with('…'), "{bar:?}");
+        assert_eq!(UnicodeWidthStr::width(bar.as_str()), width, "{bar:?}");
+        // Without the "a" the last wide char would straddle the edge: it is
+        // dropped and the column it leaves is blanked.
+        let (bar, width) = explorer_search_bar(&"日本語".repeat(20));
+        assert!(bar.starts_with("/日本語") && bar.ends_with("… "), "{bar:?}");
+        assert_eq!(UnicodeWidthStr::width(bar.as_str()), width, "{bar:?}");
+    }
+
+    #[test]
+    fn explorer_search_ascii_bar_is_unchanged() {
+        let long = "abcdefghij".repeat(10);
+        let (bar, width) = explorer_search_bar(&long);
+        assert_eq!(bar, format!("/{}…", &long[..width - 2]));
+        let (bar, width) = explorer_search_bar("src");
+        assert_eq!(
+            bar,
+            format!("/src{:pad$}No matches", "", pad = width - 1 - 3 - 10)
+        );
+    }
+
     /// The explorer and the cursor, as one frame shows them.
     fn render_explorer_with_cursor(editor: &Editor) -> (String, (usize, usize)) {
         let output = SharedOutput::default();
@@ -12614,6 +12663,36 @@ mod tests {
             "label is cut with an ellipsis; output={rendered:?}"
         );
         assert!(rendered.contains("→→…"), "detail is cut with an ellipsis");
+    }
+
+    /// The doc panel is 45 columns: "│ ", 41 columns of text, " │".
+    fn completion_doc_rows(documentation: &str) -> String {
+        let mut editor = completion_editor(&["demo"], "");
+        editor.completion.items[0].documentation = Some(documentation.to_string());
+        without_ansi(&render_completion_to_string(&editor))
+    }
+
+    /// A long run of CJK with no spaces cannot be word-wrapped, so it is cut
+    /// at the panel edge. Cutting it by bytes panicked inside a character.
+    #[test]
+    fn completion_docs_cut_wide_text_at_the_panel_edge() {
+        use unicode_width::UnicodeWidthStr;
+        let plain = completion_doc_rows(&"日本語".repeat(40));
+        // 20 wide chars fill 40 of the 41 columns; one space pads the rest.
+        let row = format!(
+            "│ {} │",
+            "日本語".repeat(7).chars().take(20).collect::<String>() + " "
+        );
+        assert!(plain.contains(&row), "output={plain:?}");
+        assert_eq!(UnicodeWidthStr::width(row.as_str()), 45);
+    }
+
+    #[test]
+    fn completion_docs_ascii_rows_are_unchanged() {
+        let plain = completion_doc_rows(&"a".repeat(60));
+        assert!(plain.contains(&format!("│ {} │", "a".repeat(41))));
+        let plain = completion_doc_rows("Returns an example value.");
+        assert!(plain.contains(&format!("│ {:41} │", "Returns an example value.")));
     }
 
     #[test]
@@ -15788,6 +15867,20 @@ mod tests {
     fn take_display_width_stops_before_expanded_tab_overflows() {
         assert_eq!(super::take_display_width("ab\tcd", 0, 5, 4), "ab");
         assert_eq!(super::take_display_width("ab\tcd", 0, 6, 4), "ab\t");
+    }
+
+    #[test]
+    fn take_display_width_cuts_on_char_boundaries_by_columns() {
+        let take = |text, width| super::take_display_width(text, 0, width, 1);
+        assert_eq!(take("", 5), "");
+        assert_eq!(take("abc", 0), "");
+        assert_eq!(take("abc", 3), "abc");
+        assert_eq!(take("abcd", 3), "abc");
+        // A wide char that would straddle the limit is left out whole.
+        assert_eq!(take("a日本", 4), "a日");
+        assert_eq!(take("日本", 1), "");
+        // Combining marks take no column and stay with their base char.
+        assert_eq!(take("e\u{301}x", 1), "e\u{301}");
     }
 
     #[test]
