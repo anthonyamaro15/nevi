@@ -7861,50 +7861,15 @@ impl Editor {
                 )
             });
 
-        Self::is_supported_url(trimmed).then(|| trimmed.to_string())
+        crate::url_open::is_supported_url(trimmed).then(|| trimmed.to_string())
     }
 
     fn is_url_delimiter(ch: char) -> bool {
         ch.is_whitespace()
     }
 
-    fn is_supported_url(token: &str) -> bool {
-        let lower = token.to_ascii_lowercase();
-        lower.starts_with("http://") || lower.starts_with("https://")
-    }
-
     fn open_url_external(url: &str) -> Result<(), String> {
-        #[cfg(target_os = "macos")]
-        let mut command = {
-            let mut command = std::process::Command::new("open");
-            command.arg(url);
-            command
-        };
-
-        #[cfg(target_os = "linux")]
-        let mut command = {
-            let mut command = std::process::Command::new("xdg-open");
-            command.arg(url);
-            command
-        };
-
-        #[cfg(target_os = "windows")]
-        let mut command = {
-            let mut command = std::process::Command::new("cmd");
-            command.args(["/C", "start", "", url]);
-            command
-        };
-
-        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-        {
-            let _ = url;
-            return Err("Opening URLs is not supported on this platform".to_string());
-        }
-
-        command
-            .spawn()
-            .map(|_| ())
-            .map_err(|err| format!("Failed to open URL: {}", err))
+        crate::url_open::open(url)
     }
 
     fn get_file_token_under_cursor(&self) -> Option<String> {

@@ -2,9 +2,10 @@
 
 Tracking issue: [#123](https://github.com/anthonyamaro15/nevi/issues/123).
 
-No CI job builds or tests Windows yet (`.github/workflows/rust.yml` runs
-macOS and Linux only), so regressions here won't be caught automatically
-until one exists.
+CI builds Windows and runs only the `gx` URL opener tests there (the
+`windows-url-open` job in `.github/workflows/rust.yml`). The full suite still
+runs on macOS and Linux only, so most regressions here won't be caught
+automatically.
 
 ## Windows-specific gaps found so far
 
@@ -26,8 +27,8 @@ until one exists.
 
 ## Still open
 
-- No Windows CI job, so the above was only verified by running the suite
-  locally on Windows.
+- The Windows CI job runs only the URL opener tests, so the above was only
+  verified by running the suite locally on Windows.
 - Job control (`Ctrl-Z` suspend, `:stop`) is a no-op on Windows (no SIGTSTP);
   `:!` and lazygit-style external commands still work since they don't depend
   on it.
