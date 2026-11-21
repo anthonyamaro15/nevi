@@ -402,7 +402,7 @@ fn main() -> anyhow::Result<()> {
     // Profiling is opt-in with NEVI_PROFILE=1/true/yes/on.
     let profile_enabled = profile_enabled_from_env();
     let mut profile_file = if profile_enabled {
-        Some(std::fs::File::create(nevi::health::PROFILE_LOG_PATH).ok())
+        Some(nevi::shada::open_private(&nevi::health::profile_log_path()).ok())
     } else {
         None
     };
@@ -502,9 +502,7 @@ fn main() -> anyhow::Result<()> {
 
     // Enable finder profiling when profiling is enabled.
     if profile_enabled {
-        nevi::terminal::FINDER_PROFILE_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
-        // Clear the finder profile log
-        let _ = std::fs::write("/tmp/nevi_finder_profile.log", "");
+        nevi::terminal::enable_finder_profile();
     }
 
     // Display any startup errors (config parse errors, etc.)

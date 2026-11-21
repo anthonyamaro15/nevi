@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-pub const PROFILE_LOG_PATH: &str = "/tmp/nevi_profile.log";
+/// Where `NEVI_PROFILE=1` writes its timings, next to the other state files.
+pub fn profile_log_path() -> PathBuf {
+    crate::shada::state_dir().join("profile.log")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileMetricSummary {
@@ -382,7 +385,7 @@ pub fn collect_health_report(
 ) -> String {
     let config_path = crate::config::config_path();
     let languages_path = crate::config::languages::languages_config_path();
-    let profile_log_path = PathBuf::from(PROFILE_LOG_PATH);
+    let profile_log_path = profile_log_path();
 
     build_health_report(&HealthReportInput {
         config_status: inspect_toml_file::<crate::config::Settings>(config_path.as_ref()),
@@ -735,6 +738,60 @@ mod tests {
     use crate::config::{FormatterConfig, KeymapEntry, LanguageConfig, LanguagesConfig, Settings};
     use std::collections::HashMap;
 
+    #[test]
+    fn profile_log_lives_in_the_state_folder() {
+        let path = profile_log_path();
+        assert_eq!(path, crate::shada::state_dir().join("profile.log"));
+        assert_ne!(path, PathBuf::from("/tmp/nevi_profile.log"));
+    }
+
+    /// Opened the way `NEVI_PROFILE=1` opens it at startup, then read back the
+    /// way `:checkhealth` reads it.
+    #[cfg(unix)]
+    #[test]
+    fn profile_log_is_private_and_readable_by_checkhealth() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+
+        let root = std::env::temp_dir().join(format!(
+            "nevi-profile-log-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = root.join("nevi").join("profile.log");
+
+        drop(crate::shada::open_private(&path).unwrap());
+        assert_eq!(mode(&path), 0o600, "new log is private");
+        assert_eq!(
+            mode(&root.join("nevi")),
+            0o700,
+            "new state folder is private"
+        );
+
+        // A log left by an older build may be world-readable.
+        std::fs::write(&path, "stale\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut file = crate::shada::open_private(&path).unwrap();
+        assert_eq!(mode(&path), 0o600, "existing log is tightened");
+        writeln!(file, "# profile summary").unwrap();
+        writeln!(
+            file,
+            "handle_key count=1 samples=1 total_us=5 avg_us=5 p50_us=5 p95_us=5 max_us=5"
+        )
+        .unwrap();
+        drop(file);
+
+        assert!(matches!(
+            inspect_profile_log(&path),
+            ProfileLogStatus::Summary(_)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn default_keymap_health() -> KeymapHealth {
         keymap_health_from_settings(&Settings::default().keymap)
     }
@@ -790,7 +847,7 @@ mod tests {
             external_tools: default_external_tools_health(),
             large_file: None,
             profile_enabled: false,
-            profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
+            profile_log_path: profile_log_path(),
             profile_log_status: ProfileLogStatus::Missing,
             lsp_enabled: true,
             ui_minimal: false,
@@ -809,7 +866,11 @@ mod tests {
         assert!(report.contains(":ConfigDefaults"));
         assert!(report.contains("Languages file: missing"));
         assert!(report.contains("Profiling: disabled"));
-        assert!(report.contains("/tmp/nevi_profile.log"));
+        assert!(report.contains(&format!(
+            "- Profile log: {}\n",
+            profile_log_path().display()
+        )));
+        assert!(!report.contains("/tmp/nevi_profile.log"));
         assert!(report.contains("NEVI_PROFILE=1"));
         assert!(report.contains("rust: enabled (rust-analyzer)"));
     }
@@ -825,7 +886,7 @@ mod tests {
             external_tools: default_external_tools_health(),
             large_file: None,
             profile_enabled: false,
-            profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
+            profile_log_path: profile_log_path(),
             profile_log_status: ProfileLogStatus::Missing,
             lsp_enabled: false,
             lsp_servers: vec![],
@@ -862,7 +923,7 @@ mod tests {
             external_tools: default_external_tools_health(),
             large_file: None,
             profile_enabled: true,
-            profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
+            profile_log_path: profile_log_path(),
             profile_log_status: ProfileLogStatus::Summary(vec![ProfileMetricSummary {
                 name: "render".to_string(),
                 count: 300,
@@ -895,7 +956,7 @@ mod tests {
             external_tools: default_external_tools_health(),
             large_file: None,
             profile_enabled: false,
-            profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
+            profile_log_path: profile_log_path(),
             profile_log_status: ProfileLogStatus::Summary(vec![ProfileMetricSummary {
                 name: "render".to_string(),
                 count: 1,
@@ -927,7 +988,7 @@ mod tests {
             external_tools: default_external_tools_health(),
             large_file: None,
             profile_enabled: false,
-            profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
+            profile_log_path: profile_log_path(),
             profile_log_status: ProfileLogStatus::Missing,
             lsp_enabled: true,
             ui_minimal: false,
@@ -966,7 +1027,7 @@ mod tests {
             external_tools: default_external_tools_health(),
             large_file: None,
             profile_enabled: false,
-            profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
+            profile_log_path: profile_log_path(),
             profile_log_status: ProfileLogStatus::Missing,
             lsp_enabled: true,
             ui_minimal: false,
@@ -997,7 +1058,7 @@ mod tests {
             keymap: default_keymap_health(),
             large_file: None,
             profile_enabled: false,
-            profile_log_path: PathBuf::from(PROFILE_LOG_PATH),
+            profile_log_path: profile_log_path(),
             profile_log_status: ProfileLogStatus::Missing,
             lsp_enabled: true,
             ui_minimal: false,

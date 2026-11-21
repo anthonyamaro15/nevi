@@ -259,10 +259,11 @@ For a full profile:
 NEVI_PROFILE=1 cargo run --release -- path/to/file
 ```
 
-On exit Nevi writes raw timing events and a summary to `/tmp/nevi_profile.log`
-with count, total, average, p50, p95, and max microseconds for key handling,
-syntax updates, full renders, and terminal-only renders. `:checkhealth` shows
-the last summary.
+On exit Nevi writes raw timing events and a summary to
+`~/.local/state/nevi/profile.log` (`$XDG_STATE_HOME/nevi/profile.log` if that
+is set) with count, total, average, p50, p95, and max microseconds for key
+handling, syntax updates, full renders, and terminal-only renders.
+`:checkhealth` shows the last summary.
 
 ## Design decisions
 
