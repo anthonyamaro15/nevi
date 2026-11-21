@@ -12750,6 +12750,41 @@ mod tests {
     }
 
     #[test]
+    fn signature_help_underlines_the_active_argument_after_non_ascii_text() {
+        use crate::lsp::types::{ParameterInfo, SignatureHelpResult, SignatureInfo};
+        let mut editor = Editor::default();
+        editor.set_size(100, 20);
+        editor.replace_buffer_content("\n\n\ngreet(\"x\", )\n");
+        editor.cursor.line = 3;
+        editor.cursor.col = 11;
+        // Offsets are character indices: `x: i32` starts at character 16
+        // but byte 20.
+        let param = |start: usize, end: usize, text: &str| ParameterInfo {
+            label_offsets: Some((start, end)),
+            label: text.to_string(),
+            documentation: None,
+        };
+        editor.signature_help = Some(SignatureHelpResult {
+            signatures: vec![SignatureInfo {
+                label: "greet(名前: &str, x: i32)".to_string(),
+                documentation: None,
+                parameters: vec![param(6, 14, "名前: &str"), param(16, 22, "x: i32")],
+            }],
+            active_signature: 0,
+            active_parameter: Some(1),
+        });
+
+        let hit = foreground_sequence(editor.theme().ui.finder_match);
+        let rendered = render_signature_help_to_string(&editor);
+        assert!(
+            rendered.contains(&format!(
+                "\x1b[24mgreet(名前: &str, {hit}\x1b[4mx: i32\x1b[38;"
+            )),
+            "only `x: i32` is underlined; output={rendered:?}"
+        );
+    }
+
+    #[test]
     fn completion_render_uses_active_theme_colors() {
         let mut editor = Editor::default();
         editor.set_size(160, 30);
