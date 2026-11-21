@@ -7,7 +7,7 @@ use crossterm::{
     terminal::{self, ClearType},
 };
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 use std::time::Instant;
 use unicode_width::UnicodeWidthChar;
 
@@ -29,20 +29,31 @@ macro_rules! terminal_print {
 
 const THEME_PICKER_TITLE: &str = " Themes ";
 
-/// Enable finder profiling (writes to /tmp/nevi_finder_profile.log)
-pub static FINDER_PROFILE_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Finder timings under `NEVI_PROFILE=1`. Opened once, so the path is never
+/// looked up again mid-session; unset otherwise, which keeps logging to one
+/// atomic load.
+static FINDER_PROFILE_LOG: OnceLock<std::fs::File> = OnceLock::new();
+
+pub fn finder_profile_log_path() -> std::path::PathBuf {
+    crate::shada::state_dir().join("finder_profile.log")
+}
+
+/// Start this session's finder log empty. If it can't be opened, finder
+/// profiling is skipped.
+pub fn enable_finder_profile() {
+    if let Ok(file) = crate::shada::open_private(&finder_profile_log_path()) {
+        let _ = FINDER_PROFILE_LOG.set(file);
+    }
+}
 
 fn log_finder_profile(msg: &str) {
-    if FINDER_PROFILE_ENABLED.load(Ordering::Relaxed) {
-        use std::fs::OpenOptions;
-        if let Ok(mut f) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/tmp/nevi_finder_profile.log")
-        {
-            let _ = writeln!(f, "{}", msg);
-        }
+    if let Some(file) = FINDER_PROFILE_LOG.get() {
+        write_finder_profile(file, msg);
     }
+}
+
+fn write_finder_profile(mut file: &std::fs::File, msg: &str) {
+    let _ = writeln!(file, "{msg}");
 }
 
 /// Grep matches to highlight in a preview line whose first `visible_chars`

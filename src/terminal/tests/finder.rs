@@ -453,3 +453,51 @@ fn finder_preview_bench() {
     );
     print_perf_row("Finder preview: load a hit deep in a large file", deep_load);
 }
+
+#[test]
+fn finder_profile_log_lives_in_the_state_folder() {
+    let path = crate::terminal::finder_profile_log_path();
+    assert_eq!(path, crate::shada::state_dir().join("finder_profile.log"));
+    assert_ne!(path, std::path::Path::new("/tmp/nevi_finder_profile.log"));
+
+    // Tests run with an unusable state folder, so turning profiling on is
+    // quietly skipped and nothing is written.
+    crate::terminal::enable_finder_profile();
+    assert!(crate::terminal::FINDER_PROFILE_LOG.get().is_none());
+}
+
+/// The log is emptied once at startup and every message after that goes
+/// through the same handle, in order.
+#[test]
+fn finder_profile_log_starts_empty_and_appends_in_order() {
+    let dir = std::env::temp_dir().join(format!(
+        "nevi-finder-profile-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let path = dir.join("nevi").join("finder_profile.log");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "last session's timings\n").unwrap();
+
+    let file = crate::shada::open_private(&path).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+    crate::terminal::write_finder_profile(&file, "first");
+    crate::terminal::write_finder_profile(&file, "second");
+    crate::terminal::write_finder_profile(&file, "third");
+    drop(file);
+
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "first\nsecond\nthird\n"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

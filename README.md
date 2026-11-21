@@ -266,8 +266,8 @@ Full references:
   `:ToolInstall` shows the install commands. Note that rust-analyzer's cold
   index takes minutes on a large crate and is not Nevi latency.
 - **Feels slow?** `:WhySlow` opens recent in-memory timings. For a full
-  profile, `NEVI_PROFILE=1 nevi path/to/file` writes `/tmp/nevi_profile.log`
-  on exit.
+  profile, `NEVI_PROFILE=1 nevi path/to/file` writes
+  `~/.local/state/nevi/profile.log` (under `$XDG_STATE_HOME` if set) on exit.
 - **Very large file?** The statusline shows `[large]` when highlighting is
   degraded, and `:checkhealth` reports the threshold.
 
