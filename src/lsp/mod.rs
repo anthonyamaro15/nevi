@@ -7,6 +7,7 @@
 //! - Hover documentation
 
 mod client;
+pub(crate) mod frame;
 pub mod multi;
 pub mod types;
 mod watched_files;
