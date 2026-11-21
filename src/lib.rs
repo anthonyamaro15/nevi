@@ -45,6 +45,7 @@ pub mod terminal;
 pub mod theme;
 pub mod tool_installer;
 pub mod ui_glyphs;
+pub(crate) mod url_open;
 #[cfg(test)]
 mod vim_oracle;
 

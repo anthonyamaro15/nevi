@@ -85,3 +85,23 @@ jobs:
 
       - name: Report release binary size
         run: du -sh target/release/nevi
+
+  # Only the URL opener tests run here: the full suite has never been run on
+  # Windows. `cargo test` still builds the whole crate and the binary, so this
+  # also catches a Windows build break.
+  windows-url-open:
+    name: URL opener on Windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Run URL opener tests
+        run: cargo test url_open_ -- --nocapture
