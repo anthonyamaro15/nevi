@@ -4971,32 +4971,31 @@ impl Terminal {
                 }
                 terminal_print!(self, "{}", prefix);
 
-                // Theme name - highlight matching characters if there's a query
-                if !picker.query.is_empty() {
-                    let query_lower = picker.query.to_lowercase();
-                    let name_lower = display_name.to_lowercase();
-                    if let Some(match_start) = name_lower.find(&query_lower) {
-                        // Before match
-                        execute!(self.stdout, SetForegroundColor(text_color))?;
-                        terminal_print!(self, "{}", &display_name[..match_start]);
-                        // Match
-                        execute!(self.stdout, SetForegroundColor(match_color))?;
-                        terminal_print!(
-                            self,
-                            "{}",
-                            &display_name[match_start..match_start + picker.query.len()]
-                        );
-                        // After match
-                        execute!(self.stdout, SetForegroundColor(text_color))?;
-                        terminal_print!(
-                            self,
-                            "{}",
-                            &display_name[match_start + picker.query.len()..]
-                        );
-                    } else {
-                        execute!(self.stdout, SetForegroundColor(text_color))?;
-                        terminal_print!(self, "{}", display_name);
-                    }
+                // Theme name - highlight the first match of the query. The
+                // match is in chars of `display_name`; one that does not fit
+                // it (a lowercase expansion like 'İ' can stretch it) is shown
+                // without a highlight.
+                let byte_at = |char_idx: usize| {
+                    display_name
+                        .char_indices()
+                        .map(|(byte_idx, _)| byte_idx)
+                        .chain(std::iter::once(display_name.len()))
+                        .nth(char_idx)
+                };
+                let highlight =
+                    crate::finder::case_insensitive_match_ranges(&display_name, &picker.query)
+                        .first()
+                        .and_then(|&(start, end)| Some((byte_at(start)?, byte_at(end)?)));
+                if let Some((match_start, match_end)) = highlight {
+                    // Before match
+                    execute!(self.stdout, SetForegroundColor(text_color))?;
+                    terminal_print!(self, "{}", &display_name[..match_start]);
+                    // Match
+                    execute!(self.stdout, SetForegroundColor(match_color))?;
+                    terminal_print!(self, "{}", &display_name[match_start..match_end]);
+                    // After match
+                    execute!(self.stdout, SetForegroundColor(text_color))?;
+                    terminal_print!(self, "{}", &display_name[match_end..]);
                 } else {
                     execute!(self.stdout, SetForegroundColor(text_color))?;
                     terminal_print!(self, "{}", display_name);
@@ -12500,6 +12499,84 @@ mod tests {
             rendered.contains(&format!("{hit}d{text}e{hit}m{text}o")),
             "d and m are highlighted, e and o are not; output={rendered:?}"
         );
+    }
+
+    #[test]
+    fn completion_ghost_text_survives_case_folding_that_changes_byte_length() {
+        // 'İ' and the Kelvin sign lowercase to a different byte length than
+        // they have, so the typed prefix's length cannot locate the ghost.
+        let editor = completion_editor(&["\u{130}ndex"], "i");
+        assert_eq!(editor.completion.ghost_text().as_deref(), Some("ndex"));
+
+        let editor = completion_editor(&["\u{212A}elvin"], "k");
+        assert_eq!(editor.completion.ghost_text().as_deref(), Some("elvin"));
+
+        let editor = completion_editor(&["Demo"], "de");
+        assert_eq!(editor.completion.ghost_text().as_deref(), Some("mo"));
+    }
+
+    fn theme_picker_editor(themes: &[(&str, bool)], query: &str) -> Editor {
+        let mut editor = Editor::default();
+        editor.set_size(80, 24);
+        let mut picker = crate::editor::ThemePicker::new(themes.to_vec());
+        for ch in query.chars() {
+            picker.add_char(ch);
+        }
+        editor.theme_picker = Some(picker);
+        editor
+    }
+
+    #[test]
+    fn theme_picker_highlights_the_first_match_in_an_ascii_name() {
+        let editor = theme_picker_editor(&[("gruvbox", true), ("boxed", true)], "box");
+        let theme = editor.theme();
+        let hit = foreground_sequence(theme.ui.finder_match);
+        let text = foreground_sequence(theme.ui.foreground);
+        let rendered = render_editor_to_string(&editor);
+        assert!(
+            rendered.contains(&format!("{text}gruv{hit}box{text}")),
+            "output={rendered:?}"
+        );
+        assert!(
+            rendered.contains(&format!("{text}{hit}box{text}ed")),
+            "output={rendered:?}"
+        );
+    }
+
+    #[test]
+    fn theme_picker_name_whose_lowercase_is_longer_renders() {
+        // 'İ' is 2 bytes and lowercases to 3.
+        let editor = theme_picker_editor(&[("\u{130}x", false)], "x");
+        let theme = editor.theme();
+        let hit = foreground_sequence(theme.ui.finder_match);
+        let text = foreground_sequence(theme.ui.foreground);
+        let rendered = render_editor_to_string(&editor);
+        assert!(
+            rendered.contains(&format!("{text}\u{130}{hit}x{text}")),
+            "output={rendered:?}"
+        );
+        assert!(rendered.contains(" (user)"));
+    }
+
+    #[test]
+    fn theme_picker_query_whose_lowercase_is_longer_renders() {
+        // The query 'İ' lowercases to "i\u{307}", which this name spells out.
+        let editor = theme_picker_editor(&[("i\u{307}x", false)], "\u{130}");
+        assert_eq!(editor.theme_picker.as_ref().unwrap().filtered.len(), 1);
+        let rendered = render_editor_to_string(&editor);
+        assert!(rendered.contains("\u{307}x"), "output={rendered:?}");
+    }
+
+    #[test]
+    fn theme_picker_truncated_multibyte_name_renders() {
+        let name = "\u{130}".repeat(10) + "b" + &"é".repeat(50);
+        let editor = theme_picker_editor(&[(&name, false)], "b");
+        let theme = editor.theme();
+        let hit = foreground_sequence(theme.ui.finder_match);
+        let text = foreground_sequence(theme.ui.foreground);
+        let rendered = render_editor_to_string(&editor);
+        let shown = "\u{130}".repeat(10) + &hit + "b" + &text + &"é".repeat(35) + "…";
+        assert!(rendered.contains(&shown), "output={rendered:?}");
     }
 
     #[test]

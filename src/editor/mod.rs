@@ -1075,13 +1075,24 @@ impl CompletionState {
             return Some(insert_text.to_string());
         }
 
-        // Try case-insensitive prefix match
-        let insert_lower = insert_text.to_lowercase();
-        let prefix_lower = prefix.to_lowercase();
+        // Case-insensitive prefix match. Lowercasing can change a char's
+        // byte length ('İ', the Kelvin sign), so the typed prefix's length
+        // says nothing about where the match ends in `insert_text`; take the
+        // end from the match, in chars of `insert_text`, instead.
+        let prefix_end = crate::finder::case_insensitive_match_ranges(insert_text, prefix)
+            .first()
+            .filter(|&&(start, _)| start == 0)
+            .and_then(|&(_, end)| {
+                insert_text
+                    .char_indices()
+                    .map(|(byte_idx, _)| byte_idx)
+                    .chain(std::iter::once(insert_text.len()))
+                    .nth(end)
+            });
 
-        if insert_lower.starts_with(&prefix_lower) {
+        if let Some(prefix_end) = prefix_end {
             // Ghost text is the part after the prefix
-            let ghost = &insert_text[prefix.len()..];
+            let ghost = &insert_text[prefix_end..];
             if ghost.is_empty() {
                 return None;
             }
