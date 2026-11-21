@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nevi, a fast Neovim-inspired terminal editor</title>
+  <meta name="description" content="Nevi is a fast, Neovim-inspired terminal editor written in Rust. Your Vim muscle memory works, with LSP, tree-sitter, fuzzy finding, and git built into the binary.">
+  <meta name="theme-color" content="#282c34">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23282c34'/%3E%3Crect x='19' y='8' width='7' height='16' fill='%2361afef'/%3E%3Cpath d='M7 24V8h3.4l5.2 9V8H18v16h-3.3L9.4 15v9z' fill='%23abb2bf'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#why">Skip to content</a>
+
+  <header class="topbar">
+    <a class="logo" href="#top" aria-label="Nevi home">nevi<span class="logo-cursor" aria-hidden="true"></span></a>
+    <nav aria-label="Sections">
+      <a href="#features">Features</a>
+      <a href="#compatibility">Compatibility</a>
+      <a href="#themes">Themes</a>
+      <a href="#install">Install</a>
+    </nav>
+    <a class="gh" href="https://github.com/anthonyamaro15/nevi"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</a>
+  </header>
+
+  <main>
+    <section class="hero" id="top" data-name="Intro">
+      <h1>Your Vim muscle memory already works here.<span class="cursor" aria-hidden="true"></span></h1>
+      <p class="lede">Nevi is a fast, Neovim-inspired terminal editor written in Rust. LSP, <span class="nowrap">tree-sitter</span>, fuzzy finding, and git are built into the binary, so there is no plugin list to assemble before you can work.</p>
+
+      <p class="hero-proof"><a href="#compatibility"><strong>372</strong> keybinds implemented. <strong>206</strong> of them verified against real Neovim on every CI run.</a></p>
+
+      <div class="install-box">
+        <div class="tabs" role="tablist" aria-label="Install method">
+          <button role="tab" id="tab-brew" aria-selected="true" aria-controls="hero-cmd" data-platform="macOS" data-cmd="brew install anthonyamaro15/nevi/nevi">Homebrew</button>
+          <button role="tab" id="tab-cargo" aria-selected="false" tabindex="-1" aria-controls="hero-cmd" data-platform="macOS and Linux" data-cmd="cargo install --git https://github.com/anthonyamaro15/nevi">Cargo</button>
+          <span class="platform" data-platform-label>macOS</span>
+        </div>
+        <div class="cmd" id="hero-cmd" role="tabpanel" aria-labelledby="tab-brew">
+          <code><span class="prompt" aria-hidden="true">$</span> <span data-copy-source>brew install anthonyamaro15/nevi/nevi</span></code>
+          <button class="copy" type="button" data-copy>Copy</button>
+        </div>
+      </div>
+
+      <figure class="window">
+        <div class="window-bar" aria-hidden="true"><span class="prompt">$</span><span>nevi .</span></div>
+        <a href="nevi-demo.gif" target="_blank" rel="noopener"><img src="nevi-demo.gif" width="1274" height="716" loading="lazy" alt="Nevi demo: starting in the rust-lang/rust repository in 9ms, opening a 183 MB log with 2 million lines and jumping to the last line with G, live grep across the repo narrowed to the line where rustc defines the &quot;does not live long enough&quot; error, a ci&quot; edit on that line, then a rust-analyzer hover in Nevi's own source and the brew install command."></a>
+        <figcaption>Starting in the rust-lang/rust repository in 9 ms, jumping to the end of a 2-million-line log with <kbd>G</kbd>, live grep across the repo, a <kbd>ci"</kbd> edit, and a rust-analyzer hover.</figcaption>
+      </figure>
+    </section>
+
+    <section data-name="Why Nevi">
+      <h2 id="why">Why Nevi</h2>
+      <div class="prose">
+        <p>Zed is fast and modern, but its vim mode is incomplete. Neovim is powerful, but it gets slow once the plugin list grows. Helix asks you to relearn Kakoune-style keys.</p>
+        <p>Nevi is a native terminal editor where the keys you already know just work, and the tools you would normally install as plugins ship in the binary.</p>
+      </div>
+
+      <div class="table-wrap">
+        <table class="compare">
+          <caption class="sr-only">How Nevi compares with Neovim, Zed, and Helix</caption>
+          <thead>
+            <tr><th scope="col">Editor</th><th scope="col">Vim keybinds</th><th scope="col">Built-in features</th><th scope="col">Notes</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Neovim</th><td data-label="Vim keybinds">Full</td><td data-label="Built-in features">Via plugins</td><td data-label="Notes">Powerful but plugin-dependent</td></tr>
+            <tr><th scope="row">Zed</th><td data-label="Vim keybinds">Partial</td><td data-label="Built-in features">Yes</td><td data-label="Notes">Fast but vim mode incomplete</td></tr>
+            <tr><th scope="row">Helix</th><td data-label="Vim keybinds">Kakoune-style</td><td data-label="Built-in features">Yes</td><td data-label="Notes">Different keybind philosophy</td></tr>
+            <tr class="is-nevi"><th scope="row">Nevi</th><td data-label="Vim keybinds">372 and counting</td><td data-label="Built-in features">Yes</td><td data-label="Notes">Test-backed vim compatibility</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="sub">Speed is measured, release to release</h3>
+      <dl class="perf">
+        <div><dt>Live grep, first result for a rare query</dt><dd><strong>33 ms</strong><span>was 5.33 s in 0.3.0</span></dd></div>
+        <div><dt>Editor frozen while the file picker opens</dt><dd><strong>15 µs</strong><span>was 407 ms</span></dd></div>
+        <div><dt>Reparse after an edit, 18,060-line Rust file</dt><dd><strong>3.4 ms</strong><span>was 27 ms</span></dd></div>
+      </dl>
+      <p class="note">Nevi 0.4.0 on an Apple M4 laptop, release builds, median of several runs. Live grep searches a generated repo of about 43,000 files and is timed from when the search starts, after the picker's 150 ms typing delay. Every number comes from a benchmark in the repository: <a href="https://github.com/anthonyamaro15/nevi/blob/master/PERF.md">see the performance table</a>.</p>
+    </section>
+
+    <section data-name="Features">
+      <h2 id="features">What is in the binary</h2>
+      <ul class="features">
+        <li>
+          <h3>Vim and Neovim keybindings</h3>
+          <p>Surround, comment, text objects, dot repeat, macros, and registers that survive restarts.</p>
+          <p class="keys"><kbd>ys</kbd> <kbd>cs</kbd> <kbd>ds</kbd> <kbd>gcc</kbd> <kbd>.</kbd> <kbd>q{a-z}</kbd></p>
+        </li>
+        <li>
+          <h3>Built-in LSP</h3>
+          <p>14 languages, auto-detected on your PATH, with install hints when a server is missing.</p>
+          <p class="keys"><kbd>gd</kbd> <kbd>gr</kbd> <kbd>K</kbd> <kbd>]d</kbd> <kbd>&lt;Space&gt;ca</kbd> <kbd>&lt;Space&gt;rn</kbd></p>
+        </li>
+        <li>
+          <h3>Tree-sitter highlighting</h3>
+          <p>15 languages, with a large-file degradation mode so huge files stay usable.</p>
+          <p class="keys"><kbd>]m</kbd> <kbd>[m</kbd></p>
+        </li>
+        <li>
+          <h3>Telescope-style finder</h3>
+          <p>Files, live grep, buffers, diagnostics, git changes, themes, and keymaps. No ripgrep or fzf needed.</p>
+          <p class="keys"><kbd>&lt;Space&gt;ff</kbd> <kbd>&lt;Space&gt;fg</kbd> <kbd>&lt;Space&gt;fb</kbd> <kbd>&lt;Space&gt;fk</kbd></p>
+        </li>
+        <li>
+          <h3>File explorer</h3>
+          <p>Git status tints and diagnostic badges next to every file.</p>
+          <p class="keys"><kbd>&lt;Space&gt;e</kbd></p>
+        </li>
+        <li>
+          <h3>Terminal, git, and Copilot</h3>
+          <p>Floating terminal sessions, lazygit, GitHub Copilot ghost text, Markdown preview, and previewed project-wide replace.</p>
+          <p class="keys"><kbd>&lt;Space&gt;tt</kbd> <kbd>&lt;Space&gt;gg</kbd> <kbd>:MarkdownPreview</kbd></p>
+        </li>
+        <li>
+          <h3>Start screen</h3>
+          <p>Recent files open with a digit, harpoon pins with <kbd>h</kbd> and a digit.</p>
+          <p class="keys"><kbd>1-9</kbd> <kbd>h1-h9</kbd> <kbd>&lt;Space&gt;m</kbd> <kbd>&lt;Space&gt;h</kbd></p>
+        </li>
+        <li>
+          <h3>Simple TOML config</h3>
+          <p>One file at <code>~/.config/nevi/config.toml</code>, created with a commented template on first run. Nevi never rewrites a config file you own.</p>
+          <p class="keys"><kbd>:config</kbd> <kbd>:checkhealth</kbd></p>
+        </li>
+      </ul>
+    </section>
+
+    <section data-name="Compatibility">
+      <h2 id="compatibility">Compatibility you can check</h2>
+      <div class="parity">
+        <div class="parity-numbers">
+          <p class="big"><strong>372</strong> keybinds implemented</p>
+          <p class="big"><strong>206</strong> verified against real Neovim on every CI run</p>
+          <div class="meter" role="img" aria-label="206 of 372 keybinds verified against real Neovim">
+            <span style="--part: calc(206 / 372 * 100%)"></span>
+          </div>
+        </div>
+        <div class="prose">
+          <p>Nevi backs its Vim compatibility with tests instead of adjectives. A Vim oracle replays the same keys in Nevi and in a headless Neovim, then compares the results.</p>
+          <ol class="steps">
+            <li>Each case is an initial buffer plus a literal key sequence.</li>
+            <li>The keys are replayed in Nevi and in <code>nvim --headless</code>.</li>
+            <li>Buffer content, cursor position, viewport top, and mode must match. CI runs this against a pinned Neovim v0.11.3 on macOS and Linux.</li>
+          </ol>
+          <p>Found a key that behaves differently from Neovim? <a href="https://github.com/anthonyamaro15/nevi/issues/new?template=vim-parity.yml">Open a Vim parity report</a> and it becomes a test case.</p>
+        </div>
+      </div>
+
+      <h3 class="sub">A few of the keys checked against Neovim</h3>
+      <ul class="keycloud" aria-label="Examples of verified keybinds">
+        <li><kbd>ciw</kbd></li><li><kbd>ci"</kbd></li><li><kbd>dit</kbd></li><li><kbd>dip</kbd></li><li><kbd>cW</kbd></li>
+        <li><kbd>dgg</kbd></li><li><kbd>yG</kbd></li><li><kbd>gJ</kbd></li><li><kbd>"_</kbd></li><li><kbd>"0</kbd></li>
+        <li><kbd>q{a-z}</kbd></li><li><kbd>@@</kbd></li><li><kbd>&lt;C-v&gt;</kbd></li><li><kbd>gv</kbd></li><li><kbd>gn</kbd></li>
+        <li><kbd>g&amp;</kbd></li><li><kbd>.</kbd></li><li><kbd>%</kbd></li><li><kbd>]p</kbd></li><li><kbd>gi</kbd></li>
+        <li><kbd>zz</kbd></li><li><kbd>&lt;C-o&gt;</kbd></li><li><kbd>*</kbd></li><li><kbd>&lt;C-a&gt;</kbd></li><li><kbd>R</kbd></li>
+        <li><kbd>g~~</kbd></li><li><kbd>'^</kbd></li><li><kbd>]]</kbd></li>
+      </ul>
+      <p class="note"><a href="https://github.com/anthonyamaro15/nevi/blob/master/PARITY.md">The parity scoreboard</a> is generated from the same inventories the test suite enforces, so it cannot drift from what is actually verified.</p>
+    </section>
+
+    <section data-name="Themes">
+      <h2 id="themes">17 themes, bundled</h2>
+      <p class="prose-line">Pick one below and this page switches to it. In Nevi, <kbd>&lt;Space&gt;ft</kbd> opens the same choice as a live picker.</p>
+
+      <div class="themes">
+        <div class="theme-preview">
+          <pre class="code" aria-label="Code sample in the selected theme"><code><span class="ln">1</span><span class="c">// Drop a .toml file into</span>
+<span class="ln">2</span><span class="c">// ~/.config/nevi/themes/ and</span>
+<span class="ln">3</span><span class="c">// its filename is the theme name.</span>
+<span class="ln">4</span><span class="k">fn</span> <span class="f">main</span>() {
+<span class="ln">5</span>    <span class="k">let</span> bundled: <span class="t">u8</span> = <span class="n">17</span>;
+<span class="ln">6</span>    <span class="f">println!</span>(<span class="s">"{bundled} themes"</span>);
+<span class="ln">7</span>}</code></pre>
+          <div class="mini-status" aria-hidden="true"><b>NORMAL</b><span>main.rs</span></div>
+          <p class="cmdline" aria-live="polite">:theme <span data-theme-name>onedark</span></p>
+        </div>
+        <ul class="theme-list" aria-label="Bundled themes" data-theme-list></ul>
+      </div>
+    </section>
+
+    <section data-name="Languages">
+      <h2 id="languages">Languages</h2>
+      <p class="prose-line">Servers are detected on your PATH. <code>:ToolInstall</code> prints the exact install command for anything missing, and <code>:checkhealth</code> shows what was found.</p>
+      <ul class="langs">
+        <li><b>Rust</b><span>rust-analyzer</span></li>
+        <li><b>TypeScript / JavaScript</b><span>typescript-language-server</span></li>
+        <li><b>Python</b><span>pyright</span></li>
+        <li><b>Go</b><span>gopls</span></li>
+        <li><b>Ruby</b><span>ruby-lsp</span></li>
+        <li><b>PHP</b><span>phpactor</span></li>
+        <li><b>CSS / SCSS</b><span>vscode-css-language-server</span></li>
+        <li><b>JSON</b><span>vscode-json-language-server</span></li>
+        <li><b>HTML</b><span>vscode-html-language-server</span></li>
+        <li><b>TOML</b><span>taplo</span></li>
+        <li><b>Shell / Bash</b><span>bash-language-server</span></li>
+        <li><b>Swift</b><span>sourcekit-lsp</span></li>
+        <li><b>Markdown</b><span>marksman (off by default)</span></li>
+        <li><b>Typst</b><span>tinymist</span></li>
+      </ul>
+      <p class="note">Every language above has syntax highlighting. External formatters such as biome, prettier, black, and gofmt are set in <code>languages.toml</code>; formatting falls back to the LSP otherwise. Missing a language? <a href="https://github.com/anthonyamaro15/nevi/issues">Open an issue</a>.</p>
+    </section>
+
+    <section data-name="Install">
+      <h2 id="install">Install</h2>
+      <div class="install-layout">
+      <div>
+      <div class="install-grid">
+        <div class="install-item">
+          <h3>Homebrew <span>macOS</span></h3>
+          <div class="cmd"><code><span class="prompt" aria-hidden="true">$</span> <span data-copy-source>brew install anthonyamaro15/<wbr>nevi/<wbr>nevi</span></code><button class="copy" type="button" data-copy>Copy</button></div>
+        </div>
+        <div class="install-item">
+          <h3>Cargo <span>macOS and Linux</span></h3>
+          <div class="cmd"><code><span class="prompt" aria-hidden="true">$</span> <span data-copy-source>cargo install --git https://<wbr>github.com/<wbr>anthonyamaro15/<wbr>nevi</span></code><button class="copy" type="button" data-copy>Copy</button></div>
+        </div>
+        <div class="install-item">
+          <h3>From source</h3>
+          <div class="cmd cmd-multi"><code><span data-copy-source>git clone https://<wbr>github.com/<wbr>anthonyamaro15/<wbr>nevi.git &amp;&amp; cd nevi
+cargo build --release
+cp target/release/nevi ~/.local/bin/</span></code><button class="copy" type="button" data-copy>Copy</button></div>
+        </div>
+      </div>
+
+      <details class="linux-deps">
+        <summary>Linux build dependencies</summary>
+        <div class="cmd cmd-multi"><code><span class="distro">Debian / Ubuntu</span><span data-copy-source><span class="tok">sudo</span> <span class="tok">apt</span> <span class="tok">update</span> <span class="tok">&amp;&amp;</span> <span class="tok">sudo</span> <span class="tok">apt</span> <span class="tok">install</span> <span class="tok">-y</span> <span class="tok">build-essential</span> <span class="tok">cmake</span> <span class="tok">pkg-config</span> <span class="tok">libssl-dev</span> <span class="tok">zlib1g-dev</span> <span class="tok">libx11-dev</span> <span class="tok">libxcb1-dev</span> <span class="tok">libxcb-render0-dev</span> <span class="tok">libxcb-shape0-dev</span> <span class="tok">libxcb-xfixes0-dev</span></span></code><button class="copy" type="button" data-copy>Copy</button></div>
+        <div class="cmd cmd-multi"><code><span class="distro">Fedora</span><span data-copy-source><span class="tok">sudo</span> <span class="tok">dnf</span> <span class="tok">install</span> <span class="tok">-y</span> <span class="tok">gcc</span> <span class="tok">gcc-c++</span> <span class="tok">make</span> <span class="tok">cmake</span> <span class="tok">pkgconf-pkg-config</span> <span class="tok">openssl-devel</span> <span class="tok">zlib-ng-compat-devel</span> <span class="tok">libX11-devel</span> <span class="tok">libxcb-devel</span></span></code><button class="copy" type="button" data-copy>Copy</button></div>
+        <div class="cmd cmd-multi"><code><span class="distro">Arch</span><span data-copy-source><span class="tok">sudo</span> <span class="tok">pacman</span> <span class="tok">-S</span> <span class="tok">--needed</span> <span class="tok">base-devel</span> <span class="tok">cmake</span> <span class="tok">pkgconf</span> <span class="tok">openssl</span> <span class="tok">zlib</span> <span class="tok">libx11</span> <span class="tok">libxcb</span></span></code><button class="copy" type="button" data-copy>Copy</button></div>
+      </details>
+      </div>
+
+      <div class="install-aside">
+      <p class="note">Building needs Rust 1.85 or newer. Nothing else is required at runtime: the file finder, live grep, fuzzy matching, and syntax highlighting are built in, so <code>ripgrep</code>, <code>fzf</code>, <code>fd</code>, and the <code>tree-sitter</code> CLI are not needed. Language servers and <code>lazygit</code> are optional.</p>
+
+      <div class="first-run">
+        <h3 class="sub">Then</h3>
+        <dl class="run-list">
+          <div><dt>nevi .</dt><dd>Open a directory</dd></div>
+          <div><dt>nevi src/main.rs</dt><dd>Open a file</dd></div>
+          <div><dt>nevi diff before.rs after.rs</dt><dd>Side-by-side diff</dd></div>
+        </dl>
+        <p class="prose-line"><code>:w</code>, <code>:q</code>, and <code>:wq</code> do exactly what they do in Vim. Press <kbd>&lt;Space&gt;</kbd> on its own to see every leader shortcut.</p>
+      </div>
+      </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p><a href="https://github.com/anthonyamaro15/nevi">github.com/anthonyamaro15/nevi</a></p>
+    <p>Released under the <a href="https://github.com/anthonyamaro15/nevi/blob/master/LICENSE">MIT License</a>.</p>
+    <p class="credits">Inspired by <a href="https://neovim.io/">Neovim</a>, <a href="https://helix-editor.com/">Helix</a>, and <a href="https://zed.dev/">Zed</a>. Built with <a href="https://github.com/cessen/ropey">ropey</a>, <a href="https://tree-sitter.github.io/tree-sitter/">tree-sitter</a>, <a href="https://github.com/crossterm-rs/crossterm">crossterm</a>, <a href="https://github.com/helix-editor/nucleo">nucleo</a>, and <a href="https://github.com/rust-lang/git2-rs">git2</a>.</p>
+  </footer>
+
+  <div class="statusline" aria-hidden="true">
+    <b class="mode">NORMAL</b>
+    <span class="file" data-status-section>top</span>
+    <span class="hint">j k scroll &nbsp; ]] [[ section &nbsp; gg G</span>
+    <span class="pos" data-status-pos>Top</span>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>

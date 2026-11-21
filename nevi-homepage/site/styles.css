@@ -1,0 +1,420 @@
+/* The page is skinned by Nevi's own themes. These are onedark's values (the
+   default colorscheme); main.js swaps them when a theme is picked and lifts
+   any text color that would read below 4.5:1 on the page.
+   Color is used sparingly on purpose: --mode marks what you can act on,
+   --ok marks verified numbers, and syntax colors appear only in code. */
+:root {
+  --bg: #282c34;
+  --fg: #abb2bf;
+  --kw: #c678dd;
+  --fn: #61afef;
+  --ty: #e5c07b;
+  --st: #98c379;
+  --cm: #7f8796;
+  --num: #d19a66;
+  --ln: #7f8796;
+  --bar: #21252b;
+  --mode: #61afef;
+  --ok: #98c379;
+  --muted: #9aa1ad;
+
+  --strong: color-mix(in srgb, var(--fg) 45%, #fff);
+  --rule: color-mix(in srgb, var(--fg) 14%, var(--bg));
+  --rule-strong: color-mix(in srgb, var(--fg) 26%, var(--bg));
+  --panel: color-mix(in srgb, var(--fg) 5%, var(--bg));
+
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: "IBM Plex Sans", system-ui, sans-serif;
+  --measure: 66ch;
+  --content: 1120px;
+  --gutter: clamp(16px, 4vw, 48px);
+  --status-h: 30px;
+
+  color-scheme: dark;
+}
+:root[data-light] { color-scheme: light; --strong: color-mix(in srgb, var(--fg) 80%, #000); }
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { scroll-padding-top: 76px; -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 400 1.0625rem/1.65 var(--sans);
+  padding-bottom: calc(var(--status-h) + env(safe-area-inset-bottom));
+  overflow-x: clip;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "tnum" 0;
+}
+
+a { color: var(--mode); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--mode); outline-offset: 3px; border-radius: 3px; }
+
+code, kbd, pre { font-family: var(--mono); font-size: .86em; }
+p code, .note code, .steps code {
+  color: var(--strong); white-space: nowrap;
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; padding: .05em .35em;
+}
+
+kbd {
+  display: inline-block;
+  padding: .1em .5em;
+  border: 1px solid var(--rule-strong);
+  border-radius: 5px;
+  background: var(--panel);
+  box-shadow: inset 0 -1px 0 var(--rule-strong);
+  color: var(--strong);
+  font-weight: 500;
+  white-space: nowrap;
+  line-height: 1.5;
+}
+
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.skip { position: absolute; left: -9999px; top: 8px; z-index: 30; background: var(--mode); color: var(--bg); padding: 8px 12px; }
+.skip:focus { left: 8px; }
+
+/* ---------- top bar ---------- */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 32px;
+  padding: 12px max(var(--gutter), calc((100% - var(--content)) / 2 + var(--gutter)));
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: saturate(140%) blur(12px);
+  -webkit-backdrop-filter: saturate(140%) blur(12px);
+  border-bottom: 1px solid var(--rule);
+  transition: transform .2s ease;
+}
+.logo {
+  font: 600 1.05rem/1 var(--mono);
+  color: var(--strong); text-decoration: none; letter-spacing: -.01em;
+  display: inline-flex; align-items: center;
+}
+.logo-cursor { display: inline-block; width: .55em; height: 1.1em; margin-left: 2px; background: var(--mode); }
+.topbar nav { display: flex; gap: 28px; margin-left: auto; }
+.topbar nav a { color: var(--muted); text-decoration: none; font-size: .92rem; padding: 6px 0; }
+.topbar nav a:hover { color: var(--strong); }
+.gh {
+  display: inline-flex; align-items: center; gap: 8px;
+  color: var(--strong); text-decoration: none; font-size: .9rem; font-weight: 500;
+  border: 1px solid var(--rule-strong); border-radius: 8px; padding: 7px 13px;
+}
+.gh:hover { background: var(--panel); }
+.gh svg { width: 16px; height: 16px; fill: currentColor; }
+
+/* ---------- layout ---------- */
+main > section {
+  max-width: var(--content);
+  margin: 0 auto;
+  padding: clamp(64px, 8vw, 104px) var(--gutter) 0;
+}
+
+h1, h2, h3 { color: var(--strong); font-family: var(--sans); margin: 0; }
+h1 {
+  font-size: clamp(2.4rem, 5vw, 4.1rem);
+  font-weight: 600;
+  line-height: 1.04;
+  letter-spacing: -.035em;
+  max-width: 22ch;
+  text-wrap: balance;
+}
+h2 {
+  font-size: clamp(1.8rem, 3.2vw, 2.6rem);
+  font-weight: 600;
+  letter-spacing: -.028em;
+  line-height: 1.1;
+  margin-bottom: 20px;
+}
+h3 { font-size: 1.1rem; font-weight: 600; letter-spacing: -.01em; line-height: 1.35; }
+.sub { margin: 72px 0 24px; font-size: 1.5rem; letter-spacing: -.02em; }
+
+.prose { max-width: var(--measure); }
+.prose p, .prose-line { margin: 0 0 1em; max-width: var(--measure); }
+
+.note { color: var(--muted); font-size: .94rem; max-width: var(--measure); margin-top: 24px; }
+
+/* ---------- hero ---------- */
+.hero { padding-top: clamp(40px, 4.5vw, 64px); }
+.cursor {
+  display: inline-block; width: .42em; height: .8em; margin-left: .12em;
+  vertical-align: -.02em; background: var(--mode);
+  animation: blink 1.1s steps(1) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+.lede { font-size: clamp(1.1rem, 1.5vw, 1.25rem); line-height: 1.55; max-width: 60ch; margin: 20px 0 12px; color: var(--fg); }
+.hero-proof { margin: 0 0 28px; font-size: 1rem; }
+.hero-proof a { color: var(--fg); text-decoration: none; }
+.hero-proof a:hover { text-decoration: underline; text-decoration-color: var(--rule-strong); }
+.hero-proof strong { font-weight: 600; color: var(--ok); font-variant-numeric: tabular-nums; }
+
+.install-box { max-width: 680px; }
+.tabs { display: flex; align-items: flex-end; gap: 2px; }
+.platform { margin-left: auto; padding: 0 4px 10px; font-size: .86rem; color: var(--muted); }
+.tabs button {
+  -webkit-tap-highlight-color: transparent;
+  font: 500 .84rem/1 var(--sans);
+  color: var(--muted); background: transparent;
+  border: 1px solid transparent; border-bottom: 0; border-radius: 8px 8px 0 0;
+  padding: 11px 16px; cursor: pointer;
+}
+.tabs button:hover { color: var(--strong); }
+.tabs button[aria-selected="true"] { color: var(--strong); background: var(--bar); border-color: var(--rule); position: relative; z-index: 1; margin-bottom: -1px; padding-bottom: 12px; }
+.install-box:has(.tabs button:first-child[aria-selected="true"]) .cmd { border-top-left-radius: 0; }
+
+/* Commands never scroll sideways: they wrap at spaces, and long URLs at a
+   slash (<wbr>), only when they don't fit on one line. */
+.cmd {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--bar); border: 1px solid var(--rule); border-radius: 10px;
+  padding: 9px 9px 9px 16px;
+}
+.cmd code { flex: 1; min-width: 0; white-space: pre-wrap; color: var(--strong); font-size: .9rem; line-height: 1.7; }
+.prompt { color: var(--muted); user-select: none; }
+.nowrap { white-space: nowrap; }
+.cmd-multi { align-items: flex-start; }
+.copy {
+  flex: none;
+  font: 500 .8rem/1 var(--sans);
+  color: var(--muted); background: transparent;
+  border: 1px solid var(--rule-strong); border-radius: 7px; padding: 0 12px; cursor: pointer;
+  min-width: 70px; min-height: 34px;
+}
+.copy:hover { color: var(--strong); background: var(--panel); }
+.copy[data-state="done"] { color: var(--ok); border-color: var(--ok); }
+
+.window {
+  margin: clamp(36px, 3.5vw, 48px) 0 0;
+  border: 1px solid var(--rule-strong); border-radius: 12px; overflow: hidden;
+  background: var(--bar);
+  box-shadow: 0 40px 80px -40px rgb(0 0 0 / .65);
+}
+/* The demo is dark, so its frame stays dark on light themes too. */
+:root[data-light] .window { --bar: #24292f; --rule: #3d444d; --rule-strong: #4b535d; --muted: #b7bdc8; --panel: #2f363d; --fg: #d1d7e0; --strong: #f0f3f6; box-shadow: 0 24px 48px -24px rgb(0 0 0 / .3); }
+.window-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 14px; border-bottom: 1px solid var(--rule);
+  font: 500 .78rem var(--mono); color: var(--muted);
+}
+.window a { display: block; }
+.window img { display: block; width: 100%; height: auto; }
+.window figcaption { padding: 14px 16px; font-size: .9rem; color: var(--muted); border-top: 1px solid var(--rule); }
+.window figcaption kbd { font-size: .8em; }
+
+/* ---------- why ---------- */
+.table-wrap { margin-top: 40px; border: 1px solid var(--rule); border-radius: 12px; overflow: hidden; }
+.compare { width: 100%; border-collapse: collapse; font-size: .97rem; }
+.compare th, .compare td { text-align: left; padding: 16px 22px; border-bottom: 1px solid var(--rule); }
+.compare thead th { font-size: .84rem; font-weight: 500; color: var(--muted); background: var(--panel); }
+.compare tbody th { font-weight: 600; color: var(--strong); }
+.compare tbody tr:last-child > * { border-bottom: 0; }
+.compare .is-nevi { background: color-mix(in srgb, var(--mode) 10%, var(--bg)); }
+.compare .is-nevi th { color: var(--mode); }
+.compare .is-nevi td { color: var(--strong); }
+
+.perf { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: auto auto; margin: 0; border-top: 1px solid var(--rule); }
+.perf > div { display: grid; grid-row: span 2; grid-template-rows: subgrid; padding: 24px 24px 4px 0; }
+.perf > div + div { padding-left: 24px; border-left: 1px solid var(--rule); }
+.perf dt { font-size: .94rem; color: var(--muted); }
+.perf dd { margin: 12px 0 0; }
+.perf strong { display: block; font: 600 clamp(2.1rem, 3.8vw, 2.9rem)/1 var(--sans); letter-spacing: -.035em; color: var(--ok); font-variant-numeric: tabular-nums; }
+.perf span { display: block; margin-top: 8px; font-size: .88rem; color: var(--muted); }
+
+/* ---------- features ---------- */
+.features { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 64px; }
+.features li { padding: 28px 0; border-top: 1px solid var(--rule); }
+.features p { margin: 8px 0 0; color: var(--fg); max-width: 52ch; }
+.features .keys { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+.features .keys kbd { font-size: .8rem; }
+
+/* ---------- compatibility ---------- */
+.parity { margin-top: 8px; display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: clamp(32px, 6vw, 88px); align-items: start; }
+.big { margin: 4px 0 24px; color: var(--muted); font-size: 1rem; }
+.big strong {
+  display: block;
+  font: 600 clamp(3.6rem, 9vw, 6.4rem)/.95 var(--sans);
+  letter-spacing: -.05em; color: var(--strong); font-variant-numeric: tabular-nums;
+}
+.big + .big strong { color: var(--ok); }
+.meter { height: 6px; border-radius: 3px; background: var(--rule); overflow: hidden; }
+.meter span { display: block; height: 100%; width: var(--part); background: var(--ok); }
+
+.steps { margin: 0 0 1.2em; padding: 0; list-style: none; counter-reset: step; }
+.steps li { counter-increment: step; position: relative; padding: 0 0 14px 36px; }
+.steps li::before {
+  content: counter(step);
+  position: absolute; left: 0; top: .15em;
+  width: 22px; height: 22px; display: grid; place-items: center;
+  font: 500 .74rem var(--mono); color: var(--muted);
+  border: 1px solid var(--rule-strong); border-radius: 50%;
+}
+
+.keycloud { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.keycloud kbd { font-size: .9rem; padding: .3em .7em; }
+
+/* ---------- themes ---------- */
+.themes { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 408px); gap: 32px; margin-top: 32px; align-items: start; }
+.theme-preview { border: 1px solid var(--rule-strong); border-radius: 12px; overflow: hidden; background: var(--bg); position: sticky; top: 88px; }
+.code { margin: 0; padding: 20px 0; font-size: .9rem; line-height: 1.75; color: var(--fg); }
+.code code { display: block; padding: 0 20px; font-size: inherit; white-space: pre-wrap; }
+.ln { display: inline-block; width: 2ch; margin-right: 1.5ch; text-align: right; color: var(--ln); user-select: none; }
+.k { color: var(--kw); } .f { color: var(--fn); } .t { color: var(--ty); } .s { color: var(--st); } .n { color: var(--num); }
+.c { color: var(--cm); font-style: italic; }
+.mini-status { display: flex; background: var(--bar); font: 500 .76rem/1 var(--mono); }
+.mini-status b { background: var(--mode); color: var(--bg); padding: 9px 12px; font-weight: 600; }
+.mini-status span { padding: 9px 12px; color: var(--fg); }
+.cmdline { margin: 0; padding: 11px 14px; font: .84rem var(--mono); color: var(--fg); }
+
+.theme-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.theme-list button {
+  width: 100%; min-height: 44px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 12px; border-radius: 8px; cursor: pointer;
+  font: 500 .78rem/1.2 var(--mono); text-align: left; white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--t-fg) 18%, var(--t-bg));
+  background: var(--t-bg); color: var(--t-fg);
+}
+.theme-list button[aria-pressed="true"] { outline: 2px solid var(--mode); outline-offset: 2px; }
+.theme-list button:focus-visible { outline: 2px dashed var(--fg); outline-offset: 2px; }
+.theme-list button span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.dots { display: flex; gap: 3px; flex: none; }
+.dots i { width: 8px; height: 8px; border-radius: 2px; }
+
+/* ---------- languages ---------- */
+.langs { list-style: none; margin: 28px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); column-gap: 24px; }
+.langs li { display: flex; flex-direction: column; gap: 2px; padding: 15px 0; border-top: 1px solid var(--rule); }
+.langs b { font-weight: 600; color: var(--strong); }
+.langs span { font: .82rem/1.45 var(--mono); color: var(--muted); }
+
+/* ---------- install ---------- */
+.install-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; }
+.install-item h3 { margin-bottom: 12px; }
+.install-item h3 span { color: var(--muted); font-weight: 400; margin-left: 8px; font-size: .85em; }
+.linux-deps { margin-top: 28px; }
+.linux-deps summary { cursor: pointer; color: var(--mode); font-size: .97rem; padding: 10px 0; }
+.linux-deps .cmd { margin-top: 10px; }
+.linux-deps .cmd + .cmd { margin-top: 8px; }
+.linux-deps .cmd code { color: var(--fg); }
+.linux-deps .tok { white-space: nowrap; }
+.distro { display: block; color: var(--muted); font-family: var(--sans); font-size: .82rem; margin-bottom: 2px; }
+
+.install-aside { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 32px 64px; margin-top: 56px; padding-top: 32px; border-top: 1px solid var(--rule); }
+.install-aside .note { margin-top: 0; }
+.first-run .sub { margin: 0 0 14px; font-size: 1.1rem; }
+.run-list { margin: 0 0 18px; padding: 4px 0; background: var(--bar); border: 1px solid var(--rule); border-radius: 10px; }
+.run-list div { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; padding: 10px 16px; }
+.run-list div + div { border-top: 1px solid var(--rule); }
+.run-list dt { font: .86rem/1.4 var(--mono); color: var(--strong); }
+.run-list dd { margin: 0; color: var(--muted); font-size: .92rem; }
+
+/* ---------- footer ---------- */
+.footer {
+  width: min(calc(var(--content) - 2 * var(--gutter)), calc(100% - 2 * var(--gutter)));
+  margin: clamp(80px, 9vw, 112px) auto 0;
+  padding: 32px 0 48px;
+  border-top: 1px solid var(--rule);
+  display: grid; grid-template-columns: auto 1fr; gap: 6px 32px;
+  font-size: .92rem; color: var(--muted);
+}
+.footer p { margin: 0; }
+.footer p:first-child a { font-family: var(--mono); font-size: .92em; color: var(--strong); }
+.footer .credits { grid-column: 1 / -1; margin-top: 14px; max-width: var(--measure); }
+
+/* ---------- statusline ---------- */
+.statusline {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+  height: calc(var(--status-h) + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+  display: flex; align-items: stretch;
+  background: var(--bar); border-top: 1px solid var(--rule);
+  font: 500 .8rem/var(--status-h) var(--mono);
+  color: var(--fg); white-space: nowrap;
+}
+.statusline > * { padding: 0 12px; }
+.statusline .mode { background: var(--mode); color: var(--bg); font-weight: 600; padding: 0 14px; }
+.statusline .mode[data-pending]::after { content: attr(data-pending); margin-left: 8px; }
+.statusline .hint { margin-left: auto; color: var(--muted); }
+.statusline .pos { min-width: 6ch; text-align: right; border-left: 1px solid var(--rule); }
+
+/* ---------- responsive ---------- */
+@media (max-width: 900px) {
+  .parity, .themes, .install-aside { grid-template-columns: minmax(0, 1fr); }
+  .theme-preview { position: static; }
+  .theme-list { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+}
+
+@media (max-width: 720px) {
+  html { scroll-padding-top: 20px; }
+  body { font-size: 1rem; }
+  /* On phones the bar slides away while reading down and returns on scroll up. */
+  .topbar[data-hidden] { transform: translateY(-100%); }
+  .topbar { flex-wrap: wrap; gap: 0 16px; padding-top: 8px; padding-bottom: 0; }
+  .logo { min-height: 44px; }
+  .gh { margin-left: auto; padding: 0 12px; min-height: 44px; }
+  /* Section links move to a second, swipeable row instead of disappearing. */
+  .topbar nav {
+    order: 3; width: calc(100% + 2 * var(--gutter));
+    margin: 0 calc(-1 * var(--gutter)); padding: 0 var(--gutter);
+    gap: 22px; overflow-x: auto; scrollbar-width: none;
+  }
+  .topbar nav a { padding: 11px 0; white-space: nowrap; }
+
+  /* The demo recording is 1274px wide; scaled to a phone its text can't be
+     read, so phones get the words and the install command instead. */
+  .window { display: none; }
+
+  .features { grid-template-columns: minmax(0, 1fr); }
+  .perf { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+  .perf > div { grid-row: auto; grid-template-rows: none; }
+  .perf > div, .perf > div + div { padding: 18px 0; border-left: 0; }
+  .perf > div + div { border-top: 1px solid var(--rule); }
+
+  /* The comparison table becomes one block per editor, so no column hides. */
+  .compare thead { display: none; }
+  .compare, .compare tbody, .compare tr, .compare th, .compare td { display: block; }
+  .compare tr { padding: 14px 18px; border-bottom: 1px solid var(--rule); }
+  .compare tbody tr:last-child { border-bottom: 0; }
+  .compare th, .compare td { padding: 0; border: 0; }
+  .compare tbody th { font-size: 1.02rem; margin-bottom: 8px; }
+  .compare td { display: flex; gap: 12px; padding: 3px 0; font-size: .95rem; }
+  .compare td::before { content: attr(data-label); flex: 0 0 9.5em; color: var(--muted); font-size: .9rem; }
+
+  /* Themes: two swipeable rows right under the preview, so it stays in view. */
+  .theme-list {
+    grid-auto-flow: column; grid-template-columns: none; grid-template-rows: repeat(2, auto); grid-auto-columns: 216px;
+    overflow-x: auto; scrollbar-width: none;
+    margin: 0 calc(-1 * var(--gutter)); padding: 6px var(--gutter) 10px;
+    scroll-padding-inline: var(--gutter); scroll-snap-type: x proximity;
+  }
+  .theme-list li { scroll-snap-align: start; }
+
+  .langs { grid-template-columns: minmax(0, 1fr); }
+  .langs li { flex-direction: row; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 2px 16px; padding: 11px 0; }
+  .langs span { font-size: .84rem; }
+  /* Fade the right edge while more themes are off-screen. */
+  .theme-list:not([data-end]) {
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 48px), transparent);
+    mask-image: linear-gradient(90deg, #000 calc(100% - 48px), transparent);
+  }
+
+  .statusline .hint { display: none; }
+  .statusline .file { margin-right: auto; overflow: hidden; text-overflow: ellipsis; }
+  .footer { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 560px) {
+  /* Copy sits under the command so the command gets the full width. */
+  .cmd { flex-wrap: wrap; gap: 8px; padding: 10px 10px 10px 14px; }
+  .cmd code { flex-basis: 100%; font-size: .82rem; }
+  .copy { margin-left: auto; min-height: 44px; min-width: 88px; }
+  .platform { font-size: .8rem; }
+  .tabs button { padding: 14px 16px; }
+  .code { font-size: .8rem; }
+  .code code { padding: 0 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cursor { animation: none; }
+  .topbar { transition: none; }
+}
