@@ -347,6 +347,9 @@ fn git_status_entry_path(entry: &git2::StatusEntry<'_>) -> Option<PathBuf> {
 }
 
 fn is_text_previewable(file_path: &Path) -> bool {
+    if crate::editor::regular_file_metadata(file_path).is_err() {
+        return false;
+    }
     let Ok(file) = std::fs::File::open(file_path) else {
         return false;
     };
@@ -1217,5 +1220,26 @@ mod tests {
             git_file_status_from_git2(git2::Status::CONFLICTED | git2::Status::WT_MODIFIED),
             Some(GitFileStatus::Conflicted)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_changes_diff_preview_of_an_untracked_fifo_does_not_block() {
+        use crate::editor::save_test_support::{finish_without_blocking_on, make_fifo};
+        let root = unique_temp_dir("nevi_git_changes_diff_fifo");
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        git2::Repository::init(&root).expect("init repo");
+        let fifo = root.join("pipe.txt");
+        make_fifo(&fifo);
+
+        let (repo_root, path) = (root.clone(), fifo.clone());
+        let preview = finish_without_blocking_on(&fifo, move || {
+            let repo = GitRepo::open(&repo_root).expect("open repo");
+            repo.diff_preview(&path, GitFileStatus::Untracked, 50)
+        });
+
+        assert_eq!(preview, vec!["File is binary or unreadable"]);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

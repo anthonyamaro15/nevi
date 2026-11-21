@@ -89,8 +89,11 @@ impl Editor {
         files
             .entry(path.to_path_buf())
             .or_insert_with(|| {
-                let small = std::fs::metadata(path).ok()?.len() <= MAX_FILE_BYTES;
-                let text = std::fs::read_to_string(path).ok().filter(|_| small)?;
+                let metadata = super::regular_file_metadata(path).ok()?;
+                if metadata.len() > MAX_FILE_BYTES {
+                    return None;
+                }
+                let text = std::fs::read_to_string(path).ok()?;
                 Some(text.lines().map(str::to_string).collect())
             })
             .as_ref()?
@@ -166,5 +169,27 @@ mod tests {
         assert!(rows[2].matched.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A language server can point a reference at a FIFO in the project.
+    #[cfg(unix)]
+    #[test]
+    fn rows_skip_a_fifo_without_blocking() {
+        use crate::editor::save_test_support::{Fixture, finish_without_blocking_on, make_fifo};
+        let dir = Fixture::new();
+        let fifo = dir.0.join("pipe.go");
+        make_fifo(&fifo);
+        let location = Location {
+            uri: crate::lsp::path_to_uri(&fifo),
+            line: 0,
+            col: 0,
+        };
+
+        let rows = finish_without_blocking_on(&fifo, move || {
+            Editor::default().reference_rows(&[location])
+        });
+
+        assert_eq!(rows[0].text, "");
+        assert!(rows[0].matched.is_empty());
     }
 }

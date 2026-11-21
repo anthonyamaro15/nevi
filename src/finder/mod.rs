@@ -1269,7 +1269,9 @@ impl FuzzyFinder {
             };
             self.preview_line_offset = start_line;
 
-            match File::open(&selected_path) {
+            match crate::editor::regular_file_metadata(&selected_path)
+                .and_then(|_| File::open(&selected_path))
+            {
                 Ok(file) => {
                     // Decode a UTF-16 file with a byte order mark the way live
                     // grep does, so its hits preview; other files pass through.
@@ -2323,5 +2325,28 @@ mod tests {
 
         assert!(!finder.poll_file_list());
         assert!(finder.items.is_empty());
+    }
+
+    // Harpoon slots come from the project's .nevi/harpoon.json, so the
+    // preview can be handed a FIFO the file picker would never list.
+    #[cfg(unix)]
+    #[test]
+    fn preview_of_a_fifo_does_not_block() {
+        use crate::editor::save_test_support::{Fixture, finish_without_blocking_on, make_fifo};
+        let dir = Fixture::new();
+        let fifo = dir.0.join("pipe.md");
+        make_fifo(&fifo);
+
+        let path = fifo.clone();
+        let preview = finish_without_blocking_on(&fifo, move || {
+            let mut finder = FuzzyFinder::new();
+            finder.preview_enabled = true;
+            finder.open_harpoon(vec![path]);
+            finder
+                .update_preview_content()
+                .map(|(_, lines)| lines.to_vec())
+        });
+
+        assert_eq!(preview, Some(vec!["(Unable to read file)".to_string()]));
     }
 }

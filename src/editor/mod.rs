@@ -19,7 +19,7 @@ pub(crate) mod set_options;
 mod topline;
 mod undo;
 
-pub use buffer::{Buffer, BufferEdit};
+pub use buffer::{Buffer, BufferEdit, regular_file_metadata};
 pub use cursor::{Cursor, DesiredCol};
 pub use macros::MacroState;
 pub use marks::{Mark, Marks};
