@@ -2587,6 +2587,7 @@ fn apply_edits_to_file(
 ) -> anyhow::Result<usize> {
     use std::fs;
 
+    nevi::editor::regular_file_metadata(path)?;
     let content = fs::read_to_string(path)?;
     let mut text = ropey::Rope::from_str(&content);
 
@@ -2992,6 +2993,36 @@ mod tests {
 
         assert_eq!(count, 1);
         assert_eq!(std::fs::read_to_string(&path).expect("read file"), "a😀X\n");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // A rename from a language server can name any path; a device behind a
+    // symlink is refused before it is read or written.
+    #[cfg(unix)]
+    #[test]
+    fn apply_edits_to_file_refuses_a_symlink_to_a_device() {
+        let tmp = unique_temp_dir("nevi_disk_lsp_edit_device");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let link = tmp.join("zero.rs");
+        std::os::unix::fs::symlink("/dev/null", &link).expect("symlink");
+
+        let err = apply_edits_to_file(
+            &link,
+            &[TextEdit {
+                start_line: 0,
+                start_col: 0,
+                end_line: 0,
+                end_col: 0,
+                new_text: "X".to_string(),
+            }],
+        )
+        .expect_err("a device is not a file");
+
+        assert_eq!(
+            err.to_string(),
+            format!("\"{}\" is not a file", link.display())
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

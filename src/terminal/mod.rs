@@ -16240,6 +16240,52 @@ mod tests {
         editor
     }
 
+    // A project entry that is not a regular file (here a symlink to a
+    // device) fails with a status message on every way in, and the buffer
+    // the user was on stays put.
+    #[cfg(unix)]
+    #[test]
+    fn opening_a_non_file_reports_an_error_and_keeps_the_buffer() {
+        let root = unique_temp_dir("nevi_open_non_file");
+        std::fs::create_dir_all(&root).expect("create root");
+        let notes = root.join("notes.md");
+        std::fs::write(&notes, "notes\n").expect("write notes");
+        let link = root.join("zero.md");
+        std::os::unix::fs::symlink("/dev/null", &link).expect("symlink");
+        let not_a_file = format!("\"{}\" is not a file", link.display());
+
+        let mut editor = Editor::default();
+        editor.set_project_root(root.clone());
+        editor.open_file(notes.clone()).expect("open notes");
+        let assert_on_notes = |editor: &Editor, expected: &str| {
+            assert_eq!(editor.status_message.as_deref(), Some(expected));
+            assert_eq!(editor.buffer().path.as_ref(), Some(&notes));
+            assert_eq!(editor.buffer().content(), "notes\n");
+            assert_eq!(editor.buffer_count(), 1);
+        };
+
+        type_command(&mut editor, &format!(":e {}", link.display()));
+        assert_on_notes(&editor, &format!("E: Error opening file: {not_a_file}"));
+
+        editor.harpoon.add_file(&link);
+        type_command(&mut editor, ":Harpoon1");
+        assert_on_notes(&editor, &format!("E: Error opening file: {not_a_file}"));
+
+        editor.open_explorer();
+        select_explorer_path(&mut editor, &link);
+        super::toggle_or_open_explorer_selection(&mut editor);
+        assert_on_notes(&editor, &format!("Couldn't open the file: {not_a_file}"));
+
+        editor.mode = Mode::Normal;
+        std::fs::remove_file(&notes).expect("remove notes");
+        std::os::unix::fs::symlink("/dev/null", &notes).expect("replace notes");
+        type_command(&mut editor, ":e!");
+        let notes_not_a_file = format!("\"{}\" is not a file", notes.display());
+        assert_on_notes(&editor, &format!("E: Error reloading: {notes_not_a_file}"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn editor_with_project_explorer(root: &std::path::Path) -> Editor {
         let mut editor = Editor::default();
         editor.set_project_root(root.to_path_buf());

@@ -102,7 +102,7 @@ impl Buffer {
 
     fn from_file_with_read_only(path: PathBuf, read_only: bool) -> anyhow::Result<Self> {
         let (text, last_mtime) = if path.exists() {
-            let mtime = std::fs::metadata(&path)?.modified().ok();
+            let mtime = regular_file_metadata(&path)?.modified().ok();
             let mut rope = Rope::from_reader(std::fs::File::open(&path)?)?;
             Self::fix_missing_final_newline(&mut rope);
             (rope, mtime)
@@ -262,6 +262,7 @@ impl Buffer {
             .ok_or_else(|| anyhow::anyhow!("No file path set"))?;
 
         if path.exists() {
+            regular_file_metadata(&path)?;
             self.text = Rope::from_reader(std::fs::File::open(&path)?)?;
             Self::fix_missing_final_newline(&mut self.text);
             self.break_edit_history();
@@ -766,6 +767,22 @@ fn write_file_atomically(
 
     sync_parent_dir(parent);
     Ok(())
+}
+
+/// Metadata of `path` after following symlinks, refused unless it names a
+/// regular file. Check this before `open()` on a path a project or a
+/// language server can choose: opening a FIFO blocks until a writer shows
+/// up, and a device such as /dev/zero never reaches end of file.
+pub fn regular_file_metadata(path: &Path) -> io::Result<fs::Metadata> {
+    let metadata = fs::metadata(path)?;
+    if metadata.is_file() {
+        Ok(metadata)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("\"{}\" is not a file", path.display()),
+        ))
+    }
 }
 
 /// Follow a symlink chain to the path it finally names. A dangling link
@@ -1378,5 +1395,99 @@ mod tests {
             buffer.take_edits_since(base).map(|edits| edits.len()),
             Some(1)
         );
+    }
+
+    #[cfg(unix)]
+    fn assert_not_a_file_error(err: &anyhow::Error, path: &std::path::Path) {
+        assert_eq!(
+            err.to_string(),
+            format!("\"{}\" is not a file", path.display())
+        );
+    }
+
+    // A project can ship a FIFO; open() on one waits for a writer forever.
+    #[cfg(unix)]
+    #[test]
+    fn opening_a_fifo_fails_at_once_and_names_the_path() {
+        use crate::editor::save_test_support::{Fixture, finish_without_blocking_on, make_fifo};
+        let dir = Fixture::new();
+        let fifo = dir.0.join("pipe.md");
+        make_fifo(&fifo);
+
+        let path = fifo.clone();
+        let opened = finish_without_blocking_on(&fifo, move || Buffer::from_file(path).map(|_| ()));
+
+        assert_not_a_file_error(&opened.expect_err("a FIFO is not a file"), &fifo);
+    }
+
+    // A checked-in `README.md -> /dev/zero` must not be read until memory
+    // runs out. /dev/null is the same kind of file, but safe if this regresses.
+    #[cfg(unix)]
+    #[test]
+    fn opening_a_symlink_to_a_device_fails_and_names_the_path() {
+        let tmp = unique_temp_dir("nevi_open_device_link");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let link = tmp.join("README.md");
+        std::os::unix::fs::symlink("/dev/null", &link).expect("symlink");
+
+        let err = Buffer::from_file(link.clone())
+            .err()
+            .expect("a device is not a file");
+        assert_not_a_file_error(&err, &link);
+        let err = Buffer::from_file_read_only(link.clone())
+            .err()
+            .expect("a device is not a file");
+        assert_not_a_file_error(&err, &link);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn regular_files_symlinks_and_missing_paths_still_open() {
+        let tmp = unique_temp_dir("nevi_open_regular");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let file = tmp.join("real.txt");
+        std::fs::write(&file, "text\n").expect("write file");
+        let link = tmp.join("link.txt");
+        std::os::unix::fs::symlink("real.txt", &link).expect("symlink");
+        let dangling = tmp.join("dangling.txt");
+        std::os::unix::fs::symlink("missing.txt", &dangling).expect("dangling symlink");
+
+        for path in [&file, &link] {
+            let buffer = Buffer::from_file(path.clone()).expect("open file");
+            assert_eq!(buffer.content(), "text\n");
+            assert!(!buffer.has_external_changes());
+        }
+        for path in [tmp.join("new.txt"), dangling] {
+            let buffer = Buffer::from_file(path.clone()).expect("open new file");
+            assert!(buffer.is_empty());
+            assert_eq!(buffer.path.as_ref(), Some(&path));
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reload_refuses_a_fifo_and_keeps_the_text() {
+        use crate::editor::save_test_support::{Fixture, finish_without_blocking_on, make_fifo};
+        let dir = Fixture::new();
+        let path = dir.file("notes.md", "keep me\n");
+        let buffer = Buffer::from_file(path.clone()).expect("open file");
+        std::fs::remove_file(&path).expect("remove file");
+        make_fifo(&path);
+
+        let (buffer, reloaded) = finish_without_blocking_on(&path, move || {
+            let mut buffer = buffer;
+            let reloaded = buffer.reload().map_err(|err| err.to_string());
+            (buffer, reloaded)
+        });
+
+        assert_eq!(
+            reloaded,
+            Err(format!("\"{}\" is not a file", path.display()))
+        );
+        assert_eq!(buffer.content(), "keep me\n");
     }
 }

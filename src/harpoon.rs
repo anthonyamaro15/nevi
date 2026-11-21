@@ -57,7 +57,7 @@ impl Harpoon {
             return;
         };
 
-        if !path.exists() {
+        if crate::editor::regular_file_metadata(&path).is_err() {
             return;
         }
 
@@ -195,5 +195,31 @@ impl Harpoon {
             self.files.swap(a, b);
             self.save();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Harpoon;
+
+    // A project can ship .nevi/harpoon.json as a FIFO; loading it must not
+    // freeze the editor when the project opens.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_harpoon_file_is_ignored_without_blocking() {
+        use crate::editor::save_test_support::{Fixture, finish_without_blocking_on, make_fifo};
+        let dir = Fixture::new();
+        std::fs::create_dir_all(dir.0.join(".nevi")).expect("create .nevi");
+        let fifo = dir.0.join(".nevi").join("harpoon.json");
+        make_fifo(&fifo);
+
+        let root = dir.0.clone();
+        let harpoon = finish_without_blocking_on(&fifo, move || {
+            let mut harpoon = Harpoon::new();
+            harpoon.set_project_root(root);
+            harpoon
+        });
+
+        assert!(harpoon.files().is_empty());
     }
 }
