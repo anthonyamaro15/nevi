@@ -18,7 +18,7 @@ const MAX_QUERY_BYTES: usize = 16 * 1024; // 16KB
 /// cut off instead. Dense but ordinary lines take well under 10 ms.
 pub const HIGHLIGHT_QUERY_BUDGET: Duration = Duration::from_millis(50);
 
-/// The highlight query ran out of time; the line has no reliable spans.
+/// A highlight query or a parse ran out of time; its result is not usable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OverBudget;
 
