@@ -646,6 +646,7 @@ fn run_lsp_thread(
 /// is called frequently during rendering (for diagnostic lookups).
 pub fn path_to_uri(path: &PathBuf) -> String {
     Url::from_file_path(path)
+        .or_else(|_| Url::from_file_path(std::path::absolute(path).map_err(|_| ())?))
         .map(|url| url.to_string())
         .unwrap_or_else(|_| format!("file://{}", path.display()))
 }
@@ -718,6 +719,18 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn relative_buffer_path_has_the_same_document_uri_as_its_absolute_path() {
+        // A new file has no directory entry to canonicalize yet.
+        let relative = PathBuf::from("src").join("new file #1.rs");
+        let absolute = std::env::current_dir().unwrap().join(&relative);
+        let buffer = crate::editor::Buffer::from_file(relative.clone()).unwrap();
+        assert_eq!(buffer.path.as_ref(), Some(&absolute));
+        let uri = super::path_to_uri(&relative);
+        assert_eq!(uri, super::path_to_uri(&absolute));
+        assert_eq!(super::uri_to_path(&uri), Some(absolute));
+    }
 
     #[test]
     fn a_server_that_exits_reports_a_fatal_channel_closed_error() {

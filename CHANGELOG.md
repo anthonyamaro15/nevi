@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- Language-server hover and rename now use the correct document when a file is opened with a relative path such as `:e src/main.rs`.
 - Nevi no longer writes to `/tmp/nevi_debug.log`. Key presses that took longer than usual to handle were logged there along with the key typed, in a file other users on the machine could read. The same timings are still available in memory through `:WhySlow`. (#405)
 - A fresh install no longer shows `Copilot: Copilot server not found...` on every launch. Copilot is on by default, so that error was the first thing a new user saw on a machine without it. Nevi now stays quiet when Node.js or the Copilot server isn't installed, unless the config sets `enabled = true`, `server_path`, or `node_path` under `[copilot]`. `:CopilotStatus` and `:CopilotAuth` now give the reason instead of `Copilot: Starting...` and a sign-in prompt that never came. (#406)
 - A mapping whose `to` contains its own `from`, like `n` to `nzz` or `x` to `"_x`, no longer crashes Nevi with a stack overflow, which also left the terminal in raw mode and lost unsaved changes. Keys that come from a `[[keymap.normal]]` or `[[keymap.visual]]` mapping are no longer mapped again, like Vim's `noremap`, so `n` in `nzz` is the built-in `n`. The leader key still works inside a mapping, and a leader mapping that runs itself now stops with a message instead of crashing. (#407)
