@@ -1995,51 +1995,22 @@ fn main() -> anyhow::Result<()> {
                             if edits.is_empty() {
                                 editor.set_status("Rename: no changes needed");
                             } else {
-                                // Apply rename edits to all affected files
-                                let mut total_edits = 0;
-                                let mut files_changed = 0;
-                                let mut errors: Vec<String> = Vec::new();
-
-                                for (uri, file_edits) in edits {
-                                    if let Some(path) = lsp::uri_to_path(&uri) {
-                                        // Check if this is the current file
-                                        let is_current =
-                                            editor.buffer().path.as_ref() == Some(&path);
-                                        if is_current {
-                                            editor.apply_text_edits(&file_edits);
-                                            total_edits += file_edits.len();
-                                            files_changed += 1;
-                                        } else {
-                                            // Apply edits to other files: read, modify, write
-                                            match apply_edits_to_file(&path, &file_edits) {
-                                                Ok(edit_count) => {
-                                                    total_edits += edit_count;
-                                                    files_changed += 1;
-                                                }
-                                                Err(e) => {
-                                                    errors.push(format!(
-                                                        "{}: {}",
-                                                        path.display(),
-                                                        e
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                if !errors.is_empty() {
+                                let outcome = editor.apply_workspace_edit(&edits);
+                                if let Some(first) = outcome.errors.first() {
                                     editor.set_error(format!(
                                         "Rename: {} error(s) - {}",
-                                        errors.len(),
-                                        errors.first().unwrap_or(&String::new())
+                                        outcome.errors.len(),
+                                        first
                                     ));
-                                } else if total_edits > 0 {
-                                    editor.set_status(format!(
-                                        "Renamed: {} edits in {} file(s)",
-                                        total_edits, files_changed
-                                    ));
-                                    // Send didChange to LSP for current file
+                                } else if outcome.total_edits > 0 {
+                                    editor.set_status(outcome.summary());
+                                }
+                                // Only the current file is open on the server
+                                // (didOpen/didClose follow the current buffer).
+                                // Other edited buffers send their text in the
+                                // didOpen when they become current; files
+                                // edited on disk reach it via file watching.
+                                if outcome.current_buffer_changed {
                                     if let Some(path) = editor.buffer().path.clone() {
                                         let text = editor.buffer().content();
                                         let _ = mlsp.did_change(&path, &text);
@@ -2577,59 +2548,6 @@ fn calculate_word_start(editor: &Editor, line_idx: usize, col: usize) -> usize {
     col
 }
 
-/// Apply LSP text edits to a file on disk
-/// Reads the file, applies edits in reverse order, and writes back
-fn apply_edits_to_file(
-    path: &std::path::Path,
-    edits: &[lsp::types::TextEdit],
-) -> anyhow::Result<usize> {
-    use std::fs;
-
-    nevi::editor::regular_file_metadata(path)?;
-    let content = fs::read_to_string(path)?;
-    let mut text = ropey::Rope::from_str(&content);
-
-    // Sort edits by position (reverse order) so we can apply from end to start
-    let mut sorted_edits: Vec<&lsp::types::TextEdit> = edits.iter().collect();
-    sorted_edits.sort_by(|a, b| match b.end_line.cmp(&a.end_line) {
-        std::cmp::Ordering::Equal => b.end_col.cmp(&a.end_col),
-        other => other,
-    });
-
-    // Apply each edit
-    for edit in &sorted_edits {
-        let start = utf16_position_to_rope_char(&text, edit.start_line, edit.start_col);
-        let end = utf16_position_to_rope_char(&text, edit.end_line, edit.end_col);
-
-        if start <= end && end <= text.len_chars() {
-            if start < end {
-                text.remove(start..end);
-            }
-            if !edit.new_text.is_empty() {
-                text.insert(start, &edit.new_text);
-            }
-        }
-    }
-
-    fs::write(path, text.to_string())?;
-
-    Ok(sorted_edits.len())
-}
-
-fn utf16_position_to_rope_char(text: &ropey::Rope, line: usize, utf16_col: usize) -> usize {
-    if line >= text.len_lines() {
-        return text.len_chars();
-    }
-
-    let line_start = text.line_to_char(line);
-    let line_text = text.line(line).to_string();
-    let line_text = line_text.trim_end_matches('\n');
-    let line_len = line_text.chars().count();
-    let col = utf16_to_utf8_col(line_text, utf16_col as u32).min(line_len);
-
-    line_start + col
-}
-
 /// Check if we should auto-trigger signature help based on the character just typed
 fn should_trigger_signature_help(editor: &Editor) -> bool {
     let col = editor.cursor.col;
@@ -2899,15 +2817,15 @@ fn find_workspace_root(file_path: &Path, root_markers: &[String]) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        CliStartupAction, PickModeAction, TerminalOutputTarget, apply_edits_to_file,
-        diagnostic_to_lsp_offsets, editor_lsp_cursor_col, editor_lsp_line_len, help_output,
+        CliStartupAction, PickModeAction, TerminalOutputTarget, diagnostic_to_lsp_offsets,
+        editor_lsp_cursor_col, editor_lsp_line_len, help_output,
         lsp_completion_response_matches_current_cursor, lsp_response_matches_current_buffer,
         open_rename_prompt_if_current, pick_mode_action_for_key, profile_enabled_from_value,
         should_dismiss_signature_help, should_dismiss_signature_help_at, startup_action_from_args,
         terminal_output_target_for_pick_mode,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use nevi::lsp::types::{Diagnostic, DiagnosticSeverity, TextEdit};
+    use nevi::lsp::types::{Diagnostic, DiagnosticSeverity};
     use nevi::{Editor, Mode};
     use std::path::PathBuf;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -2968,61 +2886,6 @@ mod tests {
             .expect("system time")
             .as_nanos();
         std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos))
-    }
-
-    #[test]
-    fn apply_edits_to_file_treats_columns_as_utf16_offsets() {
-        let tmp = unique_temp_dir("nevi_disk_lsp_edit");
-        std::fs::create_dir_all(&tmp).expect("create temp dir");
-        let path = tmp.join("unicode.txt");
-        std::fs::write(&path, "a😀b\n").expect("write file");
-
-        let count = apply_edits_to_file(
-            &path,
-            &[TextEdit {
-                start_line: 0,
-                start_col: 3,
-                end_line: 0,
-                end_col: 4,
-                new_text: "X".to_string(),
-            }],
-        )
-        .expect("apply edits");
-
-        assert_eq!(count, 1);
-        assert_eq!(std::fs::read_to_string(&path).expect("read file"), "a😀X\n");
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    // A rename from a language server can name any path; a device behind a
-    // symlink is refused before it is read or written.
-    #[cfg(unix)]
-    #[test]
-    fn apply_edits_to_file_refuses_a_symlink_to_a_device() {
-        let tmp = unique_temp_dir("nevi_disk_lsp_edit_device");
-        std::fs::create_dir_all(&tmp).expect("create temp dir");
-        let link = tmp.join("zero.rs");
-        std::os::unix::fs::symlink("/dev/null", &link).expect("symlink");
-
-        let err = apply_edits_to_file(
-            &link,
-            &[TextEdit {
-                start_line: 0,
-                start_col: 0,
-                end_line: 0,
-                end_col: 0,
-                new_text: "X".to_string(),
-            }],
-        )
-        .expect_err("a device is not a file");
-
-        assert_eq!(
-            err.to_string(),
-            format!("\"{}\" is not a file", link.display())
-        );
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
