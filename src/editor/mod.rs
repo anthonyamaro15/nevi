@@ -18,6 +18,7 @@ mod search_pattern;
 pub(crate) mod set_options;
 mod topline;
 mod undo;
+mod workspace_edit;
 
 pub use buffer::{Buffer, BufferEdit, regular_file_metadata};
 pub use cursor::{Cursor, DesiredCol};
@@ -26,6 +27,7 @@ pub use marks::{Mark, Marks};
 pub use reference_rows::ReferenceRow;
 pub use register::{RegisterContent, Registers};
 pub use undo::{Change, UndoEntry, UndoStack};
+pub use workspace_edit::WorkspaceEditOutcome;
 
 use replace::ReplaceSession;
 use search_pattern::SearchPattern;
@@ -4190,19 +4192,25 @@ impl Editor {
         self.open_file_with_read_only(path, true)
     }
 
+    /// The buffer holding `path`, matched after resolving symlinks and
+    /// relative components, so the same file reached two ways is one buffer.
+    pub(crate) fn buffer_index_for_path(&self, path: &std::path::Path) -> Option<usize> {
+        let comparable_path = comparable_file_path(path);
+        self.buffers.iter().position(|buffer| {
+            buffer
+                .path
+                .as_deref()
+                .is_some_and(|buffer_path| comparable_file_path(buffer_path) == comparable_path)
+        })
+    }
+
     fn open_file_with_read_only(
         &mut self,
         path: std::path::PathBuf,
         read_only: bool,
     ) -> anyhow::Result<()> {
         // Check if file is already open in an existing buffer
-        let comparable_path = comparable_file_path(&path);
-        if let Some(existing_idx) = self.buffers.iter().position(|buffer| {
-            buffer
-                .path
-                .as_deref()
-                .is_some_and(|buffer_path| comparable_file_path(buffer_path) == comparable_path)
-        }) {
+        if let Some(existing_idx) = self.buffer_index_for_path(&path) {
             // File already open, switch to that buffer
             if existing_idx != self.current_buffer_idx {
                 self.remember_current_file_as_alternate();

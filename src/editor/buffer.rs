@@ -720,7 +720,7 @@ impl Default for Buffer {
     }
 }
 
-fn write_file_atomically(
+pub(super) fn write_file_atomically(
     path: &Path,
     write_contents: impl FnOnce(&mut dyn Write) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
