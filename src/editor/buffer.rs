@@ -101,6 +101,7 @@ impl Buffer {
     }
 
     fn from_file_with_read_only(path: PathBuf, read_only: bool) -> anyhow::Result<Self> {
+        let path = std::path::absolute(path)?;
         let (text, last_mtime) = if path.exists() {
             let mtime = regular_file_metadata(&path)?.modified().ok();
             let mut rope = Rope::from_reader(std::fs::File::open(&path)?)?;
