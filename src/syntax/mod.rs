@@ -1,20 +1,42 @@
+#[cfg(test)]
+mod highlight_budget_tests;
 mod highlighter;
 #[cfg(test)]
 mod ruby_heredoc_tests;
 mod scanner_guard;
 mod theme;
 
-pub use highlighter::HighlightSpan;
+pub use highlighter::{HIGHLIGHT_QUERY_BUDGET, HighlightSpan};
 pub use theme::{HighlightGroup, SyntaxStyle, Theme};
 
 use std::cell::{Cell, RefCell};
 use std::path::Path;
+use std::time::{Duration, Instant};
 use tree_sitter::{Parser, Query, Tree};
 
 use crate::editor::Buffer;
 
 pub const MAX_HIGHLIGHT_LINES: usize = 200_000;
 pub const MAX_HIGHLIGHT_CHARS: usize = 2_000_000;
+
+/// Time all highlight queries of one drawn frame may take together. Lines
+/// that each stay under the per-line budget can still add up to a frozen
+/// screen. A screen of dense but ordinary 16 KB lines needs about 220 ms.
+pub const HIGHLIGHT_FRAME_BUDGET: Duration = Duration::from_millis(250);
+
+/// Budgets a new `SyntaxManager` starts with, as (per line, per frame).
+#[cfg(not(test))]
+const DEFAULT_HIGHLIGHT_BUDGETS: (Duration, Duration) =
+    (HIGHLIGHT_QUERY_BUDGET, HIGHLIGHT_FRAME_BUDGET);
+/// Tests run on loaded machines where a scheduler stall must not turn
+/// highlighting off in the middle of an unrelated test. Tests of the budgets
+/// set the real values themselves.
+#[cfg(test)]
+const DEFAULT_HIGHLIGHT_BUDGETS: (Duration, Duration) =
+    (Duration::from_secs(30), Duration::from_secs(30));
+
+/// Shown once per buffer when its highlight query runs out of time.
+pub const SLOW_HIGHLIGHT_MESSAGE: &str = "Syntax highlighting off: file too slow to highlight";
 
 fn to_input_edit(edit: &crate::editor::BufferEdit) -> tree_sitter::InputEdit {
     tree_sitter::InputEdit {
@@ -72,6 +94,20 @@ pub struct SyntaxManager {
     /// reparse is only safe when both still match; anything else falls back
     /// to a full parse.
     incremental_identity: Option<(u64, String)>,
+    /// Time each line's highlight query may take.
+    highlight_budget: Duration,
+    /// Time all queries of one frame may take together.
+    frame_highlight_budget: Duration,
+    /// Query time spent since `begin_highlight_frame` or the last parse.
+    frame_highlight_spent: Cell<Duration>,
+    /// Set when a query ran out of time or the frame's queries did. Every
+    /// line then gets no highlighting without querying, so a slow tree costs
+    /// one overrun per parse instead of one per visible line. Cleared on the
+    /// next parse, so fixing the file brings the colours back.
+    highlight_budget_hit: Cell<bool>,
+    /// Buffer the slow-highlight message was last shown for, so editing a
+    /// file that stays slow does not repeat it.
+    slow_notice_buffer: Option<u64>,
 }
 
 /// Kill switch: NEVI_INCREMENTAL_PARSE=0 forces full reparses, in case an
@@ -98,6 +134,11 @@ impl SyntaxManager {
             parse_version: 0,
             method_boundaries: RefCell::new(None),
             incremental_identity: None,
+            highlight_budget: DEFAULT_HIGHLIGHT_BUDGETS.0,
+            frame_highlight_budget: DEFAULT_HIGHLIGHT_BUDGETS.1,
+            frame_highlight_spent: Cell::new(Duration::ZERO),
+            highlight_budget_hit: Cell::new(false),
+            slow_notice_buffer: None,
         }
     }
 
@@ -603,6 +644,7 @@ impl SyntaxManager {
     /// incremental parsing when the buffer's recorded edits exactly cover
     /// the span since the last parse; otherwise falls back to a full parse.
     pub fn parse(&mut self, buffer: &mut Buffer) {
+        self.reset_highlight_budget();
         if self.language.is_none() {
             // No language means no tree; keep the buffer's edit queue from
             // growing without bound.
@@ -721,6 +763,7 @@ impl SyntaxManager {
     /// Parse string content directly (for preview panels, etc.)
     /// Designed for small content like finder preview (~150 lines max)
     pub fn parse_string(&mut self, content: &str) {
+        self.reset_highlight_budget();
         if self.language.is_none() {
             return;
         }
@@ -839,22 +882,81 @@ impl SyntaxManager {
                 {
                     return cached.clone();
                 }
+                if self.highlight_budget_hit.get() {
+                    return Vec::new();
+                }
 
-                let spans = highlighter::get_line_highlights(
+                // One budget covers both limits: the line's own, cut short
+                // by whatever this frame has already spent.
+                let frame_left = self
+                    .frame_highlight_budget
+                    .saturating_sub(self.frame_highlight_spent.get());
+                let started = Instant::now();
+                let result = highlighter::get_line_highlights(
                     tree,
                     query,
                     &self.source_cache,
                     &self.line_start_bytes,
                     line,
                     &self.theme,
+                    self.highlight_budget.min(frame_left),
                 );
-                if let Some(entry) = self.highlight_cache.borrow_mut().get_mut(line) {
-                    *entry = Some(spans.clone());
+                let spent = self.frame_highlight_spent.get() + started.elapsed();
+                self.frame_highlight_spent.set(spent);
+                match result {
+                    Ok(spans) if spent < self.frame_highlight_budget => {
+                        if let Some(entry) = self.highlight_cache.borrow_mut().get_mut(line) {
+                            *entry = Some(spans.clone());
+                        }
+                        spans
+                    }
+                    _ => {
+                        self.trip_highlight_breaker();
+                        Vec::new()
+                    }
                 }
-                spans
             }
             _ => Vec::new(),
         }
+    }
+
+    /// True once per buffer when its highlighting was turned off because the
+    /// query ran out of time. Only trees parsed from a buffer count, so the
+    /// finder preview and hover never report it.
+    pub fn take_slow_highlight_notice(&mut self) -> bool {
+        let buffer = self.incremental_identity.as_ref().map(|(id, _)| *id);
+        if !self.highlight_budget_hit.get() || buffer.is_none() || self.slow_notice_buffer == buffer
+        {
+            return false;
+        }
+        self.slow_notice_buffer = buffer;
+        true
+    }
+
+    /// Start counting query time for a new frame. Lines already cached
+    /// cost nothing, so only lines first drawn in this frame count.
+    pub fn begin_highlight_frame(&self) {
+        self.frame_highlight_spent.set(Duration::ZERO);
+    }
+
+    fn reset_highlight_budget(&self) {
+        self.highlight_budget_hit.set(false);
+        self.frame_highlight_spent.set(Duration::ZERO);
+    }
+
+    /// Turn highlighting off until the next parse. Spans cached before the
+    /// trip are dropped too, so the whole file looks plain, as the message
+    /// says, instead of coloured above the slow line and plain below it.
+    fn trip_highlight_breaker(&self) {
+        self.highlight_budget_hit.set(true);
+        self.highlight_cache
+            .replace(vec![None; self.line_start_bytes.len()]);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_highlight_budgets(&mut self, line: Duration, frame: Duration) {
+        self.highlight_budget = line;
+        self.frame_highlight_budget = frame;
     }
 
     /// Get the current language name
@@ -1128,14 +1230,18 @@ pub(crate) fn assert_tree_matches_fresh_parse(syntax: &SyntaxManager, buffer: &B
         for line in 0..syntax.line_start_bytes.len() {
             assert_eq!(
                 spans(syntax.get_line_highlights(line)),
-                spans(highlighter::get_line_highlights(
-                    &fresh,
-                    query,
-                    source,
-                    &syntax.line_start_bytes,
-                    line,
-                    &syntax.theme,
-                )),
+                spans(
+                    highlighter::get_line_highlights(
+                        &fresh,
+                        query,
+                        source,
+                        &syntax.line_start_bytes,
+                        line,
+                        &syntax.theme,
+                        syntax.highlight_budget,
+                    )
+                    .expect("test source fits the highlight budget")
+                ),
                 "highlights diverged from full parse on line {line}"
             );
         }

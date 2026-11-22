@@ -1,12 +1,26 @@
+use std::cell::Cell;
+use std::ops::ControlFlow;
+use std::time::{Duration, Instant};
+
 use crossterm::style::Color;
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Query, QueryCursor, Tree};
+use tree_sitter::{Query, QueryCursor, QueryCursorOptions, Tree};
 
 use super::theme::{SyntaxStyle, Theme};
 
 /// Maximum query byte range to prevent freezing on minified files
 /// (e.g., minified JavaScript with 100KB+ single lines)
 const MAX_QUERY_BYTES: usize = 16 * 1024; // 16KB
+
+/// Time one line's highlight query may take. Some trees (deep nesting from
+/// unclosed brackets, long runs of tokens in CSS) make the query crawl even
+/// though it finds nothing, and a draw cannot be interrupted, so the query is
+/// cut off instead. Dense but ordinary lines take well under 10 ms.
+pub const HIGHLIGHT_QUERY_BUDGET: Duration = Duration::from_millis(50);
+
+/// The highlight query ran out of time; the line has no reliable spans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverBudget;
 
 /// A highlighted span within a line
 #[derive(Debug, Clone, Copy)]
@@ -31,7 +45,8 @@ struct PrioritySpan {
     priority: u32,
 }
 
-/// Get highlights for a specific line from the parsed tree
+/// Get highlights for a specific line from the parsed tree, or `OverBudget`
+/// when the query takes longer than `budget`.
 pub fn get_line_highlights(
     tree: &Tree,
     query: &Query,
@@ -39,13 +54,14 @@ pub fn get_line_highlights(
     line_start_bytes: &[usize],
     line: usize,
     theme: &Theme,
-) -> Vec<HighlightSpan> {
+    budget: Duration,
+) -> Result<Vec<HighlightSpan>, OverBudget> {
     let mut spans: Vec<PrioritySpan> = Vec::new();
     let mut cursor = QueryCursor::new();
 
     // Get the byte range for this line
     if line >= line_start_bytes.len() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let line_start_byte = line_start_bytes[line];
@@ -62,7 +78,7 @@ pub fn get_line_highlights(
     // This prevents the editor from freezing on pathological input
     let line_byte_len = line_end_byte.saturating_sub(line_start_byte);
     if line_byte_len > MAX_QUERY_BYTES {
-        return Vec::new(); // Graceful degradation: no highlighting for this line
+        return Ok(Vec::new()); // Graceful degradation: no highlighting for this line
     }
 
     // Extract the line content for byte-to-char conversion
@@ -77,7 +93,21 @@ pub fn get_line_highlights(
     // Query only the nodes that intersect with this line
     cursor.set_byte_range(line_start_byte..line_end_byte);
 
-    let mut matches = cursor.matches(query, root, source.as_bytes());
+    // tree-sitter only checks the callback every 100 internal steps, and a
+    // step costs more the deeper the tree, so a slow line can still run past
+    // the budget. The caller stops querying after the first overrun.
+    let started = Instant::now();
+    let over_budget = Cell::new(false);
+    let mut check_time = |_: &_| {
+        if started.elapsed() >= budget {
+            over_budget.set(true);
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    let options = QueryCursorOptions::new().progress_callback(&mut check_time);
+    let mut matches = cursor.matches_with_options(query, root, source.as_bytes(), options);
 
     while let Some(m) = matches.next() {
         for capture in m.captures {
@@ -117,6 +147,11 @@ pub fn get_line_highlights(
         }
     }
 
+    drop(matches);
+    if over_budget.get() {
+        return Err(OverBudget);
+    }
+
     // Sort spans by start column, then by priority (higher priority = later in query = wins)
     spans.sort_by(|a, b| {
         a.start_col
@@ -125,7 +160,7 @@ pub fn get_line_highlights(
     });
 
     // Resolve overlapping spans using priority
-    resolve_overlapping_spans_with_priority(spans)
+    Ok(resolve_overlapping_spans_with_priority(spans))
 }
 
 /// Get highlights for a YAML line using lightweight tokenization.
@@ -1787,7 +1822,16 @@ mod tests {
         let source = "self.name.upper()\n";
         let tree = parser.parse(source, None).expect("parse python source");
         let theme = Theme::default();
-        let spans = get_line_highlights(&tree, &query, source, &[0, source.len()], 0, &theme);
+        let spans = get_line_highlights(
+            &tree,
+            &query,
+            source,
+            &[0, source.len()],
+            0,
+            &theme,
+            HIGHLIGHT_QUERY_BUDGET,
+        )
+        .expect("small line fits the budget");
         let upper_start = source.find("upper").expect("upper call");
         let function = theme
             .get_color_for_capture("function")
@@ -1928,7 +1972,16 @@ mod tests {
         let source = "// comment\n";
         let tree = parser.parse(source, None).expect("parse rust source");
         let theme = Theme::default();
-        let spans = get_line_highlights(&tree, &query, source, &[0, source.len()], 0, &theme);
+        let spans = get_line_highlights(
+            &tree,
+            &query,
+            source,
+            &[0, source.len()],
+            0,
+            &theme,
+            HIGHLIGHT_QUERY_BUDGET,
+        )
+        .expect("small line fits the budget");
 
         assert!(
             spans.iter().any(|span| span.style.italic),

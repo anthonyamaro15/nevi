@@ -2398,6 +2398,13 @@ fn main() -> anyhow::Result<()> {
                 editor.render_damage.clear_after_full_render();
                 needs_redraw = false;
                 terminal_redraw_pending = false;
+                // Rendering only borrows the editor, so a highlight query
+                // that ran out of time during it is reported here. Wait for
+                // an empty message line rather than replace another message.
+                if editor.status_message.is_none() && editor.syntax.take_slow_highlight_notice() {
+                    editor.set_warning(nevi::syntax::SLOW_HIGHLIGHT_MESSAGE);
+                    needs_redraw = true;
+                }
                 if deferred_lsp_status_redraw_at.is_some() {
                     last_lsp_status_redraw_at = Some(now);
                     deferred_lsp_status_redraw_at = None;

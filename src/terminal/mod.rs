@@ -1400,6 +1400,9 @@ impl Terminal {
     /// Render the editor state to the terminal
     pub fn render(&mut self, editor: &Editor) -> anyhow::Result<()> {
         self.set_mouse_capture(Self::should_capture_mouse(editor))?;
+        // Highlight queries are limited per frame; partial renders count too.
+        editor.syntax.begin_highlight_frame();
+        editor.preview_syntax.begin_highlight_frame();
 
         // Large overlays cover most of the screen, so repainting the editor
         // behind them on every keystroke only wastes work and can flash

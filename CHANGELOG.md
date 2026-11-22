@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- Drawing some files could freeze the editor for seconds or minutes, with no way to interrupt it, even when the file was small. Some syntax trees made finding the colours for a line extremely slow. Nevi now limits how long this may take for each line and for each screen, and when a limit runs out, syntax highlighting turns off for that file and the message line says `Syntax highlighting off: file too slow to highlight`, once per buffer. Colours come back after an edit makes the file quick to highlight again. The file picker preview and hover popups use the same limit.
 - Language-server hover and rename now use the correct document when a file is opened with a relative path such as `:e src/main.rs`.
 - Nevi no longer writes to `/tmp/nevi_debug.log`. Key presses that took longer than usual to handle were logged there along with the key typed, in a file other users on the machine could read. The same timings are still available in memory through `:WhySlow`. (#405)
 - A fresh install no longer shows `Copilot: Copilot server not found...` on every launch. Copilot is on by default, so that error was the first thing a new user saw on a machine without it. Nevi now stays quiet when Node.js or the Copilot server isn't installed, unless the config sets `enabled = true`, `server_path`, or `node_path` under `[copilot]`. `:CopilotStatus` and `:CopilotAuth` now give the reason instead of `Copilot: Starting...` and a sign-in prompt that never came. (#406)
