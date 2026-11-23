@@ -2119,8 +2119,25 @@ fn handle_rename_response(
     // Result is a WorkspaceEdit
     let mut edits: Vec<(String, Vec<TextEdit>)> = Vec::new();
 
-    // Handle "changes" format
-    if let Some(changes) = result.get("changes").and_then(|c| c.as_object()) {
+    if let Some(doc_changes) = result.get("documentChanges").and_then(Value::as_array) {
+        // Keep the first-seen file order while collecting edits for the same URI.
+        let mut file_indices = HashMap::new();
+        for change in doc_changes {
+            let Some(uri) = change.pointer("/textDocument/uri").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(file_edits) = change.get("edits").and_then(Value::as_array) else {
+                continue;
+            };
+            for edit in file_edits.iter().filter_map(parse_lsp_text_edit) {
+                let index = *file_indices.entry(uri).or_insert_with(|| {
+                    edits.push((uri.to_owned(), Vec::new()));
+                    edits.len() - 1
+                });
+                edits[index].1.push(edit);
+            }
+        }
+    } else if let Some(changes) = result.get("changes").and_then(Value::as_object) {
         for (uri, file_edits) in changes {
             if let Some(file_edits_arr) = file_edits.as_array() {
                 let text_edits: Vec<TextEdit> = file_edits_arr
@@ -2129,26 +2146,6 @@ fn handle_rename_response(
                     .collect();
                 if !text_edits.is_empty() {
                     edits.push((uri.clone(), text_edits));
-                }
-            }
-        }
-    }
-
-    // Handle "documentChanges" format
-    if let Some(doc_changes) = result.get("documentChanges").and_then(|c| c.as_array()) {
-        for doc_change in doc_changes {
-            if let (Some(text_document), Some(file_edits_arr)) = (
-                doc_change.get("textDocument"),
-                doc_change.get("edits").and_then(|e| e.as_array()),
-            ) {
-                if let Some(uri) = text_document.get("uri").and_then(|u| u.as_str()) {
-                    let text_edits: Vec<TextEdit> = file_edits_arr
-                        .iter()
-                        .filter_map(parse_lsp_text_edit)
-                        .collect();
-                    if !text_edits.is_empty() {
-                        edits.push((uri.to_string(), text_edits));
-                    }
                 }
             }
         }
@@ -2910,6 +2907,55 @@ mod tests {
                 "params": {"textDocument": {"uri": "file:///tmp/main.rs"}}
             })
         );
+    }
+
+    #[test]
+    fn rename_response_prefers_document_changes_and_groups_each_file() {
+        let uri = "file:///main.rs";
+        let other = "file:///other.rs";
+        let edit = |line| {
+            json!({
+                "range": {
+                    "start": {"line": line, "character": 0},
+                    "end": {"line": line, "character": 3}
+                },
+                "newText": "renamed"
+            })
+        };
+        let legacy = json!({uri: [edit(4)]});
+        let document_edits = json!([
+            {"textDocument": {"uri": uri}, "edits": [edit(0)]},
+            {"textDocument": {"uri": other}, "edits": [edit(1)]},
+            {"textDocument": {"uri": uri}, "edits": [edit(2)]}
+        ]);
+        let parse = |result| {
+            let Some(LspNotification::RenameResult { edits, .. }) =
+                handle_rename_response(result, uri.into(), 7)
+            else {
+                panic!("expected a rename result")
+            };
+            edits
+                .into_iter()
+                .map(|(file, edits)| {
+                    (
+                        file,
+                        edits.iter().map(|edit| edit.start_line).collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let expected = vec![(uri.to_string(), vec![0, 2]), (other.to_string(), vec![1])];
+        assert_eq!(
+            parse(json!({"changes": legacy, "documentChanges": document_edits})),
+            expected
+        );
+        assert_eq!(parse(json!({"documentChanges": document_edits})), expected);
+        assert_eq!(
+            parse(json!({"changes": legacy})),
+            vec![(uri.to_string(), vec![4])]
+        );
+        assert!(parse(json!({"changes": legacy, "documentChanges": []})).is_empty());
     }
 
     #[test]
