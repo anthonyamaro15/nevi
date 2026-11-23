@@ -12668,7 +12668,21 @@ impl Editor {
         Some((start_line, start_col, end_line, end_col))
     }
 
+    /// Parse the current buffer now, unless its last parse ran out of time.
+    /// Such a buffer waits for a pause in editing instead, so a held key or
+    /// a range re-indent pays for one slow parse rather than one per change.
     fn parse_current_buffer(&mut self) {
+        if self
+            .syntax
+            .parse_timed_out(self.buffers[self.current_buffer_idx].id())
+        {
+            self.last_edit_at = Some(Instant::now());
+            return;
+        }
+        self.parse_current_buffer_now();
+    }
+
+    fn parse_current_buffer_now(&mut self) {
         let buffer_idx = self.current_buffer_idx;
         let started = Instant::now();
         self.syntax.parse(&mut self.buffers[buffer_idx]);
@@ -12701,9 +12715,12 @@ impl Editor {
             return false;
         }
 
-        let version = self.buffers[self.current_buffer_idx].version();
-        if version != self.last_syntax_version {
-            self.parse_current_buffer();
+        // A buffer whose parse ran out of time is retried here even when a
+        // language change or switch, not an edit, asked for the parse.
+        let buffer = &self.buffers[self.current_buffer_idx];
+        if buffer.version() != self.last_syntax_version || self.syntax.parse_timed_out(buffer.id())
+        {
+            self.parse_current_buffer_now();
             return true;
         }
 
@@ -12794,6 +12811,7 @@ mod tests {
     mod lsp_rename;
     mod macro_lens;
     mod open_line;
+    mod parse_time_limit;
     mod paste_text;
     mod replace;
     mod screen_position;

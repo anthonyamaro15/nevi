@@ -5,6 +5,7 @@ mod highlighter;
 mod ruby_heredoc_tests;
 mod scanner_guard;
 mod theme;
+mod timed_parse;
 
 pub use highlighter::{HIGHLIGHT_QUERY_BUDGET, HighlightSpan};
 pub use theme::{HighlightGroup, SyntaxStyle, Theme};
@@ -35,7 +36,14 @@ const DEFAULT_HIGHLIGHT_BUDGETS: (Duration, Duration) =
 const DEFAULT_HIGHLIGHT_BUDGETS: (Duration, Duration) =
     (Duration::from_secs(30), Duration::from_secs(30));
 
-/// Shown once per buffer when its highlight query runs out of time.
+/// Parse time limits a new `SyntaxManager` starts with, as (base, per byte).
+#[cfg(not(test))]
+const DEFAULT_PARSE_BUDGET: (Duration, Duration) = timed_parse::PARSE_BUDGET;
+/// Like the highlight budgets, tests get a limit no machine will reach.
+#[cfg(test)]
+const DEFAULT_PARSE_BUDGET: (Duration, Duration) = (Duration::from_secs(30), Duration::ZERO);
+
+/// Shown once per buffer when its parse or highlight query runs out of time.
 pub const SLOW_HIGHLIGHT_MESSAGE: &str = "Syntax highlighting off: file too slow to highlight";
 
 fn to_input_edit(edit: &crate::editor::BufferEdit) -> tree_sitter::InputEdit {
@@ -108,6 +116,11 @@ pub struct SyntaxManager {
     /// Buffer the slow-highlight message was last shown for, so editing a
     /// file that stays slow does not repeat it.
     slow_notice_buffer: Option<u64>,
+    /// Time a parse may take, as (base, per byte of source).
+    parse_budget: (Duration, Duration),
+    /// Buffer whose last parse ran out of time. It has no tree, so
+    /// `incremental_identity` cannot name it for the slow-highlight message.
+    slow_parse_buffer: Option<u64>,
 }
 
 /// Kill switch: NEVI_INCREMENTAL_PARSE=0 forces full reparses, in case an
@@ -139,6 +152,8 @@ impl SyntaxManager {
             frame_highlight_spent: Cell::new(Duration::ZERO),
             highlight_budget_hit: Cell::new(false),
             slow_notice_buffer: None,
+            parse_budget: DEFAULT_PARSE_BUDGET,
+            slow_parse_buffer: None,
         }
     }
 
@@ -720,18 +735,29 @@ impl SyntaxManager {
         if old_tree.is_none() {
             buffer.reset_edit_history();
         }
-        self.tree = self.parser.parse(&self.source_cache, old_tree.as_ref());
+        // Both parses below share one time limit.
+        let deadline =
+            Instant::now() + timed_parse::parse_budget(self.parse_budget, self.source_cache.len());
+        let mut parsed = timed_parse::parse_before(
+            &mut self.parser,
+            &self.source_cache,
+            old_tree.as_ref(),
+            deadline,
+        );
         // Error recovery can choose a different tree when it reuses nodes
         // (for example a JS function expression vs declaration). Preserve
         // full-parse behavior while the user is typing incomplete syntax.
-        if old_tree.is_some()
-            && self
-                .tree
-                .as_ref()
-                .is_some_and(|tree| tree.root_node().has_error())
-        {
-            self.tree = self.parser.parse(&self.source_cache, None);
+        if old_tree.is_some() && matches!(&parsed, Ok(Some(tree)) if tree.root_node().has_error()) {
+            parsed =
+                timed_parse::parse_before(&mut self.parser, &self.source_cache, None, deadline);
         }
+        let Ok(tree) = parsed else {
+            // Drawn as plain text; the next parse tries again from scratch.
+            self.skip_parse(buffer);
+            self.slow_parse_buffer = Some(buffer.id());
+            return;
+        };
+        self.tree = tree;
         self.incremental_identity = self.tree.is_some().then_some(identity);
         self.parse_version = buffer.version();
         self.cache_version.set(self.parse_version);
@@ -742,14 +768,18 @@ impl SyntaxManager {
     /// Leave the buffer without a tree, so it shows without highlighting,
     /// the same way a file over the large-file limits does.
     fn skip_parse(&mut self, buffer: &mut Buffer) {
+        self.clear_tree();
+        buffer.reset_edit_history();
+        self.parse_version = buffer.version();
+    }
+
+    fn clear_tree(&mut self) {
         self.tree = None;
         self.incremental_identity = None;
-        buffer.reset_edit_history();
         self.source_cache.clear();
         self.line_start_bytes.clear();
         self.highlight_cache.borrow_mut().clear();
         self.cache_version.set(0);
-        self.parse_version = buffer.version();
     }
 
     /// Whether `source` is Markdown nested too deeply to hand to the parser
@@ -799,11 +829,7 @@ impl SyntaxManager {
             || char_count > MAX_HIGHLIGHT_CHARS
             || self.scanner_would_overflow(content)
         {
-            self.tree = None;
-            self.source_cache.clear();
-            self.line_start_bytes.clear();
-            self.highlight_cache.borrow_mut().clear();
-            self.cache_version.set(0);
+            self.clear_tree();
             return;
         }
 
@@ -815,7 +841,15 @@ impl SyntaxManager {
                 self.line_start_bytes.push(idx + 1);
             }
         }
-        self.tree = self.parser.parse(&self.source_cache, None);
+        let deadline =
+            Instant::now() + timed_parse::parse_budget(self.parse_budget, self.source_cache.len());
+        let Ok(tree) =
+            timed_parse::parse_before(&mut self.parser, &self.source_cache, None, deadline)
+        else {
+            self.clear_tree();
+            return;
+        };
+        self.tree = tree;
         self.incremental_identity = None;
         self.parse_version = self.parse_version.wrapping_add(1);
         self.cache_version.set(self.parse_version);
@@ -921,12 +955,17 @@ impl SyntaxManager {
     }
 
     /// True once per buffer when its highlighting was turned off because the
-    /// query ran out of time. Only trees parsed from a buffer count, so the
-    /// finder preview and hover never report it.
+    /// parse or the query ran out of time. Only buffers count, so the finder
+    /// preview and hover never report it.
     pub fn take_slow_highlight_notice(&mut self) -> bool {
-        let buffer = self.incremental_identity.as_ref().map(|(id, _)| *id);
-        if !self.highlight_budget_hit.get() || buffer.is_none() || self.slow_notice_buffer == buffer
-        {
+        let buffer = match self.slow_parse_buffer {
+            Some(id) => Some(id),
+            None if self.highlight_budget_hit.get() => {
+                self.incremental_identity.as_ref().map(|(id, _)| *id)
+            }
+            None => None,
+        };
+        if buffer.is_none() || self.slow_notice_buffer == buffer {
             return false;
         }
         self.slow_notice_buffer = buffer;
@@ -939,7 +978,8 @@ impl SyntaxManager {
         self.frame_highlight_spent.set(Duration::ZERO);
     }
 
-    fn reset_highlight_budget(&self) {
+    fn reset_highlight_budget(&mut self) {
+        self.slow_parse_buffer = None;
         self.highlight_budget_hit.set(false);
         self.frame_highlight_spent.set(Duration::ZERO);
     }
@@ -951,6 +991,17 @@ impl SyntaxManager {
         self.highlight_budget_hit.set(true);
         self.highlight_cache
             .replace(vec![None; self.line_start_bytes.len()]);
+    }
+
+    /// Whether the last parse was of this buffer and ran out of time.
+    pub fn parse_timed_out(&self, buffer_id: u64) -> bool {
+        self.slow_parse_buffer == Some(buffer_id)
+    }
+
+    /// Set the parse time limit as (base, per byte of source).
+    #[cfg(test)]
+    pub(crate) fn set_parse_budget(&mut self, budget: (Duration, Duration)) {
+        self.parse_budget = budget;
     }
 
     #[cfg(test)]

@@ -2399,8 +2399,9 @@ fn main() -> anyhow::Result<()> {
                 needs_redraw = false;
                 terminal_redraw_pending = false;
                 // Rendering only borrows the editor, so a highlight query
-                // that ran out of time during it is reported here. Wait for
-                // an empty message line rather than replace another message.
+                // that ran out of time during it is reported here, along
+                // with a parse that did. Wait for an empty message line
+                // rather than replace another message.
                 if editor.status_message.is_none() && editor.syntax.take_slow_highlight_notice() {
                     editor.set_warning(nevi::syntax::SLOW_HIGHLIGHT_MESSAGE);
                     needs_redraw = true;
