@@ -5,28 +5,32 @@ this repository, so you can check it yourself. Each release adds a column even
 when nothing got faster, so a slowdown can't hide.
 
 Measured on an Apple M4 laptop (10 cores) with macOS 27, using release builds.
-Both columns were measured on the same machine, and each number is the median
+All columns were measured on the same machine, and each number is the median
 of several runs. Expect different numbers on other machines, especially
 in the rows that open many files: those depend on the disk and on any security
 software that scans files as they open.
 
-| Scenario | 0.3.0 | 0.4.0 |
-| --- | --- | --- |
-| Live grep, rare query: first result | 5.33 s | 33 ms |
-| Live grep, rare query: all results | 5.33 s | 1.80 s |
-| Live grep, typing an identifier: final results | 16.91 s | 1.80 s |
-| File picker: editor frozen while it opens | 407 ms | 15 µs |
-| File picker: full list ready | 407 ms | 127 ms |
-| Finder preview: load a hit deep in a large file | 34 ms | 10 ms |
-| Editing: reparse after an edit, large Rust file | 27 ms | 3.4 ms |
-| Editing: gg=G, file with scrambled indentation | 7.06 s | 1.02 s |
-| Drawing: one frame, large multiline file | 88 µs | 90 µs |
-| Drawing: one frame, minified one-line file | 988 µs | 910 µs |
-| Drawing: one frame, grep preview of a minified one-line file | 29.62 s | 63 µs |
+| Scenario | 0.3.0 | 0.4.0 | 0.4.1 |
+| --- | --- | --- | --- |
+| Live grep, rare query: first result | 5.33 s | 33 ms | 93 ms |
+| Live grep, rare query: all results | 5.33 s | 1.80 s | 1.71 s |
+| Live grep, typing an identifier: final results | 16.91 s | 1.80 s | 1.73 s |
+| File picker: editor frozen while it opens | 407 ms | 15 µs | 12 µs |
+| File picker: full list ready | 407 ms | 127 ms | 123 ms |
+| Finder preview: load a hit deep in a large file | 34 ms | 10 ms | 11 ms |
+| Editing: reparse after an edit, large Rust file | 27 ms | 3.4 ms | 3.1 ms |
+| Editing: gg=G, file with scrambled indentation | 7.06 s | 1.02 s | 1.03 s |
+| Drawing: one frame, large multiline file | 88 µs | 90 µs | 93 µs |
+| Drawing: one frame, minified one-line file | 988 µs | 910 µs | 1.0 ms |
+| Drawing: one frame, grep preview of a minified one-line file | 29.62 s | 63 µs | 66 µs |
 
 For reference, ripgrep 15.1 takes 1.67 s to search the same repo for a string
 that isn't there, so live grep now searches at about the speed of the engine
 it's built on.
+
+The first result row moves a lot between runs, from about 30 ms to 160 ms on
+the same build. 0.4.0 measured again next to 0.4.1 gave the same spread, and
+the search code did not change between them.
 
 ## What each row measures
 
