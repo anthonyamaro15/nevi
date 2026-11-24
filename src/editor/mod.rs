@@ -3753,11 +3753,14 @@ impl Editor {
 
         // Determine which buffer the new pane shows
         let new_buffer_idx = if let Some(path) = file_path {
-            // Open file in new buffer
-            let new_buffer = Buffer::from_file(path)?;
-            self.buffers.push(new_buffer);
-            self.undo_stacks.push(UndoStack::new());
-            self.buffers.len() - 1
+            if let Some(existing_idx) = self.buffer_index_for_path(&path) {
+                existing_idx
+            } else {
+                let new_buffer = Buffer::from_file(path)?;
+                self.buffers.push(new_buffer);
+                self.undo_stacks.push(UndoStack::new());
+                self.buffers.len() - 1
+            }
         } else {
             // Same buffer as current pane
             self.current_buffer_idx
