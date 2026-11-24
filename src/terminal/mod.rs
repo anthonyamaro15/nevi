@@ -10765,6 +10765,7 @@ mod tests {
     mod remap;
     mod replay;
     mod set_options;
+    mod split_buffers;
     mod suspend;
     mod viewport_rendering;
     mod zero_size;

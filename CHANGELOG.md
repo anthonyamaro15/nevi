@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `:vs file` and `:sp file` now reuse an already-open buffer instead of creating a second copy. Edits are shared between panes, including when a file is named through a relative path or symlink. (#442)
+
 ## 0.4.1 - 2026-11-22
 
 Nevi 0.4.1 is a fix release, and upgrading is recommended. It closes a group
