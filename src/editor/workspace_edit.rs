@@ -1,12 +1,14 @@
-//! Applying a language server's multi-file edit (a rename) across the
-//! workspace. Like Neovim, a file that is open in any buffer is edited in
-//! that buffer and left for the user to save; only files that are not open
-//! are rewritten on disk. Writing an open file on disk instead would leave
-//! the buffer stale, and saving it later would silently drop the edit.
+//! Applying a multi-file edit across the workspace: a language server's
+//! rename, or a `:ProjectReplace` preview. Like Neovim, a file that is open
+//! in any buffer is edited in that buffer and left for the user to save; only
+//! files that are not open are rewritten on disk. Writing an open file on
+//! disk instead would leave the buffer stale, and saving it later would
+//! silently drop the edit.
 
-use super::Editor;
 use super::buffer::{regular_file_metadata, write_file_atomically};
+use super::{Editor, project_replace_display_path};
 use crate::lsp::types::TextEdit;
+use crate::project_replace::ProjectReplaceFile;
 use std::path::Path;
 
 /// What a workspace edit changed, for the status line and the LSP sync.
@@ -83,6 +85,115 @@ impl Editor {
         // Any pane may show an edited buffer, not just the active one.
         self.render_damage.mark_full();
         outcome
+    }
+
+    /// Apply the last `:ProjectReplace` preview. Every check that can refuse
+    /// the apply runs before the first change. Returns the status line text;
+    /// an error means nothing was changed, or only part of it (the message
+    /// says which files failed).
+    pub fn apply_project_replace_preview(&mut self) -> Result<String, String> {
+        let mut preview = self
+            .project_replace_preview
+            .clone()
+            .ok_or_else(|| "No project replace preview to apply".to_string())?;
+
+        if preview.truncated {
+            return Err(
+                "Project replace preview was truncated; refine the pattern before applying"
+                    .to_string(),
+            );
+        }
+        if preview.total_replacements() == 0 {
+            return Err("Project replace preview has no replacements".to_string());
+        }
+
+        let root = preview.root.clone();
+        let name = |file: &ProjectReplaceFile| project_replace_display_path(&root, &file.path);
+        let blocked = |file: &ProjectReplaceFile, reason: &str| {
+            format!("Project replace blocked: {} {}", name(file), reason)
+        };
+
+        let mut open_buffers = Vec::with_capacity(preview.files.len());
+        for file in &preview.files {
+            let open = self.buffer_index_for_path(&file.path);
+            if let Some(idx) = open {
+                let buffer = &self.buffers[idx];
+                // Buffer-level edits are no-ops on a read-only buffer.
+                if buffer.is_read_only() {
+                    return Err(blocked(file, "is open read-only"));
+                }
+                if buffer.dirty {
+                    return Err(blocked(file, "has unsaved changes"));
+                }
+                if !buffer_holds_text(&buffer.content(), &file.original_content) {
+                    return Err(blocked(file, "changed since preview"));
+                }
+            }
+            let current = std::fs::read_to_string(&file.path)
+                .map_err(|err| blocked(file, &format!("could not be read: {}", err)))?;
+            if current != file.original_content {
+                return Err(blocked(file, "changed since preview"));
+            }
+            open_buffers.push(open);
+        }
+
+        let mut replacements = 0;
+        let mut files_changed = 0;
+        let mut unsaved_buffers = 0;
+        let mut errors = Vec::new();
+        for (file, open) in preview.files.iter().zip(&open_buffers) {
+            let result = match *open {
+                Some(idx) => {
+                    self.apply_text_edits_to_buffer(idx, &line_edits(file));
+                    unsaved_buffers += 1;
+                    Ok(())
+                }
+                None => write_file_atomically(&file.path, |writer| {
+                    writer.write_all(file.new_content.as_bytes())?;
+                    Ok(())
+                }),
+            };
+            match result {
+                Ok(()) => {
+                    replacements += file.replacements;
+                    files_changed += 1;
+                }
+                Err(err) => errors.push((file.path.clone(), format!("{}: {}", name(file), err))),
+            }
+        }
+
+        self.clamp_inactive_panes();
+        // Any pane may show an edited buffer, not just the active one.
+        self.render_damage.mark_full();
+        self.refresh_git_state();
+
+        let mut message = format!(
+            "Applied {} project replacement(s) in {} file(s)",
+            replacements, files_changed
+        );
+        if unsaved_buffers > 0 {
+            message.push_str(&format!(", {} buffer(s) unsaved (:wa)", unsaved_buffers));
+        }
+        if errors.is_empty() {
+            self.project_replace_preview = None;
+            return Ok(message);
+        }
+
+        // A failed write leaves its file untouched, so the preview still
+        // matches it. Keep only those files: once the cause is fixed,
+        // :ProjectReplaceApply finishes the job, while the files already
+        // changed would only block it as "changed since preview".
+        preview
+            .files
+            .retain(|file| errors.iter().any(|(path, _)| *path == file.path));
+        self.project_replace_preview = Some(preview);
+        let reasons: Vec<&str> = errors.iter().map(|(_, reason)| reason.as_str()).collect();
+        Err(format!(
+            "{}; failed to write {} file(s): {}. :ProjectReplaceApply retries them",
+            message,
+            errors.len(),
+            reasons.join("; ")
+        ))
     }
 
     /// `apply_text_edits` for any buffer. It only knows the current buffer,
@@ -177,6 +288,27 @@ fn apply_edits_to_file(path: &Path, edits: &[TextEdit]) -> anyhow::Result<usize>
     })?;
 
     Ok(sorted_edits.len())
+}
+
+/// One edit per changed line, replacing the line body the preview matched.
+/// The preview leaves line endings alone, so a CR before the newline stays.
+fn line_edits(file: &ProjectReplaceFile) -> Vec<TextEdit> {
+    file.line_previews
+        .iter()
+        .map(|line| TextEdit {
+            start_line: line.line_number - 1,
+            start_col: 0,
+            end_line: line.line_number - 1,
+            end_col: line.before.encode_utf16().count(),
+            new_text: line.after.clone(),
+        })
+        .collect()
+}
+
+/// Whether a buffer still holds `text`. A buffer always ends in a newline
+/// (Neovim's 'fixendofline'), so a file without one still matches.
+fn buffer_holds_text(buffer_text: &str, text: &str) -> bool {
+    buffer_text == text || (!text.ends_with('\n') && buffer_text.strip_suffix('\n') == Some(text))
 }
 
 fn utf16_position_to_rope_char(text: &ropey::Rope, line: usize, utf16_col: usize) -> usize {
@@ -464,6 +596,286 @@ mod tests {
             err.to_string(),
             format!("\"{}\" is not a file", link.display())
         );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A temp folder with a `project` folder inside it (the editor's root)
+    /// holding `files`. Tests put symlinks next to `project`, outside the
+    /// root, so they reach a project file the way an outside path would.
+    fn project(prefix: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf, Editor) {
+        let tmp = unique_temp_dir(prefix);
+        let root = tmp.join("project");
+        std::fs::create_dir_all(&root).expect("create project");
+        for (name, content) in files {
+            std::fs::write(root.join(name), content).expect("write project file");
+        }
+        let mut editor = Editor::default();
+        editor.set_project_root(root.clone());
+        (tmp, root, editor)
+    }
+
+    fn preview_old_to_new(editor: &mut Editor) {
+        editor
+            .preview_project_replace("old", "new", true)
+            .expect("preview project replace");
+    }
+
+    fn make_dirty(editor: &mut Editor) {
+        editor.enter_insert_mode_end();
+        editor.insert_char('!');
+        editor.enter_normal_mode();
+    }
+
+    // The unsaved-changes check compared paths exactly, so a buffer opened
+    // through a symlink was missed and its file rewritten under it.
+    #[cfg(unix)]
+    #[test]
+    fn project_replace_blocks_a_dirty_buffer_opened_through_a_symlink() {
+        let (tmp, root, mut editor) =
+            project("nevi_preplace_dirty_symlink", &[("note.txt", "old one\n")]);
+        let link = tmp.join("link.txt");
+        std::os::unix::fs::symlink(root.join("note.txt"), &link).expect("symlink");
+        editor.open_file(link).expect("open link");
+        make_dirty(&mut editor);
+
+        preview_old_to_new(&mut editor);
+        let err = editor
+            .apply_project_replace_preview()
+            .expect_err("a dirty buffer blocks the apply");
+
+        assert_eq!(err, "Project replace blocked: note.txt has unsaved changes");
+        assert_eq!(read(&root.join("note.txt")), "old one\n");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn project_replace_blocks_a_dirty_buffer_opened_with_a_relative_path() {
+        let (tmp, root, mut editor) =
+            project("nevi_preplace_dirty_relative", &[("note.txt", "old one\n")]);
+        // Climb from the working directory to the filesystem root, then down
+        // to the file, without changing the shared working directory.
+        let cwd = std::env::current_dir().expect("cwd");
+        let ups = cwd.components().skip(1).count();
+        let path = root.join("note.txt");
+        let relative =
+            PathBuf::from("../".repeat(ups)).join(path.strip_prefix("/").unwrap_or(&path));
+        assert!(relative.is_relative());
+        editor.open_file(relative).expect("open relative path");
+        assert_ne!(editor.buffer().path.as_deref(), Some(path.as_path()));
+        make_dirty(&mut editor);
+
+        preview_old_to_new(&mut editor);
+        let err = editor
+            .apply_project_replace_preview()
+            .expect_err("a dirty buffer blocks the apply");
+
+        assert_eq!(err, "Project replace blocked: note.txt has unsaved changes");
+        assert_eq!(read(&path), "old one\n");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // An open file is edited in its buffer as one undo step and left for the
+    // user to save. It used to be written on disk and reloaded, which cleared
+    // its undo history.
+    #[test]
+    fn project_replace_edits_a_clean_open_buffer_as_one_undo_step() {
+        let (tmp, root, mut editor) = project(
+            "nevi_preplace_clean",
+            &[("note.rs", "old one\nkeep\nold old\n")],
+        );
+        let path = root.join("note.rs");
+        editor.open_file(path.clone()).expect("open note");
+        let idx = editor.buffer_index_for_path(&path).expect("note is open");
+
+        preview_old_to_new(&mut editor);
+        let message = editor.apply_project_replace_preview().expect("apply");
+
+        assert_eq!(
+            message,
+            "Applied 3 project replacement(s) in 1 file(s), 1 buffer(s) unsaved (:wa)"
+        );
+        assert_eq!(read(&path), "old one\nkeep\nold old\n", "not written");
+        assert!(editor.switch_to_buffer(idx));
+        assert_eq!(editor.buffer().content(), "new one\nkeep\nnew new\n");
+        assert!(editor.buffer().dirty);
+        crate::syntax::assert_tree_matches_fresh_parse(&editor.syntax, editor.buffer());
+        editor.undo();
+        assert_eq!(editor.buffer().content(), "old one\nkeep\nold old\n");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // A buffer always ends in a newline, so a file without one must still
+    // count as unchanged, and the CR of a CRLF line must survive the edit.
+    #[test]
+    fn project_replace_edits_a_crlf_buffer_without_a_final_newline() {
+        let (tmp, root, mut editor) =
+            project("nevi_preplace_crlf", &[("note.txt", "old one\r\nold")]);
+        let path = root.join("note.txt");
+        editor.open_file(path.clone()).expect("open note");
+        let idx = editor.buffer_index_for_path(&path).expect("note is open");
+
+        preview_old_to_new(&mut editor);
+        editor.apply_project_replace_preview().expect("apply");
+
+        assert_eq!(editor.buffers[idx].content(), "new one\r\nnew\n");
+        assert_eq!(read(&path), "old one\r\nold");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // Files that are not open go through the save path: a temp file renamed
+    // over the target, so the inode changes and the mode is kept.
+    #[cfg(unix)]
+    #[test]
+    fn project_replace_writes_a_file_that_is_not_open_atomically() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let (tmp, root, mut editor) = project("nevi_preplace_disk", &[("note.txt", "old one\n")]);
+        let path = root.join("note.txt");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).expect("chmod");
+        let inode_before = std::fs::metadata(&path).expect("stat").ino();
+
+        preview_old_to_new(&mut editor);
+        let message = editor.apply_project_replace_preview().expect("apply");
+
+        assert_eq!(message, "Applied 1 project replacement(s) in 1 file(s)");
+        assert_eq!(read(&path), "new one\n");
+        let metadata = std::fs::metadata(&path).expect("stat");
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o640);
+        assert_ne!(metadata.ino(), inode_before, "written through a temp file");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // The reload after the write compared paths exactly too, so a clean
+    // buffer opened through a symlink kept showing the old text.
+    #[cfg(unix)]
+    #[test]
+    fn project_replace_edits_a_clean_buffer_opened_through_a_symlink() {
+        let (tmp, root, mut editor) =
+            project("nevi_preplace_clean_symlink", &[("note.txt", "old one\n")]);
+        let link = tmp.join("link.txt");
+        std::os::unix::fs::symlink(root.join("note.txt"), &link).expect("symlink");
+        editor.open_file(link.clone()).expect("open link");
+        let idx = editor.buffer_index_for_path(&link).expect("link is open");
+
+        preview_old_to_new(&mut editor);
+        editor.apply_project_replace_preview().expect("apply");
+
+        assert_eq!(editor.buffers[idx].content(), "new one\n");
+        assert!(editor.buffers[idx].dirty);
+        assert_eq!(read(&root.join("note.txt")), "old one\n");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn project_replace_edits_a_background_buffer_without_touching_the_current_one() {
+        let (tmp, root, mut editor) = project(
+            "nevi_preplace_background",
+            &[
+                ("target.txt", "old one\n"),
+                ("current.txt", "alpha\nbeta\n"),
+            ],
+        );
+        let target = root.join("target.txt");
+        let current = root.join("current.txt");
+        editor.open_file(target.clone()).expect("open target");
+        let target_idx = editor
+            .buffer_index_for_path(&target)
+            .expect("target is open");
+        editor.open_file(current.clone()).expect("open current");
+        let current_idx = editor
+            .buffer_index_for_path(&current)
+            .expect("current is open");
+        make_dirty(&mut editor);
+
+        preview_old_to_new(&mut editor);
+        assert!(editor.switch_to_buffer(current_idx));
+        editor.cursor = Cursor { line: 1, col: 2 };
+        let change_list = format!("{:?}", editor.change_list);
+
+        editor.apply_project_replace_preview().expect("apply");
+
+        assert_eq!(editor.current_buffer_index(), current_idx);
+        assert_eq!((editor.cursor.line, editor.cursor.col), (1, 2));
+        assert_eq!(format!("{:?}", editor.change_list), change_list);
+        assert_eq!(editor.buffer().content(), "alpha!\nbeta\n");
+        editor.undo();
+        assert_eq!(editor.buffer().content(), "alpha\nbeta\n", "its own undo");
+
+        assert!(editor.switch_to_buffer(target_idx));
+        assert_eq!(editor.buffer().content(), "new one\n");
+        editor.undo();
+        assert_eq!(editor.buffer().content(), "old one\n");
+        assert_eq!(read(&target), "old one\n");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // A read-only buffer ignores edits, so changing it would report a replace
+    // that never happened.
+    #[test]
+    fn project_replace_blocks_a_read_only_open_buffer() {
+        let (tmp, root, mut editor) =
+            project("nevi_preplace_read_only", &[("note.txt", "old one\n")]);
+        let path = root.join("note.txt");
+        editor.open_file_read_only(path.clone()).expect("view note");
+        let idx = editor.buffer_index_for_path(&path).expect("note is open");
+
+        preview_old_to_new(&mut editor);
+        let err = editor
+            .apply_project_replace_preview()
+            .expect_err("a read-only buffer blocks the apply");
+
+        assert_eq!(err, "Project replace blocked: note.txt is open read-only");
+        assert_eq!(editor.buffers[idx].content(), "old one\n");
+        assert_eq!(read(&path), "old one\n");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // A file name that fits the filesystem but leaves no room for the save
+    // temp file's suffix fails the write on every platform, even as root.
+    // The other files are still applied and the failure is reported.
+    #[test]
+    fn project_replace_reports_a_failed_write_and_keeps_going() {
+        let long_name = format!("{}.txt", "x".repeat(246));
+        let (tmp, root, mut editor) = project(
+            "nevi_preplace_write_failure",
+            &[
+                ("a.txt", "old a\n"),
+                (long_name.as_str(), "old long\n"),
+                ("z.txt", "old z\n"),
+            ],
+        );
+
+        preview_old_to_new(&mut editor);
+        let err = editor
+            .apply_project_replace_preview()
+            .expect_err("one write fails");
+
+        assert!(
+            err.starts_with(&format!(
+                "Applied 2 project replacement(s) in 2 file(s); failed to write 1 file(s): {}: ",
+                long_name
+            )),
+            "{err}"
+        );
+        assert!(
+            err.ends_with(". :ProjectReplaceApply retries them"),
+            "{err}"
+        );
+        assert_eq!(read(&root.join("a.txt")), "new a\n");
+        assert_eq!(read(&root.join(&long_name)), "old long\n");
+        assert_eq!(read(&root.join("z.txt")), "new z\n");
+        let retry = editor.project_replace_preview.as_ref().expect("kept");
+        assert_eq!(retry.files.len(), 1);
+        assert_eq!(retry.files[0].path, root.join(&long_name));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -10361,9 +10361,7 @@ fn execute_command(editor: &mut Editor, cmd: Command) {
         },
 
         Command::ProjectReplaceApply => match editor.apply_project_replace_preview() {
-            Ok(count) => {
-                CommandResult::Message(format!("Applied {} project replacement(s)", count))
-            }
+            Ok(message) => CommandResult::Message(message),
             Err(message) => CommandResult::Error(message),
         },
 
