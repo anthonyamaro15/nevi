@@ -949,10 +949,12 @@ While typing an Ex command after `:`.
 | `:ProjectReplace/{pattern}/{replacement}/[g]` / `:PReplace/{pattern}/{replacement}/[g]` | Preview project-wide literal replace in a read-only `[project-replace]` buffer |
 | `:ProjectReplaceApply` / `:PReplaceApply` | Apply the last project replace preview |
 
-`ProjectReplace` is preview-first. It does not write files until
-`:ProjectReplaceApply` is run. V1 uses literal matching, respects the file
-finder ignore settings, skips non-UTF-8 files, and blocks apply if a matched
-file has unsaved changes or changed on disk after the preview was created. Use
+`ProjectReplace` is preview-first. It does not change files until
+`:ProjectReplaceApply` is run. A file that is open in a buffer is changed in
+that buffer as one undo step and left unsaved (use `:wa`); other files are
+written to disk. V1 uses literal matching, respects the file finder ignore
+settings, skips non-UTF-8 files, and blocks apply if a matched file has unsaved
+changes, is open read-only, or changed after the preview was created. Use
 an alternate delimiter such as `#` when the pattern or replacement contains `/`,
 for example `:ProjectReplace#/api/v1#/api/v2#g`.
 

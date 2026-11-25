@@ -2263,83 +2263,6 @@ impl Editor {
         Ok(replacement_count)
     }
 
-    /// Apply the last project-wide replace preview.
-    pub fn apply_project_replace_preview(&mut self) -> Result<usize, String> {
-        let preview = self
-            .project_replace_preview
-            .clone()
-            .ok_or_else(|| "No project replace preview to apply".to_string())?;
-
-        if preview.truncated {
-            return Err(
-                "Project replace preview was truncated; refine the pattern before applying"
-                    .to_string(),
-            );
-        }
-
-        let replacement_count = preview.total_replacements();
-        if replacement_count == 0 {
-            return Err("Project replace preview has no replacements".to_string());
-        }
-
-        for file in &preview.files {
-            for buffer in &self.buffers {
-                if buffer.dirty && buffer.path.as_ref() == Some(&file.path) {
-                    return Err(format!(
-                        "Project replace blocked: {} has unsaved changes",
-                        project_replace_display_path(&preview.root, &file.path)
-                    ));
-                }
-            }
-        }
-
-        for file in &preview.files {
-            let current = std::fs::read_to_string(&file.path).map_err(|err| {
-                format!(
-                    "Project replace blocked: failed to read {}: {}",
-                    project_replace_display_path(&preview.root, &file.path),
-                    err
-                )
-            })?;
-            if current != file.original_content {
-                return Err(format!(
-                    "Project replace blocked: {} changed since preview",
-                    project_replace_display_path(&preview.root, &file.path)
-                ));
-            }
-        }
-
-        for file in &preview.files {
-            std::fs::write(&file.path, &file.new_content).map_err(|err| {
-                format!(
-                    "Project replace failed writing {}: {}",
-                    project_replace_display_path(&preview.root, &file.path),
-                    err
-                )
-            })?;
-        }
-
-        for file in &preview.files {
-            for idx in 0..self.buffers.len() {
-                if self.buffers[idx].path.as_ref() == Some(&file.path) && !self.buffers[idx].dirty {
-                    self.buffers[idx].reload().map_err(|err| {
-                        format!(
-                            "Project replace wrote {}, but reload failed: {}",
-                            project_replace_display_path(&preview.root, &file.path),
-                            err
-                        )
-                    })?;
-                    self.reset_undo_stack_for_buffer(idx);
-                }
-            }
-        }
-
-        self.project_replace_preview = None;
-        self.refresh_git_state();
-        self.sync_syntax_to_current_buffer();
-        Ok(replacement_count)
-    }
-
     /// Open named content that is not backed by a file and cannot be edited.
     pub fn open_virtual_read_only_buffer(
         &mut self,
@@ -14038,11 +13961,11 @@ mod tests {
         editor
             .preview_project_replace("old", "new", true)
             .expect("preview project replace");
-        let count = editor
+        let message = editor
             .apply_project_replace_preview()
             .expect("apply project replace");
 
-        assert_eq!(count, 3);
+        assert_eq!(message, "Applied 3 project replacement(s) in 1 file(s)");
         assert_eq!(
             std::fs::read_to_string(&path).expect("read file"),
             "new one\nnew new\n"
