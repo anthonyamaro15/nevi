@@ -84,6 +84,11 @@ impl Editor {
         self.clamp_inactive_panes();
         // Any pane may show an edited buffer, not just the active one.
         self.render_damage.mark_full();
+        // Edited buffers need new gutter signs and edited files need their
+        // explorer marker, as after a project replace.
+        if outcome.files_changed > 0 {
+            self.refresh_git_state();
+        }
         outcome
     }
 

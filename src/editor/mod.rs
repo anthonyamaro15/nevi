@@ -15609,4 +15609,49 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    // Issue #445: a rename that rewrote a file on disk left the explorer
+    // showing it as clean until something else refreshed git state.
+    #[test]
+    fn rename_into_a_file_that_is_not_open_marks_it_modified_in_the_explorer() {
+        let tmp = unique_temp_dir("nevi_rename_git_status");
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        let root = tmp.canonicalize().expect("canonical temp dir");
+        let lib = root.join("lib.rs");
+        std::fs::write(&lib, "fn old() {}\n").expect("write");
+        let repo = git2::Repository::init(&root).expect("init repo");
+        commit_file(&repo, Path::new("lib.rs"), "initial");
+
+        let mut editor = Editor::default();
+        editor.set_project_root(root.clone());
+        editor.init_git();
+        wait_for_git_state(&mut editor);
+        assert_eq!(editor.explorer.git_status_for_path(&lib), None);
+
+        // An edit that changes nothing must not start a scan.
+        let missing = crate::lsp::path_to_uri(&root.join("missing.rs"));
+        let rename = |start_col, end_col| TextEdit {
+            start_line: 0,
+            start_col,
+            end_line: 0,
+            end_col,
+            new_text: "new".to_string(),
+        };
+        let outcome = editor.apply_workspace_edit(&[(missing, vec![rename(0, 0)])]);
+        assert_eq!(outcome.files_changed, 0);
+        assert!(editor.git_status_receiver.is_none());
+
+        let outcome =
+            editor.apply_workspace_edit(&[(crate::lsp::path_to_uri(&lib), vec![rename(3, 6)])]);
+        assert_eq!(outcome.files_changed, 1);
+        assert_eq!(std::fs::read_to_string(&lib).unwrap(), "fn new() {}\n");
+        wait_for_git_state(&mut editor);
+
+        assert_eq!(
+            editor.explorer.git_status_for_path(&lib),
+            Some(crate::git::GitFileStatus::Modified)
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
