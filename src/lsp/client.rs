@@ -2017,42 +2017,10 @@ fn handle_code_action_response(
                 .and_then(|p| p.as_bool())
                 .unwrap_or(false);
 
-            // Parse workspace edit if present
-            let mut edits: Vec<(String, Vec<TextEdit>)> = Vec::new();
-
-            if let Some(edit) = action.get("edit") {
-                if let Some(changes) = edit.get("changes").and_then(|c| c.as_object()) {
-                    for (uri, file_edits) in changes {
-                        if let Some(file_edits_arr) = file_edits.as_array() {
-                            let text_edits: Vec<TextEdit> = file_edits_arr
-                                .iter()
-                                .filter_map(parse_lsp_text_edit)
-                                .collect();
-                            if !text_edits.is_empty() {
-                                edits.push((uri.clone(), text_edits));
-                            }
-                        }
-                    }
-                }
-                // Also handle documentChanges format
-                if let Some(doc_changes) = edit.get("documentChanges").and_then(|c| c.as_array()) {
-                    for doc_change in doc_changes {
-                        if let (Some(text_document), Some(file_edits_arr)) = (
-                            doc_change.get("textDocument"),
-                            doc_change.get("edits").and_then(|e| e.as_array()),
-                        ) {
-                            let uri = text_document.get("uri")?.as_str()?.to_string();
-                            let text_edits: Vec<TextEdit> = file_edits_arr
-                                .iter()
-                                .filter_map(parse_lsp_text_edit)
-                                .collect();
-                            if !text_edits.is_empty() {
-                                edits.push((uri, text_edits));
-                            }
-                        }
-                    }
-                }
-            }
+            let edits = action
+                .get("edit")
+                .map(parse_workspace_edit)
+                .unwrap_or_default();
 
             let command = action
                 .get("command")
@@ -2110,16 +2078,14 @@ fn parse_prepare_rename_result(result: Option<&Value>) -> PrepareRenameOutcome {
     }
 }
 
-/// Handle rename response
-fn handle_rename_response(
-    result: Value,
-    request_uri: String,
-    request_version: u64,
-) -> Option<LspNotification> {
-    // Result is a WorkspaceEdit
+/// Read the text edits of a WorkspaceEdit, one entry per file.
+/// `documentChanges` wins when present, as the LSP spec asks, so a server that
+/// sends both forms does not get its edits applied twice. Positions refer to
+/// the original text, so edits for the same file are kept in one entry.
+fn parse_workspace_edit(edit: &Value) -> Vec<(String, Vec<TextEdit>)> {
     let mut edits: Vec<(String, Vec<TextEdit>)> = Vec::new();
 
-    if let Some(doc_changes) = result.get("documentChanges").and_then(Value::as_array) {
+    if let Some(doc_changes) = edit.get("documentChanges").and_then(Value::as_array) {
         // Keep the first-seen file order while collecting edits for the same URI.
         let mut file_indices = HashMap::new();
         for change in doc_changes {
@@ -2129,15 +2095,15 @@ fn handle_rename_response(
             let Some(file_edits) = change.get("edits").and_then(Value::as_array) else {
                 continue;
             };
-            for edit in file_edits.iter().filter_map(parse_lsp_text_edit) {
+            for text_edit in file_edits.iter().filter_map(parse_lsp_text_edit) {
                 let index = *file_indices.entry(uri).or_insert_with(|| {
                     edits.push((uri.to_owned(), Vec::new()));
                     edits.len() - 1
                 });
-                edits[index].1.push(edit);
+                edits[index].1.push(text_edit);
             }
         }
-    } else if let Some(changes) = result.get("changes").and_then(Value::as_object) {
+    } else if let Some(changes) = edit.get("changes").and_then(Value::as_object) {
         for (uri, file_edits) in changes {
             if let Some(file_edits_arr) = file_edits.as_array() {
                 let text_edits: Vec<TextEdit> = file_edits_arr
@@ -2151,8 +2117,17 @@ fn handle_rename_response(
         }
     }
 
+    edits
+}
+
+/// Handle rename response
+fn handle_rename_response(
+    result: Value,
+    request_uri: String,
+    request_version: u64,
+) -> Option<LspNotification> {
     Some(LspNotification::RenameResult {
-        edits,
+        edits: parse_workspace_edit(&result),
         request_uri,
         request_version,
     })
@@ -2956,6 +2931,84 @@ mod tests {
             vec![(uri.to_string(), vec![4])]
         );
         assert!(parse(json!({"changes": legacy, "documentChanges": []})).is_empty());
+    }
+
+    fn code_action_edit_lines(edit: Value) -> Vec<(String, Vec<usize>)> {
+        let result = json!([{"title": "Fix it", "edit": edit}]);
+        let Some(LspNotification::CodeActions { actions, .. }) =
+            handle_code_action_response(result, "file:///main.rs".into(), 3)
+        else {
+            panic!("expected code actions")
+        };
+        assert_eq!(actions.len(), 1, "the action should be kept");
+        actions[0]
+            .edits
+            .iter()
+            .map(|(file, edits)| {
+                (
+                    file.clone(),
+                    edits.iter().map(|edit| edit.start_line).collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn line_edit(line: usize) -> Value {
+        json!({
+            "range": {
+                "start": {"line": line, "character": 0},
+                "end": {"line": line, "character": 3}
+            },
+            "newText": "fixed"
+        })
+    }
+
+    #[test]
+    fn code_action_prefers_document_changes_over_changes() {
+        let uri = "file:///main.rs";
+        let edits = code_action_edit_lines(json!({
+            "changes": {uri: [line_edit(0)]},
+            "documentChanges": [{"textDocument": {"uri": uri}, "edits": [line_edit(0)]}]
+        }));
+        assert_eq!(edits, vec![(uri.to_string(), vec![0])]);
+    }
+
+    #[test]
+    fn code_action_groups_document_changes_for_the_same_file() {
+        let uri = "file:///main.rs";
+        let other = "file:///other.rs";
+        let edits = code_action_edit_lines(json!({
+            "documentChanges": [
+                {"textDocument": {"uri": uri}, "edits": [line_edit(0)]},
+                {"textDocument": {"uri": other}, "edits": [line_edit(1)]},
+                {"textDocument": {"uri": uri}, "edits": [line_edit(2)]}
+            ]
+        }));
+        assert_eq!(
+            edits,
+            vec![(uri.to_string(), vec![0, 2]), (other.to_string(), vec![1])]
+        );
+    }
+
+    #[test]
+    fn code_action_skips_document_change_without_uri() {
+        let uri = "file:///main.rs";
+        let edits = code_action_edit_lines(json!({
+            "documentChanges": [
+                {"textDocument": {}, "edits": [line_edit(5)]},
+                {"textDocument": {"uri": uri}, "edits": [line_edit(1)]}
+            ]
+        }));
+        assert_eq!(edits, vec![(uri.to_string(), vec![1])]);
+    }
+
+    #[test]
+    fn code_action_reads_changes_when_document_changes_is_missing() {
+        let uri = "file:///main.rs";
+        let edits = code_action_edit_lines(json!({
+            "changes": {uri: [line_edit(4), line_edit(6)]}
+        }));
+        assert_eq!(edits, vec![(uri.to_string(), vec![4, 6])]);
     }
 
     #[test]
