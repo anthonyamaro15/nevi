@@ -6,6 +6,7 @@
 
 - `:vs file` and `:sp file` now reuse an already-open buffer instead of creating a second copy. Edits are shared between panes, including when a file is named through a relative path or symlink. (#451)
 - An LSP rename could apply every edit twice when the server sent both `changes` and `documentChanges`, which corrupted the renamed text. Nevi now reads `documentChanges` when it is present, and edits to the same file are applied together. (#450)
+- A code action had the same problem: when the server sent both `changes` and `documentChanges`, its edits were applied twice, and separate entries for one file could land on the wrong line. Code actions now read their edits the same way as rename. (#453)
 - `:ProjectReplaceApply` could rewrite a file on disk while a buffer still held unsaved changes to it, when that buffer was opened through a symlink or another spelling of the path. It also wrote files in place, stopped at the first failed write, and cleared the undo history of open files. Open files are now changed in the buffer as one undo step and left for you to save with `:wa`. Other files are written the same safe way as `:w`, a read-only buffer blocks the apply, and a failed write is reported with the number of files that were changed. (#452)
 
 ## 0.4.1 - 2026-11-22
