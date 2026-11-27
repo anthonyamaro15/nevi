@@ -9,6 +9,7 @@
 - A code action had the same problem: when the server sent both `changes` and `documentChanges`, its edits were applied twice, and separate entries for one file could land on the wrong line. Code actions now read their edits the same way as rename. (#453)
 - `:ProjectReplaceApply` could rewrite a file on disk while a buffer still held unsaved changes to it, when that buffer was opened through a symlink or another spelling of the path. It also wrote files in place, stopped at the first failed write, and cleared the undo history of open files. Open files are now changed in the buffer as one undo step and left for you to save with `:wa`. Other files are written the same safe way as `:w`, a read-only buffer blocks the apply, and a failed write is reported with the number of files that were changed. (#452)
 - After an LSP rename, the file explorer kept showing the changed files as unmodified, and the git signs in the gutter were not updated, until something else such as a save refreshed them. Both now update right after the rename. (#454)
+- The language server for the file named on the command line, as in `nevi main.rs`, did not start until the first key press, so diagnostics and the ready mark waited for it. If that first key was an LSP command such as `K` or `gd`, it was dropped while the server started, and the message only said the server was starting. The server now starts as soon as the file is shown, and a request made while it is still starting says `LSP: still starting, request not sent`. (#455)
 
 ## 0.4.1 - 2026-11-22
 
