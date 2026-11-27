@@ -283,6 +283,110 @@ enum TerminalOutputTarget {
     Tty,
 }
 
+/// What the LSP open check last saw: the buffer path, and whether a language
+/// resolved for it.
+#[derive(Default)]
+struct LspOpenCheck {
+    path: Option<PathBuf>,
+    has_language: bool,
+}
+
+/// Tells the language server which file is current: closes the old one,
+/// starts the server for the new one, and sends didOpen when the server is
+/// already up (when it is still starting, the `Initialized` handler sends it).
+/// Runs once per change of the buffer path, tracked in `check`, so an idle
+/// pass costs one comparison and a server that is starting or failed to start
+/// is not asked again on every pass. Returns true when it ran.
+///
+/// A script with no extension gets its language from its first line, which
+/// can be typed after the file was opened. Only input changes it, so only the
+/// per-key call (`after_key`) looks at the first line again, and only while
+/// no language has resolved for the path.
+fn sync_lsp_open_file(
+    editor: &mut Editor,
+    mlsp: &mut MultiLspManager,
+    save_runtime: &mut save_runtime::SaveRuntime,
+    check: &mut LspOpenCheck,
+    after_key: bool,
+    lsp_current_file: &mut Option<PathBuf>,
+    lsp_synced_version: &mut Option<u64>,
+) -> bool {
+    if editor.buffer().path.as_deref() == check.path.as_deref() {
+        let language_appeared = after_key
+            && !check.has_language
+            && check.path.as_deref().is_some_and(|path| {
+                let first_line = editor.buffer().first_line_prefix();
+                mlsp.language_for_path_and_first_line(path, first_line.as_deref())
+                    .is_some()
+            });
+        if !language_appeared {
+            return false;
+        }
+    }
+    check.path = editor.buffer().path.clone();
+
+    if let Some(old_path) = lsp_current_file.take() {
+        let _ = mlsp.did_close(&old_path);
+    }
+    let Some(new_path) = check.path.as_ref() else {
+        check.has_language = false;
+        return true;
+    };
+
+    let first_line = editor.buffer().first_line_prefix();
+    check.has_language = mlsp
+        .language_for_path_and_first_line(new_path, first_line.as_deref())
+        .is_some();
+    match mlsp.ensure_server_for_file_with_first_line(new_path, first_line.as_deref()) {
+        // A file type with no server lands here too and shows that state.
+        Ok(_) => editor.set_lsp_state(mlsp.status_and_lifecycle(Some(new_path.as_path()))),
+        Err(e) => {
+            let message = mlsp
+                .language_for_path(new_path)
+                .map(|lang| mlsp.user_facing_error(lang, &e.to_string()))
+                .unwrap_or_else(|| e.to_string());
+            editor.set_lsp_state((lsp::LspStatus::Error, format!("LSP: {}", message)));
+        }
+    }
+
+    if mlsp.is_ready_for_file(new_path) {
+        let text = editor.buffer().content();
+        save_runtime.before_current_open(new_path, mlsp);
+        if let Err(e) = mlsp.did_open(new_path, &text) {
+            editor.set_lsp_state((lsp::LspStatus::Error, format!("LSP: open error: {}", e)));
+        } else {
+            *lsp_current_file = Some(new_path.clone());
+            *lsp_synced_version = Some(editor.buffer().version());
+        }
+    }
+    true
+}
+
+/// An LSP request (gd, K, code actions, rename) came before the server was
+/// ready. It is dropped, not queued: a jump or popup that lands seconds later,
+/// after the cursor has moved on, is worse than asking again. Starts the server
+/// if needed and says the request was not sent.
+fn drop_lsp_request_until_ready(editor: &mut Editor, mlsp: &mut MultiLspManager, path: &Path) {
+    let first_line = editor.buffer().first_line_prefix();
+    if let Err(e) = mlsp.ensure_server_for_file_with_first_line(path, first_line.as_deref()) {
+        let message = mlsp
+            .language_for_path(path)
+            .map(|lang| mlsp.user_facing_error(lang, &e.to_string()))
+            .unwrap_or_else(|| e.to_string());
+        // :checkhealth reads lsp_status, so the pointer holds.
+        editor.set_lsp_status(format!("LSP: {}", message));
+        editor.set_error(format!("{message}  ·  :checkhealth"));
+        return;
+    }
+    let (state, status) = mlsp.status_and_lifecycle(Some(path));
+    editor.set_lsp_state((state, status.clone()));
+    if state == lsp::LspStatus::Starting {
+        editor.set_status("LSP: still starting, request not sent");
+    } else {
+        editor.set_status(status);
+    }
+}
+
 fn version_output() -> String {
     format!("nevi {}", env!("CARGO_PKG_VERSION"))
 }
@@ -613,6 +717,10 @@ fn main() -> anyhow::Result<()> {
     // lsp_current_file. Changes are sent once per loop iteration, not per
     // keystroke; this survives skipped iterations so no edit is ever lost.
     let mut lsp_synced_version: Option<u64> = None;
+    // Buffer path the open check last ran for. Unlike lsp_current_file it is
+    // set even when the server is still starting or failed to start, so the
+    // check runs once per file change and not on every loop pass.
+    let mut lsp_open_check = LspOpenCheck::default();
     let mut save_runtime = save_runtime::SaveRuntime::default();
 
     if lsp_enabled {
@@ -1036,27 +1144,7 @@ fn main() -> anyhow::Result<()> {
                         if let Some(ref mut mlsp) = multi_lsp {
                             if let Some(path) = editor.buffer().path.clone() {
                                 if !mlsp.is_ready_for_file(&path) {
-                                    // Try to start server for this file type
-                                    let first_line = editor.buffer().first_line_prefix();
-                                    if let Err(e) = mlsp.ensure_server_for_file_with_first_line(
-                                        &path,
-                                        first_line.as_deref(),
-                                    ) {
-                                        let message = mlsp
-                                            .language_for_path(&path)
-                                            .map(|lang| {
-                                                mlsp.user_facing_error(lang, &e.to_string())
-                                            })
-                                            .unwrap_or_else(|| e.to_string());
-                                        // :checkhealth reads lsp_status, so the pointer holds.
-                                        editor.set_lsp_status(format!("LSP: {}", message));
-                                        editor.set_error(format!("{message}  ·  :checkhealth"));
-                                    } else {
-                                        let (state, status) =
-                                            mlsp.status_and_lifecycle(Some(path.as_path()));
-                                        editor.set_lsp_state((state, status.clone()));
-                                        editor.set_status(status);
-                                    }
+                                    drop_lsp_request_until_ready(&mut editor, mlsp, &path);
                                 } else {
                                     let line = editor.cursor.line as u32;
                                     let col = editor_lsp_cursor_col(&editor);
@@ -1183,68 +1271,21 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
 
-                    // Check if the current file has changed (e.g., opened from finder)
-                    // If so, notify LSP with did_close for old file and did_open for new file
-                    let current_file = editor.buffer().path.clone();
-                    if current_file != lsp_current_file {
-                        if let Some(ref mut mlsp) = multi_lsp {
-                            // Close the old file if we had one
-                            if let Some(ref old_path) = lsp_current_file {
-                                let _ = mlsp.did_close(old_path);
-                                lsp_current_file = None;
-                            }
-
-                            // Try to start server for new file type and open the file
-                            if let Some(ref new_path) = current_file {
-                                // Ensure server is started for this file type
-                                let first_line = editor.buffer().first_line_prefix();
-                                match mlsp.ensure_server_for_file_with_first_line(
-                                    new_path,
-                                    first_line.as_deref(),
-                                ) {
-                                    Ok(Some(_lang)) => {
-                                        editor.set_lsp_state(
-                                            mlsp.status_and_lifecycle(Some(new_path.as_path())),
-                                        );
-                                    }
-                                    Ok(None) => {
-                                        // No LSP for this file type
-                                        editor.set_lsp_state(
-                                            mlsp.status_and_lifecycle(Some(new_path.as_path())),
-                                        );
-                                    }
-                                    Err(e) => {
-                                        let message = mlsp
-                                            .language_for_path(new_path)
-                                            .map(|lang| {
-                                                mlsp.user_facing_error(lang, &e.to_string())
-                                            })
-                                            .unwrap_or_else(|| e.to_string());
-                                        editor.set_lsp_state((
-                                            lsp::LspStatus::Error,
-                                            format!("LSP: {}", message),
-                                        ));
-                                    }
-                                }
-
-                                // If server is ready, send did_open
-                                if mlsp.is_ready_for_file(new_path) {
-                                    let text = editor.buffer().content();
-                                    save_runtime.before_current_open(new_path, mlsp);
-                                    if let Err(e) = mlsp.did_open(new_path, &text) {
-                                        editor.set_lsp_state((
-                                            lsp::LspStatus::Error,
-                                            format!("LSP: open error: {}", e),
-                                        ));
-                                    } else {
-                                        lsp_current_file = Some(new_path.clone());
-                                        lsp_synced_version = Some(editor.buffer().version());
-                                    }
-                                }
-                            } else {
-                                lsp_current_file = None;
-                            }
-                        }
+                    // Opening a file from the finder or a buffer switch changes the
+                    // current file. Checked here, per key, so a request on the next
+                    // key of the same batch goes to an opened file, and so a shebang
+                    // typed into a script with no extension starts its server. The
+                    // pass after render covers changes that came without a key.
+                    if let Some(ref mut mlsp) = multi_lsp {
+                        sync_lsp_open_file(
+                            &mut editor,
+                            mlsp,
+                            &mut save_runtime,
+                            &mut lsp_open_check,
+                            true,
+                            &mut lsp_current_file,
+                            &mut lsp_synced_version,
+                        );
                     }
 
                     // Track file changes for Copilot and send did_open/did_close
@@ -2432,6 +2473,22 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        // The file given on the command line, and any file opened without a
+        // key (a jump from an LSP response), starts its server here instead
+        // of waiting for the next key. After render, so the first frame does
+        // not wait on it; on an idle pass it is one path comparison.
+        if let Some(ref mut mlsp) = multi_lsp {
+            needs_redraw |= sync_lsp_open_file(
+                &mut editor,
+                mlsp,
+                &mut save_runtime,
+                &mut lsp_open_check,
+                false,
+                &mut lsp_current_file,
+                &mut lsp_synced_version,
+            );
+        }
+
         drain_profile_metrics!(editor, profile_stats, profile_file, profiled_metric_seq);
     }
 
@@ -2894,6 +2951,254 @@ mod tests {
             .expect("system time")
             .as_nanos();
         std::env::temp_dir().join(format!("{}_{}_{}", prefix, std::process::id(), nanos))
+    }
+
+    /// A temp folder holding `main.rs` and a "server" that is a shell script,
+    /// used for both Rust and Shell. Each start appends a line to `spawned`,
+    /// so a test can count them. Removed on drop.
+    #[cfg(unix)]
+    struct StandInLsp {
+        dir: PathBuf,
+        file: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl StandInLsp {
+        fn new(prefix: &str, script_tail: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = unique_temp_dir(prefix);
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("main.rs");
+            std::fs::write(&file, "fn main() {}\n").unwrap();
+            let script = dir.join("stand-in-lsp");
+            let spawned = dir.join("spawned");
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\necho started >> '{}'\n{script_tail}\n",
+                    spawned.display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            Self { dir, file }
+        }
+
+        fn manager(&self) -> nevi::MultiLspManager {
+            let command = self.dir.join("stand-in-lsp").display().to_string();
+            let mut servers = nevi::config::LspServers::default();
+            servers.rust.command = command.clone();
+            servers.rust.args.clear();
+            servers.shell.command = command;
+            servers.shell.args.clear();
+            nevi::MultiLspManager::new(
+                self.dir.clone(),
+                servers.rust,
+                servers.typescript,
+                servers.javascript,
+                servers.css,
+                servers.json,
+                servers.toml,
+                servers.markdown,
+                servers.html,
+                servers.python,
+                servers.php,
+                servers.go,
+                servers.ruby,
+                servers.shell,
+                servers.swift,
+                servers.typst,
+            )
+        }
+
+        fn editor(&self) -> Editor {
+            self.editor_on("main.rs", "fn main() {}\n")
+        }
+
+        fn editor_on(&self, name: &str, text: &str) -> Editor {
+            let file = self.dir.join(name);
+            std::fs::write(&file, text).unwrap();
+            let mut editor = test_editor();
+            editor.open_file(file).unwrap();
+            editor
+        }
+
+        /// Waits for the script to have started `count` times, then a little
+        /// longer so a start that should not happen has time to show up.
+        fn spawn_count_settles_at(&self, count: usize) -> usize {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let read = || {
+                std::fs::read_to_string(self.dir.join("spawned"))
+                    .map(|log| log.lines().count())
+                    .unwrap_or(0)
+            };
+            while read() < count && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            read()
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for StandInLsp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// The loop's state for the open check, so a test can run it like the
+    /// key branch (`after_key`) or like the pass after render.
+    #[cfg(unix)]
+    struct OpenCheck {
+        mlsp: nevi::MultiLspManager,
+        save_runtime: super::save_runtime::SaveRuntime,
+        check: super::LspOpenCheck,
+        current: Option<PathBuf>,
+        synced: Option<u64>,
+    }
+
+    #[cfg(unix)]
+    impl OpenCheck {
+        fn new(stand_in: &StandInLsp) -> Self {
+            Self {
+                mlsp: stand_in.manager(),
+                save_runtime: Default::default(),
+                check: Default::default(),
+                current: None,
+                synced: None,
+            }
+        }
+
+        fn run(&mut self, editor: &mut Editor, after_key: bool) -> bool {
+            super::sync_lsp_open_file(
+                editor,
+                &mut self.mlsp,
+                &mut self.save_runtime,
+                &mut self.check,
+                after_key,
+                &mut self.current,
+                &mut self.synced,
+            )
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lsp_open_check_starts_the_server_for_the_current_file_with_no_key() {
+        let stand_in = StandInLsp::new("nevi_lsp_open_check", "exec cat > /dev/null");
+        let mut open_check = OpenCheck::new(&stand_in);
+
+        // The start screen has no file: nothing to start.
+        let mut empty = test_editor();
+        assert!(!open_check.run(&mut empty, false));
+        assert!(!open_check.mlsp.has_server_for_file(&stand_in.file, None));
+
+        let mut editor = stand_in.editor();
+        assert!(open_check.run(&mut editor, false));
+        assert!(open_check.mlsp.has_server_for_file(&stand_in.file, None));
+        assert_eq!(editor.lsp_state, nevi::lsp::LspStatus::Starting);
+        assert_eq!(open_check.check.path.as_ref(), Some(&stand_in.file));
+        // didOpen waits for the server's Initialized notification.
+        assert_eq!(open_check.current, None);
+        assert_eq!(stand_in.spawn_count_settles_at(1), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lsp_open_check_does_not_retry_a_server_that_failed_to_start() {
+        let stand_in = StandInLsp::new("nevi_lsp_open_check_failed", "exit 1");
+        let mut open_check = OpenCheck::new(&stand_in);
+        let mut editor = stand_in.editor();
+
+        assert!(open_check.run(&mut editor, false));
+        assert_eq!(stand_in.spawn_count_settles_at(1), 1);
+        let _ = open_check.mlsp.poll_notifications();
+
+        // Later passes and keys on the same file leave the server and the
+        // status alone; the file was never opened on the server.
+        editor.set_lsp_state((nevi::lsp::LspStatus::Stopped, "untouched".to_string()));
+        for after_key in [false, true, false, true, false] {
+            assert!(!open_check.run(&mut editor, after_key));
+        }
+        assert_eq!(editor.lsp_status.as_deref(), Some("untouched"));
+        assert_eq!(open_check.current, None);
+        assert_eq!(stand_in.spawn_count_settles_at(1), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lsp_open_check_is_quiet_for_a_file_with_no_server() {
+        let stand_in = StandInLsp::new("nevi_lsp_open_check_txt", "exec cat > /dev/null");
+        let mut open_check = OpenCheck::new(&stand_in);
+        let mut editor = stand_in.editor_on("notes.txt", "just text\n");
+
+        assert!(open_check.run(&mut editor, false));
+        // Neither idle passes nor keys run it again, so they ask for no redraw.
+        for after_key in [false, true, false, true, false] {
+            assert!(!open_check.run(&mut editor, after_key));
+        }
+        assert_eq!(stand_in.spawn_count_settles_at(0), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lsp_open_check_starts_the_shell_server_once_a_shebang_is_typed() {
+        let stand_in = StandInLsp::new("nevi_lsp_open_check_shebang", "exec cat > /dev/null");
+        let mut open_check = OpenCheck::new(&stand_in);
+        let mut editor = stand_in.editor_on("deploy", "");
+        let script = editor.buffer().path.clone().unwrap();
+
+        assert!(open_check.run(&mut editor, false));
+        assert!(!open_check.mlsp.has_server_for_file(&script, None));
+
+        editor.replace_buffer_content("#!/bin/sh\n");
+        // Only input changes the first line, so the pass after render does
+        // not look at it again; the key that typed it does.
+        assert!(!open_check.run(&mut editor, false));
+        assert!(open_check.run(&mut editor, true));
+        assert!(
+            open_check
+                .mlsp
+                .has_server_for_file(&script, Some("#!/bin/sh"))
+        );
+        assert_eq!(editor.lsp_state, nevi::lsp::LspStatus::Starting);
+
+        for after_key in [true, false, true] {
+            assert!(!open_check.run(&mut editor, after_key));
+        }
+        assert_eq!(stand_in.spawn_count_settles_at(1), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lsp_request_while_the_server_starts_says_it_was_not_sent() {
+        let stand_in = StandInLsp::new("nevi_lsp_dropped_request", "exec cat > /dev/null");
+        let mut mlsp = stand_in.manager();
+        let mut editor = stand_in.editor();
+
+        super::drop_lsp_request_until_ready(&mut editor, &mut mlsp, &stand_in.file);
+
+        assert_eq!(
+            editor.status_message.as_deref(),
+            Some("LSP: still starting, request not sent")
+        );
+        assert_eq!(editor.lsp_state, nevi::lsp::LspStatus::Starting);
+        assert_eq!(stand_in.spawn_count_settles_at(1), 1);
+    }
+
+    #[test]
+    fn lsp_open_check_also_runs_on_loop_passes_without_a_key() {
+        // The loop itself has no test seam. The check must also run after
+        // render, outside the key branch, or the file given on the command
+        // line waits for a key before its server starts.
+        let main = include_str!("main.rs");
+        let code = &main[..main.find(concat!("#[cfg(test)]\nmod ", "tests {")).unwrap()];
+        let render = code.find("terminal.render(&editor)?;").unwrap();
+        assert!(
+            code[render..].contains(concat!("sync_lsp_open_file", "(")),
+            "sync_lsp_open_file must also be called after render"
+        );
     }
 
     #[test]
