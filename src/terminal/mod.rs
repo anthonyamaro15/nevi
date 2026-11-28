@@ -2172,6 +2172,36 @@ impl Terminal {
         Ok(())
     }
 
+    fn render_end_of_buffer_row(
+        &mut self,
+        editor: &Editor,
+        pane: &Pane,
+        editor_fg: Color,
+    ) -> anyhow::Result<()> {
+        let pane_width = usize::from(pane.rect.width);
+        if pane_width == 0 {
+            return Ok(());
+        }
+
+        // The split separator is painted over the first cell of each pane
+        // to the right of another pane. Start at its first visible cell.
+        let has_leading_separator = editor.split_layout() == SplitLayout::Vertical
+            && !std::ptr::eq(pane, &editor.panes()[0]);
+        let marker_col = usize::from(has_leading_separator);
+        if has_leading_separator {
+            terminal_print!(self, " ");
+        }
+        if marker_col < pane_width {
+            execute!(self.stdout, SetForegroundColor(Color::Blue))?;
+            terminal_print!(self, "{}", editor.eob_fill());
+            execute!(self.stdout, SetForegroundColor(editor_fg))?;
+            for _ in marker_col + 1..pane_width {
+                terminal_print!(self, " ");
+            }
+        }
+        Ok(())
+    }
+
     /// Render pane with soft wrap enabled
     #[allow(clippy::too_many_arguments)]
     fn render_pane_wrapped(
@@ -2441,22 +2471,7 @@ impl Terminal {
                 SetForegroundColor(editor_fg)
             )?;
 
-            terminal_print!(self, "{:w$}", "", w = sign_column_width); // empty sign column
-
-            execute!(self.stdout, SetForegroundColor(Color::Blue))?;
-            let eob = editor.eob_fill();
-            if show_line_numbers {
-                terminal_print!(self, "{:>width$} {}", "", eob, width = line_num_width);
-            } else {
-                terminal_print!(self, "{}", eob);
-            }
-            execute!(self.stdout, SetForegroundColor(editor_fg))?;
-
-            // Gutter plus the one-cell end-of-buffer glyph
-            let chars_printed = gutter_width + 1;
-            for _ in chars_printed..pane_width {
-                terminal_print!(self, " ");
-            }
+            self.render_end_of_buffer_row(editor, pane, editor_fg)?;
 
             current_row += 1;
         }
@@ -2797,27 +2812,7 @@ impl Terminal {
                     }
                 }
             } else {
-                // Empty line - sign column + line indicator
-                terminal_print!(self, "{:w$}", "", w = sign_column_width); // empty sign column
-
-                execute!(self.stdout, SetForegroundColor(Color::Blue))?;
-                let eob = editor.eob_fill();
-                if show_line_numbers {
-                    terminal_print!(self, "{:>width$} {}", "", eob, width = line_num_width);
-                } else {
-                    terminal_print!(self, "{}", eob);
-                }
-                execute!(
-                    self.stdout,
-                    SetForegroundColor(editor_fg),
-                    SetBackgroundColor(row_bg)
-                )?;
-
-                // Gutter plus the one-cell end-of-buffer glyph
-                let chars_printed = gutter_width + 1;
-                for _ in chars_printed..pane_width {
-                    terminal_print!(self, " ");
-                }
+                self.render_end_of_buffer_row(editor, pane, editor_fg)?;
             }
             // Keep background color set (don't reset to terminal default)
         }
@@ -11726,6 +11721,78 @@ mod tests {
             rendered.contains('~'),
             "minimal mode keeps end-of-buffer tildes; output={rendered:?}"
         );
+    }
+
+    fn end_of_buffer_rows_with_gutter() -> [[String; 3]; 2] {
+        [false, true].map(|wrap| {
+            let mut editor = Editor::default();
+            editor.set_size(40, 10);
+            editor.settings.editor.bufferline = false;
+            editor.settings.ui.style = Some(crate::config::UiStyle::Minimal);
+            editor.replace_buffer_content("a\n");
+            let wrap_option = if wrap { "wrap" } else { "nowrap" };
+            editor
+                .set_options(&format!("nu scl=yes {wrap_option}"))
+                .unwrap();
+
+            let rendered = render_editor_to_string(&editor);
+            [0, 1, 2].map(|row| screen_row_text(&rendered, row))
+        })
+    }
+
+    #[test]
+    fn end_of_buffer_fill_starts_at_the_window_edge_with_a_gutter() {
+        assert_eq!(end_of_buffer_rows_with_gutter(), [["    1 a", "~", "~"]; 2]);
+    }
+
+    #[test]
+    #[ignore = "requires NEVI_VIM_ORACLE=1 and nvim on PATH"]
+    fn vim_oracle_smoke_end_of_buffer_rows_match_neovim() {
+        if std::env::var("NEVI_VIM_ORACLE").as_deref() != Ok("1") {
+            return;
+        }
+
+        let output = std::process::Command::new("nvim")
+            .args(["--clean", "--headless", "-n", "-i", "NONE", "-l"])
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/terminal/end_of_buffer_oracle.lua"
+            ))
+            .output()
+            .expect("start Neovim end-of-buffer oracle");
+        assert!(
+            output.status.success(),
+            "Neovim oracle: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let expected: [[String; 3]; 2] =
+            serde_json::from_slice(&output.stdout).expect("Neovim screen rows");
+        assert_eq!(
+            end_of_buffer_rows_with_gutter(),
+            expected,
+            "nowrap and wrap"
+        );
+    }
+
+    #[test]
+    fn end_of_buffer_fill_starts_at_each_vertical_split_edge() {
+        let markers = [false, true].map(|wrap| {
+            let mut editor = Editor::default();
+            editor.set_size(40, 10);
+            editor.settings.editor.bufferline = false;
+            editor.settings.editor.wrap = wrap;
+            editor.replace_buffer_content("a\n");
+            editor.set_options("nu scl=yes fcs=eob:+").unwrap();
+            editor.vsplit(None).unwrap();
+
+            let left = &editor.panes()[0].rect;
+            let separator_x = left.x + left.width;
+            let rendered = render_editor_to_string(&editor);
+            let row = screen_row_text(&rendered, left.y as usize + 1);
+            [left.x, separator_x, separator_x + 1].map(|col| row.chars().nth(col as usize))
+        });
+
+        assert_eq!(markers, [[Some('+'), Some('│'), Some('+')]; 2]);
     }
 
     #[test]

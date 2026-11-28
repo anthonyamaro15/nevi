@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Interface
+
+- The end-of-buffer marker now starts at the left edge of each window, even with line numbers or the sign column enabled. (#415)
+
 ### Fixed
 
 - `:vs file` and `:sp file` now reuse an already-open buffer instead of creating a second copy. Edits are shared between panes, including when a file is named through a relative path or symlink. (#451)
