@@ -44,7 +44,7 @@ until you set it. Every key below is optional.
 | `bufferline` | `false` | Show the bufferline |
 | `relative_numbers` | `false` | Relative line numbers |
 | `sign_column` | `"yes"` | Git and diagnostic gutter. `"auto"` shows it only while a sign exists, like nvim. `"no"` hides it. `:set signcolumn=auto` switches it at runtime. |
-| `fillchars` | unset | Vim's `fillchars`, only the `eob` item: the character drawn on rows past the end of the file. Unset, rich mode leaves those rows blank and minimal mode draws `~`. `"eob:~"` gives Vim's look in either style, and `"eob: "` (a plain space, no backslash) blanks it. Nvim's other items, such as `vert:|`, are accepted so a copied value still loads, but only `eob` is drawn. |
+| `fillchars` | unset | Vim's `fillchars`, only the `eob` item: the character drawn at the left edge of each window on rows past the end of the file. Unset, rich mode leaves those rows blank and minimal mode draws `~`. `"eob:~"` gives Vim's look in either style, and `"eob: "` (a plain space, no backslash) blanks it. Nvim's other items, such as `vert:|`, are accepted so a copied value still loads, but only `eob` is drawn. |
 | `cursor_line` | `false` | Highlight the cursor row |
 | `scroll_off` | `8` | Lines kept visible above and below the cursor |
 | `auto_indent` | `true` | Smart indentation on new lines |
